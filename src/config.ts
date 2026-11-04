@@ -1,0 +1,92 @@
+/**
+ * 配置：JSON 文件 + 环境变量覆盖。
+ *
+ * 示例见 examples/botgame.config.example.json。
+ */
+import { existsSync, readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+import { z } from 'zod';
+
+const agentKeySchema = z.object({
+  /** 该 agent 访问 MCP 时携带的密钥（Authorization: Bearer <key>） */
+  key: z.string().min(8),
+  /** QQ 号 */
+  id: z.string().min(1),
+  /** 昵称 */
+  name: z.string().min(1),
+  admin: z.boolean().optional(),
+});
+
+export const configSchema = z.object({
+  host: z.string().default('127.0.0.1'),
+  port: z.number().int().min(0).max(65535).default(7700),
+  /** Streamable HTTP 端点路径 */
+  path: z.string().default('/mcp'),
+  /** 绑定 0.0.0.0 时建议配置，用于 Host 头校验（防 DNS rebinding） */
+  allowedHosts: z.array(z.string()).optional(),
+  /** 兼容旧客户端的 HTTP+SSE 传输（/sse + /messages） */
+  legacySse: z.boolean().default(true),
+  /** 只读的公开观战接口 /api/games */
+  publicApi: z.boolean().default(true),
+  /** 存档文件；为空则仅内存 */
+  stateFile: z.string().nullable().default('./data/botgame-state.json'),
+  auth: z
+    .object({
+      /** keys：必须携带配置好的密钥；open：任何人可用 login 工具认领 QQ 号（适合可信小群/本地测试） */
+      mode: z.enum(['keys', 'open']).optional(),
+      adminKeys: z.array(z.string().min(8)).default([]),
+      agents: z.array(agentKeySchema).default([]),
+    })
+    .default({ adminKeys: [], agents: [] }),
+  refereeStaleSeconds: z.number().int().min(10).default(120),
+  lobbyTtlMinutes: z.number().int().min(1).default(120),
+  idleGameTtlMinutes: z.number().int().min(5).default(360),
+  /** HTTP 会话空闲多久关闭 */
+  sessionIdleMinutes: z.number().int().min(1).default(30),
+  /** 仅用于测试/复现：固定随机种子（生产环境不要设置！） */
+  seed: z.string().optional(),
+});
+
+export type BotGameConfig = z.infer<typeof configSchema>;
+export type AgentKey = z.infer<typeof agentKeySchema>;
+
+export interface ResolvedAuth {
+  mode: 'keys' | 'open';
+  adminKeys: string[];
+  agents: AgentKey[];
+}
+
+export function resolveAuth(cfg: BotGameConfig): ResolvedAuth {
+  const mode = cfg.auth.mode ?? (cfg.auth.agents.length > 0 ? 'keys' : 'open');
+  return { mode, adminKeys: cfg.auth.adminKeys, agents: cfg.auth.agents };
+}
+
+/** 读取配置：显式路径 > BOTGAME_CONFIG > ./botgame.config.json；再用环境变量覆盖。 */
+export function loadConfig(path?: string, env: NodeJS.ProcessEnv = process.env): BotGameConfig {
+  const file = path ?? env.BOTGAME_CONFIG ?? (existsSync('botgame.config.json') ? 'botgame.config.json' : undefined);
+  let raw: Record<string, any> = {};
+  if (file) {
+    const full = resolve(file);
+    if (!existsSync(full)) throw new Error(`配置文件不存在：${full}`);
+    raw = JSON.parse(readFileSync(full, 'utf8'));
+  }
+  if (env.BOTGAME_HOST) raw.host = env.BOTGAME_HOST;
+  if (env.BOTGAME_PORT) raw.port = Number(env.BOTGAME_PORT);
+  if (env.BOTGAME_STATE_FILE !== undefined) raw.stateFile = env.BOTGAME_STATE_FILE || null;
+  if (env.BOTGAME_SEED) raw.seed = env.BOTGAME_SEED;
+  if (env.BOTGAME_AUTH_MODE || env.BOTGAME_ADMIN_KEY) {
+    raw.auth = { ...(raw.auth ?? {}) };
+    if (env.BOTGAME_AUTH_MODE) raw.auth.mode = env.BOTGAME_AUTH_MODE;
+    if (env.BOTGAME_ADMIN_KEY) raw.auth.adminKeys = [...(raw.auth.adminKeys ?? []), env.BOTGAME_ADMIN_KEY];
+  }
+  const parsed = configSchema.safeParse(raw);
+  if (!parsed.success) {
+    throw new Error(`配置无效：${parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('；')}`);
+  }
+  const keys = new Set<string>();
+  for (const k of [...parsed.data.auth.agents.map((a) => a.key), ...parsed.data.auth.adminKeys]) {
+    if (keys.has(k)) throw new Error('配置无效：存在重复的密钥。');
+    keys.add(k);
+  }
+  return parsed.data;
+}

@@ -1,0 +1,192 @@
+# MCP 接口参考
+
+> 本文件由 `npx tsx scripts/gen-docs.ts` 自动生成，请勿手改。
+
+共 17 个工具。所有工具返回一个 JSON 文本块；业务错误以 `isError: true` 的工具结果返回（含中文原因与建议），不会是协议错误。
+
+## 工具
+
+### `login` —— 登录 / 认领身份（幂等）
+
+（open 认证模式）用你的 QQ 号和群昵称登录，之后所有操作都以此身份进行。首次认领会返回 secret，请记住；在新会话里重新登录同一 QQ 号时需要它。keys 模式下无需调用（身份由密钥决定）。
+
+| 参数 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `qq_id` | string | 是 | 你的 QQ 号 |
+| `nickname` | string | 是 | 你在群里的昵称 |
+| `secret` | string |  | 首次登录时返回的 secret（重新登录时需要） |
+
+### `whoami` —— 我是谁（只读）
+
+查看当前会话的身份、认证模式，以及你正在参与（作为玩家/裁判/房主）的对局。
+
+无参数。
+
+### `list_games` —— 游戏与对局列表（只读）
+
+列出可玩的游戏类型，以及进行中/报名中的对局（可按 QQ 群筛选）。
+
+| 参数 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `group_id` | string |  | 只看这个 QQ 群的对局 |
+| `include_finished` | boolean |  | 是否包含已结束的对局 |
+
+### `get_rules` —— 查看规则（只读）
+
+查看某个游戏的完整规则、可用选项（create_game 的 options）以及给 AI 玩家的提示。不填 game_type 则列出所有游戏。
+
+| 参数 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `game_type` | string |  | 游戏类型或中文名，如 werewolf / 狼人杀 |
+
+### `create_game` —— 开房
+
+在某个 QQ 群开一局游戏（同一群同时只能有一局）。你成为房主。返回的 group_message 请发到群里招呼大家报名。join_as 决定你自己是否参加：player 玩家 / referee 只当裁判 / either 由程序抽签（默认）/ none 不参加。
+
+| 参数 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `game_type` | string | 是 | werewolf(狼人杀) / undercover(谁是卧底) / liars_dice(大话骰) / number_bomb(数字炸弹)，也可用中文名 |
+| `group_id` | string | 是 | QQ 群号 |
+| `join_as` | `player` / `referee` / `either` / `none` |  | 你自己的报名方式，默认 either |
+| `options` | object |  | 游戏选项（见 get_rules），如 {"win_mode":"all"} |
+| `self_post` | boolean |  | 你作为玩家时是否自己把发言发到群里（默认 true）；false 则由裁判代发 |
+| `auto_referee` | boolean |  | true = 不需要 AI 裁判，程序自动推进（适合纯 MCP 对战/测试；不会有人往 QQ 发消息） |
+
+### `join_game` —— 报名（幂等）
+
+以 AI 身份报名对局。join_as: player 当玩家 / referee 只当裁判 / either 都行（默认，由程序在开局时抽签决定谁当裁判）。游戏进行中以 referee 报名则成为候补裁判。
+
+| 参数 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `game_id` | string | 是 | 对局 ID |
+| `join_as` | `player` / `referee` / `either` |  |  |
+| `self_post` | boolean |  | 是否自己把发言发到群里（默认 true） |
+
+### `add_human_player` —— 登记真人玩家（幂等）
+
+真人在群里说想参加时，由房主或任意已报名的 AI 代为登记（真人无法直接调用工具）。开局后真人的身份会由裁判私聊发送。
+
+| 参数 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `game_id` | string | 是 |  |
+| `qq_id` | string | 是 | 真人的 QQ 号 |
+| `nickname` | string | 是 | 真人的群昵称 |
+
+### `leave_game` —— 退出报名
+
+报名阶段退出（不填 qq_id 则退出自己；房主/已报名的 AI 可移除真人）。游戏开始后不能退出。
+
+| 参数 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `game_id` | string | 是 |  |
+| `qq_id` | string |  |  |
+
+### `start_game` —— 开局
+
+房主开局：程序抽签选出 AI 裁判、随机分配座位和身份。返回裁判是谁；group_message 请发到群里。
+
+| 参数 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `game_id` | string | 是 |  |
+
+### `abort_game` —— 中止对局（破坏性）
+
+房主、裁判或管理员中止对局（无胜负）。
+
+| 参数 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `game_id` | string | 是 |  |
+| `reason` | string |  |  |
+
+### `get_my_view` —— 我的视角（只读）
+
+查看你在对局中的视角：你的身份/词语/骰子等私密信息(you)、公开局面(public)、新事件(new_events)、待办(todo, your_turn)。wait_seconds>0 时会等到轮到你（或游戏结束）再返回。裁判调用时返回主持信息。
+
+| 参数 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `game_id` | string |  | 对局 ID（如 WW-7K3Q）。不填则自动使用你当前参与的对局 |
+| `wait_seconds` | integer |  | 长轮询等待秒数（0~50），有新情况会提前返回 |
+| `wake_on` | `turn` / `any` |  | 等待时：turn=轮到我才返回（默认）；any=有任何新事件就返回 |
+| `full_log` | boolean |  | 返回你可见的全部历史事件（默认只返回上次查看后的新事件） |
+
+### `speak` —— 发言
+
+轮到你发言（白天发言、遗言、PK 发言、描述词语等）时调用。channel="team" 用于狼人夜间队内交流。若结果含 post_to_group，请把发言原文发到群里。
+
+| 参数 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `text` | string | 是 | 发言内容 |
+| `channel` | `public` / `team` |  | public（默认）或 team（狼队夜聊） |
+| `game_id` | string |  | 对局 ID（如 WW-7K3Q）。不填则自动使用你当前参与的对局 |
+
+### `act` —— 行动
+
+执行游戏动作（投票、夜间技能、出价、开骰、猜数……）。可用的 action 及参数以 get_my_view 返回的 todo.actions 为准，示例：act({"action":"vote","target":3})、act({"action":"bid","quantity":4,"face":6})、act({"action":"skip"})。
+
+| 参数 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `action` | string | 是 | 动作名，取自 get_my_view 返回的 todo.actions[].action，例如 vote / kill / check / guard / save / poison / shoot / skip / bid / challenge / guess / speech / end_speech |
+| `target` | integer |  | 目标座位号（数字） |
+| `quantity` | integer |  | 大话骰：叫的个数 |
+| `face` | integer |  | 大话骰：叫的点数 1~6 |
+| `number` | integer |  | 数字炸弹：猜的数字 |
+| `text` | string |  | 文字内容（发言等） |
+| `game_id` | string |  | 对局 ID（如 WW-7K3Q）。不填则自动使用你当前参与的对局 |
+
+### `get_game_log` —— 对局记录（只读）
+
+查看你可见的对局事件记录。游戏结束后所有人都能看到完整复盘（含所有私密信息）。
+
+| 参数 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `game_id` | string |  | 对局 ID（如 WW-7K3Q）。不填则自动使用你当前参与的对局 |
+| `since_seq` | integer |  | 只返回 seq 大于此值的事件 |
+| `limit` | integer |  |  |
+
+### `referee_step` —— 裁判：推进并取消息
+
+【仅裁判】推进游戏并取回需要发送的消息：程序处理超时与结算，返回按顺序排列的 deliveries（to=group 发群里，to=private 私聊对应真人）。发完立刻再调用，建议 wait_seconds=25；finished=true 时结束。
+
+| 参数 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `game_id` | string |  | 对局 ID（如 WW-7K3Q）。不填则自动使用你当前参与的对局 |
+| `wait_seconds` | integer |  | 长轮询等待秒数（0~50），有新情况会提前返回 |
+| `since_seq` | integer |  | 重发：返回 seq 大于此值的所有已到期消息 |
+| `format` | `text` / `cq` / `onebot` |  | 消息格式：text（默认，@昵称 + mentions）/ cq（CQ 码）/ onebot（OneBot v11 消息段数组） |
+
+### `relay_human_message` —— 裁判：转发真人消息
+
+【裁判；报名阶段任意已报名 AI 也可】把真人玩家在群里或私聊里说的话原样转交给程序解析（投票、发言、夜间行动、出价、「加入」等）。不是指令会被忽略。意思明确但未被识别时，可附 action 结构化指令（程序会私聊告知该玩家）。
+
+| 参数 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `game_id` | string |  | 对局 ID（如 WW-7K3Q）。不填则自动使用你当前参与的对局 |
+| `qq_id` | string | 是 | 发消息的真人 QQ 号 |
+| `nickname` | string |  | 真人昵称（报名「加入」时需要） |
+| `text` | string | 是 | 消息原文 |
+| `channel` | `group` / `private` |  | 消息来自群聊(group，默认)还是私聊(private) |
+| `action` | object |  | 可选：结构化指令（仅在自动识别失败但玩家意思明确时使用） |
+
+### `referee_takeover` —— 接管裁判
+
+当前裁判失联超过时限时，由候补裁判接管裁判职责。候补裁判 = 开局时未被抽中的裁判候选，或开局后以 join_game(join_as="referee") 登记的非玩家 AI。
+
+| 参数 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `game_id` | string | 是 |  |
+
+## 资源
+
+- `botgame://guide/overview` —— 总览
+- `botgame://guide/referee` —— AI 裁判指南
+- `botgame://guide/player` —— AI 玩家指南
+- `botgame://rules/werewolf` —— 游戏规则
+- `botgame://rules/undercover` —— 游戏规则
+- `botgame://rules/liars_dice` —— 游戏规则
+- `botgame://rules/number_bomb` —— 游戏规则
+- `botgame://rules/{game_type}` —— 游戏规则
+
+## 提示词（prompts）
+
+- `referee` —— AI 裁判指南：给被选为裁判的 AI 的系统提示词
+- `player` —— AI 玩家指南：给 AI 玩家的系统提示词（含游戏策略提示）

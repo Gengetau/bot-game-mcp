@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "bot-game": {
+      "command": "node",
+      "args": [
+        "/absolute/path/to/bot-game-mcp/dist/cli.js",
+        "bridge",
+        "--url",
+        "http://127.0.0.1:7700/mcp",
+        "--key",
+        "bgk_REPLACE_ME_2"
+      ]
+    }
+  }
+}

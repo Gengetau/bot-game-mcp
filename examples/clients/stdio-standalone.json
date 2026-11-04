@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "bot-game-local": {
+      "command": "node",
+      "args": ["/absolute/path/to/bot-game-mcp/dist/cli.js", "stdio", "--no-state"],
+      "env": {
+        "BOTGAME_AGENT_ID": "10001",
+        "BOTGAME_AGENT_NAME": "小克"
+      }
+    }
+  }
+}
