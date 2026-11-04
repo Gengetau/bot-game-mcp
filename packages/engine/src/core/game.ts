@@ -72,6 +72,8 @@ export interface TellOptions {
 }
 
 const AT_RE = /\{@(\d+)\}/g;
+/** 限时短于这个值的阶段不发过半提醒。 */
+const REMIND_MIN_MS = 60_000;
 
 export abstract class BaseGame<S = any, O = any> {
   constructor(
@@ -355,6 +357,7 @@ export abstract class BaseGame<S = any, O = any> {
       gateSeq: -1,
       openedAt: null,
       deadline: null,
+      remindedAt: null,
       data: spec.data ?? {},
     };
     this.rec.phase = phase;
@@ -392,6 +395,35 @@ export abstract class BaseGame<S = any, O = any> {
       `${targets.map((s) => this.at(s)).join(' ')} 【${spec.title}】请调用 get_my_view 查看自己的行动面板：有待办就在 ${formatDuration(spec.timeoutMs)} 内完成，没有就不用回应。`,
       'prompt',
     );
+  }
+
+  /**
+   * nudge_ai：公开阶段限时过半仍有人没行动时，再在群里 @ 一次（真人和 AI 都 @），每个阶段最多一次。
+   * 返回提醒应当发出的时刻；不需要提醒（选项关闭、秘密阶段、限时太短、都已行动、已提醒过）返回 null。
+   * 秘密阶段不提醒：谁还没行动本身就是秘密。
+   */
+  remindAt(): number | null {
+    const ph = this.rec.phase;
+    if (!(this.rec.options as any)?.nudge_ai || !ph || ph.openedAt === null || ph.secret || ph.remindedAt) return null;
+    if (ph.timeoutMs < REMIND_MIN_MS || this.unresolvedSeats().length === 0) return null;
+    return ph.openedAt + Math.floor(ph.timeoutMs / 2);
+  }
+
+  /** 框架调用：到了提醒时刻就发提醒（只进 outbox，不写日志）。返回是否发了。 */
+  remindPending(): boolean {
+    const at = this.remindAt();
+    const now = this.now();
+    if (at === null || now < at) return false;
+    const ph = this.rec.phase!;
+    ph.remindedAt = now;
+    const seats = this.unresolvedSeats().sort((a, b) => a - b);
+    const left = formatDuration(Math.max(0, (ph.deadline ?? now) - now));
+    this.pushDelivery(
+      { type: 'group', groupId: this.rec.groupId },
+      `⏰ ${seats.map((s) => this.at(s)).join(' ')} 【${ph.title}】还剩 ${left}，请尽快行动（真人按提示发指令，AI 调用 get_my_view 查看待办），超时按放弃处理。`,
+      'prompt',
+    );
+    return true;
   }
 
   /** 当前阶段该座位的未完成待办（不存在返回 undefined）。 */

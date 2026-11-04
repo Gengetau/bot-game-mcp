@@ -639,6 +639,7 @@ export class GameManager {
         }
         continue;
       }
+      if (processTimeouts && inst.remindPending()) changed = true;
       break;
     }
     if (rec.phase && rec.phase.gateSeq === -1) rec.phase.gateSeq = rec.outboxSeq;
@@ -1016,7 +1017,10 @@ export class GameManager {
     if (!ph) return true;
     if (ph.openedAt === null) return this.gateOpen(rec, ph);
     if (ph.deadline !== null && now >= ph.deadline) return true;
-    if (this.inst(rec).isPhaseComplete() && now >= ph.openedAt + ph.minDurationMs) return true;
+    const inst = this.inst(rec);
+    if (inst.isPhaseComplete() && now >= ph.openedAt + ph.minDurationMs) return true;
+    const remind = inst.remindAt();
+    if (remind !== null && now >= remind) return true;
     return false;
   }
 
@@ -1028,6 +1032,10 @@ export class GameManager {
     const ph = rec.phase;
     if (ph?.deadline != null) times.push(ph.deadline);
     if (ph?.openedAt != null && ph.minDurationMs > 0) times.push(ph.openedAt + ph.minDurationMs);
+    if (rec.status === 'running') {
+      const remind = this.inst(rec).remindAt();
+      if (remind !== null) times.push(remind);
+    }
     return times.length ? Math.min(...times) : null;
   }
 

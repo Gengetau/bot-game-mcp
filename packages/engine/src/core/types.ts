@@ -144,6 +144,8 @@ export interface PhaseState {
   gateSeq: number;
   openedAt: number | null;
   deadline: number | null;
+  /** nudge_ai：公开阶段过半时的「还没行动」提醒已发出的时间（旧存档里没有这个字段）。 */
+  remindedAt?: number | null;
   data: Record<string, any>;
 }
 

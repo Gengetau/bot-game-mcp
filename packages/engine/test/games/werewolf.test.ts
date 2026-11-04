@@ -410,6 +410,25 @@ describe('day', () => {
     }
   });
 
+  it('tally tells timed-out voters apart from deliberate abstainers; speech timeouts are announced', () => {
+    const g = make({ werewolf: 2, villager: 4 });
+    g.drive({}, () => g.key() === 'speech');
+    const speaker = pendingSeats(g.rec)[0]!;
+    g.clock.advance(g.rec.phase!.timeoutMs + 1000);
+    g.manager.tick();
+    expect(g.rec.log.some((e) => e.audience.type === 'public' && e.text.includes(`${speaker}号`) && e.text.includes('超时未发言'))).toBe(true);
+    g.drive({}, () => g.key() === 'vote');
+    g.act(1, { action: 'vote', target: 2 });
+    g.act(2, { action: 'skip' });
+    g.clock.advance(g.rec.phase!.timeoutMs + 1000);
+    g.manager.tick();
+    const tally = g.rec.log.find((e) => e.text.includes('投票结果'))!;
+    expect(tally.text).toContain('1号 → 2号');
+    expect(tally.text).toContain('弃票：2号');
+    expect(tally.text).toContain('未投票（超时）：3号、4号、5号、6号');
+    expect(g.rec.state.voteLog[0].abstain).toEqual([2, 3, 4, 5, 6]);
+  });
+
   it('votes stay hidden until the tally', () => {
     const g = make({ werewolf: 2, villager: 4 });
     g.drive({}, () => g.key() === 'vote');

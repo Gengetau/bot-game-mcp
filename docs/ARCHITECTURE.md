@@ -111,7 +111,7 @@ MCP 层只做两件事：参数校验，把调用转给 `GameManager`。所有�
 
 `bot-game-referee` 是裁判角色的参考实现：一个 OneBot v11 正向 WebSocket 客户端加一个 MCP 客户端。主循环 `referee_step(wait_seconds=25, format="onebot")` → 按顺序 `send_group_msg` / `send_private_msg`；收到的群消息、私聊按先后顺序 `relay_human_message`；「/桌游」指令对应 `create_game` / `start_game` / `abort_game`。传输失败后的第一次调用会比较 `seq`，发现引擎游标越过了没送到的消息就用 `since_seq` 补发。它只用裁判能用的那几个工具，没有任何能影响结果的接口。
 
-`nudge_ai` 选项在 `BaseGame.openPhase` 里实现：阶段建立时往 outbox 推一条 @ AI 玩家的提示（不写日志），所以它和公告一样受阶段门控约束，总是在阶段开放计时之前发出。
+`nudge_ai` 选项在 `BaseGame.openPhase` 里实现：阶段建立时往 outbox 推一条 @ AI 玩家的提示（不写日志），所以它和公告一样受阶段门控约束，总是在阶段开放计时之前发出。公开阶段限时过半仍有人没行动时，`BaseGame.remindPending` 再推一条 @ 未行动者（真人和 AI 都 @）的提醒，每阶段最多一次，限时不足 60 秒不提醒；秘密阶段不提醒，因为谁还没行动本身是秘密。提醒时刻计入裁判长轮询的唤醒时间（`refereeNextWake`），所以代码裁判会准时发出。
 
 ## 新增一款游戏
 

@@ -154,7 +154,7 @@ const RULES = `## 狼人杀
 5. 被放逐者有遗言；猎人可开枪；白痴被放逐则翻牌免死但失去投票权。同样，若放逐（或猎人开枪）已使某一方满足胜利条件，游戏立即结束，不再有猎人开枪和遗言。
 **胜负**：狼人全灭 → 好人胜。\`win_mode=side\`（默认，屠边）：所有神职死光 或 所有村民死光 → 狼人胜；\`all\`（屠城）：所有好人死光 → 狼人胜。
 **选项**：\`witch_self_save\`（first_night 默认/never/always）、\`first_night_last_words\`、各阶段超时（秒）、\`night_min_s\`（夜晚与女巫阶段最短时长，默认 20 秒，防止通过结算速度推断谁还活着；只要板子里有女巫，每晚都会开启女巫阶段，女巫死亡或药用完时只是空等）。
-**超时**：未行动视为放弃（空刀/空守/不用药/弃票/过）。连续 6 个昼夜无人死亡视为平局。
+**超时**：未行动视为放弃（空刀/空守/不用药/弃票/过）；发言超时会公告，投票结果里「未投票（超时）」和主动「弃票」分开标出。连续 6 个昼夜无人死亡视为平局。
 
 **真人指令**：夜间私聊——狼人「刀3」「空刀」、预言家「验3」、守卫「守3」「空守」、女巫「救」「毒3」「不用」；白天——发言直接说，结束发「过」；投票「投3」「弃票」；猎人「开枪3」「不开枪」。
 **bot 指令**：\`act({"action":"kill|check|guard|save|poison|vote|shoot|skip","target":N})\`；发言 \`speak({"text":"…"})\`；狼人夜间密谈 \`speak({"text":"…","channel":"team"})\`。`;
@@ -799,16 +799,20 @@ export class WerewolfGame extends BaseGame<WerewolfState, WerewolfOptions> {
     const counts = new Map<number, number>();
     const record: Record<string, number> = {};
     const abstain: Seat[] = [];
+    const noVote: Seat[] = [];
     const lines: string[] = [];
     for (const v of voters) {
-      const t = votes[String(v)] ?? 0;
-      if (t > 0) {
+      const t = votes[String(v)];
+      if (t !== undefined && t > 0) {
         counts.set(t, (counts.get(t) ?? 0) + 1);
         record[String(v)] = t;
         lines.push(`${v}号 → ${t}号`);
-      } else abstain.push(v);
+      } else if (t === 0) abstain.push(v);
+      else noVote.push(v); // 超时没投：和主动弃票分开标出，群里才看得出是没来得及还是不想投
     }
     if (abstain.length) lines.push(`弃票：${this.seatList(abstain)}`);
+    if (noVote.length) lines.push(`未投票（超时）：${this.seatList(noVote)}`);
+    abstain.push(...noVote);
     const tallyText = [...counts.entries()]
       .sort((a, b) => b[1] - a[1] || a[0] - b[0])
       .map(([s, c]) => `${s}号 ${c}票`)
@@ -856,6 +860,14 @@ export class WerewolfGame extends BaseGame<WerewolfState, WerewolfOptions> {
     if (this.checkWin()) return true;
     this.afterDeaths([{ seat: out, cause: 'exile' }], true);
     return false;
+  }
+
+  // ───────────────────────── 超时 ─────────────────────────
+
+  /** 未行动视为放弃。发言阶段超时一个字没说，公告一下，免得群里不知道为什么跳到了下一个人。 */
+  protected override timeoutDefault(seat: Seat, _req: PendingRequest): void {
+    const ph = this.phase;
+    if (ph && SPEECH_KEYS.has(ph.key) && !ph.data.spoke) this.announce(`⏰ ${this.label(seat)} 超时未发言，视为「过」。`);
   }
 
   // ───────────────────────── 动作入口 ─────────────────────────

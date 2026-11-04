@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import type { Delivery, GameRecord } from '../../src/core/types.js';
-import { REF, bot, human, pendingSeats, setup, startGame } from '../helpers.js';
+import { REF, bot, human, identityOf, pendingSeats, setup, startGame } from '../helpers.js';
 
 const nudges = (rec: GameRecord): Delivery[] => rec.outbox.filter((d) => d.text.includes('查看自己的行动面板'));
+const reminders = (rec: GameRecord): Delivery[] => rec.outbox.filter((d) => d.text.includes('还剩'));
 const agentIds = (rec: GameRecord) => rec.players.filter((p) => p.kind === 'agent' && p.alive).map((p) => p.id).sort();
 
 describe('nudge_ai option', () => {
@@ -82,6 +83,67 @@ describe('nudge_ai option', () => {
     const n = nudges(rec);
     expect(n).toHaveLength(1);
     expect(n[0]!.mentions.map((m) => m.id).sort()).toEqual(want);
+  });
+
+  it('reminds exactly the seats still pending halfway through a public phase, once, humans included', async () => {
+    const { manager, clock } = setup(3);
+    const { gameId, rec } = startGame(manager, 'undercover', {
+      players: [1, 2, 3, 4].map((n) => bot(n)),
+      humans: [human(1)],
+      referee: REF,
+      options: { nudge_ai: true, vote_timeout_s: 90 },
+    });
+    await manager.refereeStep(REF, gameId);
+    let guard = 0;
+    while (pendingSeats(rec).length === 1 && guard++ < 10) {
+      const seat = pendingSeats(rec)[0]!;
+      const p = rec.players.find((pl) => pl.seat === seat)!;
+      const input = manager.randomActionFor(gameId, seat)!;
+      if (p.kind === 'agent') manager.act({ id: p.id, name: p.name }, gameId, input);
+      else manager.relayHumanMessage(REF, gameId, { userId: p.id, text: '', channel: 'group', action: input });
+      await manager.refereeStep(REF, gameId);
+    }
+    expect(rec.phase?.key).toBe('vote');
+    expect(rec.phase?.timeoutMs).toBe(90_000);
+    // 两个 bot 先投了，过半时只 @ 还没投的人（含真人）
+    const voters = pendingSeats(rec);
+    for (const seat of voters.slice(0, 2)) manager.act(identityOf(rec, seat), gameId, manager.randomActionFor(gameId, seat)!);
+    clock.advance(44_000);
+    await manager.refereeStep(REF, gameId);
+    expect(reminders(rec)).toHaveLength(0);
+    clock.advance(1_000);
+    const step = await manager.refereeStep(REF, gameId);
+    const r = reminders(rec);
+    expect(r).toHaveLength(1);
+    expect(r[0]!.category).toBe('prompt');
+    const want = pendingSeats(rec)
+      .map((s) => rec.players.find((p) => p.seat === s)!.id)
+      .sort();
+    expect(want).toContain('201');
+    expect(r[0]!.mentions.map((m) => m.id).sort()).toEqual(want);
+    expect(r[0]!.text).toContain('还剩');
+    expect(step.deliveries.some((d) => d.seq === r[0]!.seq)).toBe(true); // 同一次 referee_step 就交付
+    expect(rec.log.some((e) => e.text.includes('还剩'))).toBe(false);
+    // 同一阶段不再提醒第二次
+    clock.advance(20_000);
+    await manager.refereeStep(REF, gameId);
+    expect(reminders(rec)).toHaveLength(1);
+  });
+
+  it('never reminds in secret phases, and not at all when nudge_ai is off', async () => {
+    for (const nudge of [true, false]) {
+      const { manager, clock } = setup(7);
+      const { gameId, rec } = startGame(manager, 'werewolf', {
+        players: [1, 2, 3, 4, 5, 6].map((n) => bot(n)),
+        referee: REF,
+        options: { nudge_ai: nudge, night_timeout_s: 120 },
+      });
+      await manager.refereeStep(REF, gameId);
+      expect(rec.phase?.secret).toBe(true);
+      clock.advance(61_000);
+      await manager.refereeStep(REF, gameId);
+      expect(reminders(rec)).toHaveLength(0);
+    }
   });
 
   it('number bomb never nudges (one seat at a time)', async () => {

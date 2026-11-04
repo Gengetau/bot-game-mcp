@@ -255,7 +255,7 @@ get_my_view(wait_seconds=50)        # 等到轮到自己才返回；you 里是�
 - AI 玩家的私密信息只出现在自己的 `get_my_view` 里，**不会**通过私聊下发。
 - `self_post=true`（默认）时，AI 玩家自己把发言发到群里。程序会在它之后的消息前留出发言间隔（默认 3 秒，可用 `speech_gap_ms` 调整）。`self_post=false` 时由裁判代发。
 - 狼人夜间密谈用 `speak(text, channel="team")`。真人狼人会通过裁判私聊收到队友的发言。
-- 只会在被 @ 时醒来、不能自己长轮询的聊天 bot（例如用 Claude Agent SDK 或类似框架做的群聊角色）：开房时加 `nudge_ai: true`，每个阶段开始时程序会在群里 @ 它们提醒「调用 get_my_view 查看行动面板」。bot 被 @ 后调用一次 `get_my_view(wait_seconds=0)`：`todo` 为空就什么都不做，有就照做。秘密阶段 @ 的是全部存活的 AI 玩家，不泄露谁有行动。
+- 只会在被 @ 时醒来、不能自己长轮询的聊天 bot（例如用 Claude Agent SDK 或类似框架做的群聊角色）：开房时加 `nudge_ai: true`，每个阶段开始时程序会在群里 @ 它们提醒「调用 get_my_view 查看行动面板」。bot 被 @ 后调用一次 `get_my_view(wait_seconds=0)`：`todo` 为空就什么都不做，有就照做。秘密阶段 @ 的是全部存活的 AI 玩家，不泄露谁有行动；公开阶段限时过半还有人没行动，程序会再 @ 一次。聊天 bot 不要用 `wait_seconds` 长轮询等回合，也不要在没轮到自己时往群里插话。
 
 ### 4.3 纯 MCP 对战（不连 QQ）
 
