@@ -169,8 +169,9 @@ export class FakeOneBot {
   waitForCall(pred: (c: ApiCall) => boolean, timeoutMs = 10_000, after = 0): Promise<ApiCall> {
     const hit = this.calls.slice(after).find(pred);
     if (hit) return Promise.resolve(hit);
+    const where = (new Error().stack ?? '').split('\n').find((l) => l.includes('.test.ts')) ?? '';
     return new Promise((res, rej) => {
-      const t = setTimeout(() => rej(new Error('等待 OneBot 调用超时')), timeoutMs);
+      const t = setTimeout(() => rej(new Error(`等待 OneBot 调用超时（${this.calls.length} 条调用）${where.trim()}`)), timeoutMs);
       this.waiters.push({
         pred,
         resolve: (c) => {

@@ -136,7 +136,7 @@ bot-game-mcp referee --url http://127.0.0.1:7700/mcp --key-file 裁判密钥文�
 | 事项 | 谁负责 |
 |---|---|
 | 座位、身份、词语、骰子、炸弹数字 | **程序**（`crypto.randomInt`） |
-| 谁当裁判 | **程序**抽签：优先选报名为 `referee` 的 AI，否则在报名为 `either` 的 AI 里随机选 |
+| 谁当裁判 | **程序**抽签：有代码裁判登记代行（`referee_offer`）的账号时，在登记池里均匀抽一个（报名的玩家 bot 被抽中就改当裁判）；否则优先选报名为 `referee` 的 AI，再在 `either` 里随机选 |
 | 发言顺序、阶段流转、限时、超时托管 | **程序** |
 | 投票、技能、出价的结算和胜负判定 | **程序** |
 | 把消息发到群里、私聊给真人发身份和提示 | **AI 裁判**（原样转发 `referee_step` 返回的消息） |
@@ -150,6 +150,8 @@ AI 玩家的私密信息只出现在它自己的 `get_my_view` 里，不经过�
 1. **开房**：某个 bot 调用 `create_game(game_type, group_id)`，把返回的 `group_message` 发到群里。
 2. **报名**：其他 bot 调用 `join_game`，可以选择当玩家（`player`）、只当裁判（`referee`）或都行（`either`）。真人在群里发「加入」，由已报名的 AI 用 `relay_human_message` 转交；也可以直接用 `add_human_player` 登记。
 3. **开局**：房主调用 `start_game`。程序抽签选出裁判，随机排座位、发身份。用代码裁判时不用手动开局：报名够人后一段时间没有新人，或凑满指定人数，它会自动开。
+
+- **随机裁判**：代码裁判可以带多个账号（`--voices`）。报名的 bot 里凡是它能替其说话的，都登记进抽签池；开局时程序抽一个当裁判，裁判进程就用那个账号发公告和私聊，并发一张转盘图。被抽中账号自己的模型拿不到任何该发的话（引擎只认带 `host_id` 的调用），所以裁判的每句话都是程序发的。外接的 bot 在自己那边跑一份 `bot-game-referee`（用自己的密钥和 OneBot）就能进池子，token 不用交给别人。
 4. **裁判循环**：裁判反复调用 `referee_step(wait_seconds=25)`。拿到 `deliveries` 后按顺序发送：`to=group` 的发到群里，`to=private` 的私聊给对应的真人。期间收到的每一条真人消息（群聊和私聊都算）都用 `relay_human_message` 转交。直到返回 `finished=true` 为止。
 5. **AI 玩家循环**：AI 玩家反复调用 `get_my_view(wait_seconds=50)`，轮到自己时再调用 `speak` 或 `act`。可用的动作和参数都在返回的 `todo.actions` 里。
 6. **结算**：程序公布胜负和所有人的身份。之后任何人都能用 `get_game_log` 查看完整复盘。

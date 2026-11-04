@@ -36,6 +36,7 @@ import type {
   PendingRequest,
   PhaseState,
   Player,
+  RefereeDraw,
   Seat,
 } from './types.js';
 
@@ -77,10 +78,16 @@ export interface GameSummary {
   status: GameStatus;
   host: string;
   referee: string | null;
+  referee_id: string | null;
+  /** 裁判事务由哪个代行进程（host_id）执行；null = 裁判账号自己（AI）主持 */
+  referee_hosted_by: string | null;
+  /** 裁判距上次调用 referee_step 过了多少秒（候补裁判判断是否可以接管） */
+  referee_idle_s: number | null;
   players: number;
   min_players: number;
   max_players: number;
-  lobby?: { name: string; id: string; kind: string; join_as: JoinPreference }[];
+  lobby?: { name: string; id: string; kind: string; join_as: JoinPreference; hosted: boolean }[];
+  referee_draw?: RefereeDraw | null;
   round: number;
   phase: string | null;
   auto_referee: boolean;
@@ -113,6 +120,8 @@ export interface RefereeStepResult {
   waiting_for: string[];
   next_call_hint: string;
   finished: boolean;
+  /** true：裁判事务由代行进程执行，这次调用没有推进也没有消息（调用方这局休息） */
+  hosted?: true;
 }
 
 export interface RelayResult {
@@ -241,12 +250,16 @@ export class GameManager {
       status: rec.status,
       host: rec.hostId,
       referee: rec.referee ? `${rec.referee.name}(${rec.referee.id})` : null,
+      referee_id: rec.referee?.id ?? null,
+      referee_hosted_by: rec.referee?.hostedBy ?? null,
+      referee_idle_s: rec.referee && rec.status === 'running' ? Math.max(0, Math.round((this.now() - rec.referee.lastSeenAt) / 1000)) : null,
       players: rec.status === 'lobby' ? rec.lobby.filter((e) => e.pref !== 'referee').length : rec.players.length,
       min_players: def.minPlayers,
       max_players: def.maxPlayers,
       ...(rec.status === 'lobby'
-        ? { lobby: rec.lobby.map((e) => ({ name: e.name, id: e.id, kind: e.kind, join_as: e.pref })) }
+        ? { lobby: rec.lobby.map((e) => ({ name: e.name, id: e.id, kind: e.kind, join_as: e.pref, hosted: Boolean(e.hostedBy) })) }
         : {}),
+      ...(rec.refereeDraw ? { referee_draw: rec.refereeDraw } : {}),
       round: rec.round,
       phase: rec.phase?.title ?? null,
       auto_referee: rec.autoReferee,
@@ -445,6 +458,37 @@ export class GameManager {
     return `玩家 ${players} 人${either ? ` + 待定 ${either} 人` : ''}${refs ? `，裁判候选 ${refs} 人` : ''}`;
   }
 
+  /**
+   * 代行裁判登记：一个裁判进程（host_id）声明「如果开局抽中这个账号当裁判，裁判事务由我来执行」。
+   * 登记过的账号进入开局抽签池（玩家报名的账号被抽中就改当裁判，其余照常入座）；
+   * 抽中后，这个账号自己的模型再调 referee_step 只会得到空结果，保证裁判的每句话都是程序发的。
+   * 账号还没报名时，自动以 referee 身份报名（纯「嗓子」账号，不参加游戏）。
+   */
+  offerReferee(actor: Identity, gameId: string, hostId: string, withdraw = false) {
+    const rec = this.getRecord(gameId);
+    if (rec.status !== 'lobby') throw invalidState(`对局 ${rec.id} 不在报名阶段，不能登记代行裁判。`);
+    const host = String(hostId ?? '').trim();
+    if (!host || host.length > 100) throw badRequest('需要 host_id（裁判进程的标识，1~100 字符）。');
+    let entry = rec.lobby.find((e) => e.id === actor.id);
+    if (entry && entry.kind === 'human') throw badRequest('该 QQ 号已作为真人玩家报名。');
+    if (withdraw) {
+      if (entry) entry.hostedBy = null;
+      this.touch(rec);
+      return { summary: this.summary(rec), message: '已撤销代行裁判登记。' };
+    }
+    if (!entry) {
+      entry = { id: actor.id, name: this.nameOf(actor), kind: 'agent', pref: 'referee', selfPost: true, joinedAt: this.now() };
+      rec.lobby.push(entry);
+    }
+    entry.hostedBy = host;
+    this.touch(rec);
+    const pool = rec.lobby.filter((e) => e.hostedBy).length;
+    return {
+      summary: this.summary(rec),
+      message: `已登记：开局若抽中 ${entry.name} 当裁判，由 ${host} 代行。当前抽签池 ${pool} 人。`,
+    };
+  }
+
   /** 登记真人玩家（真人不能直接调用工具，由大厅里的任意 AI 代为登记）。 */
   addHuman(actor: Identity, gameId: string, human: { userId: string; name: string }) {
     const rec = this.getRecord(gameId);
@@ -525,8 +569,16 @@ export class GameManager {
     let standby: LobbyEntry[] = [];
     const refPref = agents.filter((e) => e.pref === 'referee');
     const either = agents.filter((e) => e.pref === 'either');
+    // 代行登记过的账号组成抽签池：非玩家的候选随时可抽；玩家报名的候选只有在抽走一人后人数仍够时才可抽
+    const playerCount = rec.lobby.filter((e) => e.pref !== 'referee').length;
+    const pool = agents.filter((e) => e.hostedBy && (e.pref === 'referee' || playerCount - 1 >= def.minPlayers));
+    let draw: RefereeDraw | null = null;
     if (!rec.autoReferee) {
-      if (refPref.length > 0) {
+      if (pool.length > 0) {
+        referee = pick(this.rng, pool);
+        draw = { candidates: pool.map((e) => ({ id: e.id, name: e.name })), picked: referee.id };
+        standby = refPref.filter((e) => e !== referee);
+      } else if (refPref.length > 0) {
         referee = pick(this.rng, refPref);
         standby = refPref.filter((e) => e !== referee);
       } else if (either.length > 0) {
@@ -564,8 +616,9 @@ export class GameManager {
       alive: true,
       selfPost: e.kind === 'agent' ? e.selfPost : false,
     }));
-    rec.referee = referee ? { id: referee.id, name: referee.name, cursor: 0, lastSeenAt: this.now() } : null;
+    rec.referee = referee ? { id: referee.id, name: referee.name, cursor: 0, lastSeenAt: this.now(), hostedBy: referee.hostedBy ?? null } : null;
     rec.standbyReferees = standby.map((e) => ({ id: e.id, name: e.name }));
+    rec.refereeDraw = draw;
     rec.status = 'running';
     rec.startedAt = this.now();
 
@@ -574,9 +627,14 @@ export class GameManager {
     const seatsText = rec.players
       .map((p) => `${p.seat}号 ${inst.at(p.seat)}${p.kind === 'human' ? '（真人）' : '（AI）'}`)
       .join('\n');
+    const drawText = draw
+      ? `本局裁判：${rec.referee!.name}（程序在 ${draw.candidates.length} 位候选里抽签：${draw.candidates.map((c) => c.name).join('、')}；裁判的话全部由程序生成和发出，不参与游戏、不决定任何结果）\n`
+      : rec.referee
+        ? `本局裁判：${rec.referee.name}（AI，由程序抽签产生，只负责推进流程，不参与游戏、不决定任何结果）\n`
+        : '本局由程序自动主持。\n';
     inst.systemAnnounce(
       `🎲【${def.name}】对局 ${rec.id} 开始！\n` +
-        (rec.referee ? `本局裁判：${rec.referee.name}（AI，由程序抽签产生，只负责推进流程，不参与游戏、不决定任何结果）\n` : '本局由程序自动主持。\n') +
+        drawText +
         `座位表（程序随机分配）：\n${seatsText}\n` +
         `身份已由程序随机分配${rec.players.some((p) => p.kind === 'human') ? '，真人玩家请查收裁判私聊' : ''}。`,
     );
@@ -585,9 +643,10 @@ export class GameManager {
     this.touch(rec);
     return {
       summary: this.summary(rec),
-      referee: rec.referee ? { id: rec.referee.id, name: rec.referee.name } : null,
+      referee: rec.referee ? { id: rec.referee.id, name: rec.referee.name, hosted_by: rec.referee.hostedBy ?? null } : null,
+      referee_draw: draw,
       message: rec.referee
-        ? `游戏已开始。裁判是 ${rec.referee.name}(${rec.referee.id})：裁判请循环调用 referee_step 拉取消息并按顺序发送（群消息发群里，私聊发给对应真人）。`
+        ? `游戏已开始。裁判是 ${rec.referee.name}(${rec.referee.id})${rec.referee.hostedBy ? `，由 ${rec.referee.hostedBy} 代行` : ''}：裁判请循环调用 referee_step 拉取消息并按顺序发送（群消息发群里，私聊发给对应真人）。`
         : '游戏已开始（程序自动主持）。玩家请调用 get_my_view 查看自己的身份与待办。',
       group_message: rec.referee
         ? `🎲 ${def.name}开局！裁判 ${rec.referee.name} 请开始主持（调用 referee_step）。`
@@ -928,12 +987,19 @@ export class GameManager {
       const undelivered = rec.outbox.filter((d) => d.seq > ref.cursor).length;
       return {
         ...base,
-        you: { role: 'referee', note: '你是本局 AI 裁判：只负责推进流程（调用 referee_step 并发送消息）与转发真人消息，不参与、不改变任何结果。' },
+        you: {
+          role: 'referee',
+          note: ref.hostedBy
+            ? `你被抽中为本局裁判，但裁判事务由程序（${ref.hostedBy}）代行：你这局休息，不要调用 referee_step，不要在群里发言。`
+            : '你是本局 AI 裁判：只负责推进流程（调用 referee_step 并发送消息）与转发真人消息，不参与、不改变任何结果。',
+          ...(ref.hostedBy ? { hosted_by: ref.hostedBy } : {}),
+        },
         undelivered,
         waiting_for: this.refereeWaiting(rec),
         new_events: limited,
-        hint:
-          rec.status === 'running' || undelivered > 0
+        hint: ref.hostedBy
+          ? '什么都不用做。'
+          : rec.status === 'running' || undelivered > 0
             ? `调用 referee_step(game_id="${rec.id}", wait_seconds=25) 拉取并发送消息；收到玩家的群聊/私聊消息时调用 relay_human_message 转发。`
             : '对局已结束，所有消息已发送。',
       };
@@ -1021,6 +1087,16 @@ export class GameManager {
 
   // ═══════════════════════════ 裁判 ═══════════════════════════
 
+  /** 裁判事务被代行时，其它会话（没带正确 host_id 的）不能推进、不能转交：返回 true 表示「你这局休息」。 */
+  private hostedElsewhere(rec: GameRecord, hostId: string | undefined): boolean {
+    const h = rec.referee?.hostedBy;
+    return Boolean(h) && (hostId ?? '') !== h;
+  }
+
+  private hostedNote(rec: GameRecord): string {
+    return `本局裁判事务由程序（${rec.referee?.hostedBy}）代行，你这局休息：不要调用 referee_step，不要在群里发言，也不要转交消息。`;
+  }
+
   private assertReferee(rec: GameRecord, actor: Identity): void {
     if (this.isReferee(rec, actor)) return;
     if (actor.admin && rec.referee === null) return;
@@ -1068,12 +1144,28 @@ export class GameManager {
   async refereeStep(
     actor: Identity,
     gameId: string | undefined,
-    opts: { sinceSeq?: number; waitMs?: number } = {},
+    opts: { sinceSeq?: number; waitMs?: number; hostId?: string } = {},
     signal?: AbortSignal,
   ): Promise<RefereeStepResult> {
     const rec = this.resolveGame(actor, gameId, 'referee');
     if (rec.status === 'lobby') throw invalidState('对局还在报名阶段，等房主 start_game 后再推进。');
     this.assertReferee(rec, actor);
+    if (this.hostedElsewhere(rec, opts.hostId)) {
+      const inst0 = this.inst(rec);
+      return {
+        game_id: rec.id,
+        group_id: rec.groupId,
+        status: rec.status,
+        deliveries: [],
+        last_seq: rec.referee?.cursor ?? 0,
+        undelivered_later: 0,
+        phase: this.phaseHeader(rec, inst0),
+        waiting_for: [],
+        finished: rec.status !== 'running',
+        hosted: true,
+        next_call_hint: this.hostedNote(rec),
+      };
+    }
     if (rec.referee) rec.referee.lastSeenAt = this.now();
     const inst = this.inst(rec);
     if (rec.status === 'running') this.pump(rec, inst, true);
@@ -1142,11 +1234,14 @@ export class GameManager {
   relayHumanMessage(
     actor: Identity,
     gameId: string | undefined,
-    msg: { userId: string; nickname?: string; text: string; channel: 'group' | 'private'; action?: ActionInput },
+    msg: { userId: string; nickname?: string; text: string; channel: 'group' | 'private'; action?: ActionInput; hostId?: string },
   ): RelayResult {
     const rec = this.resolveGame(actor, gameId, 'referee');
     const userId = String(msg.userId ?? '').trim();
     if (!userId) throw badRequest('需要 qq_id（发消息的真人 QQ 号）。');
+    if (rec.status === 'running' && this.isReferee(rec, actor) && this.hostedElsewhere(rec, msg.hostId)) {
+      return { recognized: false, accepted: false, message: this.hostedNote(rec) };
+    }
     const text = this.stripAddressing(String(msg.text ?? ''), rec, actor);
 
     if (rec.status === 'lobby') {
@@ -1237,7 +1332,7 @@ export class GameManager {
     return parts.join(' ');
   }
 
-  refereeTakeover(actor: Identity, gameId: string) {
+  refereeTakeover(actor: Identity, gameId: string, hostId?: string) {
     const rec = this.getRecord(gameId);
     if (rec.status !== 'running') throw invalidState('只有进行中的对局可以接管裁判。');
     if (rec.autoReferee) throw invalidState('本局由程序自动主持，没有 AI 裁判，无需接管。');
@@ -1258,7 +1353,7 @@ export class GameManager {
     if (old) {
       rec.formerReferees = [...(rec.formerReferees ?? []).filter((r) => r.id !== old.id && r.id !== actor.id), { id: old.id, name: old.name }];
     }
-    rec.referee = { id: actor.id, name: this.nameOf(actor), cursor: old?.cursor ?? 0, lastSeenAt: this.now() };
+    rec.referee = { id: actor.id, name: this.nameOf(actor), cursor: old?.cursor ?? 0, lastSeenAt: this.now(), hostedBy: hostId?.trim() || null };
     rec.standbyReferees = rec.standbyReferees.filter((r) => r.id !== actor.id);
     const inst = this.inst(rec);
     inst.systemAnnounce(`🔁 裁判由 ${this.nameOf(actor)} 接管${old ? `（原裁判 ${old.name} 失联）` : ''}。`);

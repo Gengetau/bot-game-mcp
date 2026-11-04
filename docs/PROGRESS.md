@@ -1,5 +1,15 @@
 # 开发进度与测试记录
 
+## 2026-11-05：随机裁判（代行登记 + 多账号裁判进程 + 转盘图）
+
+主人的要求：裁判不要固定是妮娅，在报名的 bot 里抽；抽中的 bot 自己不能插话；外接 bot 的 OneBot token 不经我们的手。
+
+- **引擎**：新工具 `referee_offer(game_id, host_id)`——裁判进程声明「抽中这个账号由我代行」。开局抽签优先在登记池里均匀抽（玩家 bot 被抽中就不入座；只有抽走一人后人数仍够时玩家账号才进池），记录 `referee_draw`。裁判的 `hostedBy` 记下代行进程；`referee_step` / `relay_human_message` 只接受带同一 `host_id` 的调用，其它会话（账号自己的模型）得到 `hosted: true` 的空结果，`get_my_view` 告诉它这局休息。`referee_takeover` 也可带 `host_id`。`GameSummary` 补 `referee_id`、`referee_hosted_by`、`referee_idle_s`、`lobby[].hosted`。
+- **裁判进程**：`--voices` 带多个账号（每个账号一条引擎会话 + 一条 OneBot 连接，群消息按 message_id 去重）；报名了的账号自动 `referee_offer`；抽中我的账号就用它发消息（它掉线则退回主账号），抽中别人的账号就旁观、失联后用主账号接管。主账号开局时发转盘图（`src/wheel.ts`，零依赖手画 PNG，`--wheel-font` 用 Unifont 写中文）。
+- **接入端 / 指南**：提示词和裁判指南各加一条「被抽中且 hosted_by 时休息」。
+- 测试：引擎 `hosted-referee.test.ts`（抽签均匀、人数不够不抽玩家、无登记走旧规则、代行时其它会话空结果、接管切换代行者）；裁判 `onebot.test.ts` 新增多账号一例（两个 bot 报名、真人加入、自动开局、转盘图、抽中账号发消息、它的模型拿空结果）；`wheel.test.ts`。
+- 外接 bot：在自己那边跑 `bot-game-referee` 用自己的密钥和 OneBot 即可进抽签池；引擎这边只见密钥。
+
 ## 2026-11-05：第二轮改进（自动开局、座位带名字、服务器限制）
 
 主人在首局后的问题与处理：

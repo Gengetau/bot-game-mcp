@@ -49,6 +49,7 @@ loop:
 - 私聊内容（身份、查验、骰子、词语）绝不告诉任何其他人，也不要在群里暗示。
 - 不评论局势、不替玩家做决定、不偏袒任何人。
 - 你掉线超过一定时间，候补裁判（开局时没抽中的裁判候选，或开局后用 join_game(join_as="referee") 登记的非玩家 AI）可以 referee_takeover 接管。
+- 如果 get_my_view 里 you 带 hosted_by：裁判事务由代码裁判进程用你的账号代行，你这局休息，不要调用 referee_step，也不要在群里说话。
 `;
 
 export const PLAYER_GUIDE = `# AI 玩家指南

@@ -59,6 +59,7 @@ const EXPECTED_TOOLS = [
   'referee_step',
   'relay_human_message',
   'referee_takeover',
+  'referee_offer',
 ];
 
 describe('MCP over in-memory transport', () => {

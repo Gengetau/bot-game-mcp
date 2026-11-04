@@ -5,12 +5,14 @@ import { configSchema, createRuntime, startHttpServer, type HttpHandle, type Run
 import { cqToPlain, parseOptionTokens, runReferee, segmentsToCq } from '../src/index.js';
 import { FakeOneBot, callText, type ApiCall } from './onebot-fake.js';
 
-const KEYS = { ref: 'bgk_referee_key_000000', ai: 'bgk_ai_key_0000000000', admin: 'bgk_admin_key_00000000' };
+const KEYS = { ref: 'bgk_referee_key_000000', ai: 'bgk_ai_key_0000000000', ai2: 'bgk_ai2_key_000000000', admin: 'bgk_admin_key_00000000' };
 const GROUP = '1127334885';
 const OWNER = '1156798139';
 const REF_ID = '2362232313';
 const AI_ID = '3127771953';
 const OTHER = '55555';
+const AI2_ID = '2742096348';
+let msgSeq = 0; // 真实 OneBot 的 message_id 唯一；裁判按它去重，所以这里不能用时间戳
 
 describe('pure helpers', () => {
   it('converts OneBot segments to CQ and back to plain text', () => {
@@ -51,6 +53,7 @@ describe('OneBot referee against the real engine', () => {
         agents: [
           { key: KEYS.ref, id: REF_ID, name: '妮娅' },
           { key: KEYS.ai, id: AI_ID, name: '克蕾雅' },
+          { key: KEYS.ai2, id: AI2_ID, name: '艾莉希娅' },
         ],
       },
     });
@@ -69,6 +72,7 @@ describe('OneBot referee against the real engine', () => {
       defaultOptions: { nudge_ai: true, turn_timeout_s: 60 },
       stepWaitSeconds: 2,
       sendGapMs: 0,
+      selfInPool: false, // 这个常驻裁判和下面几个测试共用引擎：不让它把妮娅登记进抽签池
       signal: ac.signal,
       log: (l) => logs.push(l),
     });
@@ -76,6 +80,7 @@ describe('OneBot referee against the real engine', () => {
   }, 20_000);
 
   afterAll(async () => {
+    if (process.env.REF_DEBUG) console.log(['=== shared logs', ...logs, '=== shared calls', ...qq.calls.map((c) => `${c.action} ${callText(c)}`)].join('\n'));
     ac.abort();
     await Promise.race([refereeDone, new Promise((res) => setTimeout(res, 5000))]);
     await qq.close();
@@ -84,9 +89,9 @@ describe('OneBot referee against the real engine', () => {
   });
 
   const groupMsg = (uid: string, nick: string, message: unknown) =>
-    qq.emit({ post_type: 'message', message_type: 'group', sub_type: 'normal', group_id: Number(GROUP), user_id: Number(uid), message_id: Date.now(), sender: { user_id: Number(uid), nickname: nick, card: '' }, message, raw_message: '' });
+    qq.emit({ post_type: 'message', message_type: 'group', sub_type: 'normal', group_id: Number(GROUP), user_id: Number(uid), message_id: ++msgSeq, sender: { user_id: Number(uid), nickname: nick, card: '' }, message, raw_message: '' });
   const privateMsg = (uid: string, nick: string, text: string) =>
-    qq.emit({ post_type: 'message', message_type: 'private', sub_type: 'friend', user_id: Number(uid), message_id: Date.now(), sender: { user_id: Number(uid), nickname: nick }, message: [{ type: 'text', data: { text } }], raw_message: text });
+    qq.emit({ post_type: 'message', message_type: 'private', sub_type: 'friend', user_id: Number(uid), message_id: ++msgSeq, sender: { user_id: Number(uid), nickname: nick }, message: [{ type: 'text', data: { text } }], raw_message: text });
   const text = (t: string) => [{ type: 'text', data: { text: t } }];
   const groupSend = (c: ApiCall) => c.action === 'send_group_msg' && String(c.params.group_id) === GROUP;
 
@@ -193,13 +198,14 @@ describe('OneBot referee against the real engine', () => {
       stepWaitSeconds: 1,
       sendGapMs: 0,
       autoStartSeconds: 2,
+      selfInPool: false,
       signal: ac2.signal,
       log: (l) => logs.push(l),
     });
     await qq2.waitForConnection();
     const send2 = (c: ApiCall) => c.action === 'send_group_msg' && String(c.params.group_id) === GROUP;
     const msg2 = (uid: string, nick: string, t: string) =>
-      qq2.emit({ post_type: 'message', message_type: 'group', sub_type: 'normal', group_id: Number(GROUP), user_id: Number(uid), message_id: Date.now(), sender: { user_id: Number(uid), nickname: nick, card: '' }, message: text(t), raw_message: t });
+      qq2.emit({ post_type: 'message', message_type: 'group', sub_type: 'normal', group_id: Number(GROUP), user_id: Number(uid), message_id: ++msgSeq, sender: { user_id: Number(uid), nickname: nick, card: '' }, message: text(t), raw_message: t });
     try {
       // 「/桌游 数字炸弹 2」：凑满 2 人立刻开局，不用再发「开局」
       let mark = qq2.calls.length;
@@ -225,10 +231,112 @@ describe('OneBot referee against the real engine', () => {
       const auto = await qq2.waitForCall((c) => send2(c) && callText(c).includes('数字炸弹开始'), 15_000, mark);
       expect(qq2.calls.indexOf(auto)).toBeGreaterThan(qq2.calls.indexOf(notice));
       expect(qq2.calls.slice(mark).filter((c) => send2(c) && callText(c).includes('秒内没有新人'))).toHaveLength(1);
+      // 收尾：别把进行中的对局留给下一个测试
+      mark = qq2.calls.length;
+      msg2(OWNER, '主人', '/桌游 中止');
+      await qq2.waitForCall((c) => send2(c) && callText(c).includes('中止'), 10_000, mark);
     } finally {
+      if (process.env.REF_DEBUG) console.log(['--- logs', ...logs, '--- calls', ...qq2.calls.map((c) => `${c.action} ${callText(c)}`)].join('\n'));
       ac2.abort();
       await Promise.race([done, new Promise((res) => setTimeout(res, 5000))]);
       await qq2.close();
+    }
+  }, 60_000);
+
+  it('draws the referee among registered voices, posts a wheel, speaks with the drawn account and keeps its own model idle', async () => {
+    const qqMain = new FakeOneBot('t0');
+    const qqA = new FakeOneBot('tA');
+    const qqB = new FakeOneBot('tB');
+    await Promise.all([qqMain.start(), qqA.start(), qqB.start()]);
+    const ac2 = new AbortController();
+    const lines: string[] = [];
+    const done = runReferee({
+      url: http.url,
+      key: KEYS.ref,
+      onebotUrl: qqMain.url,
+      onebotToken: 't0',
+      groupId: GROUP,
+      admins: [OWNER],
+      bots: [AI_ID, AI2_ID],
+      voices: [
+        { key: KEYS.ai, onebotUrl: qqA.url, onebotToken: 'tA' },
+        { key: KEYS.ai2, onebotUrl: qqB.url, onebotToken: 'tB' },
+      ],
+      hostId: 'test-host',
+      selfInPool: false,
+      defaultOptions: { turn_timeout_s: 60 },
+      stepWaitSeconds: 1,
+      sendGapMs: 0,
+      autoStartSeconds: 1,
+      signal: ac2.signal,
+      log: (l) => lines.push(l),
+    });
+    await Promise.all([qqMain.waitForConnection(), qqA.waitForConnection(), qqB.waitForConnection()]);
+    const sendOf = (c: ApiCall) => c.action === 'send_group_msg' && String(c.params.group_id) === GROUP;
+    const emitAll = (ev: Record<string, unknown>) => {
+      for (const q of [qqMain, qqA, qqB]) q.emit(ev);
+    };
+    const msgAll = (uid: string, nick: string, t: string) =>
+      emitAll({ post_type: 'message', message_type: 'group', sub_type: 'normal', group_id: Number(GROUP), user_id: Number(uid), message_id: ++msgSeq, sender: { user_id: Number(uid), nickname: nick, card: '' }, message: text(t), raw_message: t });
+    const mcp = async (key: string) => {
+      const c = new Client({ name: 'brain', version: '1.0.0' });
+      await c.connect(new StreamableHTTPClientTransport(new URL(http.url), { requestInit: { headers: { Authorization: `Bearer ${key}` } } }));
+      return c;
+    };
+    const callOn = async (c: Client, name: string, args: Record<string, unknown> = {}) => {
+      const r: any = await c.callTool({ name, arguments: args });
+      const t = r.content?.[0]?.text ?? '';
+      if (r.isError) throw new Error(t);
+      return JSON.parse(t);
+    };
+    const brainA = await mcp(KEYS.ai);
+    const brainB = await mcp(KEYS.ai2);
+    try {
+      let mark = qqMain.calls.length;
+      msgAll(OWNER, '主人', '/桌游 数字炸弹');
+      await qqMain.waitForCall((c) => sendOf(c) && callText(c).includes('报名'), 10_000, mark);
+      const list = await callOn(brainA, 'list_games', { group_id: GROUP });
+      const gameId: string = list.games[0].game_id;
+      // 两个 bot 的「脑子」各自报名当玩家；主人加入。群消息三路连接都会收到，但只处理一次
+      await callOn(brainA, 'join_game', { game_id: gameId, join_as: 'player' });
+      await callOn(brainB, 'join_game', { game_id: gameId, join_as: 'player' });
+      msgAll(OWNER, '主人', '加入');
+      const joined = await qqMain.waitForCall((c) => sendOf(c) && callText(c).includes('加入了'), 10_000, mark);
+      expect(callText(joined)).toContain('主人');
+      // 开局：主账号发转盘图和开局公告；裁判在两个 bot 里抽
+      const wheel = await qqMain.waitForCall((c) => sendOf(c) && Array.isArray(c.params.message) && c.params.message.some((s: any) => s.type === 'image' && String(s.data?.file).startsWith('base64://')), 20_000, mark);
+      expect(wheel).toBeTruthy();
+      await qqMain.waitForCall((c) => sendOf(c) && callText(c).includes('开局！'), 20_000, mark);
+      expect(qqMain.calls.slice(mark).filter((c) => sendOf(c) && callText(c).includes('加入了'))).toHaveLength(1);
+      const sum = (await callOn(brainA, 'list_games', { group_id: GROUP })).games[0];
+      expect([AI_ID, AI2_ID]).toContain(sum.referee_id);
+      expect(sum.referee_hosted_by).toBe('test-host');
+      expect(sum.referee_draw.candidates.map((c: any) => c.id).sort()).toEqual([AI_ID, AI2_ID].sort());
+      const drawn = sum.referee_id === AI_ID ? qqA : qqB;
+      const other = sum.referee_id === AI_ID ? qqB : qqA;
+      const drawnBrain = sum.referee_id === AI_ID ? brainA : brainB;
+      const playerBrain = sum.referee_id === AI_ID ? brainB : brainA;
+      // 游戏消息用抽中的账号发；没抽中的账号和主账号都不发游戏消息
+      const first = await drawn.waitForCall((c) => sendOf(c) && callText(c).includes('当前范围'), 20_000);
+      expect(first).toBeTruthy();
+      expect(other.calls.some((c) => sendOf(c))).toBe(false);
+      expect(qqMain.calls.slice(mark).some((c) => sendOf(c) && callText(c).includes('当前范围'))).toBe(false);
+      // 抽中账号自己的模型：空结果，不能推进
+      const idle = await callOn(drawnBrain, 'referee_step', { game_id: gameId });
+      expect(idle.hosted).toBe(true);
+      expect(idle.deliveries).toHaveLength(0);
+      const view = await callOn(drawnBrain, 'get_my_view', { game_id: gameId });
+      expect(view.you.role).toBe('referee');
+      expect(view.you.hosted_by).toBe('test-host');
+      // 另一个 bot 是玩家；真人的指令照常被转交（只转交一次）
+      const pv = await callOn(playerBrain, 'get_my_view', { game_id: gameId });
+      expect(pv.you.role).not.toBe('referee');
+      expect(lines.some((l) => l.includes('由本进程代行'))).toBe(true);
+    } finally {
+      if (process.env.REF_DEBUG) console.log(['--- lines', ...lines, '--- main', ...qqMain.calls.map((c) => `${c.action} ${callText(c)}`), '--- A', ...qqA.calls.map((c) => `${c.action} ${callText(c)}`), '--- B', ...qqB.calls.map((c) => `${c.action} ${callText(c)}`)].join('\n'));
+      ac2.abort();
+      await Promise.race([done, new Promise((res) => setTimeout(res, 5000))]);
+      await Promise.all([brainA.close(), brainB.close(), qqMain.close(), qqA.close(), qqB.close()]);
     }
   }, 60_000);
 

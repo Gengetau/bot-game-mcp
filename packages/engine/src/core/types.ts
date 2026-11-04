@@ -32,6 +32,8 @@ export interface LobbyEntry {
   /** agent 是否自己把发言发到群里（默认 true）；false 时由裁判代发。 */
   selfPost: boolean;
   joinedAt: number;
+  /** 代行裁判：哪个裁判进程（host_id）登记了「抽中这个账号当裁判时由它来执行」；null/缺省 = 没有。 */
+  hostedBy?: string | null;
 }
 
 export interface Player {
@@ -155,6 +157,14 @@ export interface RefereeState {
   /** 已交给裁判的最大消息 seq。 */
   cursor: number;
   lastSeenAt: number;
+  /** 裁判事务由这个 host_id 的程序代行：其它会话（比如这个账号自己的模型）调 referee_step 只会得到空结果。 */
+  hostedBy?: string | null;
+}
+
+/** 开局时的裁判抽签记录（供转盘展示）。 */
+export interface RefereeDraw {
+  candidates: { id: string; name: string }[];
+  picked: string;
 }
 
 export interface GameResult {
@@ -180,6 +190,8 @@ export interface GameRecord<S = any, O = any> {
   referee: RefereeState | null;
   /** 非玩家的候补裁判（可在裁判失联时接管）。 */
   standbyReferees: { id: string; name: string }[];
+  /** 开局时的裁判抽签（有代行登记时才抽）。旧存档可能没有。 */
+  refereeDraw?: RefereeDraw | null;
   /** 被接管下去的历任裁判。真人常常还在 @ 原裁判发指令，转交时同样剥离这些 @。旧存档可能没有这个字段。 */
   formerReferees?: { id: string; name: string }[];
   /** 无需 AI 裁判：消息视为立即送达、超时由服务端计时器处理（测试/模拟/纯 MCP 对战）。 */

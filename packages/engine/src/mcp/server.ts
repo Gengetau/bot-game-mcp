@@ -297,7 +297,7 @@ export function createMcpServer(deps: ServerDeps, ctx: SessionContext): McpServe
     'start_game',
     {
       title: '开局',
-      description: '房主开局：程序抽签选出 AI 裁判、随机分配座位和身份。返回裁判是谁；group_message 请发到群里。',
+      description: '房主开局：程序抽签选出 AI 裁判（有 referee_offer 登记时在登记池里抽，返回 referee_draw）、随机分配座位和身份。返回裁判是谁；group_message 请发到群里。',
       inputSchema: { game_id: z.string() },
     },
     (a) => manager.startGame(me(), a.game_id),
@@ -392,6 +392,7 @@ export function createMcpServer(deps: ServerDeps, ctx: SessionContext): McpServe
         game_id: gameIdOpt,
         wait_seconds: waitSeconds,
         since_seq: z.number().int().min(0).max(1_000_000_000).optional().describe('重发：返回 seq 大于此值的所有已到期消息'),
+        host_id: z.string().max(100).optional().describe('代行裁判进程的标识（referee_offer 时登记的那个）。裁判事务被代行时，不带正确 host_id 的调用只得到空结果'),
         format: z
           .enum(['text', 'cq', 'onebot'])
           .optional()
@@ -402,7 +403,7 @@ export function createMcpServer(deps: ServerDeps, ctx: SessionContext): McpServe
       const r = await manager.refereeStep(
         me(),
         a.game_id,
-        { sinceSeq: a.since_seq, waitMs: Math.min(a.wait_seconds ?? 0, MAX_WAIT_SECONDS) * 1000 },
+        { sinceSeq: a.since_seq, waitMs: Math.min(a.wait_seconds ?? 0, MAX_WAIT_SECONDS) * 1000, hostId: a.host_id },
         extra.signal,
       );
       const fmt: DeliveryFormat = a.format ?? 'text';
@@ -423,6 +424,7 @@ export function createMcpServer(deps: ServerDeps, ctx: SessionContext): McpServe
         text: z.string().describe('消息原文'),
         channel: z.enum(['group', 'private']).optional().describe('消息来自群聊(group，默认)还是私聊(private)'),
         action: z.object(actionShape).optional().describe('可选：结构化指令（仅在自动识别失败但玩家意思明确时使用）'),
+        host_id: z.string().max(100).optional().describe('代行裁判进程的标识（见 referee_offer）'),
       },
     },
     (a) =>
@@ -432,7 +434,24 @@ export function createMcpServer(deps: ServerDeps, ctx: SessionContext): McpServe
         text: a.text,
         channel: a.channel ?? 'group',
         action: a.action as ActionInput | undefined,
+        hostId: a.host_id,
       }),
+  );
+
+  tool(
+    'referee_offer',
+    {
+      title: '登记代行裁判',
+      description:
+        '【代码裁判进程用】登记「开局若抽中这个账号当裁判，裁判事务由 host_id 这个程序代行」。登记过的账号进入开局抽签池：玩家报名的账号被抽中就改当裁判（人数仍够时才会抽到玩家），没报名的账号自动以 referee 身份报名。抽中后这个账号自己的模型调 referee_step 只得到空结果，裁判的每句话都由程序发出。',
+      inputSchema: {
+        game_id: z.string(),
+        host_id: z.string().min(1).max(100).describe('裁判进程的标识（同一进程每次都用同一个）'),
+        withdraw: z.boolean().optional().describe('true：撤销登记'),
+      },
+      idempotent: true,
+    },
+    (a) => manager.offerReferee(me(), a.game_id, a.host_id, a.withdraw ?? false),
   );
 
   tool(
@@ -440,9 +459,9 @@ export function createMcpServer(deps: ServerDeps, ctx: SessionContext): McpServe
     {
       title: '接管裁判',
       description: '当前裁判失联超过时限时，由候补裁判接管裁判职责。候补裁判 = 开局时未被抽中的裁判候选，或开局后以 join_game(join_as="referee") 登记的非玩家 AI。',
-      inputSchema: { game_id: z.string() },
+      inputSchema: { game_id: z.string(), host_id: z.string().max(100).optional().describe('接管后由这个代行进程执行裁判事务（代码裁判用）') },
     },
-    (a) => manager.refereeTakeover(me(), a.game_id),
+    (a) => manager.refereeTakeover(me(), a.game_id, a.host_id),
   );
 
   // ─────────────────────────── 资源 ───────────────────────────

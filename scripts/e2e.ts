@@ -1236,7 +1236,7 @@ async function scenarioStartup(env: Env): Promise<Scenario> {
   const who = await ref.call('whoami');
   sc.check('keys 模式下密钥绑定身份（裁判 bot）', who.identity?.id === env.ref.id && who.auth_mode === 'keys', JSON.stringify(who.identity));
   const tools = await ref.client!.listTools();
-  sc.check('暴露 17 个工具', tools.tools.length === 17, `实际 ${tools.tools.length}`);
+  sc.check('暴露 18 个工具', tools.tools.length === 18, `实际 ${tools.tools.length}`);
   let loginRefused = false;
   try {
     await ref.call('login', { qq_id: '1', nickname: 'x' }, { retry: false });
