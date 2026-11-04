@@ -30,6 +30,7 @@ import { SeededRng, type Rng } from '../src/core/rng.js';
 const ROOT = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const CLI = join(ROOT, 'dist', 'cli.js');
 const T0 = Date.now();
+let VERBOSE = false;
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 /** 所有需要从输出里抹掉的密钥 */
@@ -1092,6 +1093,17 @@ async function lobby(
   return gameId;
 }
 
+/** --verbose：把群聊记录和真人收件箱打出来，便于排查 */
+function dump(sc: Scenario, qq: FakeQQ): void {
+  if (!VERBOSE) return;
+  console.log(`\n───── ${sc.tag} 群聊记录 ─────`);
+  for (const l of qq.group) console.log(redact(`[${l.seq ?? '-'}] ${l.from}: ${l.text.replace(/\n/g, ' ⏎ ')}`));
+  for (const [uid, box] of qq.inbox) {
+    console.log(`───── ${sc.tag} 私聊收件箱 ${uid} ─────`);
+    for (const m of box) console.log(redact(`[${m.seq}] (${m.category}) ${m.text.replace(/\n/g, ' ⏎ ')}`));
+  }
+}
+
 function prepareQQ(sc: Scenario, groupId: string, env: Env, ais: AgentCfg[], humans: HumanSpec[]): FakeQQ {
   const qq = new FakeQQ(sc, groupId);
   for (const a of ais) qq.playerIds.add(a.id);
@@ -1246,6 +1258,7 @@ async function scenarioWerewolf(env: Env, rng: Rng): Promise<Scenario> {
   sc.note(`AI 行动被引擎拒绝 ${aiErrors} 次；重连次数 ${[...sc.conns].reduce((n, c) => n + Math.max(0, c.connects - 1), 0)}；裁判传输失败 ${loop.transportFails} 次；真人中转传输失败 ${sc.relays.transportFail} 次`);
   if (aiErrors > 0) sc.check('AI 的每个动作都被接受', false, `${aiErrors} 次被拒`);
   void v;
+  dump(sc, qq);
   await sc.closeAll();
   return sc;
 }
@@ -1301,6 +1314,7 @@ async function scenarioUndercover(env: Env, rng: Rng): Promise<Scenario> {
   sc.check('结束后结果里揭晓了两个词', [...words].every((w) => blob.includes(w)), `词：${[...words].join('/')}`);
   sc.check('经 stdio bridge 与旧版 SSE 的 AI 全程可玩', players[0]!.acted > 0 && players[1]!.acted > 0, `bridge 行动 ${players[0]!.acted} 次，sse 行动 ${players[1]!.acted} 次`);
   void rng;
+  dump(sc, qq);
   await sc.closeAll();
   return sc;
 }
@@ -1374,18 +1388,20 @@ async function scenarioNumberBomb(env: Env, rng: Rng): Promise<Scenario> {
   const players = ais.map((a, i) => new AiPlayer(sc, a.conn, gameId, qq, new SeededRng(`${env.seed}:nb-ai${i}`), a.cfg, { selfPost: false, label: `AI${i + 1}` }, 'number_bomb'));
 
   // 第一步（开局公告 + 第一个猜数提示）之后，原裁判「失联」
+  let pausedP: Promise<void> = Promise.resolve();
   const firstStep = new Promise<void>((res) => {
     const orig = loop.hooks.afterStep!;
     (loop.hooks as RefHooks).afterStep = async (r, l) => {
       await orig(r, l);
       if (l.steps === 1) {
-        await l.pause();
+        pausedP = l.pause();
         res();
       }
     };
   });
   const failover = (async () => {
     await firstStep;
+    await pausedP;
     // 候补裁判登记（开局后以 referee 报名）
     const reg = await standby.call('join_game', { game_id: gameId, join_as: 'referee' });
     sc.check('开局后 join_game(referee) 登记为候补裁判', /候补/.test(String(reg.message)), String(reg.message).slice(0, 80));
@@ -1428,6 +1444,7 @@ async function scenarioNumberBomb(env: Env, rng: Rng): Promise<Scenario> {
   sc.check('群里公告了裁判接管', Boolean(takeoverLine), takeoverLine?.text.slice(0, 60) ?? '');
   commonChecks(sc, loop);
   await finishInfo(sc, standby, gameId);
+  dump(sc, qq);
   await sc.closeAll();
   void rng;
   return sc;
@@ -1543,7 +1560,8 @@ function printReport(seed: string, scenarios: Scenario[], totalMs: number): void
 }
 
 async function main(): Promise<number> {
-  const { values } = parseArgs({ options: { seed: { type: 'string' }, json: { type: 'string' }, 'server-seed': { type: 'boolean' }, timeout: { type: 'string' }, only: { type: 'string' } }, strict: false });
+  const { values } = parseArgs({ options: { seed: { type: 'string' }, json: { type: 'string' }, 'server-seed': { type: 'boolean' }, timeout: { type: 'string' }, only: { type: 'string' }, verbose: { type: 'boolean' } }, strict: false });
+  VERBOSE = Boolean(values.verbose);
   const str = (k: string) => (typeof values[k] === 'string' ? (values[k] as string) : undefined);
   const seed = str('seed') ?? String(randomInt(1_000_000_000));
   const only = str('only')?.split(',').map((s) => s.trim().toUpperCase());
