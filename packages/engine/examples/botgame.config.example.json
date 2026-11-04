@@ -15,6 +15,8 @@
       { "key": "bgk_REPLACE_ME_4", "id": "10004", "name": "团子" }
     ]
   },
+  "allowedGroups": [],
+  "maxActiveGames": 0,
   "refereeStaleSeconds": 120,
   "lobbyTtlMinutes": 120,
   "idleGameTtlMinutes": 360,

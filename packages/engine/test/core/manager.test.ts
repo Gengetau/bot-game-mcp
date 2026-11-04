@@ -445,3 +445,26 @@ describe('security hardening', () => {
     expect(r2.accepted, r2.message).toBe(true);
   });
 });
+
+describe('allowedGroups & maxActiveGames', () => {
+  it('refuses groups outside allowedGroups and caps concurrent games server-wide', () => {
+    const manager = new GameManager({ registry: createRegistry(), rng: new SeededRng(1), allowedGroups: ['g1', 'g2'], maxActiveGames: 1 });
+    expect(() => manager.createGame(bot(1), { type: 'number_bomb', groupId: 'other' })).toThrowError(/不在群 other 开房/);
+    const { summary } = manager.createGame(bot(1), { type: 'number_bomb', groupId: 'g1', joinAs: 'player' });
+    expect(summary.min_players).toBeGreaterThan(0);
+    expect(summary.max_players).toBeGreaterThanOrEqual(summary.min_players);
+    // 另一个允许的群也不能开：整台服务器只许一局
+    expect(() => manager.createGame(bot(2), { type: 'number_bomb', groupId: 'g2' })).toThrowError(/同时最多开 1 局/);
+    // 同一群重复开房仍然是原来的「已有对局」错误
+    expect(() => manager.createGame(bot(3), { type: 'number_bomb', groupId: 'g1' })).toThrowError(/已有/);
+    manager.abortGame(bot(1), summary.game_id, 'test');
+    expect(() => manager.createGame(bot(2), { type: 'number_bomb', groupId: 'g2' })).not.toThrow();
+  });
+
+  it('is unrestricted by default', () => {
+    const { manager } = setup();
+    manager.createGame(bot(1), { type: 'number_bomb', groupId: 'a' });
+    manager.createGame(bot(2), { type: 'number_bomb', groupId: 'b' });
+    manager.createGame(bot(3), { type: 'number_bomb', groupId: 'c' });
+  });
+});

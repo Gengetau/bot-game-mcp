@@ -381,7 +381,7 @@ describe('day', () => {
     const g2 = make({ werewolf: 2, villager: 4 });
     g2.drive(voteAll((s) => (s === 3 ? 0 : 3)), () => g2.key() === 'night' && g2.rec.round === 2);
     expect(g2.alive(3)).toBe(false);
-    expect(g2.rec.log.some((e) => e.text.includes('投票结果') && e.text.includes('1号 → 3号'))).toBe(true);
+    expect(g2.rec.log.some((e) => e.text.includes('投票结果') && /1号 \S+ → 3号 \S+/.test(e.text))).toBe(true);
   });
 
   it('PK flow enqueues each night step exactly once and rounds never go backwards', () => {
@@ -423,9 +423,9 @@ describe('day', () => {
     g.clock.advance(g.rec.phase!.timeoutMs + 1000);
     g.manager.tick();
     const tally = g.rec.log.find((e) => e.text.includes('投票结果'))!;
-    expect(tally.text).toContain('1号 → 2号');
-    expect(tally.text).toContain('弃票：2号');
-    expect(tally.text).toContain('未投票（超时）：3号、4号、5号、6号');
+    expect(tally.text).toMatch(/1号 \S+ → 2号 \S+/);
+    expect(tally.text).toMatch(/弃票：2号 \S+/);
+    expect(tally.text).toMatch(/未投票（超时）：3号 \S+、4号 \S+、5号 \S+、6号 \S+/);
     expect(g.rec.state.voteLog[0].abstain).toEqual([2, 3, 4, 5, 6]);
   });
 
@@ -433,7 +433,7 @@ describe('day', () => {
     const g = make({ werewolf: 2, villager: 4 });
     g.drive({}, () => g.key() === 'vote');
     g.act(1, { action: 'vote', target: 2 });
-    expect(g.rec.log.some((e) => e.audience.type === 'public' && (e.text.includes('投票结果') || e.text.includes('1号 → 2号\n')))).toBe(false);
+    expect(g.rec.log.some((e) => e.audience.type === 'public' && (e.text.includes('投票结果') || /1号 \S+ → 2号 \S+\n/.test(e.text)))).toBe(false);
     expect(() => g.act(1, { action: 'vote', target: 1 })).toThrow();
   });
 

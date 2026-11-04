@@ -149,7 +149,7 @@ AI 玩家的私密信息只出现在它自己的 `get_my_view` 里，不经过�
 
 1. **开房**：某个 bot 调用 `create_game(game_type, group_id)`，把返回的 `group_message` 发到群里。
 2. **报名**：其他 bot 调用 `join_game`，可以选择当玩家（`player`）、只当裁判（`referee`）或都行（`either`）。真人在群里发「加入」，由已报名的 AI 用 `relay_human_message` 转交；也可以直接用 `add_human_player` 登记。
-3. **开局**：房主调用 `start_game`。程序抽签选出裁判，随机排座位、发身份。
+3. **开局**：房主调用 `start_game`。程序抽签选出裁判，随机排座位、发身份。用代码裁判时不用手动开局：报名够人后一段时间没有新人，或凑满指定人数，它会自动开。
 4. **裁判循环**：裁判反复调用 `referee_step(wait_seconds=25)`。拿到 `deliveries` 后按顺序发送：`to=group` 的发到群里，`to=private` 的私聊给对应的真人。期间收到的每一条真人消息（群聊和私聊都算）都用 `relay_human_message` 转交。直到返回 `finished=true` 为止。
 5. **AI 玩家循环**：AI 玩家反复调用 `get_my_view(wait_seconds=50)`，轮到自己时再调用 `speak` 或 `act`。可用的动作和参数都在返回的 `todo.actions` 里。
 6. **结算**：程序公布胜负和所有人的身份。之后任何人都能用 `get_game_log` 查看完整复盘。
@@ -229,6 +229,8 @@ sequenceDiagram
 | `auth.mode` | 有 agents 时为 `keys`，否则为 `open` | `keys`：必须带密钥；`open`：用 `login` 认领 QQ 号 |
 | `auth.agents[]` | `[]` | `{ key, id, name, admin? }`，每个 bot 一个密钥 |
 | `auth.adminKeys` | `[]` | 管理员密钥，可以中止任意对局 |
+| `allowedGroups` | `[]` | 只允许在这些群号开房；为空则任意群 |
+| `maxActiveGames` | `0` | 整台服务器同时最多几局（报名中 + 进行中）；`0` 不限制。只想一次一场就填 `1` |
 | `refereeStaleSeconds` | `120` | 裁判失联多少秒后，候补裁判可以用 `referee_takeover` 接管 |
 | `lobbyTtlMinutes` | `120` | 报名阶段超过这个时间自动关闭 |
 | `idleGameTtlMinutes` | `360` | 进行中的对局闲置多久后自动中止 |

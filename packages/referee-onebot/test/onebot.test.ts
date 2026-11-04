@@ -178,6 +178,60 @@ describe('OneBot referee against the real engine', () => {
     await ai.close();
   }, 60_000);
 
+  it('auto-starts a lobby once the target player count is reached, and after the quiet period otherwise', async () => {
+    const qq2 = new FakeOneBot('tok2');
+    await qq2.start();
+    const ac2 = new AbortController();
+    const done = runReferee({
+      url: http.url,
+      key: KEYS.ref,
+      onebotUrl: qq2.url,
+      onebotToken: 'tok2',
+      groupId: GROUP,
+      admins: [OWNER],
+      bots: [AI_ID],
+      stepWaitSeconds: 1,
+      sendGapMs: 0,
+      autoStartSeconds: 2,
+      signal: ac2.signal,
+      log: (l) => logs.push(l),
+    });
+    await qq2.waitForConnection();
+    const send2 = (c: ApiCall) => c.action === 'send_group_msg' && String(c.params.group_id) === GROUP;
+    const msg2 = (uid: string, nick: string, t: string) =>
+      qq2.emit({ post_type: 'message', message_type: 'group', sub_type: 'normal', group_id: Number(GROUP), user_id: Number(uid), message_id: Date.now(), sender: { user_id: Number(uid), nickname: nick, card: '' }, message: text(t), raw_message: t });
+    try {
+      // 「/桌游 数字炸弹 2」：凑满 2 人立刻开局，不用再发「开局」
+      let mark = qq2.calls.length;
+      msg2(OWNER, '主人', '/桌游 数字炸弹 2');
+      const opened = await qq2.waitForCall((c) => send2(c) && callText(c).includes('报名'), 10_000, mark);
+      expect(callText(opened)).toContain('2 人');
+      msg2(OWNER, '主人', '加入');
+      msg2('777', '路人甲', '加入');
+      const started = await qq2.waitForCall((c) => send2(c) && callText(c).includes('数字炸弹开始'), 15_000, mark);
+      expect(callText(started)).toBeTruthy();
+      expect(qq2.calls.slice(mark).some((c) => send2(c) && callText(c).includes('秒内没有新人'))).toBe(false);
+      msg2(OWNER, '主人', '/桌游 中止');
+      await qq2.waitForCall((c) => send2(c) && callText(c).includes('中止'), 10_000, mark);
+
+      // 没指定人数：够最少人数后先预告，安静 2 秒自动开局
+      mark = qq2.calls.length;
+      msg2(OWNER, '主人', '/桌游 数字炸弹');
+      await qq2.waitForCall((c) => send2(c) && callText(c).includes('报名'), 10_000, mark);
+      msg2(OWNER, '主人', '加入');
+      msg2('777', '路人甲', '加入');
+      const notice = await qq2.waitForCall((c) => send2(c) && callText(c).includes('秒内没有新人'), 15_000, mark);
+      expect(callText(notice)).toMatch(/已有 2 人报名/);
+      const auto = await qq2.waitForCall((c) => send2(c) && callText(c).includes('数字炸弹开始'), 15_000, mark);
+      expect(qq2.calls.indexOf(auto)).toBeGreaterThan(qq2.calls.indexOf(notice));
+      expect(qq2.calls.slice(mark).filter((c) => send2(c) && callText(c).includes('秒内没有新人'))).toHaveLength(1);
+    } finally {
+      ac2.abort();
+      await Promise.race([done, new Promise((res) => setTimeout(res, 5000))]);
+      await qq2.close();
+    }
+  }, 60_000);
+
   it('rejects a wrong OneBot token', async () => {
     const bad = new FakeOneBot('right');
     await bad.start();

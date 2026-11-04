@@ -15,10 +15,11 @@ const HELP = `bot-game-referee ${VERSION} —— bot-game-mcp 的代码裁判（
 用法：
   bot-game-referee --url http://主机:7700/mcp --key 密钥|--key-file 文件 --onebot ws://127.0.0.1:3001/ --group 群号
                    [--onebot-token-file 文件] [--admins QQ,QQ] [--bots QQ,QQ] [--options '{"nudge_ai":true}']
-                   [--prefix /桌游] [--wait 25]
+                   [--prefix /桌游] [--wait 25] [--auto-start 60]
 
   用一个 OneBot v11 账号（正向 WebSocket）把引擎的消息发到群里和私聊里，转交真人消息，响应「/桌游」指令。
   它只用裁判能用的那几个工具，没有任何能影响结果的接口。
+  --auto-start N：报名够人后 N 秒没有新人加入就自动开局（默认 60，0 为关闭）；开房时写人数（/桌游 狼人杀 7）则凑满立刻开局。
 
 环境变量：BOTGAME_URL BOTGAME_KEY BOTGAME_ONEBOT_URL BOTGAME_ONEBOT_TOKEN BOTGAME_GROUP BOTGAME_ADMINS BOTGAME_BOTS`;
 
@@ -39,6 +40,7 @@ async function main(argv: string[]): Promise<void> {
       options: { type: 'string' },
       prefix: { type: 'string' },
       wait: { type: 'string' },
+      'auto-start': { type: 'string' },
       help: { type: 'boolean', short: 'h' },
       version: { type: 'boolean', short: 'v' },
     },
@@ -70,6 +72,7 @@ async function main(argv: string[]): Promise<void> {
     defaultOptions: str('options') ? JSON.parse(str('options')!) : undefined,
     commandPrefix: str('prefix'),
     stepWaitSeconds: str('wait') ? Number(str('wait')) : undefined,
+    autoStartSeconds: str('auto-start') !== undefined ? Number(str('auto-start')) : 60,
     signal: ac.signal,
   });
 }

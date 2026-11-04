@@ -52,6 +52,10 @@ export interface ManagerOptions {
   idleGameTtlMs?: number;
   /** 最多保留多少个已结束对局（默认 100）。 */
   keepFinishedGames?: number;
+  /** 只允许在这些群开房；空数组为不限制。 */
+  allowedGroups?: string[];
+  /** 整个服务器同时最多几局（报名中 + 进行中）；0 为不限制。 */
+  maxActiveGames?: number;
 }
 
 export interface CreateGameInput {
@@ -74,6 +78,8 @@ export interface GameSummary {
   host: string;
   referee: string | null;
   players: number;
+  min_players: number;
+  max_players: number;
   lobby?: { name: string; id: string; kind: string; join_as: JoinPreference }[];
   round: number;
   phase: string | null;
@@ -129,6 +135,8 @@ export class GameManager {
   private readonly lobbyTtlMs: number;
   private readonly idleGameTtlMs: number;
   private readonly keepFinishedGames: number;
+  private readonly allowedGroups: Set<string>;
+  private readonly maxActiveGames: number;
 
   private readonly games = new Map<string, GameRecord>();
   private readonly instances = new Map<string, BaseGame>();
@@ -145,6 +153,8 @@ export class GameManager {
     this.lobbyTtlMs = opts.lobbyTtlMs ?? 2 * 3600_000;
     this.idleGameTtlMs = opts.idleGameTtlMs ?? 6 * 3600_000;
     this.keepFinishedGames = opts.keepFinishedGames ?? 100;
+    this.allowedGroups = new Set(opts.allowedGroups ?? []);
+    this.maxActiveGames = opts.maxActiveGames ?? 0;
     this.emitter.setMaxListeners(0);
     const loaded = this.store?.load();
     if (loaded) this.restore(loaded);
@@ -232,6 +242,8 @@ export class GameManager {
       host: rec.hostId,
       referee: rec.referee ? `${rec.referee.name}(${rec.referee.id})` : null,
       players: rec.status === 'lobby' ? rec.lobby.filter((e) => e.pref !== 'referee').length : rec.players.length,
+      min_players: def.minPlayers,
+      max_players: def.maxPlayers,
       ...(rec.status === 'lobby'
         ? { lobby: rec.lobby.map((e) => ({ name: e.name, id: e.id, kind: e.kind, join_as: e.pref })) }
         : {}),
@@ -314,9 +326,19 @@ export class GameManager {
     }
     const groupId = String(input.groupId ?? '').trim();
     if (!groupId) throw badRequest('需要 group_id（QQ 群号）。');
-    const existing = [...this.games.values()].find(
-      (g) => g.groupId === groupId && (g.status === 'lobby' || g.status === 'running'),
-    );
+    if (this.allowedGroups.size > 0 && !this.allowedGroups.has(groupId)) {
+      throw new GameError('FORBIDDEN', `这台服务器不在群 ${groupId} 开房。`, '只有管理员配置过的群可以开房（allowedGroups）。');
+    }
+    const activeGames = [...this.games.values()].filter((g) => g.status === 'lobby' || g.status === 'running');
+    const existing = activeGames.find((g) => g.groupId === groupId);
+    if (!existing && this.maxActiveGames > 0 && activeGames.length >= this.maxActiveGames) {
+      const busy = activeGames.map((g) => `${g.id}（群 ${g.groupId}）`).join('、');
+      throw new GameError(
+        'CONFLICT',
+        `这台服务器同时最多开 ${this.maxActiveGames} 局，现在已有：${busy}。`,
+        '等它结束或中止后再开。',
+      );
+    }
     if (existing) {
       throw new GameError(
         'CONFLICT',

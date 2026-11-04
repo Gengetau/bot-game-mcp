@@ -721,7 +721,8 @@ class Humans {
   /** PK 投票的候选：从最近的公告里读出平票者（卧底的 PK 提示只用 @，所以也要看「X号、Y号 平票」那条）。 */
   private tiedSeats(): number[] | null {
     for (const t of this.recentGroup(12)) {
-      const m = t.match(/投给([\d号、\s]+)之一/) ?? t.match(/平票[：:]\s*([\d号、]+)/) ?? t.match(/([\d号、]+)\s*平票，进入/);
+      // 座位后面带名字（「3号 小明、5号 大锤」），所以先截出那一段，再把其中的 N号 都抓出来
+      const m = t.match(/投给(.+?)之一/) ?? t.match(/平票[：:]\s*(.+?)(?:，|$)/m) ?? t.match(/(.+?)\s*平票，进入/);
       if (m) return [...m[1]!.matchAll(/(\d+)号/g)].map((x) => Number(x[1]));
     }
     return null;

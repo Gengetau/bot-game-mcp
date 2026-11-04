@@ -224,7 +224,7 @@ export class UndercoverGame extends BaseGame<UndercoverState, UndercoverOptions>
     const order = this.orderFrom(start);
     this.state.firstSpeaker = order[0]!;
     this.announce(
-      `📣 第 ${this.rec.round} 轮开始，存活 ${order.length} 人。发言顺序：${order.map((s) => `${s}号`).join(' → ')}`,
+      `📣 第 ${this.rec.round} 轮开始，存活 ${order.length} 人。发言顺序：${order.map((s) => this.label(s)).join(' → ')}`,
     );
     this.openDescribe(order, 0, 'describe');
   }
@@ -384,7 +384,7 @@ export class UndercoverGame extends BaseGame<UndercoverState, UndercoverOptions>
       this.cur().votes.push({ stage, voter, target: t === 0 ? null : t });
       if (t === 0) lines.push(`${this.label(voter)} → 弃票`);
       else {
-        lines.push(`${this.label(voter)} → ${t}号`);
+        lines.push(`${this.label(voter)} → ${this.label(t)}`);
         counts.set(t, (counts.get(t) ?? 0) + 1);
       }
     }
@@ -408,7 +408,7 @@ export class UndercoverGame extends BaseGame<UndercoverState, UndercoverOptions>
     }
     if (stage === 'vote') {
       const tied = leaders.sort((a, b) => a - b);
-      this.announce(`⚖️ ${tied.map((s) => `${s}号`).join('、')} 平票，进入 PK！平票者依次再描述一次，其余玩家再投票。`);
+      this.announce(`⚖️ ${tied.map((s) => this.label(s)).join('、')} 平票，进入 PK！平票者依次再描述一次，其余玩家再投票。`);
       const order = this.orderFrom(tied[0]!, tied);
       this.openDescribe(order, 0, 'pk', tied);
       return;

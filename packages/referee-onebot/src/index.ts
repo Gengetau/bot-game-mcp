@@ -37,6 +37,11 @@ export interface RefereeOptions {
   stepWaitSeconds?: number;
   /** 指令前缀，默认「/桌游」 */
   commandPrefix?: string;
+  /**
+   * 自动开局：报名人数达到最少人数后，这么多秒没有新人加入就自动开局（0 或不填 = 关闭，等「开局」指令）。
+   * 开房指令里写一个数字（如「/桌游 狼人杀 7」）表示凑满这么多人立刻开局；人数达到上限也立刻开局。
+   */
+  autoStartSeconds?: number;
   /** 两条 QQ 消息之间的最小间隔（毫秒），默认 300 */
   sendGapMs?: number;
   /** 外部停止信号 */
@@ -307,6 +312,12 @@ interface CurrentGame {
   id: string;
   status: 'lobby' | 'running';
   host: string;
+  /** 报名人数（不含裁判）与这款游戏的人数范围 */
+  players: number;
+  min: number;
+  max: number;
+  /** 开房时指定的目标人数：凑满就开 */
+  target?: number;
 }
 
 export async function runReferee(opts: RefereeOptions): Promise<void> {
@@ -315,13 +326,18 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
   const admins = new Set(opts.admins ?? []);
   const bots = new Set(opts.bots ?? []);
   const stepWait = Math.max(1, Math.min(50, opts.stepWaitSeconds ?? 25));
+  const autoStart = Math.max(0, opts.autoStartSeconds ?? 0);
   const sendGap = opts.sendGapMs ?? 300;
   const engine = new Engine(opts.url, opts.key, log);
 
   let stopped = false;
   let me = { id: '', name: '' };
   // 放在对象里：闭包里会改它们，用裸 let 的话 TypeScript 的类型收窄会出错
-  const st: { game: CurrentGame | null; lastSeq: number } = { game: null, lastSeq: -1 }; // lastSeq：本局已发出的最后一条 seq；-1 = 未知
+  const st: { game: CurrentGame | null; lastSeq: number; lobby: { count: number; changedAt: number; announced: boolean } } = {
+    game: null,
+    lastSeq: -1, // 本局已发出的最后一条 seq；-1 = 未知
+    lobby: { count: -1, changedAt: 0, announced: false }, // 自动开局：人数上次变化的时间
+  };
   let wake: (() => void) | null = null;
   const idle = (ms: number) =>
     new Promise<void>((res) => {
@@ -370,9 +386,10 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
 
   const help =
     `🎲 桌游指令（由程序主持，裁判不参与、不决定任何结果）：\n` +
-    `${prefix} 狼人杀 | 谁是卧底 | 大话骰 | 数字炸弹 [选项，如 win_mode=all]  开房\n` +
+    `${prefix} 狼人杀 | 谁是卧底 | 大话骰 | 数字炸弹 [人数] [选项，如 win_mode=all]  开房\n` +
     `${prefix} 开局 · ${prefix} 中止 · ${prefix} 状态 · ${prefix} 规则 狼人杀\n` +
-    `报名：发「加入」；游戏中按提示在群里发指令（如「投3号」），夜间行动私聊我。`;
+    `报名：发「加入」；游戏中按提示在群里发指令（如「投3号」），夜间行动私聊我。` +
+    (autoStart > 0 ? `\n报名够人后 ${autoStart} 秒没有新人加入就自动开局；开房时写人数（如「${prefix} 狼人杀 7」）则凑满立刻开局。` : '');
 
   async function refreshGame(): Promise<void> {
     const r = await engine.call('list_games', { group_id: opts.groupId });
@@ -383,14 +400,51 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
       st.lastSeq = -1;
       return;
     }
-    if (st.game?.id !== g.game_id) st.lastSeq = -1;
-    st.game = { id: String(g.game_id), status: g.status, host: String(g.host ?? '') };
+    const fresh = st.game?.id !== g.game_id;
+    if (fresh) {
+      st.lastSeq = -1;
+      st.lobby = { count: -1, changedAt: 0, announced: false };
+    }
+    st.game = {
+      id: String(g.game_id),
+      status: g.status,
+      host: String(g.host ?? ''),
+      players: Number(g.players ?? 0),
+      min: Number(g.min_players ?? 0),
+      max: Number(g.max_players ?? 0),
+      target: fresh ? undefined : st.game?.target,
+    };
     if (g.status === 'lobby' && !(g.lobby ?? []).some((e: Json) => String(e.id) === me.id)) {
       const j = await engine.call('join_game', { game_id: g.game_id, join_as: 'referee' });
       log(`[referee] 已以裁判身份加入 ${g.game_id}`);
       if (j.group_message) await say(j.group_message);
     }
     wake?.();
+  }
+
+  /** 开局（指令或自动）。 */
+  async function startNow(why: string): Promise<void> {
+    if (!st.game || st.game.status !== 'lobby') return;
+    log(`[referee] 开局 ${st.game.id}（${why}）`);
+    const r = await engine.call('start_game', { game_id: st.game.id });
+    if (r.group_message) await say(r.group_message);
+    await refreshGame();
+  }
+
+  /** 自动开局：报名够人且一段时间没有新人就开；凑满目标人数或上限立刻开。 */
+  async function maybeAutoStart(): Promise<void> {
+    const g = st.game;
+    if (autoStart <= 0 || !g || g.status !== 'lobby') return;
+    const now = Date.now();
+    if (g.players !== st.lobby.count) st.lobby = { count: g.players, changedAt: now, announced: false };
+    if (g.players < g.min) return;
+    if ((g.target && g.players >= g.target) || (g.max > 0 && g.players >= g.max)) return startNow(`已凑满 ${g.players} 人`);
+    if (!st.lobby.announced) {
+      st.lobby.announced = true;
+      await say(`已有 ${g.players} 人报名（最少 ${g.min} 人）。${autoStart} 秒内没有新人加入就自动开局；发「${prefix} 开局」可以立即开始。`);
+      return;
+    }
+    if (now - st.lobby.changedAt >= autoStart * 1000) await startNow(`${g.players} 人报名，${autoStart} 秒无人加入`);
   }
 
   async function handleCommand(uid: string, nick: string, rest: string): Promise<void> {
@@ -433,9 +487,7 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
           await refreshGame();
           if (!st.game) return void (await say(`本群没有报名中的对局。先发「${prefix} 狼人杀」这样的指令开房。`));
           if (st.game.status !== 'lobby') return void (await say('对局已经开始了。'));
-          const r = await engine.call('start_game', { game_id: st.game.id });
-          if (r.group_message) await say(r.group_message);
-          await refreshGame();
+          await startNow(`${nick} 发了开局指令`);
           return;
         }
         case '中止':
@@ -445,8 +497,9 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
           await refreshGame();
           if (!st.game) return void (await say('本群没有进行中的对局。'));
           const wasLobby = st.game.status === 'lobby';
-          await engine.call('abort_game', { game_id: st.game.id, reason: `${nick} 中止` });
+          const r = await engine.call('abort_game', { game_id: st.game.id, reason: `${nick} 中止` });
           if (wasLobby) await say('已取消报名中的对局。');
+          else if (r.group_message) await say(String(r.group_message));
           await refreshGame();
           return;
         }
@@ -454,18 +507,35 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
           if (!canAdmin) return void (await sayTo(uid, '只有管理员能开房。'));
           await refreshGame();
           if (st.game) return void (await say(`本群已有对局 ${st.game.id}（${st.game.status === 'lobby' ? '报名中' : '进行中'}）。发「${prefix} 中止」可以结束它。`));
+          // 「/桌游 狼人杀 7 win_mode=all」：单独的数字是目标人数，其余是选项
+          const target = tail.find((t) => /^\d+$/.test(t));
           let options: Record<string, unknown>;
           try {
-            options = { ...(opts.defaultOptions ?? {}), ...parseOptionTokens(tail) };
+            options = { ...(opts.defaultOptions ?? {}), ...parseOptionTokens(tail.filter((t) => !/^\d+$/.test(t))) };
           } catch {
             return void (await say('选项格式不对：用 key=value，或者一个 JSON 对象。'));
           }
           const r = await engine.call('create_game', { game_type: head, group_id: opts.groupId, join_as: 'referee', options });
           const id = String(r.summary?.game_id ?? r.game_id ?? '');
-          st.game = { id, status: 'lobby', host: me.id };
+          const sum = r.summary ?? {};
+          st.game = {
+            id,
+            status: 'lobby',
+            host: me.id,
+            players: Number(sum.players ?? 0),
+            min: Number(sum.min_players ?? 0),
+            max: Number(sum.max_players ?? 0),
+            target: target ? Number(target) : undefined,
+          };
           st.lastSeq = -1;
-          log(`[referee] 已开房 ${id}（${head}）`);
-          await say(`${r.group_message ?? `已开房 ${id}`}\n发「加入」报名；人齐后发「${prefix} 开局」。`);
+          st.lobby = { count: -1, changedAt: 0, announced: false };
+          log(`[referee] 已开房 ${id}（${head}${target ? `，目标 ${target} 人` : ''}）`);
+          const howStart = target
+            ? `凑满 ${target} 人自动开局`
+            : autoStart > 0
+              ? `报名够人后 ${autoStart} 秒没有新人就自动开局`
+              : `人齐后发「${prefix} 开局」`;
+          await say(`${r.group_message ?? `已开房 ${id}`}\n发「加入」报名；${howStart}。`);
           // 只有被 @ 才会醒来的聊天 bot：点名请它们报名
           if (bots.size > 0) {
             await sendGroup([
@@ -553,6 +623,7 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
         if (cur.status === 'lobby') {
           await idle(3000);
           if (!stopped) await refreshGame();
+          if (!stopped) await maybeAutoStart();
           continue;
         }
         const args: Json = { game_id: cur.id, wait_seconds: recovering ? 0 : stepWait, format: 'onebot' };

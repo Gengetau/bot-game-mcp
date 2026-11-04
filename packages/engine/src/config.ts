@@ -28,6 +28,10 @@ export const configSchema = z.object({
   legacySse: z.boolean().default(true),
   /** 只读的公开观战接口 /api/games */
   publicApi: z.boolean().default(true),
+  /** 只允许在这些群号开房；为空则不限制（对外开放时建议配置） */
+  allowedGroups: z.array(z.string().min(1)).default([]),
+  /** 整个服务器同时最多几局（报名中 + 进行中）；0 为不限制。想「一次只开一场」就设 1 */
+  maxActiveGames: z.number().int().min(0).default(0),
   /** 存档文件；为空则仅内存 */
   stateFile: z.string().nullable().default('./data/botgame-state.json'),
   auth: z

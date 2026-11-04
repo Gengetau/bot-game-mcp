@@ -186,8 +186,9 @@ export class WerewolfGame extends BaseGame<WerewolfState, WerewolfOptions> {
     return seats.filter((s) => s !== seat);
   }
 
+  /** 「3号 小明、4号 大锤」：座位后面总是带名字，bot 和真人都不用回头翻座位表。 */
   private seatList(seats: Seat[]): string {
-    return seats.map((s) => `${s}号`).join('、');
+    return seats.map((s) => this.label(s)).join('、');
   }
 
   private push(...steps: Step[]): void {
@@ -575,9 +576,10 @@ export class WerewolfGame extends BaseGame<WerewolfState, WerewolfOptions> {
     this.state.tonight = { victim: 0, guarded: [], saved: false, poisons: [] };
     for (const d of deaths) this.markDead(d.seat, d.cause, `第${n}夜`);
     this.announce(
-      deaths.length === 0
+      (deaths.length === 0
         ? `☀️ 第${n}天，天亮了。昨夜是平安夜，无人死亡。`
-        : `☀️ 第${n}天，天亮了。昨夜死亡的玩家：${deaths.map((d) => this.label(d.seat)).join('、')}。`,
+        : `☀️ 第${n}天，天亮了。昨夜死亡的玩家：${deaths.map((d) => this.label(d.seat)).join('、')}。`) +
+        `\n存活：${this.seatList(this.aliveSeats())}`,
       { kind: 'death', data: { seats: deaths.map((d) => d.seat) } },
     );
     if (this.checkWin()) return;
@@ -690,7 +692,7 @@ export class WerewolfGame extends BaseGame<WerewolfState, WerewolfOptions> {
     const start = pick(this.rng, alive);
     const order = this.orderFrom(start, alive);
     this.state.order = order;
-    this.announce(`🗣️ 第${this.rec.round}天讨论开始，发言顺序：${order.map((s) => `${s}号`).join(' → ')}。`);
+    this.announce(`🗣️ 第${this.rec.round}天讨论开始，发言顺序：${order.map((s) => this.label(s)).join(' → ')}。`);
     this.push(...order.map((seat): Step => ({ t: 'speech', seat })), { t: 'vote' });
   }
 
@@ -806,7 +808,7 @@ export class WerewolfGame extends BaseGame<WerewolfState, WerewolfOptions> {
       if (t !== undefined && t > 0) {
         counts.set(t, (counts.get(t) ?? 0) + 1);
         record[String(v)] = t;
-        lines.push(`${v}号 → ${t}号`);
+        lines.push(`${this.label(v)} → ${this.label(t)}`);
       } else if (t === 0) abstain.push(v);
       else noVote.push(v); // 超时没投：和主动弃票分开标出，群里才看得出是没来得及还是不想投
     }
