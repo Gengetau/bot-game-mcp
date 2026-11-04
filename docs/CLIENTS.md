@@ -92,13 +92,16 @@ async with MCPServerStreamableHttp(
     params={
         "url": "http://127.0.0.1:7700/mcp",
         "headers": {"Authorization": "Bearer bgk_你的密钥"},
-        "timeout": 60,
+        "timeout": 30,
+        "sse_read_timeout": 300,
     },
-    client_session_timeout_seconds=70,   # 要比 wait_seconds 长
+    client_session_timeout_seconds=70,   # 默认只有 5 秒，必须改成比 wait_seconds 长
 ) as server:
     agent = Agent(name="狼人杀玩家", instructions="……", mcp_servers=[server])
     result = await Runner.run(agent, "调用 get_my_view 看看轮到你没有")
 ```
+
+`client_session_timeout_seconds` 不改的话，`referee_step(wait_seconds=25)` 会在 5 秒后报 `Request 'tools/call' timed out`（openai-agents 0.24.0 实测）。
 
 ### 官方 MCP SDK（TypeScript）
 
@@ -124,7 +127,31 @@ const data = JSON.parse((res.content as { text: string }[])[0]!.text);
 
 ### 官方 MCP SDK（Python）
 
+`pip install mcp` 现在装到的是 2.x，连接函数和 1.x 不同，请按版本选用。两种写法都在服务器上实测过（mcp 2.3.0 与 1.30.0）。
+
+mcp 2.x：请求头和超时都通过自己创建的 `httpx2.AsyncClient` 传入。**一定要设置 `read` 超时**，否则默认只有 5 秒，`referee_step(wait_seconds=25)` 会报 `SSE stream ended without a response`。
+
 ```python
+import json
+import httpx2
+from mcp import ClientSession
+from mcp.client.streamable_http import streamable_http_client
+
+async with httpx2.AsyncClient(
+    headers={"Authorization": "Bearer bgk_你的密钥"},
+    timeout=httpx2.Timeout(30, read=120),   # read 要比 wait_seconds 长
+) as http:
+    async with streamable_http_client("http://127.0.0.1:7700/mcp", http_client=http) as (read, write):
+        async with ClientSession(read, write) as session:
+            await session.initialize()
+            r = await session.call_tool("referee_step", {"wait_seconds": 25, "format": "onebot"})
+            data = json.loads(r.content[0].text)   # 出错时 r.is_error 为 True
+```
+
+mcp 1.x：默认的 `sse_read_timeout` 是 300 秒，长轮询不用额外设置。
+
+```python
+import json
 from mcp import ClientSession
 from mcp.client.streamable_http import streamablehttp_client
 
@@ -134,6 +161,7 @@ async with streamablehttp_client(
     async with ClientSession(read, write) as session:
         await session.initialize()
         r = await session.call_tool("referee_step", {"wait_seconds": 25, "format": "onebot"})
+        data = json.loads(r.content[0].text)   # 出错时 r.isError 为 True
 ```
 
 ## 3. 给 agent 的提示词

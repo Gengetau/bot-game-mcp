@@ -1,5 +1,30 @@
 # 开发进度与测试记录
 
+## 2026-11-04：服务器实测（Oracle，Ubuntu 24.04 arm64）
+
+### 环境
+
+- 服务器没有系统 Node，用的是自带运行时：Node 22.23.4 linux-arm64（nodejs.org 官方 tarball，sha256 已核对），放在工作区 `bot-game-runtime/` 下，不改系统、不碰其他服务。
+- 仓库克隆自 `main`（6aa63a7）到工作区 `bot-game-mcp/`。
+- 测试服务只监听 127.0.0.1 的临时端口；每轮测试结束进程都正常退出，端口释放。
+
+### 结果
+
+- `npm ci`、`npm run typecheck`、`npm test`（148/148）、`npm run build`：全部通过。
+- `dist/cli.js simulate`：四款游戏各跑 3 个种子（狼人杀 9 人含 2 真人；狼人杀 12 人含 3 真人、`--afk 0.1`；谁是卧底 6 人含 1 真人；大话骰 4 人；数字炸弹 5 人含 2 真人），15 局全部正常结束。`--afk 0.1` 的三局分别有 1、4、3 次超时托管，其余都是 0 次。
+- HTTP：`/health`、`/api/games`、MCP `initialize` 正常；伪造 Host 头的请求被拒（403）。
+- stdio：`initialize`、`tools/list`（17 个工具）、`whoami` 正常。
+- Python 客户端（keys 模式，管理员密钥用环境变量注入，测完即弃）：
+
+  | 客户端 | 结果 |
+  |---|---|
+  | mcp 1.30.0 `streamablehttp_client` | 连接、工具、资源、提示词正常；默认超时下 `referee_step(wait_seconds=25)` 阻塞 25 秒后正常返回 |
+  | mcp 2.3.0 `streamable_http_client` + `httpx2.AsyncClient` | 同上；但不设 `read` 超时时 5 秒就断（`SSE stream ended without a response`） |
+  | openai-agents 0.24.0 `MCPServerStreamableHttp` | `client_session_timeout_seconds=70` 正常；默认的 5 秒会报 `Request 'tools/call' timed out` |
+
+  两个超时陷阱和 mcp 2.x 的新写法都已写进 `docs/CLIENTS.md`。
+- 没带密钥的 `initialize` 被拒绝；真人在群里发的 `[CQ:reply,id=1]50` 能被正确识别为猜数，而且只有轮到的那位会被接受。
+
 ## 2026-11-04：v0.1.0 首个完整版本
 
 ### 已完成
