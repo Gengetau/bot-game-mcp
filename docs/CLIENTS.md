@@ -26,7 +26,7 @@ open 模式不需要密钥：连上后先调用 `login(qq_id, nickname)`。
 
 **长轮询与超时**：`referee_step` 和 `get_my_view` 的 `wait_seconds`（0~50）会让这次工具调用最多阻塞那么多秒，有新情况会提前返回。请确认客户端的工具调用超时比它长，否则就把 `wait_seconds` 调小（`0` 表示立即返回）。
 
-**没有 npm 包时**：本项目尚未发布到 npm，下面示例里的 `bot-game-mcp` 命令需要先在仓库里 `npm run build && npm link`。也可以写成 `node /绝对路径/bot-game-mcp/dist/cli.js`。
+**没有 npm 包时**：本项目尚未发布到 npm，下面示例里的 `bot-game-mcp` 命令需要先在仓库里 `npm run build && npm link -w bot-game-mcp`。也可以写成 `node /绝对路径/bot-game-mcp/packages/engine/dist/cli.js`。
 
 ## 2. 常见客户端
 
@@ -48,7 +48,7 @@ claude mcp add --transport http bot-game http://127.0.0.1:7700/mcp \
   "mcpServers": {
     "bot-game": {
       "command": "node",
-      "args": ["/绝对路径/bot-game-mcp/dist/cli.js", "bridge", "--url", "http://127.0.0.1:7700/mcp", "--key", "bgk_你的密钥"]
+      "args": ["/绝对路径/bot-game-mcp/packages/engine/dist/cli.js", "bridge", "--url", "http://127.0.0.1:7700/mcp", "--key", "bgk_你的密钥"]
     }
   }
 }
@@ -192,10 +192,10 @@ async with streamablehttp_client(
 - **大模型驱动**：给裁判 agent 配上 `referee` 提示词，让它自己循环调用工具。实现最简单，但每一步都要经过大模型，速度慢、消耗 token。
 - **代码驱动（推荐）**：在 bot 框架里用代码实现下面的循环。这个 bot 在引擎看来仍然是一个以 `referee` 身份报名的 agent，由程序抽签选中，只是它的「思考」是固定代码。可靠、零 token、延迟低。
 
-仓库自带一个现成的代码裁判：`bot-game-mcp referee`。它用一个 OneBot v11 账号的正向 WebSocket（Universal 角色，NapCat / LLOneBot / Lagrange / SnowLuma 等都有）收发消息：
+仓库自带一个现成的代码裁判：`bot-game-referee`（包 `bot-game-mcp-referee-onebot`，只依赖 MCP SDK）。它用一个 OneBot v11 账号的正向 WebSocket（Universal 角色，NapCat / LLOneBot / Lagrange / SnowLuma 等都有）收发消息：
 
 ```bash
-bot-game-mcp referee --url http://127.0.0.1:7700/mcp --key-file 裁判密钥文件 \
+bot-game-referee --url http://127.0.0.1:7700/mcp --key-file 裁判密钥文件 \
   --onebot ws://127.0.0.1:3001/ --onebot-token-file onebot密钥文件 --group 群号 \
   --admins 主人QQ号 --bots 其他bot的QQ号,… --options '{"nudge_ai":true,"speech_gap_ms":15000}'
 ```

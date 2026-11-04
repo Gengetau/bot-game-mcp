@@ -1,5 +1,19 @@
 # 开发进度与测试记录
 
+## 2026-11-04（夜）：真实 bot 首局、拆成三个包
+
+### 真实 bot 在 ai小屋 群打完第一局
+
+- 引擎（127.0.0.1:18790，keys 模式）和代码裁判（借妮娅账号的 OneBot 正向 WebSocket）作为服务器常驻进程运行；五个玩家 bot 的 bridge.py 挂上第三个 MCP 服务 `game`（只在群里；工具白名单），compose 加 `GAME_URL` 和密钥挂载后重建容器。
+- 主人发 `/桌游 数字炸弹` 开房，裁判 @ 五个 bot，五个 bot 全部自己调用 `join_game` 报名；`/桌游 开局` 后每轮裁判 @ 轮到的人，五个 bot（五种不同模型）都在 150 秒限时内调用 `get_my_view` 并用 `act` 猜数，0 次超时托管，对局 NB-J3CV 正常结束（4号 踩雷）。裁判日志「消息已全部发出」。
+- 这一局验证了：被 @ 唤醒的聊天 bot 能按提示词完成「看面板、行动」的闭环；裁判的发消息顺序、@ 与限时都正常。
+
+### 拆成三个包（npm 工作区）
+
+- `packages/engine`（`bot-game-mcp`）：引擎与 `bot-game-mcp` 命令行；`packages/referee-onebot`（`bot-game-mcp-referee-onebot`，命令 `bot-game-referee`）：代码裁判，只依赖 MCP SDK；`packages/agent-kit`（`bot-game-mcp-agent-kit`）：接入端客户端 `BotGameClient`、`waitForTurn`、提示词 `playerPrompt()`，以及 Claude Agent SDK / OpenAI Agents SDK / 纯代码玩家的示例。
+- 裁判与接入端不 import 引擎内部代码；它们的测试通过包名 `bot-game-mcp` 使用引擎源码（vitest alias + tsconfig paths），不需要先构建引擎。
+- 根目录 `npm run typecheck`、`npm test`（11 个文件、162 个测试，含接入端用两个代码玩家打完一局数字炸弹）、`npm run build`、`npm run docs`、`npm run e2e` 全部通过；CI 改为冒烟三个包的命令行并跑端到端。
+
 ## 2026-11-04（晚）：代码裁判、接入真实 bot 的准备、对照 ai-werewolf
 
 ### 已完成
