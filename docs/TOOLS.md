@@ -2,7 +2,7 @@
 
 > 本文件由 `npx tsx scripts/gen-docs.ts` 自动生成，请勿手改。
 
-共 17 个工具。所有工具返回一个 JSON 文本块；业务错误以 `isError: true` 的工具结果返回（含中文原因与建议），不会是协议错误。
+共 18 个工具。所有工具返回一个 JSON 文本块；业务错误以 `isError: true` 的工具结果返回（含中文原因与建议），不会是协议错误。
 
 ## 工具
 
@@ -83,7 +83,7 @@
 
 ### `start_game` —— 开局
 
-房主开局：程序抽签选出 AI 裁判、随机分配座位和身份。返回裁判是谁；group_message 请发到群里。
+房主开局：程序抽签选出 AI 裁判（有 referee_offer 登记时在登记池里抽，返回 referee_draw）、随机分配座位和身份。返回裁判是谁；group_message 请发到群里。
 
 | 参数 | 类型 | 必填 | 说明 |
 |---|---|---|---|
@@ -140,7 +140,7 @@
 | 参数 | 类型 | 必填 | 说明 |
 |---|---|---|---|
 | `game_id` | string |  | 对局 ID（如 WW-7K3Q）。不填则自动使用你当前参与的对局 |
-| `since_seq` | integer |  | 只返回 seq 大于此值的事件 |
+| `since_seq` | integer |  | 只返回 seq 大于此值的事件（seq 是你视角内的连续编号；游戏正常结束公开完整复盘后会重新编号） |
 | `limit` | integer |  |  |
 
 ### `referee_step` —— 裁判：推进并取消息
@@ -152,6 +152,7 @@
 | `game_id` | string |  | 对局 ID（如 WW-7K3Q）。不填则自动使用你当前参与的对局 |
 | `wait_seconds` | integer |  | 长轮询等待秒数（0~50），有新情况会提前返回 |
 | `since_seq` | integer |  | 重发：返回 seq 大于此值的所有已到期消息 |
+| `host_id` | string |  | 代行裁判进程的标识（referee_offer 时登记的那个）。裁判事务被代行时，不带正确 host_id 的调用只得到空结果 |
 | `format` | `text` / `cq` / `onebot` |  | 消息格式：text（默认，@昵称 + mentions）/ cq（CQ 码）/ onebot（OneBot v11 消息段数组） |
 
 ### `relay_human_message` —— 裁判：转发真人消息
@@ -166,6 +167,17 @@
 | `text` | string | 是 | 消息原文 |
 | `channel` | `group` / `private` |  | 消息来自群聊(group，默认)还是私聊(private) |
 | `action` | object |  | 可选：结构化指令（仅在自动识别失败但玩家意思明确时使用） |
+| `host_id` | string |  | 代行裁判进程的标识（见 referee_offer） |
+
+### `referee_offer` —— 登记代行裁判（幂等）
+
+【代码裁判进程用】登记「开局若抽中这个账号当裁判，裁判事务由 host_id 这个程序代行」。登记过的账号进入开局抽签池：玩家报名的账号被抽中就改当裁判（人数仍够时才会抽到玩家），没报名的账号自动以 referee 身份报名。抽中后这个账号自己的模型调 referee_step 只得到空结果，裁判的每句话都由程序发出。
+
+| 参数 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `game_id` | string | 是 |  |
+| `host_id` | string | 是 | 裁判进程的标识（同一进程每次都用同一个） |
+| `withdraw` | boolean |  | true：撤销登记 |
 
 ### `referee_takeover` —— 接管裁判
 
@@ -174,6 +186,7 @@
 | 参数 | 类型 | 必填 | 说明 |
 |---|---|---|---|
 | `game_id` | string | 是 |  |
+| `host_id` | string |  | 接管后由这个代行进程执行裁判事务（代码裁判用） |
 
 ## 资源
 

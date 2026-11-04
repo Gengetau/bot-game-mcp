@@ -1,50 +1,29 @@
 {
-  "name": "bot-game-mcp",
-  "version": "0.1.0",
-  "description": "QQ 群聊桌游引擎（MCP 服务器）：狼人杀、谁是卧底、大话骰、数字炸弹。程序主导流程与身份，AI 裁判只负责推进与私聊发牌。",
+  "name": "bot-game-mcp-workspace",
+  "private": true,
+  "version": "0.2.0",
+  "description": "QQ 群聊桌游引擎（MCP）工作区：引擎 bot-game-mcp、代码裁判 bot-game-mcp-referee-onebot、接入端 bot-game-mcp-agent-kit",
   "type": "module",
   "license": "MIT",
-  "bin": {
-    "bot-game-mcp": "dist/cli.js"
-  },
-  "main": "dist/index.js",
-  "types": "dist/index.d.ts",
-  "files": [
-    "dist",
-    "README.md",
-    "docs",
-    "examples"
+  "workspaces": [
+    "packages/engine",
+    "packages/referee-onebot",
+    "packages/agent-kit"
   ],
   "engines": {
     "node": ">=22"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.build.json",
-    "dev": "tsx src/cli.ts",
-    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "build": "npm run build --workspaces",
+    "typecheck": "npm run typecheck --workspaces && tsc -p tsconfig.json",
     "test": "vitest run",
     "test:watch": "vitest",
-    "simulate": "tsx src/cli.ts simulate",
-    "docs": "tsx scripts/gen-docs.ts",
-    "prepublishOnly": "npm run build"
-  },
-  "keywords": [
-    "mcp",
-    "model-context-protocol",
-    "qq",
-    "onebot",
-    "werewolf",
-    "狼人杀",
-    "谁是卧底",
-    "board-game",
-    "agent"
-  ],
-  "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.32.2",
-    "zod": "^4.6.7"
+    "docs": "npm run docs -w bot-game-mcp",
+    "simulate": "npm run simulate -w bot-game-mcp --",
+    "e2e": "tsx scripts/e2e.ts"
   },
   "devDependencies": {
-    "@types/express": "^5.0.6",
+    "@modelcontextprotocol/sdk": "^1.32.2",
     "@types/node": "^22.20.5",
     "tsx": "^4.23.15",
     "typescript": "^5.9.3",

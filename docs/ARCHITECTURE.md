@@ -4,6 +4,8 @@
 
 ## 分层
 
+仓库是一个 npm 工作区：引擎在 `packages/engine`（下文的 `src/` 都指它的 `src/`），代码裁判在 `packages/referee-onebot`，接入端在 `packages/agent-kit`。后两者只通过 MCP 协议和只读 HTTP 接口使用引擎，不 import 引擎内部代码。
+
 ```text
 各个 bot 的 agent（MCP 客户端）
    │  Streamable HTTP / 旧版 SSE / stdio / bridge
@@ -32,7 +34,7 @@ MCP 层只做两件事：参数校验，把调用转给 `GameManager`。所有�
 | `status` | `lobby` → `running` → `ended`（正常结束）或 `aborted`（中止） |
 | `lobby` | 报名名单。AI 的报名方式是 `player`、`referee` 或 `either`；真人一律是 `player` |
 | `players` | 开局后的座位表：座位号、QQ 号、昵称、`agent`/`human`、存活、是否自己发言（`selfPost`） |
-| `referee` / `standbyReferees` | 当前裁判（含投递游标 `cursor`、最后活跃时间）和候补裁判 |
+| `referee` / `standbyReferees` | 当前裁判（含投递游标 `cursor`、最后活跃时间、代行进程 `hostedBy`）和候补裁判 |
 | `phase` | 当前阶段：`pending`（每个座位的待办、可选动作、真人回应渠道）、`timeoutMs`、`secret`、`minDurationMs`、`gateSeq`、`openedAt`、`deadline`、`data` |
 | `log` | 事件日志。可见范围（audience）分三种：`public`、`seats`（指定座位）、`referee` |
 | `outbox` | 待发往 QQ 的消息：`seq`、`notBefore`、目标（群/私聊）、消息段（文本/@）、类别 |
@@ -72,16 +74,18 @@ MCP 层只做两件事：参数校验，把调用转给 `GameManager`。所有�
 - `minDurationMs` 让夜晚至少持续一段时间（狼人杀默认 20 秒），避免从「结束得多快」推断神职死活。
 - 狼人杀的女巫阶段只要板子里有女巫就每晚都开，避免阶段的出现与否暴露女巫存活。
 - 超时托管只使用该座位自己能看到的信息。
+- 视图里的事件 `seq` 按该视角可见的事件重新编号。全局序号的空档会暴露别人的私密事件数量，例如预言家是否还在查验。
 
 ## 裁判选举与接管
 
 开局时（`startGame`）：
 
-1. 如果有 AI 报名为 `referee`，程序从中随机抽一位当裁判，其余的成为候补裁判。
+0. 如果有账号登记了代行（`referee_offer`，`LobbyEntry.hostedBy`），程序在这些账号里均匀抽一位当裁判；报名为玩家的账号被抽中就不入座（只有抽走一人后人数仍够时，玩家账号才进池子）。抽签记录写进 `refereeDraw`，裁判的 `hostedBy` 记下代行进程的 `host_id`，之后 `referee_step` / `relay_human_message` 只接受带同一 `host_id` 的调用，其它会话得到空结果。
+1. 否则，如果有 AI 报名为 `referee`，程序从中随机抽一位当裁判，其余的成为候补裁判。
 2. 否则，从报名为 `either` 的 AI 里随机抽一位，其余的 `either` 当玩家。
 3. 都没有就拒绝开局，除非开了 `auto_referee`。
 
-裁判超过 `refereeStaleSeconds` 没有调用 `referee_step`，候补裁判可以 `referee_takeover`。开局后用 `join_game(join_as="referee")` 登记的非玩家 AI 也算候补。管理员不受这些限制。接管后从上一任的游标继续发消息。
+裁判超过 `refereeStaleSeconds` 没有调用 `referee_step`，候补裁判可以 `referee_takeover`。开局后用 `join_game(join_as="referee")` 登记的非玩家 AI 也算候补。管理员不受这些限制。接管后从上一任的游标继续发消息。被接管的裁判记入 `formerReferees`：真人习惯 @ 原裁判发指令，转交时这些 @ 也会被剥离。
 
 ## 长轮询
 
@@ -92,6 +96,8 @@ MCP 层只做两件事：参数校验，把调用转给 `GameManager`。所有�
 
 裁判等待时还会在下一个截止时间或 `notBefore` 到来时醒来，处理超时。时钟可以注入，测试里用 `FakeClock`。
 
+长轮询被取消时（客户端超时或断开、服务关闭，SDK 都会触发 abort 信号），`referee_step` 不推进裁判游标，`get_my_view` 不推进事件游标，而是直接报错。否则响应没人收到，这批消息就丢了。
+
 ## 认证
 
 - **keys**：每个 bot 一把密钥，身份由密钥决定。HTTP 会话和建立会话时的密钥绑定，中途换密钥会被拒绝。
@@ -101,6 +107,12 @@ MCP 层只做两件事：参数校验，把调用转给 `GameManager`。所有�
 ## 持久化
 
 `FileStateStore` 有防抖（250ms），先写临时文件，再 `rename` 原子替换，内容包括所有对局和 open 模式的认领记录。重启时 `GameManager` 读回存档，游戏实例在第一次访问时重建。已结束的对局默认保留最近 100 局。
+
+## 代码裁判（`packages/referee-onebot`）
+
+`bot-game-referee` 是裁判角色的参考实现：一个 OneBot v11 正向 WebSocket 客户端加一个 MCP 客户端。主循环 `referee_step(wait_seconds=25, format="onebot")` → 按顺序 `send_group_msg` / `send_private_msg`；收到的群消息、私聊按先后顺序 `relay_human_message`；「/桌游」指令对应 `create_game` / `start_game` / `abort_game`。传输失败后的第一次调用会比较 `seq`，发现引擎游标越过了没送到的消息就用 `since_seq` 补发。它只用裁判能用的那几个工具，没有任何能影响结果的接口。
+
+`nudge_ai` 选项在 `BaseGame.openPhase` 里实现：阶段建立时往 outbox 推一条 @ AI 玩家的提示（不写日志），所以它和公告一样受阶段门控约束，总是在阶段开放计时之前发出。公开阶段限时过半仍有人没行动时，`BaseGame.remindPending` 再推一条 @ 未行动者（真人和 AI 都 @）的提醒，每阶段最多一次，限时不足 60 秒不提醒；秘密阶段不提醒，因为谁还没行动本身是秘密。提醒时刻计入裁判长轮询的唤醒时间（`refereeNextWake`），所以代码裁判会准时发出。
 
 ## 新增一款游戏
 

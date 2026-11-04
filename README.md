@@ -24,6 +24,7 @@ flowchart LR
 
 ## 目录
 
+- [仓库结构](#仓库结构)
 - [游戏](#游戏)
 - [快速开始](#快速开始)
 - [一局游戏是怎么跑起来的](#一局游戏是怎么跑起来的)
@@ -34,6 +35,18 @@ flowchart LR
 - [开发](#开发)
 
 更多文档：[游戏规则与选项](docs/GAMES.md) · [MCP 接口参考](docs/TOOLS.md) · [接入各类客户端与 QQ 框架](docs/CLIENTS.md) · [架构与新增游戏](docs/ARCHITECTURE.md) · [开发进度与测试记录](docs/PROGRESS.md)
+
+## 仓库结构
+
+这是一个 npm 工作区，按用途分成三个独立发布的包，用哪个装哪个（尚未发布到 npm，目前从仓库构建）：
+
+| 包 | 用途 | 安装 |
+|---|---|---|
+| [`bot-game-mcp`](packages/engine) | 引擎：MCP 服务器、四款游戏、HTTP/SSE/stdio 传输、离线模拟器，命令行 `bot-game-mcp` | `npm i bot-game-mcp` |
+| [`bot-game-mcp-referee-onebot`](packages/referee-onebot) | 代码裁判：用一个 OneBot v11 账号主持 QQ 群桌游，命令行 `bot-game-referee`。只依赖 MCP SDK，不依赖引擎 | `npm i bot-game-mcp-referee-onebot` |
+| [`bot-game-mcp-agent-kit`](packages/agent-kit) | 接入端：给 AI 玩家用的 TypeScript 客户端、等待回合的辅助函数、提示词文本，以及 Claude Agent SDK / OpenAI Agents SDK 的接入示例 | `npm i bot-game-mcp-agent-kit` |
+
+三个包之间只通过 MCP 协议和引擎的只读 HTTP 接口说话，裁判和接入端都不 import 引擎内部代码。文档统一放在根目录 `docs/`。
 
 ## 游戏
 
@@ -56,8 +69,9 @@ flowchart LR
 git clone https://github.com/Gengetau/bot-game-mcp.git
 cd bot-game-mcp
 npm ci
-npm run build
-npm link            # 可选：之后可以直接用 bot-game-mcp 命令，否则用 node dist/cli.js
+npm run build       # 构建三个包
+# 引擎命令：node packages/engine/dist/cli.js；裁判命令：node packages/referee-onebot/dist/cli.js
+# 可选：npm link -w bot-game-mcp -w bot-game-mcp-referee-onebot，之后直接用 bot-game-mcp / bot-game-referee
 ```
 
 ### 2. 先离线看一局（不需要任何 agent）
@@ -105,6 +119,14 @@ claude mcp add --transport http bot-game http://127.0.0.1:7700/mcp \
 
 只支持 stdio 的客户端可以用桥接模式（`bot-game-mcp bridge --url … --key …`）。其他客户端和 QQ 框架的接法见 [docs/CLIENTS.md](docs/CLIENTS.md)，配置样例在 [examples/](examples/)。
 
+裁判不一定要是大模型。自带的代码裁判 `bot-game-mcp referee` 用一个 OneBot v11 账号（正向 WebSocket）发消息、转交真人消息，群里发「/桌游 狼人杀」就开房，零 token、不会走神：
+
+```bash
+bot-game-mcp referee --url http://127.0.0.1:7700/mcp --key-file 裁判密钥文件 \
+  --onebot ws://127.0.0.1:3001/ --onebot-token-file onebot密钥文件 --group 群号 \
+  --admins 主人QQ号 --bots 其他bot的QQ号,… --options '{"nudge_ai":true}'
+```
+
 给 agent 的系统提示词可以直接用 MCP prompt：裁判用 `referee`，玩家用 `player`（也可以读取资源 `botgame://guide/referee`、`botgame://guide/player`）。
 
 ## 一局游戏是怎么跑起来的
@@ -114,7 +136,7 @@ claude mcp add --transport http bot-game http://127.0.0.1:7700/mcp \
 | 事项 | 谁负责 |
 |---|---|
 | 座位、身份、词语、骰子、炸弹数字 | **程序**（`crypto.randomInt`） |
-| 谁当裁判 | **程序**抽签：优先选报名为 `referee` 的 AI，否则在报名为 `either` 的 AI 里随机选 |
+| 谁当裁判 | **程序**抽签：有代码裁判登记代行（`referee_offer`）的账号时，在登记池里均匀抽一个（报名的玩家 bot 被抽中就改当裁判）；否则优先选报名为 `referee` 的 AI，再在 `either` 里随机选 |
 | 发言顺序、阶段流转、限时、超时托管 | **程序** |
 | 投票、技能、出价的结算和胜负判定 | **程序** |
 | 把消息发到群里、私聊给真人发身份和提示 | **AI 裁判**（原样转发 `referee_step` 返回的消息） |
@@ -127,7 +149,9 @@ AI 玩家的私密信息只出现在它自己的 `get_my_view` 里，不经过�
 
 1. **开房**：某个 bot 调用 `create_game(game_type, group_id)`，把返回的 `group_message` 发到群里。
 2. **报名**：其他 bot 调用 `join_game`，可以选择当玩家（`player`）、只当裁判（`referee`）或都行（`either`）。真人在群里发「加入」，由已报名的 AI 用 `relay_human_message` 转交；也可以直接用 `add_human_player` 登记。
-3. **开局**：房主调用 `start_game`。程序抽签选出裁判，随机排座位、发身份。
+3. **开局**：房主调用 `start_game`。程序抽签选出裁判，随机排座位、发身份。用代码裁判时不用手动开局：报名够人后一段时间没有新人，或凑满指定人数，它会自动开。
+
+- **随机裁判**：代码裁判可以带多个账号（`--voices`）。报名的 bot 里凡是它能替其说话的，都登记进抽签池；开局时程序抽一个当裁判，裁判进程就用那个账号发公告和私聊，并发一张转盘图。被抽中账号自己的模型拿不到任何该发的话（引擎只认带 `host_id` 的调用），所以裁判的每句话都是程序发的。外接的 bot 在自己那边跑一份 `bot-game-referee`（用自己的密钥和 OneBot）就能进池子，token 不用交给别人。
 4. **裁判循环**：裁判反复调用 `referee_step(wait_seconds=25)`。拿到 `deliveries` 后按顺序发送：`to=group` 的发到群里，`to=private` 的私聊给对应的真人。期间收到的每一条真人消息（群聊和私聊都算）都用 `relay_human_message` 转交。直到返回 `finished=true` 为止。
 5. **AI 玩家循环**：AI 玩家反复调用 `get_my_view(wait_seconds=50)`，轮到自己时再调用 `speak` 或 `act`。可用的动作和参数都在返回的 `todo.actions` 里。
 6. **结算**：程序公布胜负和所有人的身份。之后任何人都能用 `get_game_log` 查看完整复盘。
@@ -157,6 +181,7 @@ sequenceDiagram
 - **纯 bot**：所有玩家都是 AI。裁判照样把公开消息发到群里，群友可以围观。如果完全不需要往 QQ 发消息（比如做 agent 对战测试），开房时加 `auto_referee: true`，程序会自己推进。
 - **bot + 真人**：真人发「加入」报名。开局后，裁判私聊发身份；真人在群里发言、投票，夜间行动则私聊裁判。到了限时还没行动的玩家由程序托管（弃票、跳过，或按该游戏规则随机行动）。
 - **谁替 AI 玩家发言**：AI 玩家报名时 `self_post` 默认为 `true`，`speak` 的结果会带上 `post_to_group`，由它自己把发言发到群里。设为 `false` 时，改由裁判以「【3号 小克】……」的格式代发。
+- **只会被 @ 唤醒的聊天 bot**：很多群聊 bot 没人 @ 就不会动，也不会自己长轮询。开房时加 `nudge_ai: true`，程序会在每个阶段开始时在群里 @ AI 玩家提醒「查看行动面板」：秘密阶段 @ 全部存活的 AI 玩家（名单不随身份变化，不泄露谁有行动），公开阶段只在多人同时行动时 @ 有待办的 AI 玩家；公开阶段限时过半还有人没行动，再 @ 一次没行动的人（真人也 @）。
 
 ### 真人可以发的指令（节选）
 
@@ -206,6 +231,8 @@ sequenceDiagram
 | `auth.mode` | 有 agents 时为 `keys`，否则为 `open` | `keys`：必须带密钥；`open`：用 `login` 认领 QQ 号 |
 | `auth.agents[]` | `[]` | `{ key, id, name, admin? }`，每个 bot 一个密钥 |
 | `auth.adminKeys` | `[]` | 管理员密钥，可以中止任意对局 |
+| `allowedGroups` | `[]` | 只允许在这些群号开房；为空则任意群 |
+| `maxActiveGames` | `0` | 整台服务器同时最多几局（报名中 + 进行中）；`0` 不限制。只想一次一场就填 `1` |
 | `refereeStaleSeconds` | `120` | 裁判失联多少秒后，候补裁判可以用 `referee_takeover` 接管 |
 | `lobbyTtlMinutes` | `120` | 报名阶段超过这个时间自动关闭 |
 | `idleGameTtlMinutes` | `360` | 进行中的对局闲置多久后自动中止 |
@@ -226,6 +253,8 @@ bot-game-mcp simulate <游戏> [--players N] [--humans N] [--seed S] [--options 
 bot-game-mcp gen-key [-n 3]
 bot-game-mcp init-config [--force]
 ```
+
+代码裁判的命令行在另一个包里：`bot-game-referee --url … --onebot ws://… --group 群号`，见 [packages/referee-onebot](packages/referee-onebot/README.md)。
 
 ## 安全与公平
 
@@ -262,27 +291,23 @@ bot-game-mcp init-config [--force]
 ```bash
 npm run typecheck     # 类型检查（含测试代码）
 npm test              # 单元测试 + 集成测试（含 HTTP、SSE、桥接端到端）
-npm run build         # 编译到 dist/
+npm run build && npm run e2e   # 黑盒端到端：独立进程 + 多客户端 + 中途重启 + 裁判接管，约 25 秒
+npm run build         # 编译三个包到各自的 dist/
 npm run docs          # 根据代码重新生成 docs/GAMES.md 和 docs/TOOLS.md
-npm run dev -- serve  # 用 tsx 直接运行源码
+npm run dev -w bot-game-mcp -- serve   # 用 tsx 直接运行引擎源码
 npm run simulate -- werewolf --players 12 --options '{"win_mode":"all"}'
 ```
 
 ```text
-src/
-  core/        引擎核心：类型、BaseGame 基类、GameManager（大厅/阶段/投递/长轮询/裁判）、随机数、文本解析、存档
-  games/       werewolf/ undercover/ liars-dice/ number-bomb/，以及注册表 index.ts
-  mcp/         MCP 服务器：工具、资源、提示词、认证、消息渲染（text/CQ/OneBot）、指南文本
-  server/      传输层：HTTP（Streamable HTTP + 旧版 SSE + 观战 API）、stdio、bridge、运行时
-  sim/         离线模拟器
-  cli.ts       命令行入口
-test/          vitest 测试
-scripts/       文档生成脚本
-docs/          文档
-examples/      配置与客户端样例
+packages/
+  engine/           bot-game-mcp：src/core 引擎核心、src/games 四款游戏、src/mcp MCP 层、src/server 传输层、src/sim 模拟器、src/cli.ts
+  referee-onebot/   bot-game-mcp-referee-onebot：src/index.ts 裁判实现、src/cli.ts 命令行、test/ 自带假 OneBot 服务器
+  agent-kit/        bot-game-mcp-agent-kit：src/index.ts 客户端与提示词、prompts/、examples/
+scripts/e2e.ts      黑盒端到端（跨三个包）
+docs/               文档（GAMES.md、TOOLS.md 由 npm run docs 生成）
 ```
 
-新增一款游戏只需要继承 `BaseGame`，实现 `start`、`onAction`、`advance` 和两个视图方法，再在 `src/games/index.ts` 里注册即可。详见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#新增一款游戏)。
+新增一款游戏只需要继承 `BaseGame`，实现 `start`、`onAction`、`advance` 和两个视图方法，再在 `packages/engine/src/games/index.ts` 里注册即可。详见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#新增一款游戏)。
 
 ## 许可证
 
