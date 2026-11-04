@@ -105,6 +105,14 @@ claude mcp add --transport http bot-game http://127.0.0.1:7700/mcp \
 
 只支持 stdio 的客户端可以用桥接模式（`bot-game-mcp bridge --url … --key …`）。其他客户端和 QQ 框架的接法见 [docs/CLIENTS.md](docs/CLIENTS.md)，配置样例在 [examples/](examples/)。
 
+裁判不一定要是大模型。自带的代码裁判 `bot-game-mcp referee` 用一个 OneBot v11 账号（正向 WebSocket）发消息、转交真人消息，群里发「/桌游 狼人杀」就开房，零 token、不会走神：
+
+```bash
+bot-game-mcp referee --url http://127.0.0.1:7700/mcp --key-file 裁判密钥文件 \
+  --onebot ws://127.0.0.1:3001/ --onebot-token-file onebot密钥文件 --group 群号 \
+  --admins 主人QQ号 --bots 其他bot的QQ号,… --options '{"nudge_ai":true}'
+```
+
 给 agent 的系统提示词可以直接用 MCP prompt：裁判用 `referee`，玩家用 `player`（也可以读取资源 `botgame://guide/referee`、`botgame://guide/player`）。
 
 ## 一局游戏是怎么跑起来的
@@ -157,6 +165,7 @@ sequenceDiagram
 - **纯 bot**：所有玩家都是 AI。裁判照样把公开消息发到群里，群友可以围观。如果完全不需要往 QQ 发消息（比如做 agent 对战测试），开房时加 `auto_referee: true`，程序会自己推进。
 - **bot + 真人**：真人发「加入」报名。开局后，裁判私聊发身份；真人在群里发言、投票，夜间行动则私聊裁判。到了限时还没行动的玩家由程序托管（弃票、跳过，或按该游戏规则随机行动）。
 - **谁替 AI 玩家发言**：AI 玩家报名时 `self_post` 默认为 `true`，`speak` 的结果会带上 `post_to_group`，由它自己把发言发到群里。设为 `false` 时，改由裁判以「【3号 小克】……」的格式代发。
+- **只会被 @ 唤醒的聊天 bot**：很多群聊 bot 没人 @ 就不会动，也不会自己长轮询。开房时加 `nudge_ai: true`，程序会在每个阶段开始时在群里 @ AI 玩家提醒「查看行动面板」：秘密阶段 @ 全部存活的 AI 玩家（名单不随身份变化，不泄露谁有行动），公开阶段只在多人同时行动时 @ 有待办的 AI 玩家。
 
 ### 真人可以发的指令（节选）
 
@@ -222,6 +231,8 @@ sequenceDiagram
 bot-game-mcp [serve] [--config 文件] [--host 地址] [--port 端口] [--state 文件 | --no-state]
 bot-game-mcp stdio   [--agent-id QQ号 --agent-name 昵称] [--state 文件 | --no-state]
 bot-game-mcp bridge  --url http://主机:7700/mcp [--key 密钥]
+bot-game-mcp referee --url http://主机:7700/mcp --key 密钥|--key-file 文件 --onebot ws://127.0.0.1:3001/ --group 群号
+                     [--onebot-token-file 文件] [--admins QQ,QQ] [--bots QQ,QQ] [--options JSON]
 bot-game-mcp simulate <游戏> [--players N] [--humans N] [--seed S] [--options JSON] [--afk 0.1] [--cq]
 bot-game-mcp gen-key [-n 3]
 bot-game-mcp init-config [--force]
@@ -275,6 +286,7 @@ src/
   games/       werewolf/ undercover/ liars-dice/ number-bomb/，以及注册表 index.ts
   mcp/         MCP 服务器：工具、资源、提示词、认证、消息渲染（text/CQ/OneBot）、指南文本
   server/      传输层：HTTP（Streamable HTTP + 旧版 SSE + 观战 API）、stdio、bridge、运行时
+  referee/     代码驱动的裁判（OneBot v11 正向 WebSocket）
   sim/         离线模拟器
   cli.ts       命令行入口
 test/          vitest 测试

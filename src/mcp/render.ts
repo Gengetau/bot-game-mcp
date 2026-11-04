@@ -33,6 +33,8 @@ export function renderDelivery(d: Delivery, format: DeliveryFormat) {
     ...base,
     category: d.category,
     message,
+    // cq / onebot 格式也附上纯文本：私聊里不能 @，接入方可以直接发 text
+    ...(format !== 'text' ? { text: d.text } : {}),
     ...(format === 'text' && d.mentions.length ? { mentions: d.mentions.map((m) => ({ qq: m.id, name: m.name })) } : {}),
   };
 }

@@ -5,14 +5,16 @@
  *   bot-game-mcp [serve]          启动 HTTP 服务（Streamable HTTP + 旧版 SSE），多个 bot 共享对局
  *   bot-game-mcp stdio            stdio 模式（单客户端，进程内引擎）
  *   bot-game-mcp bridge --url URL --key KEY   把 stdio 客户端桥接到远端 HTTP 引擎
+ *   bot-game-mcp referee --url URL --key KEY --onebot ws://… --group 群号   代码驱动的裁判（OneBot v11）
  *   bot-game-mcp simulate <game>  离线模拟一局（随机策略），打印 QQ 风格消息记录
  *   bot-game-mcp gen-key [-n 3]   生成随机密钥
  *   bot-game-mcp init-config      生成示例配置 botgame.config.json
  */
 import { randomBytes } from 'node:crypto';
-import { existsSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { parseArgs } from 'node:util';
 import { loadConfig } from './config.js';
+import { runReferee } from './referee/onebot.js';
 import { startBridge } from './server/bridge.js';
 import { startHttpServer } from './server/http.js';
 import { createRuntime } from './server/runtime.js';
@@ -26,6 +28,9 @@ const HELP = `bot-game-mcp ${VERSION} —— QQ 群桌游引擎（MCP 服务器�
   bot-game-mcp [serve] [--config 文件] [--host 地址] [--port 端口] [--state 文件|--no-state]
   bot-game-mcp stdio   [--config 文件] [--state 文件|--no-state] [--agent-id QQ号 --agent-name 昵称]
   bot-game-mcp bridge  --url http://主机:7700/mcp [--key 密钥]
+  bot-game-mcp referee --url http://主机:7700/mcp --key 密钥|--key-file 文件 --onebot ws://127.0.0.1:3001/ --group 群号
+                       [--onebot-token-file 文件] [--admins QQ,QQ] [--bots QQ,QQ] [--options '{"nudge_ai":true}']
+                       代码驱动的裁判：用一个 OneBot v11 账号（正向 WebSocket）发消息、转交真人消息、响应「/桌游」指令
   bot-game-mcp simulate <werewolf|undercover|liars_dice|number_bomb> [--players 9] [--humans 0]
                        [--seed 42] [--options '{"win_mode":"all"}'] [--afk 0.1] [--cq]
   bot-game-mcp gen-key [-n 3]
@@ -68,6 +73,12 @@ async function main(argv: string[]): Promise<void> {
       'agent-name': { type: 'string' },
       url: { type: 'string' },
       key: { type: 'string', short: 'k' },
+      'key-file': { type: 'string' },
+      onebot: { type: 'string' },
+      'onebot-token-file': { type: 'string' },
+      group: { type: 'string' },
+      admins: { type: 'string' },
+      bots: { type: 'string' },
       players: { type: 'string' },
       humans: { type: 'string' },
       seed: { type: 'string' },
@@ -133,6 +144,31 @@ async function main(argv: string[]): Promise<void> {
       if (!url) throw new Error('bridge 需要 --url（例如 http://127.0.0.1:7700/mcp）');
       await startBridge({ url, key: str('key') ?? process.env.BOTGAME_KEY });
       process.stderr.write(`[bot-game-mcp] bridge 已连接 ${url}\n`);
+      return;
+    }
+    case 'referee': {
+      const url = str('url') ?? process.env.BOTGAME_URL;
+      if (!url) throw new Error('referee 需要 --url（引擎地址，例如 http://127.0.0.1:7700/mcp）');
+      const key = str('key') ?? (str('key-file') ? readFileSync(str('key-file')!, 'utf8').trim() : process.env.BOTGAME_KEY);
+      const onebotUrl = str('onebot') ?? process.env.BOTGAME_ONEBOT_URL;
+      if (!onebotUrl) throw new Error('referee 需要 --onebot（OneBot v11 正向 WebSocket 地址，例如 ws://127.0.0.1:3001/）');
+      const onebotToken = str('onebot-token-file') ? readFileSync(str('onebot-token-file')!, 'utf8').trim() : process.env.BOTGAME_ONEBOT_TOKEN;
+      const groupId = str('group') ?? process.env.BOTGAME_GROUP;
+      if (!groupId) throw new Error('referee 需要 --group（只服务这个群）');
+      const list = (s?: string) => (s ?? '').split(',').map((x) => x.trim()).filter(Boolean);
+      const ac = new AbortController();
+      process.on('SIGINT', () => ac.abort());
+      process.on('SIGTERM', () => ac.abort());
+      await runReferee({
+        url,
+        key,
+        onebotUrl,
+        onebotToken,
+        groupId,
+        admins: list(str('admins') ?? process.env.BOTGAME_ADMINS),
+        bots: list(str('bots') ?? process.env.BOTGAME_BOTS),
+        defaultOptions: str('options') ? JSON.parse(str('options')!) : undefined,
+      });
       return;
     }
     case 'simulate':

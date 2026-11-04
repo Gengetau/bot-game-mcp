@@ -372,7 +372,26 @@ export abstract class BaseGame<S = any, O = any> {
         );
       }
     }
+    if ((this.rec.options as any)?.nudge_ai) this.nudgeAgents(phase, spec);
     return phase;
+  }
+
+  /**
+   * 给只有被 @ 才会醒来的聊天 bot 发一条「请查看行动面板」的群提示（nudge_ai 选项）。
+   * - 秘密阶段：@ 全部存活的 AI 玩家。名单不随身份变化，所以不泄露谁有行动。
+   * - 公开阶段：只在多人同时行动（如投票）时 @ 有待办的 AI 玩家；单人行动的提示已经 @ 过本人。
+   * 只进 outbox，不写日志，视角里看不到它。
+   */
+  private nudgeAgents(phase: PhaseState, spec: OpenPhaseSpec): void {
+    const agents = (seats: Seat[]) => seats.filter((s) => this.player(s).kind === 'agent').sort((a, b) => a - b);
+    const todo = Object.values(phase.pending).map((r) => r.seat);
+    const targets = phase.secret ? agents(this.aliveSeats()) : todo.length >= 2 ? agents(todo) : [];
+    if (targets.length === 0) return;
+    this.pushDelivery(
+      { type: 'group', groupId: this.rec.groupId },
+      `${targets.map((s) => this.at(s)).join(' ')} 【${spec.title}】请调用 get_my_view 查看自己的行动面板：有待办就在 ${formatDuration(spec.timeoutMs)} 内完成，没有就不用回应。`,
+      'prompt',
+    );
   }
 
   /** 当前阶段该座位的未完成待办（不存在返回 undefined）。 */

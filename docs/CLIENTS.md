@@ -192,6 +192,23 @@ async with streamablehttp_client(
 - **大模型驱动**：给裁判 agent 配上 `referee` 提示词，让它自己循环调用工具。实现最简单，但每一步都要经过大模型，速度慢、消耗 token。
 - **代码驱动（推荐）**：在 bot 框架里用代码实现下面的循环。这个 bot 在引擎看来仍然是一个以 `referee` 身份报名的 agent，由程序抽签选中，只是它的「思考」是固定代码。可靠、零 token、延迟低。
 
+仓库自带一个现成的代码裁判：`bot-game-mcp referee`。它用一个 OneBot v11 账号的正向 WebSocket（Universal 角色，NapCat / LLOneBot / Lagrange / SnowLuma 等都有）收发消息：
+
+```bash
+bot-game-mcp referee --url http://127.0.0.1:7700/mcp --key-file 裁判密钥文件 \
+  --onebot ws://127.0.0.1:3001/ --onebot-token-file onebot密钥文件 --group 群号 \
+  --admins 主人QQ号 --bots 其他bot的QQ号,… --options '{"nudge_ai":true,"speech_gap_ms":15000}'
+```
+
+| 群里的指令 | 作用 |
+|---|---|
+| `/桌游 狼人杀 win_mode=all`（也可用英文名、JSON 选项） | 开房，裁判自己以 `referee` 身份报名；`--options` 是默认选项 |
+| `加入` / `退出` | 真人报名（任何人都可以） |
+| `/桌游 开局` | 开局（房主是裁判；AI 自己开的房由那个 AI 开局） |
+| `/桌游 中止` · `/桌游 状态` · `/桌游 规则 狼人杀` | 中止、看状态、看规则 |
+
+`--admins` 限制谁能开房、开局、中止；`--bots` 列出其他 bot 的 QQ 号，它们的群消息不转交（它们通过 MCP 自己参与）。游戏中真人的群消息和私聊原样转交；私聊里的指令会收到程序的回执。引擎重启或网络抖动时会自动重连并用 `since_seq` 补发没送到的消息；AI 自己开的房它也会自动加入当裁判。它没有任何能影响结果的接口。
+
 ```ts
 // 开局后：裁判循环
 for (;;) {
@@ -238,6 +255,7 @@ get_my_view(wait_seconds=50)        # 等到轮到自己才返回；you 里是�
 - AI 玩家的私密信息只出现在自己的 `get_my_view` 里，**不会**通过私聊下发。
 - `self_post=true`（默认）时，AI 玩家自己把发言发到群里。程序会在它之后的消息前留出发言间隔（默认 3 秒，可用 `speech_gap_ms` 调整）。`self_post=false` 时由裁判代发。
 - 狼人夜间密谈用 `speak(text, channel="team")`。真人狼人会通过裁判私聊收到队友的发言。
+- 只会在被 @ 时醒来、不能自己长轮询的聊天 bot（例如用 Claude Agent SDK 或类似框架做的群聊角色）：开房时加 `nudge_ai: true`，每个阶段开始时程序会在群里 @ 它们提醒「调用 get_my_view 查看行动面板」。bot 被 @ 后调用一次 `get_my_view(wait_seconds=0)`：`todo` 为空就什么都不做，有就照做。秘密阶段 @ 的是全部存活的 AI 玩家，不泄露谁有行动。
 
 ### 4.3 纯 MCP 对战（不连 QQ）
 
