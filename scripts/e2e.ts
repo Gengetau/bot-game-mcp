@@ -691,6 +691,15 @@ class Humans {
       .reverse();
   }
 
+  /** PK 投票的候选：从最近的公告里读出平票者（卧底的 PK 提示只用 @，所以也要看「X号、Y号 平票」那条）。 */
+  private tiedSeats(): number[] | null {
+    for (const t of this.recentGroup(12)) {
+      const m = t.match(/投给([\d号、\s]+)之一/) ?? t.match(/平票[：:]\s*([\d号、]+)/) ?? t.match(/([\d号、]+)\s*平票，进入/);
+      if (m) return [...m[1]!.matchAll(/(\d+)号/g)].map((x) => Number(x[1]));
+    }
+    return null;
+  }
+
   private async alive(): Promise<number[]> {
     if (Date.now() - this.aliveCache.at < 150) return this.aliveCache.seats;
     const j = await httpJson(this.env, `/api/games/${this.gameId}`);
@@ -732,6 +741,7 @@ class Humans {
   }
 
   private async relay(h: H, text: string, channel: 'group' | 'private', phase: string, kind: 'cmd' | 'chatter' = 'cmd'): Promise<{ accepted: boolean; recognized: boolean } | null> {
+    await sleep(intBetween(this.rng, 60, 350)); // 真人打字、看消息的时间
     const full = this.noise(text);
     let res: any;
     try {
@@ -855,8 +865,8 @@ class Humans {
       else await this.relay(h, this.cmd(h, 'noShoot', undefined, sources, title), channel, title);
     } else if (key === 'vote' || key === 'pk_vote') {
       let cands = others;
-      const tied = groupSrc.find((t) => /投给[\d号、\s]+之一/.test(t))?.match(/投给([\d号、\s]+)之一/)?.[1];
-      if (key === 'pk_vote' && tied) cands = [...tied.matchAll(/(\d+)号/g)].map((m) => Number(m[1])).filter((s) => s !== seat && alive.includes(s));
+      const tied = key === 'pk_vote' ? this.tiedSeats() : null;
+      if (tied) cands = tied.filter((s) => s !== seat && alive.includes(s));
       if (chance(this.rng, 0.1) || cands.length === 0) await this.relay(h, this.cmd(h, 'abstain', undefined, sources, title), channel, title);
       else {
         // 偶尔私聊投票（提示里说了可以）
@@ -881,11 +891,13 @@ class Humans {
     const alive = await this.alive();
     const others = alive.filter((s) => s !== h.seat);
     const sources = [h.lastPrompt, ...this.recentGroup(8)];
+    const tied = key === 'pk_vote' ? this.tiedSeats() : null;
+    const cands = tied ? tied.filter((s) => s !== h.seat && alive.includes(s)) : others;
     if (key === 'describe' || key === 'pk_describe') {
       await this.relay(h, pick(this.rng, DESCRIBE_LINES), 'group', title);
     } else if (key === 'vote' || key === 'pk_vote') {
-      if (chance(this.rng, 0.1)) await this.relay(h, this.cmd(h, 'abstain', undefined, sources, title), channel, title);
-      else await this.tryTargets(h, title, channel, others, (t) => this.cmd(h, 'vote', t, sources, title), this.cmd(h, 'abstain', undefined, sources, title));
+      if (chance(this.rng, 0.1) || cands.length === 0) await this.relay(h, this.cmd(h, 'abstain', undefined, sources, title), channel, title);
+      else await this.tryTargets(h, title, channel, cands, (t) => this.cmd(h, 'vote', t, sources, title), this.cmd(h, 'abstain', undefined, sources, title));
     } else this.sc.note(`未处理的阶段 ${key}（${title}）正在等真人 ${h.nick}`);
   }
 
@@ -962,6 +974,7 @@ class AiPlayer {
         this.viewSnaps.push(JSON.stringify({ game: v.game, players: v.players, public: v.public, events: v.new_events }));
       }
       if (!v.your_turn || !v.todo) continue;
+      await sleep(intBetween(this.rng, 20, 200)); // AI 思考时间
       try {
         await this.turn(v);
         fails = 0;
