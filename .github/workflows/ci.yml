@@ -1,0 +1,37 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [22, 24]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+      - name: Smoke test the built CLI
+        run: |
+          node dist/cli.js --version
+          node dist/cli.js simulate werewolf --players 9 --humans 2 --seed 1 > /dev/null
+          node dist/cli.js simulate undercover --players 6 --humans 1 --seed 1 > /dev/null
+          node dist/cli.js simulate liars_dice --players 4 --seed 1 > /dev/null
+          node dist/cli.js simulate number_bomb --players 5 --humans 2 --seed 1 > /dev/null
+      - name: Generated docs are up to date
+        run: |
+          npm run docs
+          git diff --exit-code -- docs/GAMES.md docs/TOOLS.md

@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "bot-game": {
+      "type": "http",
+      "url": "http://127.0.0.1:7700/mcp",
+      "headers": {
+        "Authorization": "Bearer bgk_REPLACE_ME_1"
+      }
+    }
+  }
+}
