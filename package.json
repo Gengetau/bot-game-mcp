@@ -26,6 +26,7 @@
     "test:watch": "vitest",
     "simulate": "tsx src/cli.ts simulate",
     "docs": "tsx scripts/gen-docs.ts",
+    "e2e": "tsx scripts/e2e.ts",
     "prepublishOnly": "npm run build"
   },
   "keywords": [
