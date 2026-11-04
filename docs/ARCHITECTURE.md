@@ -81,7 +81,7 @@ MCP 层只做两件事：参数校验，把调用转给 `GameManager`。所有�
 2. 否则，从报名为 `either` 的 AI 里随机抽一位，其余的 `either` 当玩家。
 3. 都没有就拒绝开局，除非开了 `auto_referee`。
 
-裁判超过 `refereeStaleSeconds` 没有调用 `referee_step`，候补裁判可以 `referee_takeover`。开局后用 `join_game(join_as="referee")` 登记的非玩家 AI 也算候补。管理员不受这些限制。接管后从上一任的游标继续发消息。
+裁判超过 `refereeStaleSeconds` 没有调用 `referee_step`，候补裁判可以 `referee_takeover`。开局后用 `join_game(join_as="referee")` 登记的非玩家 AI 也算候补。管理员不受这些限制。接管后从上一任的游标继续发消息。被接管的裁判记入 `formerReferees`：真人习惯 @ 原裁判发指令，转交时这些 @ 也会被剥离。
 
 ## 长轮询
 
@@ -91,6 +91,8 @@ MCP 层只做两件事：参数校验，把调用转给 `GameManager`。所有�
 - 一个按真实时间计算的上限。
 
 裁判等待时还会在下一个截止时间或 `notBefore` 到来时醒来，处理超时。时钟可以注入，测试里用 `FakeClock`。
+
+长轮询被取消时（客户端超时或断开、服务关闭，SDK 都会触发 abort 信号），`referee_step` 不推进裁判游标，`get_my_view` 不推进事件游标，而是直接报错。否则响应没人收到，这批消息就丢了。
 
 ## 认证
 

@@ -698,7 +698,9 @@ export class WerewolfGame extends BaseGame<WerewolfState, WerewolfOptions> {
 
   private openHunter(seat: Seat): boolean {
     const alive = this.aliveSeats();
-    this.announce(`🔫 ${this.label(seat)} 是猎人！请在 ${this.options.hunter_timeout_s} 秒内选择开枪目标，或放弃。`);
+    this.announce(
+      `🔫 ${this.label(seat)} 是猎人！请在 ${this.options.hunter_timeout_s} 秒内在群里发「开枪3」带走 3号，或发「不开枪」放弃。`,
+    );
     this.openPhase({
       key: 'hunter',
       title: `第${this.rec.round}天·猎人开枪`,

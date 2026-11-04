@@ -7,6 +7,7 @@
 ```bash
 npm run typecheck   # 类型检查（含测试代码）
 npm test            # vitest，必须全绿
+npm run build && npm run e2e   # 黑盒端到端（独立进程、多客户端、中途重启、裁判接管），约 25 秒
 npm run build       # 编译到 dist/
 npm run docs        # 改了规则、选项或工具描述后，重新生成 docs/GAMES.md、docs/TOOLS.md（CI 会检查）
 npm run simulate -- werewolf --players 9 --humans 2 --seed 1   # 离线跑一局

@@ -683,6 +683,13 @@ export class GameManager {
     });
   }
 
+  /** 长轮询被取消后（客户端超时、断开或服务关闭），结果送不到调用方手里，之后不能再产生任何副作用。 */
+  private assertNotCancelled(signal: AbortSignal | undefined, tool: string): void {
+    if (signal?.aborted) {
+      throw invalidState(`${tool} 调用已被取消（客户端断开、超时或服务关闭），本次没有推进任何游标。`, `请重新调用 ${tool}。`);
+    }
+  }
+
   /** 等到 cond 成立或超时（超时按真实时间计算；nextWake 用于在截止时间附近醒来）。 */
   private async waitUntil(
     gameId: string,
@@ -963,6 +970,8 @@ export class GameManager {
         return false;
       };
       await this.waitUntil(rec.id, cond, waitMs, signal);
+      // 取消后不能再调 getView，否则「新事件」游标被推进，而调用方什么都没收到
+      this.assertNotCancelled(signal, 'get_my_view');
     }
     return this.getView(actor, rec.id, opts);
   }
@@ -1037,6 +1046,8 @@ export class GameManager {
 
     if ((opts.waitMs ?? 0) > 0 && !this.refereeHasWork(rec)) {
       await this.waitUntil(rec.id, () => this.refereeHasWork(rec), opts.waitMs!, signal, () => this.refereeNextWake(rec));
+      // 调用方已取消（客户端超时、断开或服务关闭）：响应送不出去，绝不能推进游标，否则这批消息就丢了
+      this.assertNotCancelled(signal, 'referee_step');
       if (rec.status === 'running') this.pump(rec, inst, true);
     }
 
@@ -1053,6 +1064,7 @@ export class GameManager {
       if (d.notBefore > now) break;
       deliveries.push(d);
     }
+    this.assertNotCancelled(signal, 'referee_step');
     if (ref && deliveries.length > 0) ref.cursor = Math.max(ref.cursor, deliveries[deliveries.length - 1]!.seq);
     if (rec.status === 'running') this.pump(rec, inst, true);
     if (ref) ref.lastSeenAt = this.now();
@@ -1160,8 +1172,10 @@ export class GameManager {
    * 真人常常回复裁判的消息，或者先 @ 裁判再说「投3」。
    */
   private stripAddressing(text: string, rec: GameRecord, actor: Identity): string {
-    const bots = new Set([actor.id, rec.referee?.id].filter((x): x is string => Boolean(x)));
-    const names = [this.nameOf(actor), rec.referee?.name].filter((x): x is string => Boolean(x));
+    // 真人习惯 @ 裁判发指令；裁判被接管后往往还在 @ 原裁判，所以历任裁判一并剥离
+    const former = rec.formerReferees ?? [];
+    const bots = new Set([actor.id, rec.referee?.id, ...former.map((r) => r.id)].filter((x): x is string => Boolean(x)));
+    const names = [this.nameOf(actor), rec.referee?.name, ...former.map((r) => r.name)].filter((x): x is string => Boolean(x));
     let t = text.trimStart();
     for (let i = 0; i < 4; i++) {
       const m = t.match(/^\[CQ:(reply|at),[^\]]*\]\s*/);
@@ -1207,6 +1221,9 @@ export class GameManager {
       throw invalidState(`当前裁判 ${rec.referee!.name} 仍在线（${left} 秒内无响应才可接管）。`);
     }
     const old = rec.referee;
+    if (old) {
+      rec.formerReferees = [...(rec.formerReferees ?? []).filter((r) => r.id !== old.id && r.id !== actor.id), { id: old.id, name: old.name }];
+    }
     rec.referee = { id: actor.id, name: this.nameOf(actor), cursor: old?.cursor ?? 0, lastSeenAt: this.now() };
     rec.standbyReferees = rec.standbyReferees.filter((r) => r.id !== actor.id);
     const inst = this.inst(rec);

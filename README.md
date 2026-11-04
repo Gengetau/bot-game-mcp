@@ -262,6 +262,7 @@ bot-game-mcp init-config [--force]
 ```bash
 npm run typecheck     # 类型检查（含测试代码）
 npm test              # 单元测试 + 集成测试（含 HTTP、SSE、桥接端到端）
+npm run build && npm run e2e   # 黑盒端到端：独立进程 + 多客户端 + 中途重启 + 裁判接管，约 25 秒
 npm run build         # 编译到 dist/
 npm run docs          # 根据代码重新生成 docs/GAMES.md 和 docs/TOOLS.md
 npm run dev -- serve  # 用 tsx 直接运行源码

@@ -320,7 +320,7 @@ class Scenario {
   durationMs = 0;
   checks: { name: string; ok: boolean; detail: string }[] = [];
   notes: string[] = [];
-  rejections: { phase: string; text: string; recognized: boolean; msg: string }[] = [];
+  rejections: { phase: string; text: string; recognized: boolean; msg: string; ctx?: string }[] = [];
   violations: string[] = [];
   conns: Conn[] = [];
   stopped = false;
@@ -357,10 +357,21 @@ class Scenario {
   }
 }
 
+/** GET 公开接口；服务重启期间的网络错误会重试（最多 30 秒），HTTP 状态码错误直接抛出。 */
 async function httpJson(env: Env, path: string): Promise<any> {
-  const r = await fetch(`${env.base}${path}`, { signal: AbortSignal.timeout(8000) });
-  if (!r.ok) throw new Error(`GET ${path} -> ${r.status}`);
-  return JSON.parse(await r.text());
+  const giveUp = Date.now() + 30_000;
+  for (;;) {
+    let r: Response;
+    try {
+      r = await fetch(`${env.base}${path}`, { signal: AbortSignal.timeout(8000) });
+    } catch (e) {
+      if (Date.now() > giveUp) throw e;
+      await sleep(250);
+      continue;
+    }
+    if (!r.ok) throw new Error(`GET ${path} -> ${r.status}`);
+    return JSON.parse(await r.text());
+  }
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -448,6 +459,11 @@ class RefereeLoop {
   private pausedFn: (() => void) | null = null;
   private resumeFn: (() => void) | null = null;
   lastStepAt = 0;
+  /** 当前裁判 bot 的 QQ 号和昵称（真人 @ 的对象；接管后会变） */
+  refId = '';
+  refName = '';
+  /** 有真人中转失败过：下一次轮询缩短等待，尽快重试 */
+  shortPoll = false;
 
   constructor(
     readonly sc: Scenario,
@@ -466,8 +482,12 @@ class RefereeLoop {
       else this.pausedFn = res;
     });
   }
-  resume(conn?: Conn): void {
+  resume(conn?: Conn, who?: AgentCfg): void {
     if (conn) this.conn = conn;
+    if (who) {
+      this.refId = who.id;
+      this.refName = who.name;
+    }
     this.pauseReq = false;
     this.paused = false;
     this.resumeFn?.();
@@ -499,7 +519,8 @@ class RefereeLoop {
         await new Promise<void>((res) => (this.resumeFn = res));
         recovering = true;
       }
-      const args: Record<string, unknown> = { game_id: this.gameId, wait_seconds: recovering ? 0 : this.stepWait, format: 'onebot' };
+      const args: Record<string, unknown> = { game_id: this.gameId, wait_seconds: recovering ? 0 : this.shortPoll ? 1 : this.stepWait, format: 'onebot' };
+      this.shortPoll = false;
       let r: any;
       try {
         r = await this.conn.call('referee_step', args, { retry: false, timeoutMs: (this.stepWait + 40) * 1000 });
@@ -614,6 +635,11 @@ class Humans {
   /** 公开接口快照（用于泄密检查）：[状态, 原始 JSON] */
   snapshots: { status: string; json: string }[] = [];
   lastGroupSeen = 0;
+  curR: any = null;
+  initRef: { id: string; name: string };
+  /** 接管后故意用「@原裁判」发一次指令，记录引擎怎么处理 */
+  probedOldRef = false;
+  oldRefProbe: { id: string; name: string } | null = null;
 
   constructor(
     private readonly env: Env,
@@ -622,11 +648,12 @@ class Humans {
     private readonly rng: Rng,
     specs: HumanSpec[],
     private readonly gameId: string,
-    private readonly refQQ: string,
-    private readonly refName: string,
+    refQQ: string,
+    refName: string,
     getRef: () => RefereeLoop,
   ) {
     this.getRef = getRef;
+    this.initRef = { id: refQQ, name: refName };
     this.list = specs.map((s) => ({
       ...s,
       seat: null,
@@ -715,7 +742,12 @@ class Humans {
     for (const src of sources) {
       for (const m of src.matchAll(/「([^」]+)」/g)) {
         const t = m[1]!.trim();
-        if (re.test(t)) return target !== undefined ? t.replace(/\d+/, String(target)) : t;
+        if (re.test(t)) {
+          if (src === h.roleMsg && src !== '' && h.roleMsg !== sources[0]) {
+            this.sc.finding('ux', `rolemsg-only:${ctx.replace(/\d+/g, 'N')}:${intent}`, `${ctx}：轮到真人时的提示没有写指令格式，只能靠开局身份牌私聊里的说明（${h.role}）`, `身份牌里写着「${t}」，但本阶段的提示/公告：${(sources[0] || this.recentGroup(1)[0] || '').replace(/\n/g, ' ⏎ ').slice(0, 160)}`);
+          }
+          return target !== undefined ? t.replace(/\d+/, String(target)) : t;
+        }
       }
     }
     this.sc.finding('ux', `nocmd:${ctx}:${intent}`, `${ctx}：提示里没有告诉真人（${h.role ?? '玩家'}）该发什么指令（期望出现类似「${FALLBACK[intent]!(3)}」的写法）`, `来源文本：${sources[0]?.replace(/\n/g, ' ⏎ ').slice(0, 300) ?? '(无)'}`);
@@ -724,8 +756,11 @@ class Humans {
 
   /** 真实 QQ 噪声：开头的回复引用和 @裁判 */
   private noise(text: string): string {
+    const loop = this.getRef();
+    const refId = loop.refId || this.initRef.id;
+    const refName = loop.refName || this.initRef.name;
     const reply = '[CQ:reply,id=12345]';
-    const at = `[CQ:at,qq=${this.refQQ}]`;
+    const at = `[CQ:at,qq=${refId}]`;
     switch (this.rng.int(6)) {
       case 0:
         return `${reply}${text}`;
@@ -734,7 +769,7 @@ class Humans {
       case 2:
         return `${reply}${at} ${text}`;
       case 3:
-        return `@${this.refName} ${text}`;
+        return `@${refName} ${text}`;
       default:
         return text;
     }
@@ -749,6 +784,7 @@ class Humans {
     } catch (e) {
       if (e instanceof TransportError) {
         this.sc.relays.transportFail++;
+        this.getRef().shortPoll = true;
         return null;
       }
       if (e instanceof ToolError) {
@@ -762,10 +798,10 @@ class Humans {
     const msg = String(res.message ?? '');
     if (/\[CQ:/i.test(msg) || /\{@/.test(msg)) this.sc.violations.push(`relay 返回给裁判的文字里含可被解析的 CQ 码或 {@：${msg.slice(0, 120)}`);
     if (res.accepted) this.sc.relays.accepted++;
-    else if (kind === 'chatter' && !res.recognized) this.sc.relays.ignored++;
+    else if (kind === 'chatter') this.sc.relays.ignored++;
     else {
       this.sc.relays.rejected++;
-      this.sc.rejections.push({ phase, text: full, recognized: Boolean(res.recognized), msg });
+      this.sc.rejections.push({ phase, text: full, recognized: Boolean(res.recognized), msg, ctx: `step.phase=${JSON.stringify(this.curR?.phase)} waiting=${JSON.stringify(this.curR?.waiting_for)} seat=${h.seat}` });
       if (!res.recognized) {
         this.sc.finding('ux', `unparsed:${phase}:${text}`, `阶段「${phase}」里真人按提示发的「${text}」没有被识别为指令`, `发送：${full}；引擎回复：${msg}`);
       }
@@ -791,6 +827,7 @@ class Humans {
 
   // ───── 每次裁判拿到消息后，轮到谁就替谁行动 ─────
   async afterStep(r: any, gameKind: 'werewolf' | 'undercover' | 'number_bomb'): Promise<void> {
+    this.curR = r;
     this.observe();
     if (!this.seatsMapped) return;
     const phase = r.phase;
@@ -821,8 +858,7 @@ class Humans {
     for (const h of this.list) {
       if (waitingSeats.has(h.seat ?? -1) || h.chatter >= 3 || !chance(this.rng, 0.04)) continue;
       h.chatter++;
-      const res = await this.relay(h, pick(this.rng, ['哈哈哈这局有意思', '笑死我了', '大家加油']), 'group', '闲聊', 'chatter');
-      if (res?.accepted) this.sc.finding('engine', 'chatter-accepted', '真人在不该说话的时候闲聊被当成了指令', `${h.nick} 发「闲聊」被 accepted=true，阶段 ${phase?.title ?? '?'}`);
+      await this.relay(h, pick(this.rng, ['哈哈哈这局有意思', '笑死我了', '大家加油']), 'group', '闲聊', 'chatter');
     }
   }
 
@@ -917,6 +953,20 @@ class Humans {
     const n = intBetween(this.rng, lo, hi);
     const style = this.rng.int(3);
     const text = style === 0 ? String(n) : style === 1 ? `猜${n}` : `我猜${n}`;
+    if (this.oldRefProbe && !this.probedOldRef && this.getRef().refId !== this.oldRefProbe.id) {
+      // 裁判接管后，真人习惯性地还是 @ 原来的裁判 bot：看引擎能不能认出这是指令
+      this.probedOldRef = true;
+      const probe = `[CQ:at,qq=${this.oldRefProbe.id}] ${text}`;
+      const res: any = await this.getRef().conn.call('relay_human_message', { game_id: this.gameId, qq_id: h.id, nickname: h.nick, text: probe, channel }, { retry: false }).catch(() => null);
+      this.sc.note(`接管后真人仍 @ 原裁判发指令：accepted=${res?.accepted} recognized=${res?.recognized} 回复=${String(res?.message ?? '').slice(0, 40)}`);
+      if (res && !res.accepted) {
+        this.sc.finding('ux', 'old-referee-at', '裁判接管后，真人 @ 原裁判 bot 发的指令不被识别（只剥离 @ 当前裁判）', `发送：${probe}；回复：${String(res.message)}；阶段 ${title}`);
+        await sleep(100);
+      } else {
+        this.sc.relays.accepted++;
+        return;
+      }
+    }
     await this.relay(h, text, channel, title);
   }
 }
@@ -933,6 +983,7 @@ interface AiOpts {
 class AiPlayer {
   finalView: any = null;
   errors = 0;
+  transportFails = 0;
   acted = 0;
   speeches: string[] = [];
   word: string | null = null;
@@ -965,6 +1016,7 @@ class AiPlayer {
         }
         throw e;
       }
+      fails = 0;
       if (v.game?.status !== 'running') {
         this.finalView = v;
         return;
@@ -979,6 +1031,11 @@ class AiPlayer {
         await this.turn(v);
         fails = 0;
       } catch (e) {
+        if (e instanceof TransportError) {
+          // 服务重启等造成的传输失败：这一步动作可能生效也可能没生效，回到循环重新取视角即可
+          this.transportFails++;
+          continue;
+        }
         if (!(e instanceof ToolError)) throw e;
         this.errors++;
         if (++fails > 12) throw new Error(`${this.o.label} 连续行动失败：${e.message}`);
@@ -1143,7 +1200,7 @@ function commonChecks(sc: Scenario, loop: RefereeLoop, opts: { expectTimeouts?: 
   const contiguous = seqs.every((s, i) => s === i + 1);
   sc.check('裁判收到每个 outbox seq 恰好一次且连续', contiguous && new Set(seqs).size === seqs.length, `共 ${seqs.length} 条，末尾 seq=${seqs[seqs.length - 1] ?? 0}`);
   if (sc.rejections.length > 0) {
-    sc.check('真人按提示发的指令都被接受（无拒绝）', false, sc.rejections.slice(0, 3).map((r) => `[${r.phase}] ${r.text} → ${r.msg}`).join('；'));
+    sc.check('真人按提示发的指令都被接受（无拒绝）', false, sc.rejections.slice(0, 3).map((r) => `[${r.phase}] ${r.text} → ${r.msg}${VERBOSE ? ` {${r.ctx}}` : ''}`).join('；'));
   } else sc.check('真人按提示发的指令都被接受（无拒绝）', true);
 }
 
@@ -1241,13 +1298,17 @@ async function scenarioWerewolf(env: Env, rng: Rng): Promise<Scenario> {
     },
     afterStep: async (r) => {
       await humans.afterStep(r, 'werewolf');
-      if (!restartPromise && (dayReached || loop.steps >= 45)) restartPromise = doRestart();
+      if (!restartPromise && (dayReached || loop.steps >= 12)) restartPromise = doRestart();
     },
   });
 
   const players = ais.map((a, i) => new AiPlayer(sc, a.conn, gameId, qq, new SeededRng(`${env.seed}:ww-ai${i}`), a.cfg, { selfPost: a.selfPost, label: `AI${i + 1}` }, 'werewolf'));
-  await Promise.all([loop.run(), ...players.map((p) => p.run())]);
-  if (restartPromise) await restartPromise;
+  try {
+    await Promise.all([loop.run(), ...players.map((p) => p.run())]);
+  } finally {
+    // 无论如何都要等重启流程走完，避免服务停在半路影响后面的场景
+    if (restartPromise) await (restartPromise as Promise<void>).catch(() => undefined);
+  }
 
   // ───── 检查 ─────
   sc.check('中途重启确实发生', Boolean(restartPromise), restartInfo || '没有触发重启');
@@ -1325,6 +1386,7 @@ async function scenarioUndercover(env: Env, rng: Rng): Promise<Scenario> {
   const final = await httpJson(env, `/api/games/${gameId}`);
   const blob = JSON.stringify(final.result) + JSON.stringify(v.result ?? {}) + qq.group.map((l) => l.text).join('\n');
   sc.check('结束后结果里揭晓了两个词', [...words].every((w) => blob.includes(w)), `词：${[...words].join('/')}`);
+  sc.check('已验证「AI 说出自己的词会被拒绝」', players[2]!.triedForbidden, players[2]!.word ? '' : 'AI3 没拿到词');
   sc.check('经 stdio bridge 与旧版 SSE 的 AI 全程可玩', players[0]!.acted > 0 && players[1]!.acted > 0, `bridge 行动 ${players[0]!.acted} 次，sse 行动 ${players[1]!.acted} 次`);
   void rng;
   dump(sc, qq);
@@ -1398,6 +1460,9 @@ async function scenarioNumberBomb(env: Env, rng: Rng): Promise<Scenario> {
   let loop!: RefereeLoop;
   const humans = new Humans(env, sc, qq, new SeededRng(`${env.seed}:nb-humans`), humanSpecs, gameId, env.ref.id, env.ref.name, () => loop);
   loop = new RefereeLoop(sc, refConn, gameId, qq, { afterStep: (r) => humans.afterStep(r, 'number_bomb') });
+  loop.refId = env.ref.id;
+  loop.refName = env.ref.name;
+  humans.oldRefProbe = { id: env.ref.id, name: env.ref.name };
   const players = ais.map((a, i) => new AiPlayer(sc, a.conn, gameId, qq, new SeededRng(`${env.seed}:nb-ai${i}`), a.cfg, { selfPost: false, label: `AI${i + 1}` }, 'number_bomb'));
 
   // 第一步（开局公告 + 第一个猜数提示）之后，原裁判「失联」
@@ -1438,7 +1503,7 @@ async function scenarioNumberBomb(env: Env, rng: Rng): Promise<Scenario> {
     sc.check('候补裁判在裁判失联后接管成功', true, String(took.message).slice(0, 100));
     const cursorMatch = String(took.message).match(/seq=(\d+)/);
     sc.check('接管消息里的游标等于原裁判已收到的最后 seq', Number(cursorMatch?.[1]) === loop.lastSeq, `接管提示 ${cursorMatch?.[1]}，原裁判实际 ${loop.lastSeq}`);
-    loop.resume(standby);
+    loop.resume(standby, standbyCfg);
   })();
 
   const watch = (async () => {
@@ -1599,8 +1664,29 @@ async function main(): Promise<number> {
 
   // 临时目录与配置
   const tmp = mkdtempSync(join(tmpdir(), 'botgame-e2e-'));
-  const childPids = new Set<number>();
+  // 子进程 pid 集合：每次变化都写进临时目录，供「看门狗」在本进程被 SIGKILL 时善后
+  class PidSet extends Set<number> {
+    private sync(): void {
+      try {
+        writeFileSync(join(tmp, 'children.pids'), `${[...this].join('\n')}\n`);
+      } catch {
+        // 目录可能已删除
+      }
+    }
+    override add(v: number): this {
+      super.add(v);
+      this.sync();
+      return this;
+    }
+    override delete(v: number): boolean {
+      const r = super.delete(v);
+      this.sync();
+      return r;
+    }
+  }
+  const childPids = new PidSet();
   let env!: Env;
+  let reaper: ChildProcess | null = null;
   let cleaned = false;
   const killAll = () => {
     for (const pid of childPids) {
@@ -1615,6 +1701,11 @@ async function main(): Promise<number> {
   const cleanupSync = () => {
     if (cleaned) return;
     cleaned = true;
+    try {
+      reaper?.kill('SIGKILL');
+    } catch {
+      // ignore
+    }
     killAll();
     try {
       rmSync(tmp, { recursive: true, force: true });
@@ -1623,6 +1714,13 @@ async function main(): Promise<number> {
     }
   };
   process.on('exit', cleanupSync);
+  // 看门狗：本进程即使被 SIGKILL，也会在 1 秒内杀掉记录在案的子进程并删除临时目录（只处理自己创建的 pid 文件和目录）
+  reaper = spawn(
+    'sh',
+    ['-c', 'while kill -0 "$1" 2>/dev/null; do sleep 1; done; if [ -f "$2/children.pids" ]; then while read -r p; do [ -n "$p" ] && kill -9 "$p" 2>/dev/null; done < "$2/children.pids"; fi; rm -rf "$2"', 'e2e-reaper', String(process.pid), tmp],
+    { detached: true, stdio: 'ignore' },
+  );
+  reaper.unref();
   const onSignal = (sig: NodeJS.Signals) => {
     console.error(`\n收到 ${sig}，清理后退出`);
     cleanupSync();

@@ -386,4 +386,62 @@ describe('security hardening', () => {
     expect(res.accepted).toBe(true);
     expect(res.action).toEqual({ action: 'guess', number: target });
   });
+
+  it('an aborted referee_step long-poll neither advances the cursor nor loses messages', async () => {
+    const { manager } = setup(12);
+    const { gameId, rec } = startGame(manager, 'number_bomb', { players: [], humans: [human(1), human(2)], referee: REF });
+    await manager.refereeStep(REF, gameId);
+    const before = rec.referee!.cursor;
+    expect(rec.outbox.filter((d) => d.seq > before)).toHaveLength(0);
+    const ac = new AbortController();
+    const waiting = manager.refereeStep(REF, gameId, { waitMs: 3000 }, ac.signal);
+    // 等待期间真人猜了数（产生新消息），但裁判的连接在拿到响应前就断开了
+    const who = rec.players.find((p) => p.seat === rec.state.current)!;
+    manager.relayHumanMessage(REF, gameId, { userId: who.id, text: String((rec.state.lo as number) + 1), channel: 'group' });
+    ac.abort();
+    await expect(waiting).rejects.toThrow(/取消/);
+    expect(rec.referee!.cursor).toBe(before);
+    const next = await manager.refereeStep(REF, gameId);
+    expect(next.deliveries.length).toBeGreaterThan(0);
+    expect(next.deliveries[0]!.seq).toBe(before + 1);
+  });
+
+  it('an aborted get_my_view long-poll does not consume the new events', async () => {
+    const { manager } = setup(13);
+    const { gameId, rec } = startGame(manager, 'number_bomb', { players: [bot(1), bot(2)], referee: REF });
+    await manager.refereeStep(REF, gameId);
+    const onTurn = identityOf(rec, rec.state.current);
+    const watcher = onTurn.id === bot(1).id ? bot(2) : bot(1);
+    manager.getView(watcher, gameId); // 先把开局事件读掉
+    const ac = new AbortController();
+    const waiting = manager.waitView(watcher, gameId, 3000, { wakeOn: 'any' }, ac.signal);
+    const safe = rec.state.bomb === 2 ? 3 : 2;
+    manager.act(onTurn, gameId, { action: 'guess', number: safe });
+    ac.abort();
+    await expect(waiting).rejects.toThrow(/取消/);
+    const view = manager.getView(watcher, gameId) as unknown as { new_events: unknown[] };
+    expect(view.new_events.length).toBeGreaterThan(0);
+  });
+
+  it('after a takeover, humans may keep addressing the former referee', async () => {
+    const { manager, clock } = setup(14);
+    const { gameId, rec } = startGame(manager, 'number_bomb', { players: [], humans: [human(1), human(2)], referee: REF });
+    await manager.refereeStep(REF, gameId);
+    const sub = bot(8, 'Sub');
+    manager.joinGame(sub, gameId, { as: 'referee' });
+    clock.advance(121_000);
+    manager.refereeTakeover(sub, gameId);
+    expect(rec.formerReferees).toEqual([{ id: REF.id, name: REF.name }]);
+    const safeGuess = () => {
+      const g = (rec.state.lo as number) + 1;
+      return g === rec.state.bomb ? g + 1 : g;
+    };
+    const first = rec.players.find((p) => p.seat === rec.state.current)!;
+    const r1 = manager.relayHumanMessage(sub, gameId, { userId: first.id, text: `[CQ:at,qq=${REF.id}] ${safeGuess()}`, channel: 'group' });
+    expect(r1.accepted, r1.message).toBe(true);
+    await manager.refereeStep(sub, gameId); // 取走上一阶段的消息，下一位的回合才会开放
+    const second = rec.players.find((p) => p.seat === rec.state.current)!;
+    const r2 = manager.relayHumanMessage(sub, gameId, { userId: second.id, text: `@${REF.name} ${safeGuess()}`, channel: 'group' });
+    expect(r2.accepted, r2.message).toBe(true);
+  });
 });

@@ -178,6 +178,8 @@ export interface GameRecord<S = any, O = any> {
   referee: RefereeState | null;
   /** 非玩家的候补裁判（可在裁判失联时接管）。 */
   standbyReferees: { id: string; name: string }[];
+  /** 被接管下去的历任裁判。真人常常还在 @ 原裁判发指令，转交时同样剥离这些 @。旧存档可能没有这个字段。 */
+  formerReferees?: { id: string; name: string }[];
   /** 无需 AI 裁判：消息视为立即送达、超时由服务端计时器处理（测试/模拟/纯 MCP 对战）。 */
   autoReferee: boolean;
   players: Player[];
