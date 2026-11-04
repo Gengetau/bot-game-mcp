@@ -1,0 +1,37 @@
+{
+  "name": "bot-game-mcp-referee-onebot",
+  "version": "0.2.0",
+  "description": "bot-game-mcp 的代码裁判：用一个 OneBot v11 账号（正向 WebSocket）主持 QQ 群桌游，只搬运消息、转交真人指令，不决定任何结果。",
+  "type": "module",
+  "license": "MIT",
+  "bin": {
+    "bot-game-referee": "dist/cli.js"
+  },
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": ["dist", "README.md"],
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "dev": "tsx src/cli.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": ["mcp", "qq", "onebot", "referee", "bot-game-mcp"],
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.2"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.5",
+    "bot-game-mcp": "^0.2.0",
+    "tsx": "^4.23.15",
+    "typescript": "^5.9.3",
+    "vitest": "^5.1.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Gengetau/bot-game-mcp.git",
+    "directory": "packages/referee-onebot"
+  }
+}

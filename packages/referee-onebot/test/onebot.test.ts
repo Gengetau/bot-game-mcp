@@ -1,10 +1,8 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
-import { configSchema } from '../../src/config.js';
-import { cqToPlain, parseOptionTokens, runReferee, segmentsToCq } from '../../src/referee/onebot.js';
-import { startHttpServer, type HttpHandle } from '../../src/server/http.js';
-import { createRuntime, type Runtime } from '../../src/server/runtime.js';
+import { configSchema, createRuntime, startHttpServer, type HttpHandle, type Runtime } from 'bot-game-mcp';
+import { cqToPlain, parseOptionTokens, runReferee, segmentsToCq } from '../src/index.js';
 import { FakeOneBot, callText, type ApiCall } from './onebot-fake.js';
 
 const KEYS = { ref: 'bgk_referee_key_000000', ai: 'bgk_ai_key_0000000000', admin: 'bgk_admin_key_00000000' };

@@ -14,7 +14,7 @@
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js';
-import { VERSION } from '../version.js';
+import { VERSION } from './version.js';
 
 export interface RefereeOptions {
   /** 引擎的 Streamable HTTP 地址，如 http://127.0.0.1:7700/mcp */

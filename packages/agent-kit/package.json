@@ -1,0 +1,33 @@
+{
+  "name": "bot-game-mcp-agent-kit",
+  "version": "0.2.0",
+  "description": "bot-game-mcp 的接入端：给 AI 玩家用的 TypeScript 客户端、等待回合的辅助函数、提示词文本，以及 Claude Agent SDK / OpenAI Agents SDK 的接入示例。",
+  "type": "module",
+  "license": "MIT",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": ["dist", "README.md", "examples", "prompts"],
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": ["mcp", "qq", "agent", "bot-game-mcp", "werewolf"],
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.2"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.5",
+    "bot-game-mcp": "^0.2.0",
+    "tsx": "^4.23.15",
+    "typescript": "^5.9.3",
+    "vitest": "^5.1.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Gengetau/bot-game-mcp.git",
+    "directory": "packages/agent-kit"
+  }
+}

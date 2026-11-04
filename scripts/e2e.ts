@@ -21,14 +21,14 @@ import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js';
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
-import { SeededRng, type Rng } from '../src/core/rng.js';
+import { SeededRng, type Rng } from '../packages/engine/src/core/rng.js';
 
 // ════════════════════════════════════════════════════════════════════════════
 // 基础工具
 // ════════════════════════════════════════════════════════════════════════════
 
 const ROOT = resolve(fileURLToPath(new URL('..', import.meta.url)));
-const CLI = join(ROOT, 'dist', 'cli.js');
+const CLI = join(ROOT, 'packages', 'engine', 'dist', 'cli.js');
 const T0 = Date.now();
 let VERBOSE = false;
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
@@ -1805,7 +1805,7 @@ async function main(): Promise<number> {
   };
 
   try {
-    log('S1', `启动 dist/cli.js serve（127.0.0.1:${port}，临时目录 ${tmp}）`);
+    log('S1', `启动 packages/engine/dist/cli.js serve（127.0.0.1:${port}，临时目录 ${tmp}）`);
     await env.server.start();
     await run('S1', () => scenarioStartup(env));
     if (done[0]!.failed > 0) throw new Error('启动与认证检查失败，后续场景无意义');

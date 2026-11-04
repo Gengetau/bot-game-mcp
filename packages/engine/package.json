@@ -1,0 +1,46 @@
+{
+  "name": "bot-game-mcp",
+  "version": "0.2.0",
+  "description": "QQ 群聊桌游引擎（MCP 服务器）：狼人杀、谁是卧底、大话骰、数字炸弹。程序主导流程与身份，AI 裁判只负责推进与私聊发牌。",
+  "type": "module",
+  "license": "MIT",
+  "bin": {
+    "bot-game-mcp": "dist/cli.js"
+  },
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist",
+    "README.md",
+    "examples"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "dev": "tsx src/cli.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "simulate": "tsx src/cli.ts simulate",
+    "docs": "tsx scripts/gen-docs.ts",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": ["mcp", "model-context-protocol", "qq", "onebot", "werewolf", "狼人杀", "谁是卧底", "board-game", "agent"],
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.2",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.6",
+    "@types/node": "^22.20.5",
+    "tsx": "^4.23.15",
+    "typescript": "^5.9.3",
+    "vitest": "^5.1.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Gengetau/bot-game-mcp.git",
+    "directory": "packages/engine"
+  }
+}

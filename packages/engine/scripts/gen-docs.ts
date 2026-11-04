@@ -32,7 +32,7 @@ for (const d of registry.list()) {
   if (d.playerTips) parts.push(`\n### 给 AI 玩家的提示\n\n${d.playerTips}`);
   parts.push('');
 }
-writeFileSync(new URL('../docs/GAMES.md', import.meta.url), `${parts.join('\n')}\n`);
+writeFileSync(new URL('../../../docs/GAMES.md', import.meta.url), `${parts.join('\n')}\n`);
 console.log('docs/GAMES.md 已生成');
 
 async function genTools(): Promise<void> {
@@ -78,7 +78,7 @@ async function genTools(): Promise<void> {
   for (const r of resourceTemplates) out.push(`- \`${r.uriTemplate}\` —— ${r.title ?? r.name}`);
   out.push('', '## 提示词（prompts）', '');
   for (const p of prompts) out.push(`- \`${p.name}\` —— ${p.title ?? ''}：${p.description ?? ''}`);
-  writeFileSync(new URL('../docs/TOOLS.md', import.meta.url), `${out.join('\n')}\n`);
+  writeFileSync(new URL('../../../docs/TOOLS.md', import.meta.url), `${out.join('\n')}\n`);
   console.log('docs/TOOLS.md 已生成');
   await client.close();
 }

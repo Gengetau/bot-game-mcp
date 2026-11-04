@@ -24,6 +24,7 @@ flowchart LR
 
 ## 目录
 
+- [仓库结构](#仓库结构)
 - [游戏](#游戏)
 - [快速开始](#快速开始)
 - [一局游戏是怎么跑起来的](#一局游戏是怎么跑起来的)
@@ -34,6 +35,18 @@ flowchart LR
 - [开发](#开发)
 
 更多文档：[游戏规则与选项](docs/GAMES.md) · [MCP 接口参考](docs/TOOLS.md) · [接入各类客户端与 QQ 框架](docs/CLIENTS.md) · [架构与新增游戏](docs/ARCHITECTURE.md) · [开发进度与测试记录](docs/PROGRESS.md)
+
+## 仓库结构
+
+这是一个 npm 工作区，按用途分成三个独立发布的包，用哪个装哪个（尚未发布到 npm，目前从仓库构建）：
+
+| 包 | 用途 | 安装 |
+|---|---|---|
+| [`bot-game-mcp`](packages/engine) | 引擎：MCP 服务器、四款游戏、HTTP/SSE/stdio 传输、离线模拟器，命令行 `bot-game-mcp` | `npm i bot-game-mcp` |
+| [`bot-game-mcp-referee-onebot`](packages/referee-onebot) | 代码裁判：用一个 OneBot v11 账号主持 QQ 群桌游，命令行 `bot-game-referee`。只依赖 MCP SDK，不依赖引擎 | `npm i bot-game-mcp-referee-onebot` |
+| [`bot-game-mcp-agent-kit`](packages/agent-kit) | 接入端：给 AI 玩家用的 TypeScript 客户端、等待回合的辅助函数、提示词文本，以及 Claude Agent SDK / OpenAI Agents SDK 的接入示例 | `npm i bot-game-mcp-agent-kit` |
+
+三个包之间只通过 MCP 协议和引擎的只读 HTTP 接口说话，裁判和接入端都不 import 引擎内部代码。文档统一放在根目录 `docs/`。
 
 ## 游戏
 
@@ -56,8 +69,9 @@ flowchart LR
 git clone https://github.com/Gengetau/bot-game-mcp.git
 cd bot-game-mcp
 npm ci
-npm run build
-npm link            # 可选：之后可以直接用 bot-game-mcp 命令，否则用 node dist/cli.js
+npm run build       # 构建三个包
+# 引擎命令：node packages/engine/dist/cli.js；裁判命令：node packages/referee-onebot/dist/cli.js
+# 可选：npm link -w bot-game-mcp -w bot-game-mcp-referee-onebot，之后直接用 bot-game-mcp / bot-game-referee
 ```
 
 ### 2. 先离线看一局（不需要任何 agent）
@@ -231,12 +245,12 @@ sequenceDiagram
 bot-game-mcp [serve] [--config 文件] [--host 地址] [--port 端口] [--state 文件 | --no-state]
 bot-game-mcp stdio   [--agent-id QQ号 --agent-name 昵称] [--state 文件 | --no-state]
 bot-game-mcp bridge  --url http://主机:7700/mcp [--key 密钥]
-bot-game-mcp referee --url http://主机:7700/mcp --key 密钥|--key-file 文件 --onebot ws://127.0.0.1:3001/ --group 群号
-                     [--onebot-token-file 文件] [--admins QQ,QQ] [--bots QQ,QQ] [--options JSON]
 bot-game-mcp simulate <游戏> [--players N] [--humans N] [--seed S] [--options JSON] [--afk 0.1] [--cq]
 bot-game-mcp gen-key [-n 3]
 bot-game-mcp init-config [--force]
 ```
+
+代码裁判的命令行在另一个包里：`bot-game-referee --url … --onebot ws://… --group 群号`，见 [packages/referee-onebot](packages/referee-onebot/README.md)。
 
 ## 安全与公平
 
@@ -274,28 +288,22 @@ bot-game-mcp init-config [--force]
 npm run typecheck     # 类型检查（含测试代码）
 npm test              # 单元测试 + 集成测试（含 HTTP、SSE、桥接端到端）
 npm run build && npm run e2e   # 黑盒端到端：独立进程 + 多客户端 + 中途重启 + 裁判接管，约 25 秒
-npm run build         # 编译到 dist/
+npm run build         # 编译三个包到各自的 dist/
 npm run docs          # 根据代码重新生成 docs/GAMES.md 和 docs/TOOLS.md
-npm run dev -- serve  # 用 tsx 直接运行源码
+npm run dev -w bot-game-mcp -- serve   # 用 tsx 直接运行引擎源码
 npm run simulate -- werewolf --players 12 --options '{"win_mode":"all"}'
 ```
 
 ```text
-src/
-  core/        引擎核心：类型、BaseGame 基类、GameManager（大厅/阶段/投递/长轮询/裁判）、随机数、文本解析、存档
-  games/       werewolf/ undercover/ liars-dice/ number-bomb/，以及注册表 index.ts
-  mcp/         MCP 服务器：工具、资源、提示词、认证、消息渲染（text/CQ/OneBot）、指南文本
-  server/      传输层：HTTP（Streamable HTTP + 旧版 SSE + 观战 API）、stdio、bridge、运行时
-  referee/     代码驱动的裁判（OneBot v11 正向 WebSocket）
-  sim/         离线模拟器
-  cli.ts       命令行入口
-test/          vitest 测试
-scripts/       文档生成脚本
-docs/          文档
-examples/      配置与客户端样例
+packages/
+  engine/           bot-game-mcp：src/core 引擎核心、src/games 四款游戏、src/mcp MCP 层、src/server 传输层、src/sim 模拟器、src/cli.ts
+  referee-onebot/   bot-game-mcp-referee-onebot：src/index.ts 裁判实现、src/cli.ts 命令行、test/ 自带假 OneBot 服务器
+  agent-kit/        bot-game-mcp-agent-kit：src/index.ts 客户端与提示词、prompts/、examples/
+scripts/e2e.ts      黑盒端到端（跨三个包）
+docs/               文档（GAMES.md、TOOLS.md 由 npm run docs 生成）
 ```
 
-新增一款游戏只需要继承 `BaseGame`，实现 `start`、`onAction`、`advance` 和两个视图方法，再在 `src/games/index.ts` 里注册即可。详见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#新增一款游戏)。
+新增一款游戏只需要继承 `BaseGame`，实现 `start`、`onAction`、`advance` 和两个视图方法，再在 `packages/engine/src/games/index.ts` 里注册即可。详见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#新增一款游戏)。
 
 ## 许可证
 
