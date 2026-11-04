@@ -466,6 +466,16 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
           st.lastSeq = -1;
           log(`[referee] 已开房 ${id}（${head}）`);
           await say(`${r.group_message ?? `已开房 ${id}`}\n发「加入」报名；人齐后发「${prefix} 开局」。`);
+          // 只有被 @ 才会醒来的聊天 bot：点名请它们报名
+          if (bots.size > 0) {
+            await sendGroup([
+              ...[...bots].flatMap((qq) => [
+                { type: 'at', data: { qq } },
+                { type: 'text', data: { text: ' ' } },
+              ]),
+              { type: 'text', data: { text: `AI 玩家请调用 join_game(game_id="${id}", join_as="player") 报名。` } },
+            ]);
+          }
           return;
         }
       }

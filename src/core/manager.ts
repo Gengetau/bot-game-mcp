@@ -827,9 +827,10 @@ export class GameManager {
     });
   }
 
-  private eventView(e: LogEntry): EventView {
+  /** seq 按「该视角可见的事件」重新编号：全局序号会因为别人的私密事件出现空档，数空档就能推断谁还在行动。 */
+  private eventView(e: LogEntry, seq: number): EventView {
     return {
-      seq: e.seq,
+      seq,
       round: e.round,
       kind: e.kind,
       text: e.text,
@@ -871,8 +872,9 @@ export class GameManager {
     const events = this.visibleEvents(rec, actor, seat);
     const cursorKey = `${rec.id}:${actor.id}`;
     const cursor = this.viewCursors.get(cursorKey) ?? 0;
-    const fresh = opts.fullLog ? events : events.filter((e) => e.seq > cursor);
-    const limited = opts.fullLog ? fresh : fresh.slice(-60);
+    const numbered = events.map((e, i) => ({ e, view: this.eventView(e, i + 1) }));
+    const fresh = opts.fullLog ? numbered : numbered.filter((x) => x.e.seq > cursor);
+    const limited = (opts.fullLog ? fresh : fresh.slice(-60)).map((x) => x.view);
     if (events.length > 0) this.viewCursors.set(cursorKey, events[events.length - 1]!.seq);
 
     const players = rec.players.map((p) => ({ seat: p.seat, name: p.name, qq: p.id, kind: p.kind, alive: p.alive }));
@@ -893,7 +895,7 @@ export class GameManager {
         you: { seat, name: me.name, alive: me.alive, ...inst.privateView(seat) },
         your_turn: Boolean(todo),
         todo,
-        new_events: limited.map((e) => this.eventView(e)),
+        new_events: limited,
         ...(fresh.length > limited.length ? { omitted_events: fresh.length - limited.length } : {}),
         hint: this.playerHint(rec, me, todo, Boolean(upcoming)),
       };
@@ -906,7 +908,7 @@ export class GameManager {
         you: { role: 'referee', note: '你是本局 AI 裁判：只负责推进流程（调用 referee_step 并发送消息）与转发真人消息，不参与、不改变任何结果。' },
         undelivered,
         waiting_for: this.refereeWaiting(rec),
-        new_events: limited.map((e) => this.eventView(e)),
+        new_events: limited,
         hint:
           rec.status === 'running' || undelivered > 0
             ? `调用 referee_step(game_id="${rec.id}", wait_seconds=25) 拉取并发送消息；收到玩家的群聊/私聊消息时调用 relay_human_message 转发。`
@@ -917,7 +919,7 @@ export class GameManager {
     return {
       ...base,
       you: { role: 'spectator' },
-      new_events: limited.map((e) => this.eventView(e)),
+      new_events: limited,
       hint: humanSeat
         ? '这个 QQ 号是本局的真人玩家：真人的身份与私密信息只由裁判私聊发给本人，MCP 会话里只能看到公开信息。'
         : '你不是本局玩家，只能看到公开信息。',
@@ -979,14 +981,16 @@ export class GameManager {
   getLog(actor: Identity, gameId: string | undefined, opts: { sinceSeq?: number; limit?: number } = {}) {
     const rec = this.resolveGame(actor, gameId, 'any');
     const seat = this.agentSeatOf(rec, actor.id);
-    const events = this.visibleEvents(rec, actor, seat).filter((e) => e.seq > (opts.sinceSeq ?? 0));
+    const events = this.visibleEvents(rec, actor, seat)
+      .map((e, i) => this.eventView(e, i + 1))
+      .filter((v) => v.seq > (opts.sinceSeq ?? 0));
     const limit = Math.max(1, Math.min(opts.limit ?? 200, 1000));
     const page = events.slice(0, limit);
     return {
       game_id: rec.id,
       status: rec.status,
       complete_replay: rec.status === 'ended',
-      events: page.map((e) => this.eventView(e)),
+      events: page,
       has_more: events.length > page.length,
       ...(rec.result ? { result: rec.result } : {}),
     };

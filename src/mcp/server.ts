@@ -372,7 +372,7 @@ export function createMcpServer(deps: ServerDeps, ctx: SessionContext): McpServe
       description: '查看你可见的对局事件记录。游戏结束后所有人都能看到完整复盘（含所有私密信息）。',
       inputSchema: {
         game_id: gameIdOpt,
-        since_seq: z.number().int().min(0).max(1_000_000_000).optional().describe('只返回 seq 大于此值的事件'),
+        since_seq: z.number().int().min(0).max(1_000_000_000).optional().describe('只返回 seq 大于此值的事件（seq 是你视角内的连续编号；游戏正常结束公开完整复盘后会重新编号）'),
         limit: z.number().int().min(1).max(1000).optional(),
       },
       readOnly: true,

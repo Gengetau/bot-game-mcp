@@ -140,7 +140,7 @@
 | 参数 | 类型 | 必填 | 说明 |
 |---|---|---|---|
 | `game_id` | string |  | 对局 ID（如 WW-7K3Q）。不填则自动使用你当前参与的对局 |
-| `since_seq` | integer |  | 只返回 seq 大于此值的事件 |
+| `since_seq` | integer |  | 只返回 seq 大于此值的事件（seq 是你视角内的连续编号；游戏正常结束公开完整复盘后会重新编号） |
 | `limit` | integer |  |  |
 
 ### `referee_step` —— 裁判：推进并取消息
