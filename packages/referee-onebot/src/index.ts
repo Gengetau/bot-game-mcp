@@ -63,6 +63,12 @@ export interface RefereeOptions {
   hostId?: string;
   /** 主账号是否进抽签池（默认 true；false 则主账号只当候补裁判和开房的嗓子） */
   selfInPool?: boolean;
+  /**
+   * 跟随模式（外接 bot 用）：本进程不开房、不响应「/桌游」指令、不转交报名消息、不当候补裁判。
+   * 它只做一件事：自己的账号报名了就登记进裁判抽签池，抽中了就用自己的账号主持（含转交真人消息）。
+   * 群里的开房、开局由主机那边的裁判进程负责。
+   */
+  follower?: boolean;
   /** 开局时把抽签结果画成转盘图发到群里（默认 true；候选只有一人时不画） */
   wheelImage?: boolean;
   /** 转盘图的字体：GNU Unifont .hex / .hex.gz 路径；不给则中文画成方块 */
@@ -368,7 +374,8 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
   const autoStart = Math.max(0, opts.autoStartSeconds ?? 0);
   const sendGap = opts.sendGapMs ?? 300;
   const hostId = (opts.hostId ?? hostname()).trim().slice(0, 100) || 'referee';
-  const selfInPool = opts.selfInPool ?? true;
+  const follower = opts.follower ?? false;
+  const selfInPool = follower ? false : (opts.selfInPool ?? true);
   const wheelImage = opts.wheelImage ?? true;
 
   let stopped = false;
@@ -380,12 +387,15 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
     /** 正在替引擎说话的账号（本局裁判是我的某个账号时） */
     active: Voice | null;
     takeoverAt: number;
+    /** 上次记过日志的「对局:裁判:代行者」，避免每次刷新都重复打印 */
+    noted: string;
   } = {
     game: null,
     lastSeq: -1, // 本局已发出的最后一条 seq；-1 = 未知
     lobby: { count: -1, changedAt: 0, announced: false }, // 自动开局：人数上次变化的时间
     active: null,
     takeoverAt: 0,
+    noted: '',
   };
   let wake: (() => void) | null = null;
   const idle = (ms: number) =>
@@ -509,7 +519,7 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
       lobbyIds: new Set(lobby.map((e) => String(e.id))),
     };
     if (g.status === 'lobby') {
-      if (!st.game.lobbyIds.has(main.id)) {
+      if (!follower && !st.game.lobbyIds.has(main.id)) {
         const j = await main.engine.call('join_game', { game_id: g.game_id, join_as: 'referee' });
         log(`[referee] 已以裁判身份加入 ${g.game_id}`);
         st.game.lobbyIds.add(main.id);
@@ -520,8 +530,10 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
       // 本局裁判是我的账号，且没有别的进程在代行（没登记过代行时 hostedBy 为空，也是我来）
       const mine = voiceOf(st.game.refereeId);
       const next = mine && (!st.game.hostedBy || st.game.hostedBy === hostId) ? mine : null;
-      if (next !== st.active) {
+      const key = `${st.game.id}:${st.game.refereeId}:${st.game.hostedBy ?? ''}`;
+      if (next !== st.active || key !== st.noted) {
         st.active = next;
+        st.noted = key;
         if (next) log(`[referee] 本局裁判 ${next.name}(${next.id}) 由本进程代行`);
         else if (mine) log(`[referee] 本局裁判 ${mine.name} 由别的进程（${st.game.hostedBy ?? '它自己'}）代行，本进程只旁观`);
         else log(`[referee] 本局裁判 ${g.referee ?? '?'} 不是本进程的账号，本进程只旁观（可候补接管）`);
@@ -536,7 +548,8 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
     if (!g || g.status !== 'lobby') return;
     for (const v of voices) {
       if (!v.id || g.hosted.has(v.id)) continue;
-      if (v.main ? !selfInPool : !g.lobbyIds.has(v.id)) continue;
+      // 主账号：默认直接进池（它是开房的嗓子）；跟随模式下它和别的账号一样，报名了才进池
+      if (v.main && !follower ? !selfInPool : !g.lobbyIds.has(v.id)) continue;
       try {
         await v.engine.call('referee_offer', { game_id: g.id, host_id: hostId });
         g.hosted.add(v.id);
@@ -728,7 +741,7 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
     const g = st.game;
     if (!g) return null;
     if (g.status === 'lobby') {
-      if (channel === 'private') return null;
+      if (channel === 'private' || follower) return null;
       return main.engine.call('relay_human_message', { game_id: g.id, qq_id: uid, nickname: nick, text: cq, channel });
     }
     if (!st.active) return null; // 本局裁判不是我的账号：它的进程会转交
@@ -737,7 +750,7 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
 
   async function handleGroup(uid: string, nick: string, cq: string): Promise<void> {
     const plain = cqToPlain(cq);
-    if (plain.startsWith(prefix)) return handleCommand(uid, nick, plain.slice(prefix.length).trim());
+    if (plain.startsWith(prefix)) return follower ? undefined : handleCommand(uid, nick, plain.slice(prefix.length).trim());
     const r = await relay(uid, nick, cq, 'group');
     if (!r || !st.game) return;
     if (st.game.status === 'lobby') {
@@ -795,7 +808,7 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
       v.onebot.start();
     }
     log(
-      `[referee] 身份 ${main.name}(${main.id})，群 ${opts.groupId}，引擎 ${opts.url}，host_id ${hostId}` +
+      `[referee] 身份 ${main.name}(${main.id})，群 ${opts.groupId}，引擎 ${opts.url}，host_id ${hostId}${follower ? '，跟随模式' : ''}` +
         (voices.length > 1 ? `，嗓子账号：${voices.filter((v) => !v.main).map((v) => `${v.name}(${v.id})`).join('、')}` : ''),
     );
 
@@ -811,7 +824,7 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
         if (cur.status === 'lobby') {
           await idle(3000);
           if (!stopped) await refreshGame();
-          if (!stopped) await maybeAutoStart();
+          if (!stopped && !follower) await maybeAutoStart();
           continue;
         }
         const active = st.active;
@@ -819,7 +832,7 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
           // 旁观：别的进程在主持。它失联了就接管
           await idle(10_000);
           if (!stopped) await refreshGame();
-          if (!stopped) await maybeTakeover();
+          if (!stopped && !follower) await maybeTakeover();
           continue;
         }
         const args: Json = { game_id: cur.id, wait_seconds: recovering ? 0 : stepWait, format: 'onebot', host_id: hostId };

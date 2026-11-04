@@ -332,11 +332,95 @@ describe('OneBot referee against the real engine', () => {
       const pv = await callOn(playerBrain, 'get_my_view', { game_id: gameId });
       expect(pv.you.role).not.toBe('referee');
       expect(lines.some((l) => l.includes('由本进程代行'))).toBe(true);
+      // 收尾：别把进行中的对局留给下一个测试
+      mark = qqMain.calls.length;
+      msgAll(OWNER, '主人', '/桌游 中止');
+      // 中止公告由本局裁判账号（抽中的那个）发
+      await drawn.waitForCall((c) => sendOf(c) && callText(c).includes('中止'), 10_000);
     } finally {
       if (process.env.REF_DEBUG) console.log(['--- lines', ...lines, '--- main', ...qqMain.calls.map((c) => `${c.action} ${callText(c)}`), '--- A', ...qqA.calls.map((c) => `${c.action} ${callText(c)}`), '--- B', ...qqB.calls.map((c) => `${c.action} ${callText(c)}`)].join('\n'));
       ac2.abort();
       await Promise.race([done, new Promise((res) => setTimeout(res, 5000))]);
       await Promise.all([brainA.close(), brainB.close(), qqMain.close(), qqA.close(), qqB.close()]);
+    }
+  }, 60_000);
+
+  it('follower mode: an external bot process only offers its own account and hosts when drawn, never answers commands', async () => {
+    const qqB = new FakeOneBot('tB');
+    await qqB.start();
+    const ac2 = new AbortController();
+    const lines: string[] = [];
+    const done = runReferee({
+      url: http.url,
+      key: KEYS.ai2,
+      onebotUrl: qqB.url,
+      onebotToken: 'tB',
+      groupId: GROUP,
+      follower: true,
+      hostId: 'ext-host',
+      stepWaitSeconds: 1,
+      sendGapMs: 0,
+      signal: ac2.signal,
+      log: (l) => lines.push(l),
+    });
+    await qqB.waitForConnection();
+    const sendOf = (c: ApiCall) => c.action === 'send_group_msg' && String(c.params.group_id) === GROUP;
+    const msgBoth = (uid: string, nick: string, t: string) => {
+      const ev = { post_type: 'message', message_type: 'group', sub_type: 'normal', group_id: Number(GROUP), user_id: Number(uid), message_id: ++msgSeq, sender: { user_id: Number(uid), nickname: nick, card: '' }, message: text(t), raw_message: t };
+      qq.emit(ev);
+      qqB.emit(ev);
+    };
+    const brainB = new Client({ name: 'brain', version: '1.0.0' });
+    await brainB.connect(new StreamableHTTPClientTransport(new URL(http.url), { requestInit: { headers: { Authorization: `Bearer ${KEYS.ai2}` } } }));
+    const brainA = new Client({ name: 'brain', version: '1.0.0' });
+    await brainA.connect(new StreamableHTTPClientTransport(new URL(http.url), { requestInit: { headers: { Authorization: `Bearer ${KEYS.ai}` } } }));
+    const callB = async (name: string, args: Record<string, unknown> = {}) => {
+      const r: any = await brainB.callTool({ name, arguments: args });
+      const t = r.content?.[0]?.text ?? '';
+      if (r.isError) throw new Error(t);
+      return JSON.parse(t);
+    };
+    try {
+      // 指令只有主机的裁判（qq）回应，跟随者不出声
+      let mark = qq.calls.length;
+      msgBoth(OWNER, '主人', '/桌游 帮助');
+      await qq.waitForCall((c) => groupSend(c) && callText(c).includes('桌游指令'), 10_000, mark);
+      mark = qq.calls.length;
+      msgBoth(OWNER, '主人', '/桌游 数字炸弹');
+      await qq.waitForCall((c) => groupSend(c) && callText(c).includes('报名'), 10_000, mark);
+      const gameId: string = (await callB('list_games', { group_id: GROUP })).games[0].game_id;
+      // 外接 bot 的脑子报名当玩家；跟随者发现自己报名了，登记进抽签池。再加一个本地 bot，凑够「抽走一人仍够开局」
+      await callB('join_game', { game_id: gameId, join_as: 'player' });
+      await brainA.callTool({ name: 'join_game', arguments: { game_id: gameId, join_as: 'player' } });
+      msgBoth(OWNER, '主人', '加入');
+      await qq.waitForCall((c) => groupSend(c) && callText(c).includes('加入了'), 10_000, mark);
+      const deadline = Date.now() + 10_000;
+      let hosted: string[] = [];
+      while (Date.now() < deadline) {
+        const g = (await callB('list_games', { group_id: GROUP })).games[0];
+        hosted = (g.lobby ?? []).filter((e: any) => e.hosted).map((e: any) => String(e.id));
+        if (hosted.includes(AI2_ID)) break;
+        await new Promise((res) => setTimeout(res, 300));
+      }
+      expect(hosted).toEqual([AI2_ID]);
+      expect(qqB.calls.some(sendOf)).toBe(false);
+      // 主机那边开局：池里只有外接账号，抽中它；之后游戏消息由跟随者用自己的账号发
+      msgBoth(OWNER, '主人', '/桌游 开局');
+      await qq.waitForCall((c) => groupSend(c) && callText(c).includes('开局！'), 10_000, mark);
+      const sum = (await callB('list_games', { group_id: GROUP })).games[0];
+      expect(sum.referee_id).toBe(AI2_ID);
+      expect(sum.referee_hosted_by).toBe('ext-host');
+      await qqB.waitForCall((c) => sendOf(c) && callText(c).includes('数字炸弹开始'), 15_000);
+      expect(qq.calls.slice(mark).some((c) => groupSend(c) && callText(c).includes('数字炸弹开始'))).toBe(false);
+      expect(logs.some((l) => l.includes('只旁观'))).toBe(true);
+      // 收尾
+      mark = qq.calls.length;
+      msgBoth(OWNER, '主人', '/桌游 中止');
+      await qq.waitForCall((c) => groupSend(c) && callText(c).includes('中止'), 10_000, mark);
+    } finally {
+      ac2.abort();
+      await Promise.race([done, new Promise((res) => setTimeout(res, 5000))]);
+      await Promise.all([brainA.close(), brainB.close(), qqB.close()]);
     }
   }, 60_000);
 
