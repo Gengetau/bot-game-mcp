@@ -1440,11 +1440,15 @@ async function scenarioNumberBomb(env: Env, rng: Rng): Promise<Scenario> {
   const qq = prepareQQ(sc, groupId, env, aiCfgs, humanSpecs);
   const refConn = sc.conn(env, 'ref', env.ref.key);
   const ais = aiCfgs.map((cfg, i) => ({ cfg, selfPost: false, conn: sc.conn(env, `ai${i + 1}`, cfg.key) }));
-  const gameId = await lobby(env, sc, refConn, 'number_bomb', groupId, { min: 1, max: 40, turn_timeout_s: 30, speech_gap_ms: 200 }, ais.map((a) => ({ conn: a.conn, selfPost: a.selfPost })), humanSpecs);
+  const gameId = await lobby(env, sc, refConn, 'number_bomb', groupId, { min: 1, max: 400, turn_timeout_s: 30, speech_gap_ms: 200 }, ais.map((a) => ({ conn: a.conn, selfPost: a.selfPost })), humanSpecs);
   log('S4b', `数字炸弹 ${gameId} 开局：3 AI + 2 真人`);
 
   const standby = sc.conn(env, 'standby', standbyCfg.key);
   const intruder = sc.conn(env, 'intruder', intruderCfg.key);
+  // 候补裁判登记（开局后以 referee 报名）。放在裁判迈出第一步之前：第一个阶段要等裁判取走公告才开放，
+  // 这时还没人能猜数，不会出现「第一猜就踩雷、对局已结束、候补没来得及登记」的概率性失败。
+  const reg = await standby.call('join_game', { game_id: gameId, join_as: 'referee' });
+  sc.check('开局后 join_game(referee) 登记为候补裁判', /候补/.test(String(reg.message)), String(reg.message).slice(0, 80));
   const refuses = async (c: Conn, what: string, why?: RegExp): Promise<boolean> => {
     try {
       await c.call('referee_takeover', { game_id: gameId }, { retry: false });
@@ -1480,9 +1484,6 @@ async function scenarioNumberBomb(env: Env, rng: Rng): Promise<Scenario> {
   const failover = (async () => {
     await firstStep;
     await pausedP;
-    // 候补裁判登记（开局后以 referee 报名）
-    const reg = await standby.call('join_game', { game_id: gameId, join_as: 'referee' });
-    sc.check('开局后 join_game(referee) 登记为候补裁判', /候补/.test(String(reg.message)), String(reg.message).slice(0, 80));
     await refuses(intruder, '非候补裁判（路人 bot）接管被拒绝', /候补/);
     await refuses(standby, '裁判仍在线时候补裁判也不能接管', /仍在线/);
     await refuses(players[0]!.conn, '玩家不能接管裁判', /玩家|候补/);
