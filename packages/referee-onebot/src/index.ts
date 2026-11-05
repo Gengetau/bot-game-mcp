@@ -524,13 +524,14 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
    * 私聊（好友和临时会话）都发不出去的消息先存着：QQ 只有对方先发起过临时会话才能回，
    * 所以在群里 @ 对方请他私聊这个账号一句，收到后按原顺序补发。
    */
-  const undelivered = new Map<string, { v: Voice; text: string }[]>();
+  const undelivered = new Map<string, { v: Voice; text: string | unknown[] }[]>();
   const askedToOpen = new Map<string, number>();
-  const sendPrivateAs = (v: Voice, userId: string, text: string) =>
+  /** text 是纯文字，或 OneBot 消息段数组（带图片的私聊） */
+  const sendPrivateAs = (v: Voice, userId: string, text: string | unknown[]) =>
     enqueue(async () => {
       const via = sendable(v);
       try {
-        const message = [{ type: 'text', data: { text } }];
+        const message = typeof text === 'string' ? [{ type: 'text', data: { text } }] : text;
         try {
           await via.onebot.call('send_private_msg', { user_id: Number(userId), message });
         } catch (e) {
@@ -1082,7 +1083,12 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
 
   async function deliver(v: Voice, d: Json): Promise<void> {
     if (d.to === 'group') await sendGroupAs(v, d.message);
-    else if (d.to === 'private') await sendPrivateAs(v, String(d.user_id), String(d.text ?? ''));
+    else if (d.to === 'private') {
+      // 带图片的私聊（剧本杀线索图）发消息段；私聊里不能 @，去掉 at 段
+      const segs: Json[] = Array.isArray(d.message) ? d.message : [];
+      if (segs.some((x) => x?.type === 'image')) await sendPrivateAs(v, String(d.user_id), segs.filter((x) => x?.type !== 'at'));
+      else await sendPrivateAs(v, String(d.user_id), String(d.text ?? ''));
+    }
   }
 
   const stop = () => {
@@ -1136,7 +1142,7 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
           if (!stopped && !follower) await maybeTakeover();
           continue;
         }
-        const args: Json = { game_id: cur.id, wait_seconds: recovering ? 0 : stepWait, format: 'onebot', host_id: hostId };
+        const args: Json = { game_id: cur.id, wait_seconds: recovering ? 0 : stepWait, format: 'onebot', inline_images: true, host_id: hostId };
         let r = await active.engine.call('referee_step', args, (stepWait + 40) * 1000);
         if (r.hosted) {
           // 引擎认为代行者不是我（比如 host_id 变了）：退回旁观
@@ -1153,7 +1159,7 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
           const lost = st.lastSeq >= 0 && ((first !== undefined && first > st.lastSeq + 1) || (ds.length === 0 && typeof r.last_seq === 'number' && r.last_seq > st.lastSeq));
           if (lost) {
             log(`[referee] 补发 seq>${st.lastSeq} 的消息`);
-            r = await active.engine.call('referee_step', { game_id: cur.id, wait_seconds: 0, format: 'onebot', since_seq: st.lastSeq, host_id: hostId }, 30_000);
+            r = await active.engine.call('referee_step', { game_id: cur.id, wait_seconds: 0, format: 'onebot', inline_images: true, since_seq: st.lastSeq, host_id: hostId }, 30_000);
           }
         }
         for (const d of r.deliveries ?? []) {

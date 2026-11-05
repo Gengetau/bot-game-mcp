@@ -10,13 +10,15 @@
  *   bot-game-mcp init-config      生成示例配置 botgame.config.json
  */
 import { randomBytes } from 'node:crypto';
-import { existsSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { parseArgs } from 'node:util';
 import { loadConfig } from './config.js';
 import { startBridge } from './server/bridge.js';
 import { startHttpServer } from './server/http.js';
-import { createRuntime } from './server/runtime.js';
+import { createAssets, createRuntime } from './server/runtime.js';
 import { startStdioServer } from './server/stdio.js';
+import { directoryLibrary, packAssets, parsePack } from './games/jubensha/index.js';
+import { localAssets } from './core/assets.js';
 import { simulate } from './sim/simulate.js';
 import { VERSION } from './version.js';
 
@@ -28,6 +30,9 @@ const HELP = `bot-game-mcp ${VERSION} —— QQ 群桌游引擎（MCP 服务器�
   bot-game-mcp bridge  --url http://主机:7700/mcp [--key 密钥]
   bot-game-mcp simulate <werewolf|undercover|liars_dice|number_bomb> [--players 9] [--humans 0]
                        [--seed 42] [--options '{"win_mode":"all"}'] [--afk 0.1] [--cq]
+                       [--scripts <剧本目录>]（剧本杀用）
+  bot-game-mcp check-script <剧本.json> [...] [--assets <图片目录> | --config 文件]
+                       校验剧本杀数据包；给了图片目录或配置了云盘时，再检查图片是否都在
   bot-game-mcp gen-key [-n 3]
   bot-game-mcp init-config [--force]
 
@@ -74,6 +79,8 @@ async function main(argv: string[]): Promise<void> {
       seed: { type: 'string' },
       options: { type: 'string' },
       afk: { type: 'string' },
+      scripts: { type: 'string' },
+      assets: { type: 'string' },
       cq: { type: 'boolean' },
       n: { type: 'string', short: 'n' },
       force: { type: 'boolean' },
@@ -149,8 +156,38 @@ async function main(argv: string[]): Promise<void> {
         options: str('options') ? JSON.parse(str('options')!) : undefined,
         afk: str('afk') ? Number(str('afk')) : undefined,
         format: values.cq ? 'cq' : 'text',
+        ...(str('scripts') ? { scripts: directoryLibrary(str('scripts')!) } : {}),
       });
       process.exitCode = res.status === 'ended' ? 0 : 1;
+      return;
+    }
+    case 'check-script': {
+      const files = positionals.slice(1);
+      if (files.length === 0) throw new Error('用法：bot-game-mcp check-script <剧本.json> [...]');
+      let bad = 0;
+      const store = str('assets') ? localAssets(str('assets')!) : str('config') ? createAssets(loadConfig(str('config')), () => {}) : undefined;
+      for (const f of files) {
+        try {
+          const p = parsePack(JSON.parse(readFileSync(f, 'utf8')), f);
+          const chars = JSON.stringify(p).length;
+          console.log(
+            `✅ ${f}：《${p.title}》id=${p.id}，${p.players} 人，${p.acts.length} 幕，凶手 ${p.culprits.join('、')}，约 ${chars} 字符` +
+              (p.images.length ? `，${p.images.length} 张图` : ''),
+          );
+          if (store && p.images.length) {
+            const missing: string[] = [];
+            for (const a of packAssets(p)) if (!(await store.exists(a))) missing.push(a);
+            if (missing.length) {
+              bad++;
+              console.log(`❌ ${f}：素材库里缺 ${missing.length} 张图：${missing.join('、')}`);
+            } else console.log(`✅ ${f}：图片都在`);
+          } else if (p.images.length) console.log(`   （没给 --assets 或 --config，未检查图片文件是否存在）`);
+        } catch (e) {
+          bad++;
+          console.log(`❌ ${e instanceof Error ? e.message : String(e)}`);
+        }
+      }
+      process.exitCode = bad ? 1 : 0;
       return;
     }
     case 'gen-key': {

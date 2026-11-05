@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -41,6 +41,23 @@ describe('OneBot referee against the real engine', () => {
   let http: HttpHandle;
   let qq: FakeOneBot;
   const keysDir = mkdtempSync(join(tmpdir(), 'botgame-referee-keys-'));
+  // 剧本杀：演示剧本 + 两张线索图（开场地图群发，人物剧本附图私发）
+  const scriptsDir = mkdtempSync(join(tmpdir(), 'botgame-referee-scripts-'));
+  const assetsDir = mkdtempSync(join(tmpdir(), 'botgame-referee-assets-'));
+  const PNG = Buffer.from('89504e470d0a1a0a0000000d49484452', 'hex');
+  {
+    const demo = JSON.parse(readFileSync(join(__dirname, '../../engine/examples/jubensha/demo-rainy-bookshop.json'), 'utf8'));
+    demo.images = [
+      { id: 'map', file: 'map.png', caption: '书屋平面图' },
+      { id: 'badge', file: 'badge.png', caption: '你的名牌' },
+    ];
+    demo.intro_images = ['map'];
+    for (const r of demo.roles) r.images = ['badge'];
+    writeFileSync(join(scriptsDir, 'demo.json'), JSON.stringify(demo));
+    mkdirSync(join(assetsDir, 'demo'));
+    writeFileSync(join(assetsDir, 'demo', 'map.png'), PNG);
+    writeFileSync(join(assetsDir, 'demo', 'badge.png'), PNG);
+  }
   const ac = new AbortController();
   const logs: string[] = [];
   let refereeDone: Promise<void>;
@@ -51,6 +68,8 @@ describe('OneBot referee against the real engine', () => {
       port: 0,
       stateFile: null,
       seed: 'referee-test',
+      scriptsDir,
+      assetsDir,
       auth: {
         mode: 'keys',
         adminKeys: [KEYS.admin],
@@ -92,6 +111,8 @@ describe('OneBot referee against the real engine', () => {
     await http.close();
     rt.close();
     rmSync(keysDir, { recursive: true, force: true });
+    rmSync(scriptsDir, { recursive: true, force: true });
+    rmSync(assetsDir, { recursive: true, force: true });
   });
 
   const groupMsg = (uid: string, nick: string, message: unknown) =>
@@ -188,6 +209,31 @@ describe('OneBot referee against the real engine', () => {
     expect(status).toBeTruthy();
     await ai.close();
   }, 60_000);
+
+  it('jubensha: sends clue images to the group and by private chat as OneBot image segments', async () => {
+    const humans = ['61001', '61002', '61003', '61004'];
+    let mark = qq.calls.length;
+    groupMsg(OWNER, '主人', text('/桌游 剧本杀'));
+    await qq.waitForCall((c) => groupSend(c) && callText(c).includes('报名'), 10_000, mark);
+    for (const [i, uid] of humans.entries()) groupMsg(uid, `玩家${i + 1}`, text('加入'));
+    await qq.waitForCall((c) => groupSend(c) && callText(c).includes('玩家4'), 10_000, mark);
+    mark = qq.calls.length;
+    groupMsg(OWNER, '主人', text('/桌游 开局'));
+    const isImg = (c: ApiCall) => Array.isArray(c.params.message) && (c.params.message as any[]).some((x) => x.type === 'image');
+    const grp = await qq.waitForCall((c) => groupSend(c) && isImg(c), 15_000, mark);
+    const gImg = (grp.params.message as any[]).find((x) => x.type === 'image');
+    expect(Buffer.from(String(gImg.data.file).replace('base64://', ''), 'base64').equals(PNG)).toBe(true);
+    expect(callText(grp)).toContain('书屋平面图');
+    const priv = await qq.waitForCall((c) => c.action === 'send_private_msg' && isImg(c), 15_000, mark);
+    expect(humans).toContain(String(priv.params.user_id));
+    expect(callText(priv)).toContain('你的名牌');
+    // 文字私聊照旧
+    expect(qq.calls.slice(mark).some((c) => c.action === 'send_private_msg' && callText(c).includes('你的人物剧本'))).toBe(true);
+    mark = qq.calls.length;
+    groupMsg(OWNER, '主人', text('/桌游 中止'));
+    await qq.waitForCall((c) => groupSend(c) && callText(c).includes('中止'), 10_000, mark);
+    await new Promise((res) => setTimeout(res, 300));
+  }, 40_000);
 
   it('auto-starts a lobby once the target player count is reached, and after the quiet period otherwise', async () => {
     const qq2 = new FakeOneBot('tok2');

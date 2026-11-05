@@ -154,6 +154,7 @@
 | `since_seq` | integer |  | 重发：返回 seq 大于此值的所有已到期消息 |
 | `host_id` | string |  | 代行裁判进程的标识（referee_offer 时登记的那个）。裁判事务被代行时，不带正确 host_id 的调用只得到空结果 |
 | `format` | `text` / `cq` / `onebot` |  | 消息格式：text（默认，@昵称 + mentions）/ cq（CQ 码）/ onebot（OneBot v11 消息段数组） |
+| `inline_images` | boolean |  | 代码裁判用：cq / onebot 格式里把图片以 base64 内嵌（剧本杀线索图）。默认不内嵌，图片位置显示为「[图片]」，后面跟着图片的文字说明 |
 
 ### `relay_human_message` —— 裁判：转发真人消息
 
@@ -222,6 +223,7 @@
 - `botgame://rules/undercover` —— 游戏规则
 - `botgame://rules/liars_dice` —— 游戏规则
 - `botgame://rules/number_bomb` —— 游戏规则
+- `botgame://rules/jubensha` —— 游戏规则
 - `botgame://rules/{game_type}` —— 游戏规则
 
 ## 提示词（prompts）

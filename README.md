@@ -1,6 +1,6 @@
 # bot-game-mcp
 
-一个遵循标准 **MCP（Model Context Protocol）** 的 **QQ 群聊桌游引擎**，内置狼人杀、谁是卧底、大话骰和数字炸弹四款游戏。
+一个遵循标准 **MCP（Model Context Protocol）** 的 **QQ 群聊桌游引擎**，内置狼人杀、谁是卧底、大话骰、数字炸弹四款游戏，以及读取私有剧本数据包的剧本杀。
 
 - **程序主导**：座位、身份、词语、骰子、发言顺序、阶段流转、超时托管、结算和胜负，全部由引擎里的程序决定。
 - **AI 裁判只负责推进**：裁判由程序抽签选出，只做三件事——把程序给的消息原样发到群里、通过私聊把身份发给真人、把真人的发言转交给程序。它看不到 AI 玩家的身份，也不能改任何结果。
@@ -56,6 +56,7 @@ flowchart LR
 | `undercover` | 谁是卧底 | 4~12 | 每人只拿到一个词，卧底的词和大家的相近但不同，没人知道自己是不是卧底。内置 250 组词。 |
 | `liars_dice` | 大话骰 | 2~8 | 每人摇骰藏着，轮流叫「N 个 F 点」，不信就开。1 点可以当任意点数，叫错的人扣命。 |
 | `number_bomb` | 数字炸弹 | 2~20 | 轮流猜数，范围越缩越小，猜中炸弹就爆炸。规则简单，适合暖场。 |
+| `jubensha` | 剧本杀 | 按剧本 | 程序负责选角、分幕私发剧本、计时、投票、凶手坦白和公布真相；可指定一个 bot 当 DM 负责念白、答疑和控场（DM 改不了结果）。剧本数据包放在私有目录，不进仓库，格式见 [docs/JUBENSHA.md](docs/JUBENSHA.md)。 |
 
 完整规则、开局选项（`create_game` 的 `options`）和给 AI 玩家的提示见 [docs/GAMES.md](docs/GAMES.md)。运行时也能用 `get_rules` 工具或 `botgame://rules/{game_type}` 资源查看。
 
@@ -194,6 +195,7 @@ sequenceDiagram
 | 谁是卧底 | 描述直接在群里说，说完发 `过`；投票：`投3`，可附理由 `投3 他说天气太宽泛`（理由随结果公开） |
 | 大话骰 | 叫数：`4个6`、`五个三`；开骰：`开` |
 | 数字炸弹 | `50`、`我猜 37` |
+| 剧本杀 | 私聊裁判 `问DM 钥匙有几把`；读完本幕：`读完`；讨论直接在群里说，不想说了发 `过`；投票：`投3`、`弃票`。DM：`回复3 两把`、`下一步`、`延长3分钟` |
 
 座位可以写成 `3`、`3号`、`三号`、`@昵称` 或 QQ 的 @。具体以裁判私聊和群里的提示为准，提示里会写明当前能用的指令。
 
@@ -232,6 +234,10 @@ sequenceDiagram
 | `auth.agents[].keyIssuer` | — | 设为 `true` 的账号能用 `issue_key` / `revoke_key` / `list_keys` 管理运行时发放的密钥，但没有其他管理员权限（不能中止别人的对局，不能 `force`）。适合让某个 bot 的模型自己给新 bot 发密钥 |
 | `auth.issuedKeysFile` | `./data/botgame-keys.json` | 管理员在运行时用 `issue_key` 发放的密钥存在这里（0600），重启仍有效；`null` 关闭运行时发放 |
 | `stateFile` | `./data/botgame-state.json` | 存档文件，重启后对局会继续。设为 `null` 则只存在内存里 |
+| `scriptsDir` | `null` | 剧本杀数据包目录（*.json），新放进去的剧本不用重启。必须是私有目录，不要放在任何 bot 能读到的路径下，见 [docs/JUBENSHA.md](docs/JUBENSHA.md) |
+| `drive` | `null` | 剧本杀线索图放在 Google 云盘：`{"folderId": "...", "credentialsFile": "服务账号密钥.json"}`。开局下载本局要用的图，结束后删除 |
+| `assetsDir` | `null` | 剧本杀线索图放在本地目录（`<目录>/<剧本id>/<文件名>`），没配云盘时使用 |
+| `assetCacheDir` | `./data/asset-cache` | 云盘图片的临时缓存目录 |
 | `auth.mode` | 有 agents 时为 `keys`，否则为 `open` | `keys`：必须带密钥；`open`：用 `login` 认领 QQ 号 |
 | `auth.agents[]` | `[]` | `{ key, id, name, admin? }`，每个 bot 一个密钥 |
 | `auth.adminKeys` | `[]` | 管理员密钥，可以中止任意对局 |
@@ -244,7 +250,7 @@ sequenceDiagram
 | `sessionIdleMinutes` | `30` | HTTP 会话闲置多久后关闭 |
 | `seed` | — | 固定随机种子，**只用于测试复现，生产环境不要设置** |
 
-可以用环境变量覆盖：`BOTGAME_HOST`、`BOTGAME_PORT`、`BOTGAME_STATE_FILE`（设为空字符串表示只用内存）、`BOTGAME_AUTH_MODE`、`BOTGAME_ADMIN_KEY`、`BOTGAME_SEED`。stdio 模式用 `BOTGAME_AGENT_ID`、`BOTGAME_AGENT_NAME`、`BOTGAME_AGENT_ADMIN=1` 指定身份；桥接模式可以用 `BOTGAME_URL`、`BOTGAME_KEY` 代替命令行参数。
+可以用环境变量覆盖：`BOTGAME_HOST`、`BOTGAME_PORT`、`BOTGAME_STATE_FILE`（设为空字符串表示只用内存）、`BOTGAME_AUTH_MODE`、`BOTGAME_ADMIN_KEY`、`BOTGAME_SEED`、`BOTGAME_SCRIPTS_DIR`、`BOTGAME_ASSETS_DIR`、`BOTGAME_DRIVE_FOLDER_ID` + `BOTGAME_DRIVE_CREDENTIALS`。stdio 模式用 `BOTGAME_AGENT_ID`、`BOTGAME_AGENT_NAME`、`BOTGAME_AGENT_ADMIN=1` 指定身份；桥接模式可以用 `BOTGAME_URL`、`BOTGAME_KEY` 代替命令行参数。
 
 密钥可以三种方式携带，任选其一：`Authorization: Bearer <key>`、`X-API-Key: <key>`、URL 参数 `?key=<key>`。URL 参数主要是给只能填地址的旧 SSE 客户端用的。
 

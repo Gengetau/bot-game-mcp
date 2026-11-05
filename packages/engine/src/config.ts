@@ -36,6 +36,21 @@ export const configSchema = z.object({
   maxActiveGames: z.number().int().min(0).default(0),
   /** 只有这些 QQ 号能当裁判（抽签池、候补、接管）；为空则不限制。名单外的 AI 报名「都行」按玩家处理 */
   refereeIds: z.array(z.string().min(1)).default([]),
+  /** 剧本杀数据包目录（私有，放 *.json）；null 则剧本杀没有可用剧本。剧本绝不能放进公开仓库 */
+  scriptsDir: z.string().nullable().default(null),
+  /** 剧本杀线索图（本地）：<assetsDir>/<剧本id>/<文件名>。和 drive 二选一，drive 优先 */
+  assetsDir: z.string().nullable().default(null),
+  /** 剧本杀线索图（Google 云盘，服务账号只读）：根文件夹下每个剧本一个以剧本 id 命名的子文件夹 */
+  drive: z
+    .object({
+      folderId: z.string().min(1),
+      /** 服务账号 JSON 密钥文件路径（私有，不要放进仓库或 bot 能读到的地方） */
+      credentialsFile: z.string().min(1),
+    })
+    .nullable()
+    .default(null),
+  /** 云盘图片的本地缓存目录：开局时下载本局要用的图，对局结束 15 分钟后删除 */
+  assetCacheDir: z.string().default('./data/asset-cache'),
   /** 存档文件；为空则仅内存 */
   stateFile: z.string().nullable().default('./data/botgame-state.json'),
   auth: z
@@ -89,6 +104,11 @@ export function loadConfig(path?: string, env: NodeJS.ProcessEnv = process.env):
   if (env.BOTGAME_PORT) raw.port = Number(env.BOTGAME_PORT);
   if (env.BOTGAME_STATE_FILE !== undefined) raw.stateFile = env.BOTGAME_STATE_FILE || null;
   if (env.BOTGAME_SEED) raw.seed = env.BOTGAME_SEED;
+  if (env.BOTGAME_SCRIPTS_DIR !== undefined) raw.scriptsDir = env.BOTGAME_SCRIPTS_DIR || null;
+  if (env.BOTGAME_ASSETS_DIR !== undefined) raw.assetsDir = env.BOTGAME_ASSETS_DIR || null;
+  if (env.BOTGAME_DRIVE_FOLDER_ID && env.BOTGAME_DRIVE_CREDENTIALS) {
+    raw.drive = { folderId: env.BOTGAME_DRIVE_FOLDER_ID, credentialsFile: env.BOTGAME_DRIVE_CREDENTIALS };
+  }
   if (env.BOTGAME_AUTH_MODE || env.BOTGAME_ADMIN_KEY) {
     raw.auth = { ...(raw.auth ?? {}) };
     if (env.BOTGAME_AUTH_MODE) raw.auth.mode = env.BOTGAME_AUTH_MODE;

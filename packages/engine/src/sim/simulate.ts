@@ -6,6 +6,7 @@ import { GameManager } from '../core/manager.js';
 import { SeededRng } from '../core/rng.js';
 import type { ActionInput, Delivery, GameResult, Identity } from '../core/types.js';
 import { createRegistry } from '../games/index.js';
+import type { ScriptLibrary } from '../games/jubensha/index.js';
 import { toCq } from '../mcp/render.js';
 
 export interface SimulateOptions {
@@ -19,6 +20,8 @@ export interface SimulateOptions {
   format?: 'text' | 'cq';
   maxSteps?: number;
   out?: (line: string) => void;
+  /** 剧本杀剧本库 */
+  scripts?: ScriptLibrary;
 }
 
 export interface SimulateResult {
@@ -53,6 +56,10 @@ export function toHumanText(input: ActionInput): string | null {
       return t !== undefined ? `毒${t}` : null;
     case 'shoot':
       return t !== undefined ? `开枪${t}` : null;
+    case 'ready':
+      return '读完';
+    case 'ask':
+      return input.text ? `问DM ${input.text}` : null;
     case 'claim':
       return '起跳';
     case 'run':
@@ -74,7 +81,7 @@ export async function simulate(o: SimulateOptions): Promise<SimulateResult> {
   const out = o.out ?? ((line: string) => console.log(line));
   const seed = o.seed ?? Date.now();
   let t = Date.UTC(2026, 0, 1, 12, 0, 0);
-  const manager = new GameManager({ registry: createRegistry(), now: () => t, rng: new SeededRng(seed) });
+  const manager = new GameManager({ registry: createRegistry(o.scripts ? { scripts: o.scripts } : {}), now: () => t, rng: new SeededRng(seed) });
   const decide = new SeededRng(`${seed}:afk`);
   const humanCount = Math.max(0, Math.min(o.humans ?? 0, o.players));
   const referee: Identity = { id: '90000', name: '裁判' };

@@ -26,8 +26,8 @@ export interface GameDefinition<O = any> {
   optionsSchema: z.ZodType<O>;
   /** 选项说明：字段名 → 中文说明 */
   optionsHelp: Record<string, string>;
-  /** 开局前根据人数与选项做额外校验，返回错误信息或 null */
-  checkStart?(playerCount: number, options: O): string | null;
+  /** 开局前根据人数与选项（以及报名的玩家，不含裁判）做额外校验，返回错误信息或 null */
+  checkStart?(playerCount: number, options: O, entries?: { id: string; name: string; kind: 'agent' | 'human' }[]): string | null;
   create(rec: GameRecord<any, O>, env: GameEnv): BaseGame<any, O>;
 }
 
