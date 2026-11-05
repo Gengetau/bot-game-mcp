@@ -828,6 +828,14 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
               ? `报名够人后 ${autoStart} 秒没有新人就自动开局`
               : `人齐后发「${prefix} 开局」`;
           await say(`${r.group_message ?? `已开房 ${id}`}\n发「加入」报名；${howStart}。`);
+          // 星璃的模型可能刚在别处发过密钥：开房时再同步一次，免得新 bot 的「加入」被当成真人报名
+          if (keyIssuer) {
+            try {
+              await syncIssuedBots();
+            } catch (e) {
+              log(`[keys] 同步已发放密钥失败：${errMsg(e)}`);
+            }
+          }
           // 只有被 @ 才会醒来的聊天 bot：点名请它们报名
           if (bots.size > 0) {
             await sendGroup([
@@ -866,9 +874,20 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
     }
   }
 
+  /** 密钥相关的调用：引擎重启后旧会话会失效，传输层失败时重连再试一次 */
+  async function keyCall(name: string, args: Record<string, unknown> = {}): Promise<Json> {
+    try {
+      return await keyEngine().call(name, args);
+    } catch (e) {
+      if (!(e instanceof TransportError)) throw e;
+      log(`[keys] ${errMsg(e)}，重连后重试`);
+      return keyEngine().call(name, args);
+    }
+  }
+
   /** 引擎里已发放的密钥对应的 QQ 号并进 bots（开房时会 @ 它们，它们的群消息也不转交） */
   async function syncIssuedBots(): Promise<void> {
-    const r = await keyEngine().call('list_keys');
+    const r = await keyCall('list_keys');
     const ids = (r.keys ?? []).map((k: Json) => String(k.id)).filter((id: string) => !myIds().has(id));
     for (const id of ids) bots.add(id);
     log(`[keys] 已发放密钥的 bot：${ids.length ? ids.join('、') : '无'}`);
@@ -890,10 +909,10 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
           if (!isAdmin) {
             if (!(await inGroup(v, uid))) return void (await reply(`你不在群 ${opts.groupId} 里，不能申请。`));
             if (botId !== uid && !(await inGroup(v, botId))) return void (await reply(`QQ ${botId} 不在群 ${opts.groupId} 里：先把 bot 拉进群再申请。`));
-            const mine = ((await keyEngine().call('list_keys')).keys ?? []).filter((k: Json) => String(k.owner ?? '') === uid && String(k.id) !== botId);
+            const mine = ((await keyCall('list_keys')).keys ?? []).filter((k: Json) => String(k.owner ?? '') === uid && String(k.id) !== botId);
             if (mine.length >= maxKeys) return void (await reply(`你已经申请了 ${mine.length} 把密钥，最多 ${maxKeys} 把。先「撤销密钥 <QQ号>」再申请。`));
           }
-          const r = await keyEngine().call('issue_key', { qq_id: botId, name, owner: uid, ...(isAdmin ? { force: true } : {}) });
+          const r = await keyCall('issue_key', { qq_id: botId, name, owner: uid, ...(isAdmin ? { force: true } : {}) });
           bots.add(botId);
           await reply(
             `✅ 已给 ${name}(${botId}) 发放密钥${r.rotated ? '（旧密钥已作废）' : ''}：\n${r.key}\n\n` +
@@ -908,11 +927,11 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
         case '撤销密钥': {
           const botId = tail[0];
           if (!idOk(botId)) return void (await reply('格式：撤销密钥 <bot的QQ号>'));
-          const keys: Json[] = (await keyEngine().call('list_keys')).keys ?? [];
+          const keys: Json[] = (await keyCall('list_keys')).keys ?? [];
           const entry = keys.find((k) => String(k.id) === botId);
           if (!entry) return void (await reply(`QQ ${botId} 没有发放过密钥。`));
           if (!isAdmin && String(entry.owner ?? '') !== uid) return void (await reply(`QQ ${botId} 的密钥不是你申请的。`));
-          await keyEngine().call('revoke_key', { qq_id: botId });
+          await keyCall('revoke_key', { qq_id: botId });
           bots.delete(botId);
           await reply(`已作废 ${entry.name}(${botId}) 的密钥。`);
           log(`[keys] ${nick}(${uid}) 作废了 ${entry.name}(${botId}) 的密钥`);
@@ -920,7 +939,7 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
         }
         case '密钥列表': {
           if (!isAdmin) return void (await reply('只有管理员能看密钥列表。'));
-          const keys: Json[] = (await keyEngine().call('list_keys')).keys ?? [];
+          const keys: Json[] = (await keyCall('list_keys')).keys ?? [];
           await reply(keys.length ? keys.map((k) => `${k.name}(${k.id}) 申请人 ${k.owner ?? '?'}`).join('\n') : '还没有发放过密钥。');
           return;
         }
@@ -955,6 +974,10 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
     if (!r || !st.game) return;
     if (st.game.status === 'lobby') {
       if (r.accepted && r.message) await say(r.message);
+      else if (r.recognized && /join_game/.test(String(r.message ?? ''))) {
+        bots.add(uid); // 引擎说它持有密钥：以后它的群消息不再当真人转交
+        await sayTo(uid, String(r.message));
+      }
       return;
     }
     if (r.recognized && !r.accepted && r.message) await sayTo(uid, r.message);

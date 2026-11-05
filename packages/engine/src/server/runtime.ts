@@ -34,6 +34,7 @@ export function createRuntime(config: BotGameConfig, log: (msg: string) => void 
     refereeIds: config.refereeIds,
   });
   const auth = new Authenticator(resolveAuth(config), manager, log);
+  manager.isKeyedAgent = (id) => auth.hasKeyFor(id);
   const timer = setInterval(() => {
     try {
       manager.tick();

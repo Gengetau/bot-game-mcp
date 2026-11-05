@@ -151,3 +151,19 @@ describe('refereeIds：裁判只从指定账号里抽', () => {
     expect(() => manager.startGame(bot(7), id)).toThrow(/没有可担任裁判/);
   });
 });
+
+describe('持有密钥的 AI 不能以真人身份报名', () => {
+  it('relay「加入」 and add_human refuse keyed ids and point them to join_game', () => {
+    const { manager } = setup(1);
+    manager.isKeyedAgent = (id) => id === '777';
+    const { summary } = manager.createGame(REF, { type: 'number_bomb', groupId: 'g', joinAs: 'referee' });
+    const id = summary.game_id;
+    const r = manager.relayHumanMessage(REF, id, { userId: '777', nickname: '刺猬', text: '加入', channel: 'group' });
+    expect(r).toMatchObject({ recognized: true, accepted: false });
+    expect(r.message).toContain(`join_game(game_id="${id}"`);
+    expect(() => manager.addHuman(REF, id, { userId: '777', name: '刺猬' })).toThrow(GameError);
+    expect(manager.getRecord(id).lobby.some((e) => e.id === '777')).toBe(false);
+    // 普通真人照常报名
+    expect(manager.relayHumanMessage(REF, id, { userId: '555', nickname: '路人', text: '加入', channel: 'group' }).accepted).toBe(true);
+  });
+});

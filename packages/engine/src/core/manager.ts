@@ -149,6 +149,8 @@ export class GameManager {
   private readonly allowedGroups: Set<string>;
   private readonly maxActiveGames: number;
   private readonly refereeIds: Set<string>;
+  /** 这个 QQ 号是不是持有密钥的 AI（由运行时接到鉴权上）。持有密钥的号不能以真人身份报名。 */
+  isKeyedAgent: (id: string) => boolean = () => false;
 
   private readonly games = new Map<string, GameRecord>();
   private readonly instances = new Map<string, BaseGame>();
@@ -326,6 +328,10 @@ export class GameManager {
     const running = mine.filter((g) => g.status === 'running');
     if (running.length === 1) return running[0]!;
     throw badRequest(`你同时参与了多个对局：${mine.map((g) => g.id).join('、')}，请指定 game_id。`);
+  }
+
+  private keyedAgentNote(rec: GameRecord, name: string): string {
+    return `${name} 是接入了 MCP 的 AI，不能以真人身份报名：请调用 join_game(game_id="${rec.id}", join_as="player")。`;
   }
 
   /** 这个账号能不能当裁判（服务器配置了 refereeIds 时只有名单里的能） */
@@ -518,6 +524,7 @@ export class GameManager {
     const userId = String(human.userId ?? '').trim();
     const name = sanitizeName(String(human.name ?? '')) || userId;
     if (!userId) throw badRequest('需要真人的 QQ 号 qq_id。');
+    if (this.isKeyedAgent(userId)) throw forbidden(this.keyedAgentNote(rec, name));
     const existing = rec.lobby.find((e) => e.id === userId);
     if (existing) {
       if (existing.kind === 'agent') throw badRequest('该 QQ 号已作为 AI 报名。');
@@ -1269,6 +1276,9 @@ export class GameManager {
       this.assertLobbyHelper(rec, actor);
       const t = stripTrailing(normalizeText(text)).replace(/^[\/#！!]/u, '');
       if (/^(加入|报名|上车|参加|我要玩|我玩|join|\+1)/iu.test(t)) {
+        if (this.isKeyedAgent(userId)) {
+          return { recognized: true, accepted: false, message: this.keyedAgentNote(rec, sanitizeName(msg.nickname ?? '') || userId) };
+        }
         const r = this.addHuman(actor, rec.id, { userId, name: msg.nickname ?? userId });
         return { recognized: true, accepted: true, message: r.group_message ?? r.message };
       }
