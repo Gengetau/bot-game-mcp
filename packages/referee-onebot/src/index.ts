@@ -3,7 +3,7 @@
  *
  *   bot-game-referee --url http://127.0.0.1:7700/mcp --key 密钥 \
  *       --onebot ws://127.0.0.1:3001/ [--onebot-token-file 文件] --group 群号 \
- *       [--admins QQ,QQ] [--bots QQ,QQ] [--bot-commands] [--options '{"nudge_ai":true}'] [--voices voices.json]
+ *       [--admins QQ,QQ] [--bots QQ,QQ] [--bot-commands] [--main-plays] [--options '{"nudge_ai":true}'] [--voices voices.json]
  *
  * 它只是一条消息总线：
  *  - 引擎要发的消息（referee_step）按顺序发到群里，或私聊给对应的真人；
@@ -70,6 +70,12 @@ export interface RefereeOptions {
   hostId?: string;
   /** 主账号是否进抽签池（默认 true；false 则主账号只当候补裁判和开房的嗓子） */
   selfInPool?: boolean;
+  /**
+   * 主账号也参赛：开房时不再自动把主账号登记成裁判候选，由它自己的模型像别的 bot 一样 join_game 报名当玩家；
+   * 报名了就进抽签池（抽中则由本进程代行裁判，没抽中就上场玩）。开局前若抽不出别的裁判（没有别的候选，
+   * 或人数只够不能少一个），本进程把主账号改回裁判，它这局坐庄。主账号的模型没报名时和原来一样：它当裁判。
+   */
+  mainPlays?: boolean;
   /**
    * 跟随模式（外接 bot 用）：本进程不开房、不响应「/桌游」指令、不转交报名消息、不当候补裁判。
    * 它只做一件事：自己的账号报名了就登记进裁判抽签池，抽中了就用自己的账号主持（含转交真人消息）。
@@ -361,6 +367,10 @@ interface CurrentGame {
   /** 报名中：已登记代行的账号 */
   hosted: Set<string>;
   lobbyIds: Set<string>;
+  /** 报名中：每个报名者的身份偏好（player / referee / either） */
+  lobbyPref: Map<string, string>;
+  /** 主账号这局是玩家（--main-plays 时由它的模型报名的）；进行中沿用报名时的判断 */
+  mainIsPlayer: boolean;
 }
 
 /** 一个账号：引擎会话 + OneBot 连接。 */
@@ -385,6 +395,7 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
   const hostId = (opts.hostId ?? hostname()).trim().slice(0, 100) || 'referee';
   const follower = opts.follower ?? false;
   const selfInPool = follower ? false : (opts.selfInPool ?? true);
+  const mainPlays = !follower && (opts.mainPlays ?? false);
   const wheelImage = opts.wheelImage ?? true;
 
   let stopped = false;
@@ -495,6 +506,7 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
     `报名：发「加入」；游戏中按提示在群里发指令（如「投3号」），夜间行动私聊本局裁判。` +
     (voices.length > 1 || selfInPool ? `\n裁判由程序在报名的 bot（含我）里抽签决定，抽中谁就用谁的账号主持。` : '') +
     (botCommands && bots.size > 0 ? `\nbot 也可以发「${prefix} <游戏>」开房、「${prefix} 开局」开局。` : '') +
+    (mainPlays ? `\n${main.name} 也会报名当玩家；抽不出别的裁判时它坐庄。` : '') +
     (autoStart > 0 ? `\n报名够人后 ${autoStart} 秒没有新人加入就自动开局；开房时写人数（如「${prefix} 狼人杀 7」）则凑满立刻开局。` : '') +
     (lobbyTimeout > 0 ? `\n人数不够时 ${fmtDuration(lobbyTimeout)} 没有新人报名，房间自动取消。` : '');
 
@@ -533,9 +545,15 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
       refereeIdleS: typeof g.referee_idle_s === 'number' ? g.referee_idle_s : null,
       hosted: new Set(lobby.filter((e) => e.hosted).map((e) => String(e.id))),
       lobbyIds: new Set(lobby.map((e) => String(e.id))),
+      lobbyPref: new Map(lobby.map((e) => [String(e.id), String(e.join_as ?? 'player')])),
+      mainIsPlayer:
+        g.status === 'lobby'
+          ? mainPlays && lobby.some((e) => String(e.id) === main.id && e.join_as !== 'referee')
+          : (!fresh && st.game?.mainIsPlayer) || false,
     };
     if (g.status === 'lobby') {
-      if (!follower && !st.game.lobbyIds.has(main.id)) {
+      // 主账号参赛模式下不自动当裁判候选：它的模型自己报名；抽不出别的裁判时再在开局前改回裁判（见 ensureReferee）
+      if (!follower && !mainPlays && !st.game.lobbyIds.has(main.id)) {
         const j = await main.engine.call('join_game', { game_id: g.game_id, join_as: 'referee' });
         log(`[referee] 已以裁判身份加入 ${g.game_id}`);
         st.game.lobbyIds.add(main.id);
@@ -564,8 +582,8 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
     if (!g || g.status !== 'lobby') return;
     for (const v of voices) {
       if (!v.id || g.hosted.has(v.id)) continue;
-      // 主账号：默认直接进池（它是开房的嗓子）；跟随模式下它和别的账号一样，报名了才进池
-      if (v.main && !follower ? !selfInPool : !g.lobbyIds.has(v.id)) continue;
+      // 主账号：默认直接进池（它是开房的嗓子）；跟随模式和参赛模式下它和别的账号一样，报名了才进池
+      if (v.main && !follower && !mainPlays ? !selfInPool : !g.lobbyIds.has(v.id)) continue;
       try {
         await v.engine.call('referee_offer', { game_id: g.id, host_id: hostId });
         g.hosted.add(v.id);
@@ -594,6 +612,7 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
   /** 开局（指令或自动）。 */
   async function startNow(why: string): Promise<void> {
     if (!st.game || st.game.status !== 'lobby') return;
+    await ensureReferee();
     await offerVoices();
     log(`[referee] 开局 ${st.game.id}（${why}）`);
     const r = await main.engine.call('start_game', { game_id: st.game.id });
@@ -602,35 +621,72 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
     await refreshGame();
   }
 
+  /**
+   * 开局前的人数核算。主账号参赛模式下，若除主账号外抽不出裁判（没有别的候选，或抽走一个玩家后人数不够），
+   * 主账号就得坐庄：它报名了玩家的话，有效人数要减一。
+   */
+  function plan(g: CurrentGame): { effective: number; mainSitsOut: boolean } {
+    if (!mainPlays) return { effective: g.players, mainSitsOut: false };
+    const otherCandidate = [...g.lobbyIds].some((id) => {
+      if (id === main.id) return false;
+      const pref = g.lobbyPref.get(id);
+      if (pref === 'referee' || pref === 'either') return true;
+      return g.hosted.has(id) && g.players - 1 >= g.min;
+    });
+    const mainSitsOut = !otherCandidate;
+    return { effective: g.players - (mainSitsOut && g.mainIsPlayer ? 1 : 0), mainSitsOut };
+  }
+
+  /** 主账号参赛模式：开局前抽不出别的裁判时，把主账号改成裁判候选（它这局坐庄）。 */
+  async function ensureReferee(): Promise<void> {
+    const g = st.game;
+    if (!mainPlays || !g || g.status !== 'lobby') return;
+    const { mainSitsOut } = plan(g);
+    if (!mainSitsOut) return;
+    const wasPlayer = g.mainIsPlayer;
+    await main.engine.call('join_game', { game_id: g.id, join_as: 'referee' });
+    g.lobbyIds.add(main.id);
+    g.lobbyPref.set(main.id, 'referee');
+    g.mainIsPlayer = false;
+    if (wasPlayer) {
+      g.players -= 1;
+      log(`[referee] 抽不出别的裁判，${main.name} 退出玩家席改当裁判`);
+      await say(`人数只够开局、抽不出别的裁判：${main.name} 这局不玩了，坐庄当裁判。`);
+    } else {
+      log(`[referee] 已以裁判身份加入 ${g.id}`);
+    }
+  }
+
   /** 自动开局：报名够人且一段时间没有新人就开；凑满目标人数或上限立刻开。人数不够且长时间没人报名则取消房间。 */
   async function maybeAutoStart(): Promise<void> {
     const g = st.game;
     if (!g || g.status !== 'lobby') return;
     const now = Date.now();
     if (g.players !== st.lobby.count) st.lobby = { count: g.players, changedAt: now, announced: false };
-    if (g.players < g.min) {
+    const { effective } = plan(g);
+    if (effective < g.min) {
       if (lobbyTimeout > 0 && now - st.lobby.changedAt >= lobbyTimeout * 1000) {
         log(`[referee] 房间 ${g.id} 报名 ${fmtDuration(lobbyTimeout)} 没凑够人，取消`);
         await main.engine.call('abort_game', { game_id: g.id, reason: `报名 ${fmtDuration(lobbyTimeout)} 没凑够人` });
-        await say(`⌛ 房间 ${g.id} 报名 ${fmtDuration(lobbyTimeout)} 只有 ${g.players} 人（最少 ${g.min} 人），已取消。想玩再发「${prefix} <游戏>」开房。`);
+        await say(`⌛ 房间 ${g.id} 报名 ${fmtDuration(lobbyTimeout)} 只有 ${effective} 人（最少 ${g.min} 人），已取消。想玩再发「${prefix} <游戏>」开房。`);
         await refreshGame();
       }
       return;
     }
     if (autoStart <= 0) return;
-    if ((g.target && g.players >= g.target) || (g.max > 0 && g.players >= g.max)) return startNow(`已凑满 ${g.players} 人`);
+    if ((g.target && effective >= g.target) || (g.max > 0 && effective >= g.max)) return startNow(`已凑满 ${effective} 人`);
     if (!st.lobby.announced) {
       st.lobby.announced = true;
-      await say(`已有 ${g.players} 人报名（最少 ${g.min} 人）。${autoStart} 秒内没有新人加入就自动开局；发「${prefix} 开局」可以立即开始。`);
+      await say(`已有 ${effective} 人报名（最少 ${g.min} 人）。${autoStart} 秒内没有新人加入就自动开局；发「${prefix} 开局」可以立即开始。`);
       return;
     }
-    if (now - st.lobby.changedAt >= autoStart * 1000) await startNow(`${g.players} 人报名，${autoStart} 秒无人加入`);
+    if (now - st.lobby.changedAt >= autoStart * 1000) await startNow(`${effective} 人报名，${autoStart} 秒无人加入`);
   }
 
   /** 本局裁判是别的进程/别的 AI 时：它失联了就用主账号接管（引擎会核对失联时限和候补资格）。 */
   async function maybeTakeover(): Promise<void> {
     const g = st.game;
-    if (!g || g.status !== 'running' || st.active || !main.id || g.refereeId === main.id) return;
+    if (!g || g.status !== 'running' || st.active || !main.id || g.refereeId === main.id || g.mainIsPlayer) return;
     if (g.refereeIdleS === null || g.refereeIdleS < 60) return;
     if (Date.now() - st.takeoverAt < 15_000) return;
     st.takeoverAt = Date.now();
@@ -731,6 +787,8 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
             refereeIdleS: null,
             hosted: new Set(),
             lobbyIds: new Set([main.id]),
+            lobbyPref: new Map([[main.id, 'referee']]),
+            mainIsPlayer: false,
           };
           st.lastSeq = -1;
           st.lobby = { count: -1, changedAt: 0, announced: false };
@@ -797,17 +855,20 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
   function onEvent(v: Voice, ev: Json): void {
     if (ev.post_type !== 'message') return;
     const uid = String(ev.user_id ?? '');
-    if (!uid || myIds().has(uid)) return;
+    if (!uid) return;
     const nick = String(ev.sender?.card || ev.sender?.nickname || uid).trim() || uid;
     const cq = segmentsToCq(ev.message ?? ev.raw_message ?? '');
     let job: () => Promise<void>;
     if (bots.has(uid)) {
-      // bot 账号的话从不转交；开了 --bot-commands 才认它们的「/桌游」指令（跟随模式不响应任何指令）
+      // bot 账号的话从不转交；开了 --bot-commands 才认它们的「/桌游」指令（跟随模式不响应任何指令）。
+      // 先于「自己的账号」判断：玩家 bot 往往同时是本进程的嗓子账号，它们自己说的话也要能当指令
       if (!botCommands || follower || ev.message_type !== 'group' || String(ev.group_id) !== opts.groupId) return;
       const plain = cqToPlain(cq);
       if (!plain.startsWith(prefix)) return;
       if (dedupe(`${ev.group_id}:${ev.message_id ?? `${uid}:${cq}`}`)) return;
       job = () => handleCommand(uid, nick, plain.slice(prefix.length).trim(), true);
+    } else if (myIds().has(uid)) {
+      return; // 本进程自己账号发的话
     } else if (ev.message_type === 'group') {
       if (String(ev.group_id) !== opts.groupId) return;
       if (dedupe(`${ev.group_id}:${ev.message_id ?? `${uid}:${cq}`}`)) return;
@@ -841,7 +902,7 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
       v.onebot.start();
     }
     log(
-      `[referee] 身份 ${main.name}(${main.id})，群 ${opts.groupId}，引擎 ${opts.url}，host_id ${hostId}${follower ? '，跟随模式' : ''}${botCommands && bots.size > 0 ? '，bot 可开房' : ''}` +
+      `[referee] 身份 ${main.name}(${main.id})，群 ${opts.groupId}，引擎 ${opts.url}，host_id ${hostId}${follower ? '，跟随模式' : ''}${botCommands && bots.size > 0 ? '，bot 可开房' : ''}${mainPlays ? '，主账号参赛' : ''}` +
         (voices.length > 1 ? `，嗓子账号：${voices.filter((v) => !v.main).map((v) => `${v.name}(${v.id})`).join('、')}` : ''),
     );
 
