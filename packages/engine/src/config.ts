@@ -28,8 +28,8 @@ export const configSchema = z.object({
   allowedHosts: z.array(z.string()).optional(),
   /** 兼容旧客户端的 HTTP+SSE 传输（/sse + /messages） */
   legacySse: z.boolean().default(true),
-  /** 只读的公开观战接口 /api/games */
-  publicApi: z.boolean().default(true),
+  /** 只读观战接口 /api/games：true 公开；"keys" 要带有效密钥（Authorization: Bearer）；false 关闭 */
+  publicApi: z.union([z.boolean(), z.literal('keys')]).default(true),
   /** 只允许在这些群号开房；为空则不限制（对外开放时建议配置） */
   allowedGroups: z.array(z.string().min(1)).default([]),
   /** 整个服务器同时最多几局（报名中 + 进行中）；0 为不限制。想「一次只开一场」就设 1 */

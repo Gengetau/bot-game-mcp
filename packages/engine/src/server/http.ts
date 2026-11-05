@@ -180,6 +180,15 @@ export async function startHttpServer(rt: Runtime, log: (msg: string) => void = 
   });
 
   if (config.publicApi) {
+    if (config.publicApi === 'keys') {
+      // 只对持有有效密钥的调用方开放（例如 bot 的桥接程序查自己有没有座位）
+      app.use('/api/games', (req, res, next) => {
+        const a = authenticate(req, res);
+        if (!a.ok) return;
+        if (!a.ctx.identity) return void jsonRpcError(res, 401, 'Unauthorized: 需要 Authorization: Bearer <key> 请求头');
+        next();
+      });
+    }
     app.get('/api/games', (req, res) => {
       res.json({ games: manager.listGames({ groupId: req.query.group_id as string | undefined, includeFinished: req.query.all === '1' }) });
     });

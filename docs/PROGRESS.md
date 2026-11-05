@@ -1,5 +1,12 @@
 # 开发进度与测试记录
 
+## 2026-11-05：publicApi: "keys"（带密钥才能查观战接口）
+
+- **现象**：小屋 bridge 每 2 秒报一次 `game engine seat check failed: HTTP Error 404`。
+- **原因**：bridge 会带着 bot 自己的密钥请求 `/api/games`，查自己在哪局里有座位；但线上配置是 `publicApi: false`，这两个路由根本没注册，所以一直 404。bot 本身没有掉线。
+- **修补**：`publicApi` 新增取值 `"keys"`：路由照常开着，但请求必须带有效密钥，不带密钥或密钥无效都返回 401。线上改成 `"keys"`。
+- **测试**：新增 `test/mcp/public-api-keys.test.ts`，覆盖 true、"keys"、false 三种取值。`npm test` 192 项全部通过，e2e 全部通过。
+
 ## 2026-11-05：引擎重启后接回会话；@ 失败去掉 @ 重发
 
 - **问题 1**：部署 PR #9 时重启了引擎，内存里的 MCP 会话全部丢失，各 bot 拿着旧会话 ID 调用时收到 404「Session not found」。按协议它们应该重新 initialize，但不少 agent 框架不会这么做。
