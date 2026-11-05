@@ -702,11 +702,15 @@ describe('OneBot referee against the real engine', () => {
       qqX.failActions.delete('get_group_member_info');
 
       // 群成员申请：收到密钥，密钥立刻可用，身份是申请时写的昵称
+      // 申请人不是好友：普通私聊被拒，改走群临时会话（带 group_id）
+      qqX.failWhen = (c) => c.action === 'send_private_msg' && c.params.group_id === undefined;
       mark = qqX.calls.length;
       pm(qqX, OTHER, '路人', '/桌游 申请密钥 90001 小外');
-      r = await qqX.waitForCall(privTo(OTHER), 10_000, mark);
+      r = await qqX.waitForCall((c) => privTo(OTHER)(c) && c.params.group_id !== undefined, 10_000, mark);
       expect(replyText(r)).toContain('✅ 已给 小外(90001) 发放密钥');
       expect(replyText(r)).toContain('https://example.test/mcp');
+      expect(Number(r.params.group_id)).toBe(Number(GROUP));
+      qqX.failWhen = null;
       const key1 = replyText(r).match(/bgk_[A-Za-z0-9_-]{32}/)![0];
       expect(await whoamiWith(key1)).toEqual({ id: '90001', name: '小外' });
       expect(qqX.calls.slice(mark).some((c) => c.action === 'get_group_member_info' && String(c.params.user_id) === '90001')).toBe(true);

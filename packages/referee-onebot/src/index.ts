@@ -524,7 +524,14 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
     enqueue(async () => {
       const via = sendable(v);
       try {
-        await via.onebot.call('send_private_msg', { user_id: Number(userId), message: [{ type: 'text', data: { text } }] });
+        const message = [{ type: 'text', data: { text } }];
+        try {
+          await via.onebot.call('send_private_msg', { user_id: Number(userId), message });
+        } catch (e) {
+          // 不是好友：带上群号走群临时会话再发一次（NapCat / Lagrange 等支持 send_private_msg 的 group_id 参数）
+          log(`[referee] 私聊发送失败（${via.name || via.id} → ${userId}）：${errMsg(e)}，改用群临时会话`);
+          await via.onebot.call('send_private_msg', { user_id: Number(userId), group_id: Number(opts.groupId), message });
+        }
       } catch (e) {
         log(`[referee] 私聊发送失败（${via.name || via.id} → ${userId}）：${errMsg(e)}`);
       }
