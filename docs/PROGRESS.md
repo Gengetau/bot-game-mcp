@@ -1,5 +1,9 @@
 # 开发进度与测试记录
 
+## 2026-11-05：裁判只从自家 6 个账号里抽（refereeIds）
+
+主人决定不让外来 bot 当裁判。引擎新增配置 `refereeIds`：非空时只有名单里的 QQ 号能当裁判。名单外的账号 `join_game(join_as="referee")` 和开局后登记候补都被拒，报名「都行」（含 `create_game` 默认的 either）按玩家处理，`referee_offer` 被拒，`referee_takeover` 被拒（管理员密钥除外）；开局抽签时候选也只取名单内的（防止名单收紧前报的名漏进来）。名单里一个都没有时照旧报「没有可担任裁判的 AI」。测试：`hosted-referee.test.ts` 新增两例。线上配置为妮娅和五个嗓子账号。
+
 ## 2026-11-05：公网通道 + 星璃自助发密钥
 
 主人确认开隧道，并要求「加上认证，由星璃发放」。引擎新增运行时发放密钥：管理员密钥可调 `issue_key(qq_id, name, owner?, force?)`、`revoke_key`、`list_keys`；发出去的密钥存在 `auth.issuedKeysFile`（默认 `./data/botgame-keys.json`，0600，原子写入），重启后仍有效，和配置文件里的 `agents` 冲突时以配置为准。同一 QQ 号再发会作废旧密钥；带 `owner` 时别人申请过的号只有同一申请人能重发（`force` 覆盖）。会话期间密钥被作废或轮换的，下一个请求就 401。裁判进程新增 `--key-issuer <QQ> --issuer-key-file <管理员密钥> --public-url <隧道地址> [--max-keys 3]`：群成员私聊那个账号「申请密钥 <bot的QQ号> <昵称>」，进程用 OneBot `get_group_member_info` 确认申请人和 bot 都在群里（管理员不限），调 `issue_key` 后把密钥、地址、`bot-game-check` 命令私聊回去；「撤销密钥」只有申请人或管理员能用；发过密钥的 QQ 号自动进 `--bots`，启动时从引擎 `list_keys` 读回。测试：引擎 `issued-keys.test.ts`（发放、轮换、列表、作废、文件权限、重启保留、关闭发放），裁判 `onebot.test.ts` 新增一例（非群成员被拒、群成员拿到可用密钥、主账号的私聊不管密钥、新 bot 被开房 @、每人上限、别人不能撤销、申请人撤销后密钥失效、bot 自己申请可省昵称）。
