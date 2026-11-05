@@ -797,17 +797,20 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
   function onEvent(v: Voice, ev: Json): void {
     if (ev.post_type !== 'message') return;
     const uid = String(ev.user_id ?? '');
-    if (!uid || myIds().has(uid)) return;
+    if (!uid) return;
     const nick = String(ev.sender?.card || ev.sender?.nickname || uid).trim() || uid;
     const cq = segmentsToCq(ev.message ?? ev.raw_message ?? '');
     let job: () => Promise<void>;
     if (bots.has(uid)) {
-      // bot 账号的话从不转交；开了 --bot-commands 才认它们的「/桌游」指令（跟随模式不响应任何指令）
+      // bot 账号的话从不转交；开了 --bot-commands 才认它们的「/桌游」指令（跟随模式不响应任何指令）。
+      // 先于「自己的账号」判断：玩家 bot 往往同时是本进程的嗓子账号，它们自己说的话也要能当指令
       if (!botCommands || follower || ev.message_type !== 'group' || String(ev.group_id) !== opts.groupId) return;
       const plain = cqToPlain(cq);
       if (!plain.startsWith(prefix)) return;
       if (dedupe(`${ev.group_id}:${ev.message_id ?? `${uid}:${cq}`}`)) return;
       job = () => handleCommand(uid, nick, plain.slice(prefix.length).trim(), true);
+    } else if (myIds().has(uid)) {
+      return; // 本进程自己账号发的话
     } else if (ev.message_type === 'group') {
       if (String(ev.group_id) !== opts.groupId) return;
       if (dedupe(`${ev.group_id}:${ev.message_id ?? `${uid}:${cq}`}`)) return;

@@ -424,9 +424,10 @@ describe('OneBot referee against the real engine', () => {
     }
   }, 60_000);
 
-  it('bot-commands: a bot account may open a room and start it, but not abort; other bot chatter stays ignored', async () => {
+  it('bot-commands: a bot account (also a voice of this process) may open a room and start it, but not abort; other bot chatter stays ignored', async () => {
     const qq3 = new FakeOneBot('tok3');
-    await qq3.start();
+    const qq3v = new FakeOneBot('tok3v');
+    await Promise.all([qq3.start(), qq3v.start()]);
     const ac3 = new AbortController();
     const lines: string[] = [];
     const done = runReferee({
@@ -438,6 +439,9 @@ describe('OneBot referee against the real engine', () => {
       admins: [OWNER],
       bots: [AI_ID],
       botCommands: true,
+      // 线上玩家 bot 同时也是本进程的嗓子账号：它自己发的指令不能被当成「自己的话」丢掉
+      voices: [{ key: KEYS.ai, onebotUrl: qq3v.url, onebotToken: 'tok3v' }],
+      hostId: 'bot-cmd-host',
       stepWaitSeconds: 1,
       sendGapMs: 0,
       autoStartSeconds: 0,
@@ -448,10 +452,14 @@ describe('OneBot referee against the real engine', () => {
         logs.push(l);
       },
     });
-    await qq3.waitForConnection();
+    await Promise.all([qq3.waitForConnection(), qq3v.waitForConnection()]);
     const send3 = (c: ApiCall) => c.action === 'send_group_msg' && String(c.params.group_id) === GROUP;
-    const msg3 = (uid: string, nick: string, t: string) =>
-      qq3.emit({ post_type: 'message', message_type: 'group', sub_type: 'normal', group_id: Number(GROUP), user_id: Number(uid), message_id: ++msgSeq, sender: { user_id: Number(uid), nickname: nick, card: '' }, message: text(t), raw_message: t });
+    // 两个账号都在群里，同一条群消息两边都会收到
+    const msg3 = (uid: string, nick: string, t: string) => {
+      const ev = { post_type: 'message', message_type: 'group', sub_type: 'normal', group_id: Number(GROUP), user_id: Number(uid), message_id: ++msgSeq, sender: { user_id: Number(uid), nickname: nick, card: '' }, message: text(t), raw_message: t };
+      qq3.emit(ev);
+      qq3v.emit(ev);
+    };
     try {
       // bot 开房
       let mark = qq3.calls.length;
@@ -481,6 +489,7 @@ describe('OneBot referee against the real engine', () => {
       ac3.abort();
       await Promise.race([done, new Promise((res) => setTimeout(res, 5000))]);
       await qq3.close();
+      await qq3v.close();
     }
   }, 60_000);
 
