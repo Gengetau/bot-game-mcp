@@ -23,6 +23,8 @@ import {
   resolveSeat,
   sanitizeName,
   sanitizeUserText,
+  cqToSpeech,
+  splitTrailingEnd,
   stripTrailing,
 } from './text.js';
 import type {
@@ -127,6 +129,8 @@ export interface RefereeStepResult {
   finished: boolean;
   /** true：裁判事务由代行进程执行，这次调用没有推进也没有消息（调用方这局休息） */
   hosted?: true;
+  /** 现在不该在群里说话的 AI 玩家 QQ 号（秘密阶段，例如狼人杀的夜晚；出局的不算）。代码裁判据此撤回并禁言。 */
+  quiet_ids?: string[];
 }
 
 export interface RelayResult {
@@ -597,13 +601,15 @@ export class GameManager {
 
     // —— 1. 抽签选裁判（程序决定）——
     // 名单外的账号（比如名单收紧之前报的名）不进任何裁判候选
-    const agents = rec.lobby.filter((e) => e.kind === 'agent' && this.canReferee(e.id));
+    const must = new Set((def.mustPlay?.(rec.options as never) ?? []).filter(Boolean));
+    const mustPlay = (e: LobbyEntry) => must.has(e.id) || must.has(e.name);
+    const agents = rec.lobby.filter((e) => e.kind === 'agent' && this.canReferee(e.id) && !mustPlay(e));
     let referee: LobbyEntry | null = null;
     let standby: LobbyEntry[] = [];
     const refPref = agents.filter((e) => e.pref === 'referee');
     const either = agents.filter((e) => e.pref === 'either');
     // 代行登记过的账号组成抽签池：非玩家的候选随时可抽；玩家报名的候选只有在抽走一人后人数仍够时才可抽
-    const playerCount = rec.lobby.filter((e) => e.pref !== 'referee').length;
+    const playerCount = rec.lobby.filter((e) => e.pref !== 'referee' || mustPlay(e)).length;
     const pool = agents.filter((e) => e.hostedBy && (e.pref === 'referee' || playerCount - 1 >= def.minPlayers));
     let draw: RefereeDraw | null = null;
     if (!rec.autoReferee) {
@@ -627,7 +633,7 @@ export class GameManager {
     }
 
     // —— 2. 确定玩家并检查人数 ——
-    const entries = rec.lobby.filter((e) => e !== referee && e.pref !== 'referee');
+    const entries = rec.lobby.filter((e) => e !== referee && (e.pref !== 'referee' || mustPlay(e)));
     const n = entries.length;
     if (n < def.minPlayers || n > def.maxPlayers) {
       throw invalidState(
@@ -1174,6 +1180,12 @@ export class GameManager {
    * 裁判的「推进」：处理超时/结算 → 交出到期的待发消息 → 开放下一阶段。
    * 消息按 seq 顺序交付；since_seq 可用于重发（例如上一批没发出去）。
    */
+  /** 秘密阶段里不该在群里说话的存活 AI 玩家。 */
+  private quietIds(rec: GameRecord): string[] {
+    if (rec.status !== 'running' || !rec.phase?.secret) return [];
+    return rec.players.filter((p) => p.alive && p.kind !== 'human').map((p) => p.id);
+  }
+
   async refereeStep(
     actor: Identity,
     gameId: string | undefined,
@@ -1256,6 +1268,7 @@ export class GameManager {
       waiting_for: this.refereeWaiting(rec),
       next_call_hint: hint,
       finished,
+      quiet_ids: this.quietIds(rec),
     };
   }
 
@@ -1303,11 +1316,11 @@ export class GameManager {
     if (rec.status === 'running' && this.isReferee(rec, actor) && this.hostedElsewhere(rec, msg.hostId)) {
       return { recognized: false, accepted: false, message: this.hostedNote(rec) };
     }
-    const text = this.stripAddressing(String(msg.text ?? ''), rec, actor);
+    const addressed = this.stripAddressing(String(msg.text ?? ''), rec, actor);
 
     if (rec.status === 'lobby') {
       this.assertLobbyHelper(rec, actor);
-      const t = stripTrailing(normalizeText(text)).replace(/^[\/#！!]/u, '');
+      const t = stripTrailing(normalizeText(addressed)).replace(/^[\/#！!]/u, '');
       if (/^(加入|报名|上车|参加|我要玩|我玩|join|\+1)/iu.test(t)) {
         if (this.isKeyedAgent(userId)) {
           return { recognized: true, accepted: false, message: this.keyedAgentNote(rec, sanitizeName(msg.nickname ?? '') || userId) };
@@ -1333,6 +1346,8 @@ export class GameManager {
     }
     const inst = this.inst(rec);
     const channel = msg.channel === 'private' ? 'private' : 'group';
+    // QQ 的 @ 变成「@昵称」（@ 局外的人、回复引用、图片表情去掉），发言里就不会出现 CQ 码；「投@昵称」仍能识别
+    const text = cqToSpeech(addressed, rec.players);
     if (channel === 'private' && !msg.action && isIdentityQuery(text)) {
       const n = this.resendRole(rec, inst, player.seat);
       this.pump(rec, inst, false);
@@ -1343,12 +1358,32 @@ export class GameManager {
     const structured = Boolean(msg.action);
     if (msg.action) input = this.normalizeInput(rec, msg.action as ActionInput & Record<string, unknown>);
     else input = inst.parseCommand(player.seat, text, channel);
+    // 发言末尾带「过」：先记发言，再结束发言
+    let endAfter = false;
+    if (input?.action === 'speech' && input.text !== undefined && !structured) {
+      const sp = splitTrailingEnd(input.text);
+      if (sp.end && sp.body) {
+        input = { ...input, text: sp.body };
+        endAfter = true;
+      }
+    }
     if (input?.text !== undefined) input = { ...input, text: sanitizeUserText(input.text) };
     if (!input) {
       return { recognized: false, accepted: false, message: '不是当前阶段的游戏指令，已忽略（无需处理）。' };
     }
     try {
+      const phaseBefore = rec.phase ? `${rec.phase.key}@${rec.phase.openedAt}` : '';
       const fb = inst.onAction(player.seat, input, { via: 'relay', channel });
+      // 只结束同一个阶段里自己的发言（一句话就自动轮到下一阶段的游戏，不能误结束下一轮）
+      const samePhase = rec.phase ? `${rec.phase.key}@${rec.phase.openedAt}` === phaseBefore : false;
+      if (endAfter && samePhase && rec.status === 'running') {
+        try {
+          inst.onAction(player.seat, { action: 'end_speech' }, { via: 'relay', channel });
+        } catch (e) {
+          // 有的游戏一句话就结束本轮发言，这里再结束会报错：忽略
+          if (!(e instanceof GameError)) throw e;
+        }
+      }
       if (structured) {
         inst.systemTell(player.seat, `🧾 裁判已代你提交指令：${this.describeInput(input)}。如非本意请立即私聊裁判。`, 'feedback');
       } else if (channel === 'private' && fb) {

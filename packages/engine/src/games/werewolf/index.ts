@@ -41,14 +41,17 @@ const optionsSchema = z.object({
     })
     .optional(),
   win_mode: z.enum(['auto', 'side', 'all']).default('auto'),
-  claim_phase: z.boolean().default(true),
+  claim_phase: z.boolean().default(false),
   claim_timeout_s: secondsOption(30),
   second_round: z.boolean().default(false),
   second_round_timeout_s: secondsOption(60),
   sheriff: z.union([z.boolean(), z.literal('auto')]).default('auto'),
   sheriff_signup_timeout_s: secondsOption(30),
+  sheriff_order_timeout_s: secondsOption(30),
   badge_timeout_s: secondsOption(30),
   witch_self_save: z.enum(['first_night', 'never', 'always']).default('first_night'),
+  /** 女巫能否看到刀口：until_antidote（常见规则：解药用掉后就看不到）/ always（没解药也告诉她） */
+  witch_sees_victim: z.enum(['until_antidote', 'always']).default('until_antidote'),
   first_night_last_words: z.boolean().default(true),
   night_timeout_s: secondsOption(60),
   witch_timeout_s: secondsOption(40),
@@ -116,6 +119,7 @@ type Step =
   | { t: 'discussion' }
   | { t: 'speech'; seat: Seat; second?: boolean }
   | { t: 'claim' }
+  | { t: 'sheriff_order' }
   | { t: 'sheriff_signup' }
   | { t: 'sheriff_speech'; seat: Seat }
   | { t: 'sheriff_vote'; candidates: Seat[]; pk: boolean }
@@ -166,6 +170,10 @@ export interface WerewolfState {
   sheriffElected?: boolean;
   /** 今天起跳的玩家（按起跳先后）。 */
   claims?: Seat[];
+  /** 今天天亮时公布的昨夜死者（定发言起点用）。 */
+  dawnDeaths?: Seat[];
+  /** 警长今天定的发言方向：1=顺序（号码从小到大），-1=逆序。没定时为空。 */
+  orderDir?: 1 | -1 | null;
   /** 每晚发生了什么（结束后在群里复盘）。 */
   nightLog?: NightRecord[];
 }
@@ -182,16 +190,16 @@ const RULES = `## 狼人杀
 1. 🌙 夜晚（秘密）：守卫守人 → 狼人刀人（多狼取最多票，平票随机，可空刀；提交后到阶段结束前可改刀，可用私聊密谈）→ 预言家验人（立即得知结果）。
 2. 女巫：若有药，得知被刀的人（仅当还有解药时），可救 / 毒 / 不用，同夜最多用一瓶。
 3. ☀️ 天亮：公布死亡名单（不说死因）或平安夜。被刀的人：被守或被救则活，**同守同救则死**。第一夜死者有遗言；猎人被刀死可开枪（被毒死不能）。**胜负判定优先**：若这次死亡已使某一方满足胜利条件，游戏立即结束，不再有猎人开枪和遗言。
-4. 👮 警长竞选（\`sheriff\`，默认 8 人及以上开启）：仅第 1 天，在讨论前进行。想当警长的发「上警」→ 上警者依次竞选发言 → 未上警的人投票；平票则平票者再发言、再投一次，仍平票则警徽流失；只有一人上警直接当选。警长放逐投票算 **1.5 票**，每天**最后发言归票**（发言从警长下一位开始）；警长出局时（遗言后）可「警徽给3」移交或「撕警徽」。
-5. 🙋 起跳（\`claim_phase\`，默认开启；当天有警长竞选则跳过）：讨论前限时报名，发「起跳」的人按起跳先后**最先发言**，其余人随后。起跳只决定顺序，真跳悍跳都可以，具体内容在发言里讲。
-6. 🗣 依次发言（随机玩家起顺时针，真人说完发「过」；\`second_round\` 开启时所有人再补充发言一轮）→ 🗳 投票放逐得票最多者；平票则平票者 PK 发言，再由其他人投票，仍平票则无人出局。
+4. 👮 警长竞选（\`sheriff\`，默认 8 人及以上开启）：仅第 1 天，在讨论前进行。想当警长的发「上警」→ 上警者依次竞选发言 → 未上警的人投票；平票则平票者再发言、再投一次，仍平票则警徽流失；只有一人上警直接当选。警长放逐投票算 **1.5 票**，每天讨论前由警长**决定发言顺序**（「顺序」号码从小到大 /「逆序」从大到小；昨夜单死时从死者的下一位开始，否则从警长的下一位开始），警长**最后发言归票**；警长出局时（遗言后）可「警徽给3」移交或「撕警徽」。
+5. 🙋 起跳（\`claim_phase\`，默认关闭；有警长或当天有警长竞选时跳过）：讨论前限时报名，发「起跳」的人按起跳先后**最先发言**，其余人随后。起跳只决定顺序，真跳悍跳都可以，具体内容在发言里讲。
+6. 🗣 依次发言（有警长按警长定的顺序；没有警长时，昨夜单死从死者的下一位开始，否则随机起点，方向随机；真人说完发「过」；\`second_round\` 开启时所有人再补充发言一轮）→ 🗳 投票放逐得票最多者；平票则平票者 PK 发言，再由其他人投票，仍平票则无人出局。
 7. 被放逐者有遗言；猎人可开枪；白痴被放逐则翻牌免死但失去投票权。同样，若放逐（或猎人开枪）已使某一方满足胜利条件，游戏立即结束，不再有猎人开枪和遗言。
 **胜负**：狼人全灭 → 好人胜。\`win_mode=side\`（屠边）：所有神职死光 或 所有村民死光 → 狼人胜；\`all\`（屠城）：所有好人死光 → 狼人胜；\`auto\`（默认）：6~7 人屠城、8 人及以上屠边。结束时公布身份并**复盘每一夜**（刀谁、守谁、救/毒、验人结果）。
-**选项**：\`witch_self_save\`（first_night 默认/never/always）、\`first_night_last_words\`、各阶段超时（秒）、\`night_min_s\`（夜晚与女巫阶段最短时长，默认 20 秒，防止通过结算速度推断谁还活着；只要板子里有女巫，每晚都会开启女巫阶段，女巫死亡或药用完时只是空等）。
+**选项**：\`witch_self_save\`（first_night 默认/never/always）、\`witch_sees_victim\`（until_antidote 默认：解药用掉后看不到刀口，这是常见规则；always：没解药也告诉女巫刀口）、\`first_night_last_words\`、各阶段超时（秒）、\`night_min_s\`（夜晚与女巫阶段最短时长，默认 20 秒，防止通过结算速度推断谁还活着；只要板子里有女巫，每晚都会开启女巫阶段，女巫死亡或药用完时只是空等）。
 **超时**：未行动视为放弃（空刀/空守/不用药/弃票/过）；发言超时会公告，投票结果里「未投票（超时）」和主动「弃票」分开标出。连续 6 个昼夜无人死亡视为平局。
 
-**真人指令**：夜间私聊——狼人「刀3」「空刀」、预言家「验3」、守卫「守3」「空守」、女巫「救」「毒3」「不用」；白天——「上警」「不上警」、「起跳」「不跳」，发言直接说，结束发「过」；投票「投3」「弃票」；猎人「开枪3」「不开枪」；警长出局「警徽给3」「撕警徽」。
-**bot 指令**：\`act({"action":"kill|check|guard|save|poison|vote|shoot|run|claim|pass_badge|skip","target":N})\`；发言 \`speak({"text":"…"})\`；狼人夜间密谈 \`speak({"text":"…","channel":"team"})\`。`;
+**真人指令**：夜间私聊——狼人「刀3」「空刀」、预言家「验3」、守卫「守3」「空守」、女巫「救」「毒3」「不用」；白天——「上警」「不上警」、警长定序「顺序」「逆序」，发言直接说，结束发「过」；投票「投3」「弃票」；猎人「开枪3」「不开枪」；警长出局「警徽给3」「撕警徽」。
+**bot 指令**：\`act({"action":"kill|check|guard|save|poison|vote|shoot|run|claim|forward|backward|pass_badge|skip","target":N})\`；发言 \`speak({"text":"…"})\`；狼人夜间密谈 \`speak({"text":"…","channel":"team"})\`。`;
 
 export class WerewolfGame extends BaseGame<WerewolfState, WerewolfOptions> {
   // ───────────────────────── 基础查询 ─────────────────────────
@@ -289,7 +297,7 @@ export class WerewolfGame extends BaseGame<WerewolfState, WerewolfOptions> {
 
     const mode = this.winMode() === 'side' ? '屠边（神职或村民全灭，狼人胜）' : '屠城（好人全灭，狼人胜）';
     const extras = [
-      this.sheriffEnabled() ? '第1天先竞选警长（警长 1.5 票、最后发言归票）' : '',
+      this.sheriffEnabled() ? '第1天先竞选警长（警长 1.5 票、决定发言顺序、最后发言归票）' : '',
       this.options.claim_phase ? '每天发言前有起跳环节（起跳者先发言）' : '',
       this.options.second_round ? '每天两轮发言' : '',
     ].filter(Boolean);
@@ -333,6 +341,9 @@ export class WerewolfGame extends BaseGame<WerewolfState, WerewolfOptions> {
         break;
       case 'claim':
         this.afterClaim();
+        break;
+      case 'sheriff_order':
+        this.state.orderDir = ph.data.dir === -1 ? -1 : 1;
         break;
       case 'sheriff_signup':
         this.afterSignup();
@@ -384,6 +395,8 @@ export class WerewolfGame extends BaseGame<WerewolfState, WerewolfOptions> {
         return this.openSpeech(step.second ? 'speech2' : 'speech', step.seat);
       case 'claim':
         return this.openClaim();
+      case 'sheriff_order':
+        return this.openSheriffOrder();
       case 'sheriff_signup':
         return this.openSignup();
       case 'sheriff_speech':
@@ -397,6 +410,10 @@ export class WerewolfGame extends BaseGame<WerewolfState, WerewolfOptions> {
       case 'hunter':
         return this.openHunter(step.seat);
       case 'discussion':
+        if (this.sheriffSeat() && !this.state.orderDir) {
+          this.push({ t: 'sheriff_order' }, { t: 'discussion' });
+          return false;
+        }
         this.startDiscussion();
         return false;
       case 'vote':
@@ -561,6 +578,10 @@ export class WerewolfGame extends BaseGame<WerewolfState, WerewolfOptions> {
     return rule === 'always' || (rule === 'first_night' && this.rec.round === 1);
   }
 
+  private witchSeesVictim(hasAntidote: boolean): boolean {
+    return hasAntidote || this.options.witch_sees_victim === 'always';
+  }
+
   private openWitch(): boolean {
     // 板子里只要有女巫，每晚都开启女巫阶段（女巫死亡/药用完时 requests 为空），
     // 否则公开的阶段名与倒计时会泄露女巫是否存活、是否还有药。
@@ -573,7 +594,7 @@ export class WerewolfGame extends BaseGame<WerewolfState, WerewolfOptions> {
       if (!p.antidote && !p.poison) continue;
       const actions: ActionSpec[] = [];
       let info: string;
-      if (p.antidote) info = t.victim ? `今晚 ${t.victim}号 被狼人袭击。` : '今晚无人被狼人袭击（平安夜）。';
+      if (this.witchSeesVictim(p.antidote)) info = t.victim ? `今晚 ${t.victim}号 被狼人袭击。` : '今晚无人被狼人袭击（平安夜）。';
       else info = '你的解药已用完，无法得知今晚谁被袭击。';
       if (p.antidote && t.victim && this.selfSaveOk(w, t.victim)) {
         actions.push({ action: 'save', label: '使用解药', example: 'act({"action":"save"})', command: '救' });
@@ -667,6 +688,8 @@ export class WerewolfGame extends BaseGame<WerewolfState, WerewolfOptions> {
     this.state.speeches = [];
     this.state.claims = [];
     this.state.order = [];
+    this.state.orderDir = null;
+    this.state.dawnDeaths = deaths.map((d) => d.seat);
     this.state.tonight = { victim: 0, guarded: [], saved: false, poisons: [] };
     for (const d of deaths) this.markDead(d.seat, d.cause, `第${n}夜`);
     this.announce(
@@ -680,7 +703,7 @@ export class WerewolfGame extends BaseGame<WerewolfState, WerewolfOptions> {
     const day: Step[] = [];
     const election = this.sheriffEnabled() && !this.state.sheriffElected;
     if (election) day.push({ t: 'sheriff_signup' });
-    else if (this.options.claim_phase) day.push({ t: 'claim' });
+    else if (this.options.claim_phase && !this.sheriffSeat()) day.push({ t: 'claim' });
     day.push({ t: 'discussion' });
     this.push(...day);
     this.afterDeaths(deaths, n === 1 && this.options.first_night_last_words);
@@ -815,24 +838,47 @@ export class WerewolfGame extends BaseGame<WerewolfState, WerewolfOptions> {
     return '发言已记录。';
   }
 
+  /** 从 anchor 的下一位起，按 dir 方向绕一圈的存活座位（不含 anchor 本身）。 */
+  private ring(anchor: Seat, dir: 1 | -1): Seat[] {
+    const n = this.players.length;
+    const out: Seat[] = [];
+    for (let k = 1; k <= n; k++) {
+      const s = ((((anchor - 1 + dir * k) % n) + n) % n) + 1;
+      if (s !== anchor && this.isAlive(s)) out.push(s);
+    }
+    return out;
+  }
+
+  /** 昨夜单死时返回死者座位，否则 0。 */
+  private singleDawnDeath(): Seat {
+    const dd = (this.state.dawnDeaths ?? []).filter((s) => !this.isAlive(s));
+    return dd.length === 1 ? dd[0]! : 0;
+  }
+
   private startDiscussion(): void {
     const alive = this.aliveSeats();
     const sheriff = this.sheriffSeat();
+    const dead = this.singleDawnDeath();
     let order: Seat[];
+    let how = '';
     if (sheriff) {
-      // 警长最后发言归票：从警长下一位开始
-      const i = alive.indexOf(sheriff);
-      order = this.orderFrom(alive[(i + 1) % alive.length]!, alive).filter((s) => s !== sheriff);
+      // 警长定方向；单死从死者下一位开始，否则从警长下一位开始；警长最后发言归票
+      const dir = this.state.orderDir ?? 1;
+      order = this.ring(dead || sheriff, dir).filter((s) => s !== sheriff);
+      order.push(sheriff);
+      how = `警长 ${sheriff}号 定${dir === 1 ? '顺序' : '逆序'}，从${dead ? `昨夜死者 ${dead}号` : '警长'}的下一位开始，警长最后发言归票`;
+    } else if (dead) {
+      order = this.ring(dead, this.rng.int(2) === 0 ? 1 : -1);
+      how = `从昨夜死者 ${dead}号 的下一位开始`;
     } else {
       order = this.orderFrom(pick(this.rng, alive), alive);
+      if (this.rng.int(2) === 0) order = [order[0]!, ...order.slice(1).reverse()];
     }
-    const claims = (this.state.claims ?? []).filter((s) => order.includes(s));
+    this.state.orderDir = null;
+    const claims = sheriff ? [] : (this.state.claims ?? []).filter((s) => order.includes(s));
     order = [...claims, ...order.filter((s) => !claims.includes(s))];
-    if (sheriff) order.push(sheriff);
     this.state.order = order;
-    const notes = [claims.length ? `起跳的 ${claims.map((s) => `${s}号`).join('、')} 先发言` : '', sheriff ? `警长 ${sheriff}号 最后发言归票` : '']
-      .filter(Boolean)
-      .join('，');
+    const notes = [claims.length ? `起跳的 ${claims.map((s) => `${s}号`).join('、')} 先发言` : '', how].filter(Boolean).join('，');
     this.announce(
       `🗣️ 第${this.rec.round}天讨论开始，发言顺序：${order.map((s) => this.label(s)).join(' → ')}。${notes ? `（${notes}）` : ''}` +
         (this.options.second_round ? '\n本轮结束后还有一轮补充发言，然后投票。' : ''),
@@ -840,6 +886,46 @@ export class WerewolfGame extends BaseGame<WerewolfState, WerewolfOptions> {
     const steps: Step[] = order.map((seat): Step => ({ t: 'speech', seat }));
     if (this.options.second_round) steps.push(...order.map((seat): Step => ({ t: 'speech', seat, second: true })));
     this.push(...steps, { t: 'vote' });
+  }
+
+  // ───────────────────────── 警长定发言顺序 ─────────────────────────
+
+  private openSheriffOrder(): boolean {
+    const sheriff = this.sheriffSeat();
+    if (!sheriff) return false;
+    const secs = this.options.sheriff_order_timeout_s;
+    const dead = this.singleDawnDeath();
+    const from = dead ? `昨夜单死，从死者 ${dead}号 的下一位开始` : '从警长的下一位开始';
+    this.announce(
+      `👮 请警长 ${this.at(sheriff)} 在 ${secs} 秒内决定今天的发言顺序：发「顺序」（号码从小到大）或「逆序」（号码从大到小）。${from}，警长最后发言归票。超时按顺序。`,
+    );
+    this.openPhase({
+      key: 'sheriff_order',
+      title: `第${this.rec.round}天·警长定发言顺序`,
+      requests: [
+        {
+          seat: sheriff,
+          channel: 'group',
+          prompt: `你是警长，请决定今天的发言方向（${from}，你最后发言归票）。`,
+          actions: [
+            { action: 'forward', label: '顺序（号码从小到大）', example: 'act({"action":"forward"})', command: '顺序' },
+            { action: 'backward', label: '逆序（号码从大到小）', example: 'act({"action":"backward"})', command: '逆序' },
+          ],
+        },
+      ],
+      timeoutMs: secs * 1000,
+      data: {},
+    });
+    return true;
+  }
+
+  private sheriffOrderAction(seat: Seat, input: ActionInput): string {
+    this.requireTurn(seat, input.action);
+    if (input.action === 'forward') this.phase!.data.dir = 1;
+    else if (input.action === 'backward') this.phase!.data.dir = -1;
+    else throw invalidAction('警长定序可执行：forward（顺序）、backward（逆序）。');
+    this.markDone(seat);
+    return input.action === 'forward' ? '你选择了顺序发言。' : '你选择了逆序发言。';
   }
 
   // ───────────────────────── 起跳 ─────────────────────────
@@ -1233,6 +1319,7 @@ export class WerewolfGame extends BaseGame<WerewolfState, WerewolfOptions> {
     if (key === 'hunter') return this.hunterAction(seat, input);
     if (key === 'vote' || key === 'pk_vote' || key === 'sheriff_vote') return this.voteAction(seat, input);
     if (key === 'claim') return this.claimAction(seat, input);
+    if (key === 'sheriff_order') return this.sheriffOrderAction(seat, input);
     if (key === 'sheriff_signup') return this.signupAction(seat, input);
     if (key === 'badge') return this.badgeAction(seat, input);
     if (key && SPEECH_KEYS.has(key)) return this.speechAction(seat, input, meta);
@@ -1262,7 +1349,7 @@ export class WerewolfGame extends BaseGame<WerewolfState, WerewolfOptions> {
     if (role === 'witch') {
       const p = this.state.potions[String(seat)]!;
       view.potions = { antidote: p.antidote ? '有' : '已用', poison: p.poison ? '有' : '已用' };
-      if (ph?.key === 'witch' && this.pendingOf(seat) && p.antidote) view.tonight_victim = this.state.tonight.victim || '无人被刀';
+      if (ph?.key === 'witch' && this.pendingOf(seat) && this.witchSeesVictim(p.antidote)) view.tonight_victim = this.state.tonight.victim || '无人被刀';
       view.witch_self_save = this.options.witch_self_save;
     }
     if (role === 'guard') {
@@ -1291,6 +1378,7 @@ export class WerewolfGame extends BaseGame<WerewolfState, WerewolfOptions> {
       sheriff: this.sheriffSeat() || null,
       today_claims: [...(s.claims ?? [])],
       witch_self_save: this.options.witch_self_save,
+      witch_sees_victim: this.options.witch_sees_victim,
       round: this.rec.round,
       stage: ph ? ph.title : null,
       alive: this.players.filter((p) => p.alive).map((p) => ({ seat: p.seat, name: p.name, can_vote: this.canVote(p.seat) })),
@@ -1362,6 +1450,12 @@ export class WerewolfGame extends BaseGame<WerewolfState, WerewolfOptions> {
       if (!this.pendingOf(seat)) return null;
       if (/^(?:不跳|不起跳|不亮|不亮身份)$/u.test(bare) || isSkipWord(bare)) return { action: 'skip' };
       if (/^(?:我)?(?:要)?(?:起跳|跳|亮身份)/u.test(bare)) return { action: 'claim' };
+      return null;
+    }
+    if (key === 'sheriff_order') {
+      if (!this.pendingOf(seat)) return null;
+      if (/^(?:顺序|正序|顺着|从小到大)/u.test(bare)) return { action: 'forward' };
+      if (/^(?:逆序|倒序|反序|逆着|从大到小)/u.test(bare)) return { action: 'backward' };
       return null;
     }
     if (key === 'sheriff_signup') {
@@ -1440,18 +1534,19 @@ export const werewolfDefinition: GameDefinition<WerewolfOptions> = {
   summary: '经典身份推理：狼人夜间刀人，好人白天发言投票。含预言家、女巫、猎人、守卫、白痴，身份与结算全由程序决定。',
   rules: RULES,
   playerTips:
-    '- 好人：认真分析发言与投票，预言家验到狼人后要想办法让大家信任。\n- 不要只说「等预言家」「先听听」：每次发言至少点出一个怀疑对象和理由，没有信息就分析别人的发言和投票。\n- 预言家：一般第 1 天就起跳（或上警）报出查验结果，并说明今晚打算验谁；被悍跳时要对跳，讲清楚对方哪里不像。\n- 女巫：可以在合适时机报出银水（救下的人）或毒了谁来帮好人站边；被投票威胁时亮身份自保。\n- 起跳环节：有身份或信息要先说的就「起跳」（claim）；警长（1.5 票）最后发言时要明确归票。\n- 狼人：夜间可密谈（speak channel=team），白天不要暴露队友；可以悍跳预言家。\n- 夜里的私密信息只写在自己的视角里，不要在群里复述工具内容。\n- 白天发言只说话，不要在发言里透露不该公开的程序信息。',
+    '- 好人：认真分析发言与投票，预言家验到狼人后要想办法让大家信任。\n- 不要只说「等预言家」「先听听」：每次发言至少点出一个怀疑对象和理由，没有信息就分析别人的发言和投票。\n- 预言家：一般第 1 天就起跳（或上警）报出查验结果，并说明今晚打算验谁；被悍跳时要对跳，讲清楚对方哪里不像。\n- 女巫：可以在合适时机报出银水（救下的人）或毒了谁来帮好人站边；被投票威胁时亮身份自保。\n- 警长：每天讨论前用 forward（顺序）/ backward（逆序）决定发言方向，想先听谁就往那边排；警长（1.5 票）最后发言时要明确归票。\n- 狼人：夜间可密谈（speak channel=team），白天不要暴露队友；可以悍跳预言家。\n- 夜里的私密信息只写在自己的视角里，不要在群里复述工具内容。\n- 白天发言只说话，不要在发言里透露不该公开的程序信息。',
   optionsSchema,
   optionsHelp: {
     ...commonOptionsHelp,
     roles: '自定义身份数量 {werewolf,villager,seer,witch,hunter,guard,idiot}，合计须等于玩家数；13~16 人必填',
     win_mode: 'auto=6~7 人屠城、8 人及以上屠边（默认）；side=屠边（神职或村民全灭则狼胜）；all=屠城（好人全灭才狼胜）',
-    claim_phase: '每天讨论前是否有起跳环节，起跳者先发言（默认 true；有警长竞选的那天跳过）',
+    claim_phase: '没有警长时，每天讨论前是否有起跳环节，起跳者先发言（默认 false；有警长或当天竞选警长时跳过）',
     claim_timeout_s: '起跳环节限时（秒，默认 30）',
     second_round: '每天是否进行第二轮补充发言再投票（默认 false）',
     second_round_timeout_s: '第二轮补充发言限时（秒，默认 60）',
     sheriff: "警长竞选：auto=8 人及以上开启（默认）；true/false 强制开关。警长 1.5 票、最后发言归票、出局可移交警徽",
     sheriff_signup_timeout_s: '上警报名限时（秒，默认 30）',
+    sheriff_order_timeout_s: '警长决定发言顺序限时（秒，默认 30，超时按顺序）',
     badge_timeout_s: '警长出局移交警徽限时（秒，默认 30）',
     witch_self_save: 'first_night=仅首夜可自救（默认）；never=不可自救；always=可自救',
     first_night_last_words: '第一夜死者是否有遗言（默认 true）',

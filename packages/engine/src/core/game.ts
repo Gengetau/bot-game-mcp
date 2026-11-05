@@ -272,7 +272,9 @@ export abstract class BaseGame<S = any, O = any> {
       text: segments.map((s) => (s.type === 'text' ? s.text : s.type === 'at' ? `@${s.name}` : '[图片]')).join(''),
       mentions: segments.flatMap((s) => (s.type === 'at' ? [{ id: s.id, name: s.name }] : [])),
       category,
+      ...(this.rec.awaitPost && target.type === 'group' ? { waitForPost: this.rec.awaitPost } : {}),
     };
+    if (target.type === 'group') this.rec.awaitPost = null;
     this.rec.outbox.push(delivery);
     return delivery;
   }
@@ -327,8 +329,10 @@ export abstract class BaseGame<S = any, O = any> {
       data: { text: clean },
     });
     if (p.kind === 'agent') {
-      if (p.selfPost) this.speechGap();
-      else
+      if (p.selfPost) {
+        this.speechGap();
+        this.rec.awaitPost = { qq: p.id, since: this.now() };
+      } else
         this.pushDelivery(
           { type: 'group', groupId: this.rec.groupId },
           `【${p.seat}号 ${p.name}${title ? `·${title}` : ''}】${clean}`,

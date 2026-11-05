@@ -25,7 +25,9 @@ function make(roles: Roles, extra: Record<string, unknown> = {}, seed: string | 
   const inst = () => (manager as any).inst(rec);
   const trace: string[] = [];
   const DEFAULT = (k: string): ActionInput =>
-    ['vote', 'pk_vote', 'sheriff_vote', 'night', 'witch', 'hunter', 'claim', 'sheriff_signup', 'badge'].includes(k)
+    k === 'sheriff_order'
+      ? { action: 'forward' }
+      : ['vote', 'pk_vote', 'sheriff_vote', 'night', 'witch', 'hunter', 'claim', 'sheriff_signup', 'badge'].includes(k)
       ? { action: 'skip' }
       : { action: 'speech', text: '过' };
   /** 按阶段 key 覆盖行为，直到 until() 为真。 */
@@ -199,6 +201,18 @@ describe('night', () => {
     g.drive({ night: (s) => (g.roleOf(s) === 'werewolf' ? { action: 'kill', target: g.seatsOf('villager')[1]! } : { action: 'skip' }) }, () => g.key() === 'witch' && g.rec.round === 2);
     expect(g.rec.phase!.pending[String(w)]!.prompt).toContain('无法得知');
     expect(g.rec.phase!.pending[String(w)]!.prompt).not.toContain(`${g.seatsOf('villager')[1]}号 被`);
+    expect(g.rec.phase!.pending[String(w)]!.actions.map((a) => a.action)).not.toContain('save');
+  });
+
+  it('witch_sees_victim=always: the witch still learns the victim after the antidote is gone', () => {
+    const g = make({ werewolf: 2, witch: 1, seer: 1, villager: 3 }, { witch_sees_victim: 'always' });
+    const w = g.seatsOf('witch')[0]!;
+    const [v1, v2] = g.seatsOf('villager');
+    g.drive({ night: (s) => (g.roleOf(s) === 'werewolf' ? { action: 'kill', target: v1! } : { action: 'skip' }) }, () => g.key() === 'witch');
+    g.act(w, { action: 'save' });
+    g.drive({ night: (s) => (g.roleOf(s) === 'werewolf' ? { action: 'kill', target: v2! } : { action: 'skip' }) }, () => g.key() === 'witch' && g.rec.round === 2);
+    expect(g.rec.phase!.pending[String(w)]!.prompt).toContain(`${v2}号 被狼人袭击`);
+    expect((g.manager.getView(identityOf(g.rec, w), g.gameId) as any).you.tonight_victim).toBe(v2);
     expect(g.rec.phase!.pending[String(w)]!.actions.map((a) => a.action)).not.toContain('save');
   });
 
@@ -826,6 +840,40 @@ describe('day flow options (claim / second round / sheriff / recap)', () => {
     g.act(1, { action: 'pass_badge', target: 3 });
     g.drive({}, () => g.key() !== 'badge');
     expect(g.rec.state.sheriff).toBe(3);
+  });
+
+  it('sheriff picks the speaking direction; a single night death sets the starting point; no claim phase', () => {
+    const g = make({ werewolf: 3, seer: 1, witch: 1, hunter: 1, villager: 2 }, { sheriff: true, claim_phase: true });
+    const wolves = g.seatsOf('werewolf');
+    const victim = [1, 2, 3, 4, 5, 6, 7, 8].find((s) => !wolves.includes(s) && g.roleOf(s) !== 'hunter' && g.roleOf(s) !== 'witch' && s !== 1)!;
+    g.drive(
+      {
+        night: (s) => (wolves.includes(s) ? { action: 'kill', target: victim } : { action: 'skip' }),
+        sheriff_signup: (s) => (s === 1 ? { action: 'run' } : { action: 'skip' }),
+      },
+      () => g.key() === 'sheriff_order',
+    );
+    expect(g.rec.state.sheriff).toBe(1);
+    expect(pendingSeats(g.rec)).toEqual([1]);
+    const p = (t: string) => g.inst().parseCommand(1, t, 'group');
+    expect(p('逆序')).toEqual({ action: 'backward' });
+    expect(p('顺序')).toEqual({ action: 'forward' });
+    g.act(1, { action: 'backward' });
+    g.drive({}, () => g.key() === 'speech');
+    const order = g.rec.state.order as number[];
+    const alive = [1, 2, 3, 4, 5, 6, 7, 8].filter((s) => s !== victim);
+    // 从死者的下一位（逆序）开始，警长最后
+    const expected: number[] = [];
+    for (let k = 1; k <= 8; k++) {
+      const s = ((victim - 1 - k + 16) % 8) + 1;
+      if (alive.includes(s) && s !== 1) expected.push(s);
+    }
+    expect(order).toEqual([...expected, 1]);
+    expect(g.trace).not.toContain('claim');
+    // 第二天警长还在，又要定序
+    g.drive({}, () => g.key() === 'sheriff_order' || g.rec.status !== 'running');
+    if (g.rec.status !== 'running') return;
+    expect(g.trace).not.toContain('claim');
   });
 
   it('sheriff: tie goes to PK, second tie loses the badge; sole candidate is elected', () => {

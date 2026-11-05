@@ -181,6 +181,31 @@ export function seatsLabel(seats: readonly Seat[]): string {
 }
 
 /** 去掉文本里的 CQ 码，限制长度，用于记录发言。 */
+/**
+ * 真人发言里的 CQ 码 → 可读文字：@ 本局玩家变成「@昵称」，@ 局外的人和其他 CQ 码（回复、图片、表情）去掉。
+ * 必须在 sanitizeUserText 之前做（之后 CQ 码已被转义）。
+ */
+export function cqToSpeech(text: string, players: readonly Pick<Player, 'id' | 'name'>[]): string {
+  return text
+    .replace(/\[CQ:at,qq=([^,\]]+)[^\]]*\]/g, (_, id: string) => {
+      const p = players.find((x) => x.id === id);
+      return p ? `@${p.name} ` : '';
+    })
+    .replace(/\[CQ:[^\]]*\]/g, '')
+    .replace(/[ \t]{2,}/g, ' ')
+    .trim();
+}
+
+/**
+ * 发言末尾单独带了结束词（「……我说完了，过」「…啊 过」）：拆成发言正文和「结束发言」。
+ * 结束词前必须有空格或标点，避免把「就这么过」之类的句子误判。
+ */
+export function splitTrailingEnd(text: string): { body: string; end: boolean } {
+  const m = text.match(/^([\s\S]*?\S)[\s,，。.!！~～;；、…]+(过|我过|说完了|我说完了|发言完毕|发言结束|完毕|pass|over)[\s。.!！~～]*$/iu);
+  if (!m) return { body: text, end: false };
+  return { body: m[1]!.trim(), end: true };
+}
+
 export function cleanSpeech(text: string, maxLen = 600): string {
   const t = sanitizeUserText(text.replace(/\[CQ:at,qq=(\d+)[^\]]*\]/g, '@$1').replace(/\[CQ:[^\]]*\]/g, '')).trim();
   return t.length > maxLen ? `${t.slice(0, maxLen)}…` : t;

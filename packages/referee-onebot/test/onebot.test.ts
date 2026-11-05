@@ -96,6 +96,7 @@ describe('OneBot referee against the real engine', () => {
       defaultOptions: { nudge_ai: true, turn_timeout_s: 60 },
       stepWaitSeconds: 2,
       sendGapMs: 0,
+      quietGraceMs: 300,
       selfInPool: false, // 这个常驻裁判和下面几个测试共用引擎：不让它把妮娅登记进抽签池
       signal: ac.signal,
       log: (l) => logs.push(l),
@@ -234,6 +235,53 @@ describe('OneBot referee against the real engine', () => {
     await qq.waitForCall((c) => groupSend(c) && callText(c).includes('中止'), 10_000, mark);
     await new Promise((res) => setTimeout(res, 300));
   }, 40_000);
+
+  it('werewolf night: recalls and mutes an alive AI player who talks in the group, then lifts the mute', async () => {
+    const humans = ['62001', '62002', '62003', '62004'];
+    let mark = qq.calls.length;
+    groupMsg(OWNER, '主人', text('/桌游 狼人杀 night_timeout_s=60'));
+    await qq.waitForCall((c) => groupSend(c) && callText(c).includes('报名'), 10_000, mark);
+    const ai = new Client({ name: 'ai-ww', version: '1.0.0' });
+    await ai.connect(new StreamableHTTPClientTransport(new URL(http.url), { requestInit: { headers: { Authorization: `Bearer ${KEYS.ai}` } } }));
+    const call = async (name: string, args: Record<string, unknown> = {}) => {
+      const r: any = await ai.callTool({ name, arguments: args });
+      const t = r.content?.[0]?.text ?? '';
+      if (r.isError) throw new Error(t);
+      return JSON.parse(t);
+    };
+    const gameId: string = (await call('list_games', { group_id: GROUP })).games[0].game_id;
+    await call('join_game', { game_id: gameId, join_as: 'player', self_post: true });
+    for (const [i, uid] of humans.entries()) groupMsg(uid, `玩家${i + 1}`, text('加入'));
+    await qq.waitForCall((c) => groupSend(c) && callText(c).includes('玩家4'), 10_000, mark);
+    // 再来一个 AI 凑够 6 人
+    const ai2 = new Client({ name: 'ai-ww2', version: '1.0.0' });
+    await ai2.connect(new StreamableHTTPClientTransport(new URL(http.url), { requestInit: { headers: { Authorization: `Bearer ${KEYS.ai2}` } } }));
+    await ai2.callTool({ name: 'join_game', arguments: { game_id: gameId, join_as: 'player', self_post: true } });
+    mark = qq.calls.length;
+    groupMsg(OWNER, '主人', text('/桌游 开局'));
+    await qq.waitForCall((c) => groupSend(c) && callText(c).includes('天黑'), 15_000, mark);
+    await new Promise((res) => setTimeout(res, 600));
+    // 夜里真人在群里说话不管；AI 说话：撤回 + 禁言 + 提醒
+    mark = qq.calls.length;
+    groupMsg(humans[0]!, '玩家1', text('好黑啊'));
+    groupMsg(AI_ID, '克蕾雅', text('我是预言家'));
+    const mid = msgSeq;
+    const del = await qq.waitForCall((c) => c.action === 'delete_msg', 10_000, mark);
+    expect(del.params.message_id).toBe(mid);
+    const ban = await qq.waitForCall((c) => c.action === 'set_group_ban', 10_000, mark);
+    expect(String(ban.params.user_id)).toBe(AI_ID);
+    expect(Number(ban.params.duration)).toBeGreaterThan(0);
+    await qq.waitForCall((c) => groupSend(c) && callText(c).includes('禁言到天亮'), 10_000, mark);
+    expect(qq.calls.slice(mark).filter((c) => c.action === 'delete_msg')).toHaveLength(1);
+    // 对局结束（这里是中止）后解除禁言
+    mark = qq.calls.length;
+    groupMsg(OWNER, '主人', text('/桌游 中止'));
+    const unban = await qq.waitForCall((c) => c.action === 'set_group_ban' && Number(c.params.duration) === 0, 15_000, mark);
+    expect(String(unban.params.user_id)).toBe(AI_ID);
+    await ai.close();
+    await ai2.close();
+    await new Promise((res) => setTimeout(res, 300));
+  }, 60_000);
 
   it('auto-starts a lobby once the target player count is reached, and after the quiet period otherwise', async () => {
     const qq2 = new FakeOneBot('tok2');
@@ -638,7 +686,9 @@ describe('OneBot referee against the real engine', () => {
       msgAll(OWNER, '主人', '/桌游 数字炸弹');
       await qqM.waitForCall((c) => sendM(c) && callText(c).includes('报名'), 10_000, mark);
       let gameId: string = (await callOn(brainMain, 'list_games', { group_id: GROUP })).games[0].game_id;
-      await callOn(brainMain, 'join_game', { game_id: gameId, join_as: 'player' });
+      // 开房时主账号已经以「都行」报名（抽不中就上场），它的模型不用自己报名
+      const lobby0 = (await callOn(brainMain, 'get_my_view', { game_id: gameId })) as any;
+      expect(JSON.stringify(lobby0)).toContain('either');
       msgAll(OWNER, '主人', '加入');
       // 主账号 + 主人 = 2 人，但主账号得坐庄 → 有效 1 人，不够最少 2 人，不会开
       await new Promise((res) => setTimeout(res, 2500));
@@ -660,7 +710,6 @@ describe('OneBot referee against the real engine', () => {
       msgAll(OWNER, '主人', '/桌游 数字炸弹');
       await qqM.waitForCall((c) => sendM(c) && callText(c).includes('报名'), 10_000, mark);
       gameId = (await callOn(brainMain, 'list_games', { group_id: GROUP })).games[0].game_id;
-      await callOn(brainMain, 'join_game', { game_id: gameId, join_as: 'player' });
       await callOn(brainA, 'join_game', { game_id: gameId, join_as: 'player' });
       msgAll(OWNER, '主人', '加入');
       msgAll('777', '路人甲', '加入');

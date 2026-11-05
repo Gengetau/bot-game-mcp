@@ -6,7 +6,9 @@
  *
  * 两种来源：
  *  - localAssets：本地目录 <dir>/<剧本id>/<文件名>。
- *  - driveAssets：Google 云盘。根文件夹下每个剧本一个子文件夹（以剧本 id 命名）。
+ *  - driveAssets：Google 云盘。根文件夹下每个剧本一个子文件夹，名字是剧本 id，或以 id 开头、后面跟着非字母数字
+ *    （如「045-夜总会杀人夜（6人封闭）」「804霸道总裁」）。
+ *  文件名可以带子文件夹（最多 3 层），如 "371/线索/04.jpg"。
  *    开局时把这一局要用的图下载到缓存目录 <cacheDir>/<对局id>/。对局结束后由 sweep 删除副本，
  *    缺了会按需重新下载（比如引擎中途重启后）。
  */
@@ -36,20 +38,35 @@ export const MAX_ASSET_BYTES = 10 * 1024 * 1024;
 const MIME: Record<string, string> = { jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', gif: 'image/gif', webp: 'image/webp' };
 export const IMAGE_FILE_RE = /^(?!\.)[^/\\:*?"<>|\u0000-\u001f]{1,100}\.(jpe?g|png|gif|webp)$/i;
 const PACK_ID_RE = /^[A-Za-z0-9_-]{1,32}$/;
+const DIR_RE = /^(?!\.)[^/\\:*?"<>|\u0000-\u001f]{1,100}$/;
+
+/** 剧本里登记的图片路径：文件名，或「子文件夹/…/文件名」（最多 3 层子文件夹）。 */
+export function isImagePath(p: string): boolean {
+  const segs = p.split('/');
+  if (segs.length > 4) return false;
+  const file = segs.pop()!;
+  return IMAGE_FILE_RE.test(file) && !file.includes('..') && segs.every((d) => DIR_RE.test(d) && d !== '..' && d.trim() === d);
+}
+
+/** 云盘里的剧本文件夹名是否对应这个剧本 id：同名，或以 id 开头、紧跟一个非字母数字字符。 */
+export function folderMatchesPack(name: string, pack: string): boolean {
+  if (name === pack) return true;
+  return name.startsWith(pack) && name.length > pack.length && !/[A-Za-z0-9_]/.test(name[pack.length]!);
+}
 
 export function mimeOf(file: string): string {
   return MIME[file.split('.').pop()!.toLowerCase()] ?? 'application/octet-stream';
 }
 
 /** 拆分并校验 "剧本id/文件名"，防止路径穿越。 */
-export function splitAsset(asset: string): { pack: string; file: string } {
+export function splitAsset(asset: string): { pack: string; file: string; segs: string[] } {
   const i = asset.indexOf('/');
   const pack = asset.slice(0, i);
   const file = asset.slice(i + 1);
-  if (i <= 0 || !PACK_ID_RE.test(pack) || !IMAGE_FILE_RE.test(file) || file.includes('..')) {
+  if (i <= 0 || !PACK_ID_RE.test(pack) || !isImagePath(file)) {
     throw new Error(`图片引用无效：${asset}`);
   }
-  return { pack, file };
+  return { pack, file, segs: file.split('/') };
 }
 
 function checkSize(data: Buffer, asset: string): Buffer {
@@ -63,14 +80,14 @@ export function localAssets(dir: string): AssetStore {
   return {
     prepare() {},
     async load(_gameId, asset) {
-      const { pack, file } = splitAsset(asset);
-      const full = join(root, pack, file);
+      const { pack, file, segs } = splitAsset(asset);
+      const full = join(root, pack, ...segs);
       return { data: checkSize(readFileSync(full), asset), mime: mimeOf(file) };
     },
     sweep() {},
     async exists(asset) {
-      const { pack, file } = splitAsset(asset);
-      return existsSync(join(root, pack, file));
+      const { pack, segs } = splitAsset(asset);
+      return existsSync(join(root, pack, ...segs));
     },
   };
 }
@@ -158,18 +175,41 @@ export function driveAssets(o: DriveOptions): AssetStore {
     return f.id;
   }
 
+  /** 根文件夹下这个剧本的文件夹（同名或以 id 开头）。 */
+  async function packFolder(pack: string): Promise<string> {
+    const key = `${o.folderId}#${pack}`;
+    const hit = ids.get(key);
+    if (hit) return hit;
+    const query = `'${q(o.folderId)}' in parents and mimeType = '${FOLDER_MIME}' and trashed = false`;
+    const url =
+      'https://www.googleapis.com/drive/v3/files?' +
+      new URLSearchParams({ q: query, fields: 'files(id,name)', pageSize: '1000', supportsAllDrives: 'true', includeItemsFromAllDrives: 'true' }).toString();
+    const j = (await (await api(url)).json()) as { files?: { id: string; name: string }[] };
+    const files = j.files ?? [];
+    const f = files.find((x) => x.name === pack) ?? files.find((x) => folderMatchesPack(x.name, pack));
+    if (!f) throw new Error(`云盘里找不到文件夹 ${pack}`);
+    ids.set(key, f.id);
+    return f.id;
+  }
+
+  /** 找到图片文件的 ID（逐层进子文件夹）；返回它所在文件夹的 ID 和文件 ID。 */
+  async function locate(pack: string, segs: string[]): Promise<{ parent: string; id: string }> {
+    let parent = await packFolder(pack);
+    for (const d of segs.slice(0, -1)) parent = await findChild(parent, d, true);
+    return { parent, id: await findChild(parent, segs[segs.length - 1]!, false) };
+  }
+
   async function download(gameId: string, asset: string): Promise<LoadedAsset> {
-    const { pack, file } = splitAsset(asset);
-    const full = join(cacheRoot, gameDir(gameId), pack, file);
+    const { pack, file, segs } = splitAsset(asset);
+    const full = join(cacheRoot, gameDir(gameId), pack, ...segs);
     if (existsSync(full)) return { data: readFileSync(full), mime: mimeOf(file) };
-    const folder = await findChild(o.folderId, pack, true);
-    const id = await findChild(folder, file, false);
+    const { parent, id } = await locate(pack, segs);
     let res: Response;
     try {
       res = await api(`https://www.googleapis.com/drive/v3/files/${encodeURIComponent(id)}?alt=media&supportsAllDrives=true`);
     } catch (e) {
       // 文件可能在云盘里被替换过（ID 变了）：下次重新查
-      ids.delete(`${folder}/${file}`);
+      ids.delete(`${parent}/${segs[segs.length - 1]}`);
       throw e;
     }
     const data = checkSize(Buffer.from(await res.arrayBuffer()), asset);
@@ -192,9 +232,9 @@ export function driveAssets(o: DriveOptions): AssetStore {
       return p;
     },
     async exists(asset) {
-      const { pack, file } = splitAsset(asset);
+      const { pack, segs } = splitAsset(asset);
       try {
-        await findChild(await findChild(o.folderId, pack, true), file, false);
+        await locate(pack, segs);
         return true;
       } catch (e) {
         if (e instanceof Error && e.message.startsWith('云盘里找不到')) return false;

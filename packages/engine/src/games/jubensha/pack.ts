@@ -7,7 +7,7 @@
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { z } from 'zod';
-import { IMAGE_FILE_RE } from '../../core/assets.js';
+import { isImagePath } from '../../core/assets.js';
 
 const text = (max: number) => z.string().trim().max(max);
 const key = z
@@ -44,7 +44,7 @@ export const packSchema = z
       .array(
         z.object({
           id: imageId,
-          file: z.string().trim().regex(IMAGE_FILE_RE, '图片文件名要以 .jpg/.jpeg/.png/.gif/.webp 结尾，不能含路径'),
+          file: z.string().trim().refine(isImagePath, '图片文件名要以 .jpg/.jpeg/.png/.gif/.webp 结尾，可以带最多 3 层子文件夹（如 线索/04.jpg），不能有 ..'),
           caption: text(2000).min(1),
         }),
       )

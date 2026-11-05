@@ -101,6 +101,11 @@ export interface Delivery {
   text: string;
   mentions: { id: string; name: string }[];
   category: DeliveryCategory;
+  /**
+   * 自己发群的 bot 刚提交了发言：裁判发这条之前，最好先等这个 QQ 的发言真的出现在群里
+   * （bot 发群可能比引擎记录晚几十秒），等不到也最多等到 since + 60 秒。
+   */
+  waitForPost?: { qq: string; since: number };
 }
 
 /** 玩家提交的动作（bot 通过 act/speak 工具，真人通过裁判转发后由程序解析）。 */
@@ -214,6 +219,8 @@ export interface GameRecord<S = any, O = any> {
   outboxSeq: number;
   /** 下一条消息的最早送达时间（单调不减，保证顺序）。 */
   notBeforeFloor: number;
+  /** 自己发群的 bot 刚发言、还没有消息跟在后面：下一条消息要等它的发言出现在群里 */
+  awaitPost?: { qq: string; since: number } | null;
   result: GameResult | null;
   abortReason?: string;
   state: S;

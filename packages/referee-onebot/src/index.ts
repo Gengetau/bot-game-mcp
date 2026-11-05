@@ -64,6 +64,15 @@ export interface RefereeOptions {
   lobbyTimeoutSeconds?: number;
   /** 两条 QQ 消息之间的最小间隔（毫秒），默认 300 */
   sendGapMs?: number;
+  /** 自己发群的 bot 发言后，最多等多久（毫秒）让它的话出现在群里，再发下一条（默认 60000，0 = 不等） */
+  postWaitMs?: number;
+  /**
+   * 夜间禁言（默认开）：秘密阶段（狼人杀的夜晚）里，存活的 AI 玩家在群里说话就撤回那条消息并禁言到天亮。
+   * 需要裁判账号是群管理员；QQ 不允许管理员禁言另一位管理员，禁言失败时只撤回并提醒。出局的人不管。
+   */
+  nightMute?: boolean;
+  /** 夜晚开始后多久才开始管（毫秒，默认 15000）：给 bot 回完白天最后一句话留出时间 */
+  quietGraceMs?: number;
   /** 额外的嗓子账号：报名了的会进裁判抽签池，抽中就用它发消息 */
   voices?: VoiceSpec[];
   /** 本进程的标识（引擎用它区分「代行进程」和「账号自己的模型」），默认主机名。重启后要保持不变 */
@@ -412,6 +421,13 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
   const autoStart = Math.max(0, opts.autoStartSeconds ?? 0);
   const lobbyTimeout = Math.max(0, opts.lobbyTimeoutSeconds ?? 0);
   const sendGap = opts.sendGapMs ?? 300;
+  const postWaitMs = opts.postWaitMs ?? 60_000;
+  /** 群里每个人最后一次说话的时间（判断自己发群的 bot 的发言是否已出现） */
+  const lastGroupPost = new Map<string, number>();
+  const nightMute = opts.nightMute ?? true;
+  const quietGrace = opts.quietGraceMs ?? 15_000;
+  /** 夜间禁言：现在不该说话的人、从什么时候开始管、已禁言的、这一夜已提醒过的 */
+  const quiet = { ids: new Set<string>(), activeAt: Infinity, muted: new Set<string>(), warned: new Set<string>() };
   const hostId = (opts.hostId ?? hostname()).trim().slice(0, 100) || 'referee';
   const follower = opts.follower ?? false;
   const selfInPool = follower ? false : (opts.selfInPool ?? true);
@@ -855,7 +871,8 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
           } catch {
             return void (await say('选项格式不对：用 key=value，或者一个 JSON 对象。'));
           }
-          const r = await main.engine.call('create_game', { game_type: head, group_id: opts.groupId, join_as: 'referee', options });
+          // 主账号参赛模式：开房就以「都行」报名：抽中当裁判，没抽中就上场当玩家（抽不出别人时 ensureReferee 改回裁判）
+          const r = await main.engine.call('create_game', { game_type: head, group_id: opts.groupId, join_as: mainPlays ? 'either' : 'referee', options });
           const id = String(r.summary?.game_id ?? r.game_id ?? '');
           const sum = r.summary ?? {};
           st.game = {
@@ -871,8 +888,8 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
             refereeIdleS: null,
             hosted: new Set(),
             lobbyIds: new Set([main.id]),
-            lobbyPref: new Map([[main.id, 'referee']]),
-            mainIsPlayer: false,
+            lobbyPref: new Map([[main.id, mainPlays ? 'either' : 'referee']]),
+            mainIsPlayer: mainPlays,
           };
           st.lastSeq = -1;
           st.lobby = { count: -1, changedAt: 0, announced: false };
@@ -1053,6 +1070,21 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
     const uid = String(ev.user_id ?? '');
     if (!uid) return;
     const nick = String(ev.sender?.card || ev.sender?.nickname || uid).trim() || uid;
+    if (ev.message_type === 'group' && String(ev.group_id) === opts.groupId) lastGroupPost.set(uid, Date.now());
+    if (
+      nightMute &&
+      ev.message_type === 'group' &&
+      String(ev.group_id) === opts.groupId &&
+      st.active &&
+      quiet.ids.has(uid) &&
+      Date.now() >= quiet.activeAt
+    ) {
+      if (dedupe(`${ev.group_id}:${ev.message_id ?? `${uid}:${Date.now()}`}`)) return;
+      const via = st.active;
+      const job = () => punishQuiet(via, uid, nick, ev.message_id);
+      inbound = inbound.then(job, job).catch((e) => log(`[referee] 夜间禁言失败：${errMsg(e)}`));
+      return;
+    }
     const cq = segmentsToCq(ev.message ?? ev.raw_message ?? '');
     if (ev.message_type === 'private' && undelivered.has(uid)) flushUndelivered(uid);
     let job: () => Promise<void>;
@@ -1081,7 +1113,68 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
     inbound = inbound.then(job, job).catch((e) => log(`[referee] 处理消息失败：${errMsg(e)}`));
   }
 
+  /** 夜里说话的存活 AI 玩家：撤回 + 禁言到天亮（禁不了就提醒一次）。 */
+  async function punishQuiet(v: Voice, uid: string, nick: string, messageId: unknown): Promise<void> {
+    if (!quiet.ids.has(uid)) return;
+    let recalled = false;
+    if (messageId !== undefined && messageId !== null) {
+      try {
+        await v.onebot.call('delete_msg', { message_id: messageId });
+        recalled = true;
+      } catch (e) {
+        log(`[referee] 撤回 ${uid} 的夜间消息失败：${errMsg(e)}`);
+      }
+    }
+    if (quiet.muted.has(uid)) return;
+    let banned = false;
+    try {
+      await v.onebot.call('set_group_ban', { group_id: Number(opts.groupId), user_id: Number(uid), duration: 3600 });
+      quiet.muted.add(uid);
+      banned = true;
+    } catch (e) {
+      log(`[referee] 禁言 ${uid} 失败：${errMsg(e)}`);
+    }
+    log(`[referee] ${nick}(${uid}) 夜间在群里说话：${recalled ? '已撤回' : '未撤回'}，${banned ? '已禁言' : '未禁言'}`);
+    if (!banned && quiet.warned.has(uid)) return;
+    quiet.warned.add(uid);
+    const name = sanitizeNick(nick);
+    await sendGroupAs(v, [
+      {
+        type: 'text',
+        data: {
+          text: banned
+            ? `🔇 ${name} 天黑后在群里说话，${recalled ? '消息已撤回，' : ''}禁言到天亮。`
+            : `⚠️ ${name} 天黑后请不要在群里说话${recalled ? '（消息已撤回）' : ''}。`,
+        },
+      },
+    ]);
+  }
+
+  /** 按引擎给的 quiet_ids 更新夜间禁言名单；不在名单里的解除禁言。 */
+  async function updateQuiet(v: Voice | null, ids: unknown): Promise<void> {
+    const next = new Set(Array.isArray(ids) ? ids.map(String) : []);
+    if (next.size > 0 && quiet.ids.size === 0) quiet.activeAt = Infinity; // 发完这批消息后再开始计时
+    if (next.size === 0) quiet.warned.clear();
+    quiet.ids = next;
+    for (const uid of [...quiet.muted]) {
+      if (next.has(uid)) continue;
+      quiet.muted.delete(uid);
+      if (!v) continue;
+      try {
+        await v.onebot.call('set_group_ban', { group_id: Number(opts.groupId), user_id: Number(uid), duration: 0 });
+      } catch (e) {
+        log(`[referee] 解除 ${uid} 的禁言失败：${errMsg(e)}`);
+      }
+    }
+  }
+
   async function deliver(v: Voice, d: Json): Promise<void> {
+    // 自己发群的 bot 刚发言：等它的话真的出现在群里再发下一条（最多等到它发言后 60 秒）
+    const wf = d.wait_for_post as { qq?: string; since?: number } | undefined;
+    if (wf?.qq && typeof wf.since === 'number') {
+      const until = wf.since + postWaitMs;
+      while (!stopped && Date.now() < until && (lastGroupPost.get(String(wf.qq)) ?? 0) < wf.since - 1000) await pause(500);
+    }
     if (d.to === 'group') await sendGroupAs(v, d.message);
     else if (d.to === 'private') {
       // 带图片的私聊（剧本杀线索图）发消息段；私聊里不能 @，去掉 at 段
@@ -1162,11 +1255,13 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
             r = await active.engine.call('referee_step', { game_id: cur.id, wait_seconds: 0, format: 'onebot', inline_images: true, since_seq: st.lastSeq, host_id: hostId }, 30_000);
           }
         }
+        if (nightMute) await updateQuiet(active, r.finished ? [] : r.quiet_ids);
         for (const d of r.deliveries ?? []) {
           if (typeof d.seq === 'number' && d.seq <= st.lastSeq) continue;
           if (typeof d.seq === 'number') st.lastSeq = d.seq;
           await deliver(active, d);
         }
+        if (quiet.ids.size > 0 && quiet.activeAt === Infinity) quiet.activeAt = Date.now() + quietGrace;
         if (r.finished) {
           log(`[referee] 对局 ${cur.id} 结束，消息已全部发出`);
           clearUndelivered();
