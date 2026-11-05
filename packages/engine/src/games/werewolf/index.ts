@@ -40,7 +40,14 @@ const optionsSchema = z.object({
       idiot: cnt(),
     })
     .optional(),
-  win_mode: z.enum(['side', 'all']).default('side'),
+  win_mode: z.enum(['auto', 'side', 'all']).default('auto'),
+  claim_phase: z.boolean().default(true),
+  claim_timeout_s: secondsOption(30),
+  second_round: z.boolean().default(false),
+  second_round_timeout_s: secondsOption(60),
+  sheriff: z.union([z.boolean(), z.literal('auto')]).default('auto'),
+  sheriff_signup_timeout_s: secondsOption(30),
+  badge_timeout_s: secondsOption(30),
   witch_self_save: z.enum(['first_night', 'never', 'always']).default('first_night'),
   first_night_last_words: z.boolean().default(true),
   night_timeout_s: secondsOption(60),
@@ -107,16 +114,30 @@ type Step =
   | { t: 'last_words'; seat: Seat }
   | { t: 'hunter'; seat: Seat }
   | { t: 'discussion' }
-  | { t: 'speech'; seat: Seat }
+  | { t: 'speech'; seat: Seat; second?: boolean }
+  | { t: 'claim' }
+  | { t: 'sheriff_signup' }
+  | { t: 'sheriff_speech'; seat: Seat }
+  | { t: 'sheriff_vote'; candidates: Seat[]; pk: boolean }
+  | { t: 'badge'; seat: Seat }
   | { t: 'vote' }
   | { t: 'pk_speech'; seat: Seat }
   | { t: 'pk_vote'; tied: Seat[] };
 
 type Cause = 'wolf' | 'poison' | 'exile' | 'shot';
 
+interface NightRecord {
+  n: number;
+  victim: number;
+  saved: boolean;
+  guarded: Seat[];
+  poisons: Seat[];
+  checks: { seer: Seat; target: Seat; wolf: boolean }[];
+}
+
 interface VoteRecord {
   day: number;
-  kind: 'vote' | 'pk_vote';
+  kind: 'vote' | 'pk_vote' | 'sheriff_vote';
   votes: Record<string, number>;
   abstain: Seat[];
   result: string;
@@ -137,9 +158,20 @@ export interface WerewolfState {
   order: Seat[];
   tonight: { victim: number; guarded: Seat[]; saved: boolean; poisons: Seat[] };
   quiet: number;
+  /** 实际生效的胜负规则（win_mode=auto 时按人数决定）。旧存档没有这个字段。 */
+  winMode?: 'side' | 'all';
+  /** 警长座位；0 = 没有警长（无人当选或警徽被撕）。 */
+  sheriff?: Seat;
+  /** 警长竞选是否已经举行过。 */
+  sheriffElected?: boolean;
+  /** 今天起跳的玩家（按起跳先后）。 */
+  claims?: Seat[];
+  /** 每晚发生了什么（结束后在群里复盘）。 */
+  nightLog?: NightRecord[];
 }
 
-const SPEECH_KEYS = new Set(['speech', 'last_words', 'pk_speech']);
+const SPEECH_KEYS = new Set(['speech', 'speech2', 'last_words', 'pk_speech', 'sheriff_speech']);
+const SPEECH_TYPE: Record<string, string> = { speech: '发言', speech2: '补充发言', last_words: '遗言', pk_speech: 'PK发言', sheriff_speech: '竞选发言' };
 const CANNED = ['我是好人，大家再听听后面的发言。', '目前信息不多，我先划水，请大家多给点线索。', '我觉得有人的发言有点奇怪，先观察一下。', '过，听后面的。'];
 
 const RULES = `## 狼人杀
@@ -150,14 +182,16 @@ const RULES = `## 狼人杀
 1. 🌙 夜晚（秘密）：守卫守人 → 狼人刀人（多狼取最多票，平票随机，可空刀；提交后到阶段结束前可改刀，可用私聊密谈）→ 预言家验人（立即得知结果）。
 2. 女巫：若有药，得知被刀的人（仅当还有解药时），可救 / 毒 / 不用，同夜最多用一瓶。
 3. ☀️ 天亮：公布死亡名单（不说死因）或平安夜。被刀的人：被守或被救则活，**同守同救则死**。第一夜死者有遗言；猎人被刀死可开枪（被毒死不能）。**胜负判定优先**：若这次死亡已使某一方满足胜利条件，游戏立即结束，不再有猎人开枪和遗言。
-4. 🗣 依次发言（随机玩家起顺时针，真人说完发「过」）→ 🗳 投票放逐得票最多者；平票则平票者 PK 发言，再由其他人投票，仍平票则无人出局。
-5. 被放逐者有遗言；猎人可开枪；白痴被放逐则翻牌免死但失去投票权。同样，若放逐（或猎人开枪）已使某一方满足胜利条件，游戏立即结束，不再有猎人开枪和遗言。
-**胜负**：狼人全灭 → 好人胜。\`win_mode=side\`（默认，屠边）：所有神职死光 或 所有村民死光 → 狼人胜；\`all\`（屠城）：所有好人死光 → 狼人胜。
+4. 👮 警长竞选（\`sheriff\`，默认 8 人及以上开启）：仅第 1 天，在讨论前进行。想当警长的发「上警」→ 上警者依次竞选发言 → 未上警的人投票；平票则平票者再发言、再投一次，仍平票则警徽流失；只有一人上警直接当选。警长放逐投票算 **1.5 票**，每天**最后发言归票**（发言从警长下一位开始）；警长出局时（遗言后）可「警徽给3」移交或「撕警徽」。
+5. 🙋 起跳（\`claim_phase\`，默认开启；当天有警长竞选则跳过）：讨论前限时报名，发「起跳」的人按起跳先后**最先发言**，其余人随后。起跳只决定顺序，真跳悍跳都可以，具体内容在发言里讲。
+6. 🗣 依次发言（随机玩家起顺时针，真人说完发「过」；\`second_round\` 开启时所有人再补充发言一轮）→ 🗳 投票放逐得票最多者；平票则平票者 PK 发言，再由其他人投票，仍平票则无人出局。
+7. 被放逐者有遗言；猎人可开枪；白痴被放逐则翻牌免死但失去投票权。同样，若放逐（或猎人开枪）已使某一方满足胜利条件，游戏立即结束，不再有猎人开枪和遗言。
+**胜负**：狼人全灭 → 好人胜。\`win_mode=side\`（屠边）：所有神职死光 或 所有村民死光 → 狼人胜；\`all\`（屠城）：所有好人死光 → 狼人胜；\`auto\`（默认）：6~7 人屠城、8 人及以上屠边。结束时公布身份并**复盘每一夜**（刀谁、守谁、救/毒、验人结果）。
 **选项**：\`witch_self_save\`（first_night 默认/never/always）、\`first_night_last_words\`、各阶段超时（秒）、\`night_min_s\`（夜晚与女巫阶段最短时长，默认 20 秒，防止通过结算速度推断谁还活着；只要板子里有女巫，每晚都会开启女巫阶段，女巫死亡或药用完时只是空等）。
 **超时**：未行动视为放弃（空刀/空守/不用药/弃票/过）；发言超时会公告，投票结果里「未投票（超时）」和主动「弃票」分开标出。连续 6 个昼夜无人死亡视为平局。
 
-**真人指令**：夜间私聊——狼人「刀3」「空刀」、预言家「验3」、守卫「守3」「空守」、女巫「救」「毒3」「不用」；白天——发言直接说，结束发「过」；投票「投3」「弃票」；猎人「开枪3」「不开枪」。
-**bot 指令**：\`act({"action":"kill|check|guard|save|poison|vote|shoot|skip","target":N})\`；发言 \`speak({"text":"…"})\`；狼人夜间密谈 \`speak({"text":"…","channel":"team"})\`。`;
+**真人指令**：夜间私聊——狼人「刀3」「空刀」、预言家「验3」、守卫「守3」「空守」、女巫「救」「毒3」「不用」；白天——「上警」「不上警」、「起跳」「不跳」，发言直接说，结束发「过」；投票「投3」「弃票」；猎人「开枪3」「不开枪」；警长出局「警徽给3」「撕警徽」。
+**bot 指令**：\`act({"action":"kill|check|guard|save|poison|vote|shoot|run|claim|pass_badge|skip","target":N})\`；发言 \`speak({"text":"…"})\`；狼人夜间密谈 \`speak({"text":"…","channel":"team"})\`。`;
 
 export class WerewolfGame extends BaseGame<WerewolfState, WerewolfOptions> {
   // ───────────────────────── 基础查询 ─────────────────────────
@@ -189,6 +223,22 @@ export class WerewolfGame extends BaseGame<WerewolfState, WerewolfOptions> {
   /** 「3号 小明、4号 大锤」：座位后面总是带名字，bot 和真人都不用回头翻座位表。 */
   private seatList(seats: Seat[]): string {
     return seats.map((s) => this.label(s)).join('、');
+  }
+
+  /** 实际生效的胜负规则 */
+  private winMode(): 'side' | 'all' {
+    return this.state.winMode ?? (this.options.win_mode === 'all' ? 'all' : 'side');
+  }
+
+  private sheriffEnabled(): boolean {
+    const o = this.options.sheriff;
+    return o === true || (o === 'auto' && this.players.length >= 8);
+  }
+
+  /** 存活的警长座位，没有返回 0 */
+  private sheriffSeat(): Seat {
+    const s = this.state.sheriff ?? 0;
+    return s && this.isAlive(s) ? s : 0;
   }
 
   private push(...steps: Step[]): void {
@@ -229,12 +279,23 @@ export class WerewolfGame extends BaseGame<WerewolfState, WerewolfOptions> {
       order: [],
       tonight: { victim: 0, guarded: [], saved: false, poisons: [] },
       quiet: 0,
+      winMode: this.options.win_mode === 'auto' ? (n <= 7 ? 'all' : 'side') : this.options.win_mode,
+      sheriff: 0,
+      sheriffElected: false,
+      claims: [],
+      nightLog: [],
     } satisfies WerewolfState);
     this.rec.round = 1;
 
-    const mode = this.options.win_mode === 'side' ? '屠边（神职或村民全灭，狼人胜）' : '屠城（好人全灭，狼人胜）';
+    const mode = this.winMode() === 'side' ? '屠边（神职或村民全灭，狼人胜）' : '屠城（好人全灭，狼人胜）';
+    const extras = [
+      this.sheriffEnabled() ? '第1天先竞选警长（警长 1.5 票、最后发言归票）' : '',
+      this.options.claim_phase ? '每天发言前有起跳环节（起跳者先发言）' : '',
+      this.options.second_round ? '每天两轮发言' : '',
+    ].filter(Boolean);
     this.announce(
       `🐺 狼人杀配置：共 ${n} 人，${this.configText()}。胜负规则：${mode}。\n` +
+        (extras.length ? `流程：${extras.join('；')}。\n` : '') +
         `身份已由程序随机分配，请查看身份牌（真人看私聊，AI 看自己的视角）。天黑后开始第一夜。`,
     );
     const wolves = this.wolves();
@@ -269,6 +330,18 @@ export class WerewolfGame extends BaseGame<WerewolfState, WerewolfOptions> {
         break;
       case 'hunter':
         if (this.afterHunter()) return;
+        break;
+      case 'claim':
+        this.afterClaim();
+        break;
+      case 'sheriff_signup':
+        this.afterSignup();
+        break;
+      case 'sheriff_vote':
+        this.tallySheriff();
+        break;
+      case 'badge':
+        this.afterBadge();
         break;
       case 'vote':
         if (this.tally(false)) return;
@@ -308,7 +381,17 @@ export class WerewolfGame extends BaseGame<WerewolfState, WerewolfOptions> {
       case 'last_words':
         return this.openSpeech('last_words', step.seat);
       case 'speech':
-        return this.openSpeech('speech', step.seat);
+        return this.openSpeech(step.second ? 'speech2' : 'speech', step.seat);
+      case 'claim':
+        return this.openClaim();
+      case 'sheriff_signup':
+        return this.openSignup();
+      case 'sheriff_speech':
+        return this.openSpeech('sheriff_speech', step.seat);
+      case 'sheriff_vote':
+        return this.openSheriffVote(step.candidates, step.pk);
+      case 'badge':
+        return this.openBadge(step.seat);
       case 'pk_speech':
         return this.openSpeech('pk_speech', step.seat);
       case 'hunter':
@@ -571,7 +654,18 @@ export class WerewolfGame extends BaseGame<WerewolfState, WerewolfOptions> {
     for (const p of t.poisons) dead.set(p, 'poison');
     for (const s of [...dead.keys()]) if (!this.isAlive(s)) dead.delete(s);
     const deaths = [...dead.entries()].map(([seat, cause]) => ({ seat, cause })).sort((a, b) => a.seat - b.seat);
+    (this.state.nightLog ??= []).push({
+      n,
+      victim: t.victim,
+      saved: t.saved,
+      guarded: [...t.guarded],
+      poisons: [...t.poisons],
+      checks: Object.entries(this.state.seerResults).flatMap(([seer, list]) =>
+        list.filter((r) => r.night === n).map((r) => ({ seer: Number(seer), target: r.target, wolf: r.wolf })),
+      ),
+    });
     this.state.speeches = [];
+    this.state.claims = [];
     this.state.order = [];
     this.state.tonight = { victim: 0, guarded: [], saved: false, poisons: [] };
     for (const d of deaths) this.markDead(d.seat, d.cause, `第${n}夜`);
@@ -583,15 +677,38 @@ export class WerewolfGame extends BaseGame<WerewolfState, WerewolfOptions> {
       { kind: 'death', data: { seats: deaths.map((d) => d.seat) } },
     );
     if (this.checkWin()) return;
-    this.push({ t: 'discussion' });
+    const day: Step[] = [];
+    const election = this.sheriffEnabled() && !this.state.sheriffElected;
+    if (election) day.push({ t: 'sheriff_signup' });
+    else if (this.options.claim_phase) day.push({ t: 'claim' });
+    day.push({ t: 'discussion' });
+    this.push(...day);
     this.afterDeaths(deaths, n === 1 && this.options.first_night_last_words);
   }
 
   private afterDeaths(deaths: { seat: Seat; cause: Cause }[], lastWords: boolean): void {
     const steps: Step[] = [];
     if (lastWords) for (const d of deaths) steps.push({ t: 'last_words', seat: d.seat });
+    // 警长出局：遗言之后移交警徽
+    for (const d of deaths) if (this.state.sheriff && this.state.sheriff === d.seat) steps.push({ t: 'badge', seat: d.seat });
     for (const d of deaths) if (this.roleOf(d.seat) === 'hunter' && d.cause !== 'poison') steps.push({ t: 'hunter', seat: d.seat });
     this.push(...steps);
+  }
+
+  /** 结束时复盘每一夜（随结算一起公布：身份已经全部公开，夜里发生的事也不再是秘密） */
+  private recapText(): string | undefined {
+    const nights = this.state.nightLog ?? [];
+    if (nights.length === 0) return undefined;
+    const lines = nights.map((r) => {
+      const parts: string[] = [];
+      parts.push(r.victim ? `狼人刀 ${this.label(r.victim)}` : '狼人空刀');
+      if (r.guarded.length) parts.push(`守卫守 ${this.seatList(r.guarded)}`);
+      if (r.saved) parts.push('女巫用解药救下');
+      if (r.poisons.length) parts.push(`女巫毒 ${this.seatList(r.poisons)}`);
+      for (const c of r.checks) parts.push(`预言家 ${c.seer}号 验 ${c.target}号=${c.wolf ? '狼人' : '好人'}`);
+      return `第${r.n}夜：${parts.join('；')}`;
+    });
+    return `—— 🌙 夜间复盘 ——\n${lines.join('\n')}`;
   }
 
   private revealAll() {
@@ -611,7 +728,7 @@ export class WerewolfGame extends BaseGame<WerewolfState, WerewolfOptions> {
     if (aliveWolves.length === 0) {
       winner = '好人阵营';
       reason = '所有狼人已出局';
-    } else if (this.options.win_mode === 'all') {
+    } else if (this.winMode() === 'all') {
       if (alive.length === aliveWolves.length) {
         winner = '狼人阵营';
         reason = '所有好人已出局（屠城）';
@@ -634,18 +751,28 @@ export class WerewolfGame extends BaseGame<WerewolfState, WerewolfOptions> {
       winnerSeats: this.players.filter((p) => (teamOf(this.roleOf(p.seat)) === winner)).map((p) => p.seat),
       reason,
       reveal: this.revealAll(),
-    });
+    }, this.recapText());
     return true;
   }
 
   // ───────────────────────── 发言 ─────────────────────────
 
-  private openSpeech(key: 'speech' | 'last_words' | 'pk_speech', seat: Seat): boolean {
+  private openSpeech(key: 'speech' | 'speech2' | 'last_words' | 'pk_speech' | 'sheriff_speech', seat: Seat): boolean {
     const o = this.options;
-    const secs = key === 'speech' ? o.speech_timeout_s : key === 'last_words' ? o.last_words_timeout_s : o.pk_speech_timeout_s;
-    const name = key === 'speech' ? '发言' : key === 'last_words' ? '遗言' : 'PK发言';
+    const secs =
+      key === 'speech' || key === 'sheriff_speech'
+        ? o.speech_timeout_s
+        : key === 'speech2'
+          ? o.second_round_timeout_s
+          : key === 'last_words'
+            ? o.last_words_timeout_s
+            : o.pk_speech_timeout_s;
+    const name = SPEECH_TYPE[key]!;
     const n = this.rec.round;
-    if (key === 'speech') this.announce(`🎤 请 ${this.at(seat)} 发言（限时 ${secs} 秒，说完请发「过」）。`);
+    const badge = this.sheriffSeat() === seat && (key === 'speech' || key === 'speech2') ? '（警长，请归票）' : '';
+    if (key === 'speech') this.announce(`🎤 请 ${this.at(seat)} 发言${badge}（限时 ${secs} 秒，说完请发「过」）。`);
+    else if (key === 'speech2') this.announce(`🔁 第二轮：请 ${this.at(seat)} 补充发言${badge}（限时 ${secs} 秒，说完请发「过」）。`);
+    else if (key === 'sheriff_speech') this.announce(`👮 请 ${this.at(seat)} 进行警长竞选发言（限时 ${secs} 秒，说完请发「过」）。`);
     else if (key === 'last_words') this.announce(`🕯️ 请 ${this.at(seat)} 留遗言（限时 ${secs} 秒，说完请发「过」）。`);
     else this.announce(`⚔️ 请 ${this.at(seat)} 进行 PK 发言（限时 ${secs} 秒，说完请发「过」）。`);
     this.openPhase({
@@ -679,7 +806,8 @@ export class WerewolfGame extends BaseGame<WerewolfState, WerewolfOptions> {
     if (input.action !== 'speech') throw invalidAction('当前只能发言（speech）或结束发言（end_speech）。');
     const text = cleanSpeech(input.text ?? '');
     if (!text) throw invalidAction('发言内容不能为空。');
-    const title = ph.key === 'last_words' ? '遗言' : ph.key === 'pk_speech' ? 'PK' : undefined;
+    const title =
+      ph.key === 'last_words' ? '遗言' : ph.key === 'pk_speech' ? 'PK' : ph.key === 'sheriff_speech' ? '竞选' : ph.key === 'speech2' ? '补充' : undefined;
     this.recordSpeech(seat, text, 'speech', title);
     this.state.speeches.push({ seat, kind: ph.key, text });
     ph.data.spoke = true;
@@ -689,11 +817,232 @@ export class WerewolfGame extends BaseGame<WerewolfState, WerewolfOptions> {
 
   private startDiscussion(): void {
     const alive = this.aliveSeats();
-    const start = pick(this.rng, alive);
-    const order = this.orderFrom(start, alive);
+    const sheriff = this.sheriffSeat();
+    let order: Seat[];
+    if (sheriff) {
+      // 警长最后发言归票：从警长下一位开始
+      const i = alive.indexOf(sheriff);
+      order = this.orderFrom(alive[(i + 1) % alive.length]!, alive).filter((s) => s !== sheriff);
+    } else {
+      order = this.orderFrom(pick(this.rng, alive), alive);
+    }
+    const claims = (this.state.claims ?? []).filter((s) => order.includes(s));
+    order = [...claims, ...order.filter((s) => !claims.includes(s))];
+    if (sheriff) order.push(sheriff);
     this.state.order = order;
-    this.announce(`🗣️ 第${this.rec.round}天讨论开始，发言顺序：${order.map((s) => this.label(s)).join(' → ')}。`);
-    this.push(...order.map((seat): Step => ({ t: 'speech', seat })), { t: 'vote' });
+    const notes = [claims.length ? `起跳的 ${claims.map((s) => `${s}号`).join('、')} 先发言` : '', sheriff ? `警长 ${sheriff}号 最后发言归票` : '']
+      .filter(Boolean)
+      .join('，');
+    this.announce(
+      `🗣️ 第${this.rec.round}天讨论开始，发言顺序：${order.map((s) => this.label(s)).join(' → ')}。${notes ? `（${notes}）` : ''}` +
+        (this.options.second_round ? '\n本轮结束后还有一轮补充发言，然后投票。' : ''),
+    );
+    const steps: Step[] = order.map((seat): Step => ({ t: 'speech', seat }));
+    if (this.options.second_round) steps.push(...order.map((seat): Step => ({ t: 'speech', seat, second: true })));
+    this.push(...steps, { t: 'vote' });
+  }
+
+  // ───────────────────────── 起跳 ─────────────────────────
+
+  private openClaim(): boolean {
+    const alive = this.aliveSeats();
+    const secs = this.options.claim_timeout_s;
+    this.announce(
+      `🙋 起跳环节：想亮明身份、报查验或对跳的玩家，请在 ${secs} 秒内发「起跳」，起跳者优先发言（按起跳先后）；不跳发「不跳」。起跳只决定发言顺序，具体说什么在发言里讲。`,
+    );
+    this.openPhase({
+      key: 'claim',
+      title: `第${this.rec.round}天·起跳`,
+      requests: alive.map((seat) => ({
+        seat,
+        channel: 'group' as const,
+        prompt: '要起跳吗？起跳＝你有身份或信息要先说（真身份或悍跳都可以），会排到最前面发言。',
+        actions: [
+          { action: 'claim', label: '起跳', example: 'act({"action":"claim"})', command: '起跳' },
+          this.specSkip('不跳', '不跳'),
+        ],
+      })),
+      timeoutMs: secs * 1000,
+      data: { claims: [] },
+    });
+    return true;
+  }
+
+  private claimAction(seat: Seat, input: ActionInput): string {
+    this.requireTurn(seat, input.action);
+    if (input.action === 'claim') (this.phase!.data.claims as Seat[]).push(seat);
+    else if (input.action !== 'skip') throw invalidAction('起跳环节可执行：claim（起跳）、skip（不跳）。');
+    this.markDone(seat);
+    return input.action === 'claim' ? '你起跳了，会优先发言。' : '你选择不跳。';
+  }
+
+  private afterClaim(): void {
+    const claims = [...((this.phase!.data.claims as Seat[]) ?? [])];
+    this.state.claims = claims;
+    this.announce(claims.length ? `🙋 起跳：${this.seatList(claims)}。` : '🙋 无人起跳，按正常顺序发言。');
+  }
+
+  // ───────────────────────── 警长 ─────────────────────────
+
+  private openSignup(): boolean {
+    this.state.sheriffElected = true;
+    const alive = this.aliveSeats();
+    const secs = this.options.sheriff_signup_timeout_s;
+    this.announce(
+      `👮 警长竞选：想当警长的玩家请在 ${secs} 秒内发「上警」，不竞选发「不上警」。上警的人依次发言，其余人投票选出警长。警长放逐投票算 1.5 票、每天最后发言归票，出局时可移交警徽。`,
+    );
+    this.openPhase({
+      key: 'sheriff_signup',
+      title: `第${this.rec.round}天·警长竞选报名`,
+      requests: alive.map((seat) => ({
+        seat,
+        channel: 'group' as const,
+        prompt: '要上警竞选警长吗？',
+        actions: [{ action: 'run', label: '上警', example: 'act({"action":"run"})', command: '上警' }, this.specSkip('不上警', '不上警')],
+      })),
+      timeoutMs: secs * 1000,
+      data: { cands: [] },
+    });
+    return true;
+  }
+
+  private signupAction(seat: Seat, input: ActionInput): string {
+    this.requireTurn(seat, input.action);
+    if (input.action === 'run') (this.phase!.data.cands as Seat[]).push(seat);
+    else if (input.action !== 'skip') throw invalidAction('警长竞选报名可执行：run（上警）、skip（不上警）。');
+    this.markDone(seat);
+    return input.action === 'run' ? '你上警了，稍后请做竞选发言。' : '你选择不上警。';
+  }
+
+  private afterSignup(): void {
+    const cands = [...((this.phase!.data.cands as Seat[]) ?? [])].sort((a, b) => a - b);
+    const voters = this.aliveSeats().filter((s) => this.canVote(s) && !cands.includes(s));
+    if (cands.length === 0) {
+      this.state.sheriff = 0;
+      this.announce('👮 无人上警，本局没有警长。');
+      return;
+    }
+    if (cands.length === 1) {
+      this.state.sheriff = cands[0]!;
+      this.announce(`👮 只有 ${this.label(cands[0]!)} 上警，自动当选警长。`, { kind: 'sheriff', data: { seat: cands[0] } });
+      return;
+    }
+    if (voters.length === 0) {
+      this.state.sheriff = 0;
+      this.announce('👮 所有人都上警了，没有人能投票，本局没有警长。');
+      return;
+    }
+    const order = this.orderFrom(pick(this.rng, cands), cands);
+    this.announce(`👮 上警：${this.seatList(cands)}。竞选发言顺序：${order.map((s) => `${s}号`).join(' → ')}，之后由其余玩家投票。`);
+    this.push(...order.map((seat): Step => ({ t: 'sheriff_speech', seat })), { t: 'sheriff_vote', candidates: cands, pk: false });
+  }
+
+  private openSheriffVote(cands: Seat[], pk: boolean): boolean {
+    const voters = this.aliveSeats().filter((s) => this.canVote(s) && !cands.includes(s));
+    if (voters.length === 0) {
+      this.state.sheriff = 0;
+      this.announce('👮 没有可以投票的玩家，本局没有警长。');
+      return false;
+    }
+    const secs = this.options.vote_timeout_s;
+    this.announce(
+      `👮 警长${pk ? ' PK ' : ''}投票：请未上警的玩家在 ${secs} 秒内投给 ${this.seatList(cands)} 之一（发「投${cands[0]}」），或「弃票」。`,
+    );
+    this.openPhase({
+      key: 'sheriff_vote',
+      title: `第${this.rec.round}天·警长${pk ? 'PK' : ''}投票`,
+      requests: voters.map((seat) => ({
+        seat,
+        channel: 'group' as const,
+        prompt: `请在警长候选 ${this.seatList(cands)} 中投一票，或弃票。`,
+        actions: [this.specTarget('vote', '投票', cands, `投${cands[0]}`), this.specSkip('弃票', '弃票')],
+      })),
+      timeoutMs: secs * 1000,
+      data: { votes: {}, cands, pk },
+    });
+    return true;
+  }
+
+  private tallySheriff(): void {
+    const ph = this.phase!;
+    const votes = ph.data.votes as Record<string, number>;
+    const pk = Boolean(ph.data.pk);
+    const voters = Object.values(ph.pending).map((r) => r.seat).sort((a, b) => a - b);
+    const counts = new Map<number, number>();
+    const lines: string[] = [];
+    const abstain: Seat[] = [];
+    const record: Record<string, number> = {};
+    for (const v of voters) {
+      const t = votes[String(v)];
+      if (t) {
+        counts.set(t, (counts.get(t) ?? 0) + 1);
+        record[String(v)] = t;
+        lines.push(`${this.label(v)} → ${this.label(t)}`);
+      } else abstain.push(v);
+    }
+    if (abstain.length) lines.push(`弃票/未投：${this.seatList(abstain)}`);
+    const top = counts.size ? Math.max(...counts.values()) : 0;
+    const leaders = [...counts.entries()].filter(([, c]) => c === top).map(([s]) => s).sort((a, b) => a - b);
+    const head = `👮 警长${pk ? ' PK ' : ''}投票结果：\n${lines.join('\n') || '无人投票'}`;
+    const log = (result: string) => this.state.voteLog.push({ day: this.rec.round, kind: 'sheriff_vote', votes: record, abstain, result });
+    if (leaders.length === 1) {
+      this.state.sheriff = leaders[0]!;
+      this.announce(`${head}\n${this.label(leaders[0]!)} 当选警长！`, { kind: 'sheriff', data: { seat: leaders[0] } });
+      log(`${leaders[0]}号 当选警长`);
+      return;
+    }
+    if (leaders.length > 1 && !pk) {
+      this.announce(`${head}\n平票：${this.seatList(leaders)}，进入警长 PK。`);
+      log(`平票 ${this.seatList(leaders)}，进入PK`);
+      this.push(...leaders.map((seat): Step => ({ t: 'sheriff_speech', seat })), { t: 'sheriff_vote', candidates: leaders, pk: true });
+      return;
+    }
+    this.state.sheriff = 0;
+    this.announce(`${head}\n${leaders.length ? '再次平票' : '无人得票'}，警徽流失，本局没有警长。`);
+    log('无人当选');
+  }
+
+  private openBadge(seat: Seat): boolean {
+    const alive = this.aliveSeats();
+    if (alive.length === 0) return false;
+    const secs = this.options.badge_timeout_s;
+    this.announce(`👮 警长 ${this.at(seat)} 出局，请在 ${secs} 秒内移交警徽：发「警徽给3」，或发「撕警徽」。`);
+    this.openPhase({
+      key: 'badge',
+      title: `第${this.rec.round}天·移交警徽`,
+      requests: [
+        {
+          seat,
+          channel: 'group',
+          prompt: '你是出局的警长，请把警徽移交给一名存活玩家，或撕掉警徽。',
+          actions: [this.specTarget('pass_badge', '移交警徽', alive, `警徽给${alive[0]}`), this.specSkip('撕警徽', '撕警徽')],
+        },
+      ],
+      timeoutMs: secs * 1000,
+      data: { from: seat },
+    });
+    return true;
+  }
+
+  private badgeAction(seat: Seat, input: ActionInput): string {
+    const req = this.requireTurn(seat, input.action);
+    if (input.action === 'pass_badge') this.phase!.data.to = this.requireTarget(req, 'pass_badge', input.target);
+    else if (input.action !== 'skip') throw invalidAction('移交警徽可执行：pass_badge（移交）、skip（撕警徽）。');
+    this.markDone(seat);
+    return input.action === 'pass_badge' ? `你把警徽交给了 ${this.phase!.data.to}号。` : '你撕掉了警徽。';
+  }
+
+  private afterBadge(): void {
+    const ph = this.phase!;
+    const from = ph.data.from as Seat;
+    const to = ph.data.to as Seat | undefined;
+    if (to && this.isAlive(to)) {
+      this.state.sheriff = to;
+      this.announce(`👮 ${this.label(from)} 把警徽移交给 ${this.label(to)}，${to}号 成为新警长。`, { kind: 'sheriff', data: { seat: to } });
+    } else {
+      this.state.sheriff = 0;
+      this.announce(`👮 ${this.label(from)} 撕掉了警徽，本局不再有警长。`);
+    }
   }
 
   // ───────────────────────── 猎人 ─────────────────────────
@@ -803,12 +1152,14 @@ export class WerewolfGame extends BaseGame<WerewolfState, WerewolfOptions> {
     const abstain: Seat[] = [];
     const noVote: Seat[] = [];
     const lines: string[] = [];
+    const sheriff = this.sheriffSeat();
     for (const v of voters) {
       const t = votes[String(v)];
       if (t !== undefined && t > 0) {
-        counts.set(t, (counts.get(t) ?? 0) + 1);
+        const w = v === sheriff ? 1.5 : 1;
+        counts.set(t, (counts.get(t) ?? 0) + w);
         record[String(v)] = t;
-        lines.push(`${this.label(v)} → ${this.label(t)}`);
+        lines.push(`${this.label(v)}${w !== 1 ? '（警长 1.5 票）' : ''} → ${this.label(t)}`);
       } else if (t === 0) abstain.push(v);
       else noVote.push(v); // 超时没投：和主动弃票分开标出，群里才看得出是没来得及还是不想投
     }
@@ -880,7 +1231,10 @@ export class WerewolfGame extends BaseGame<WerewolfState, WerewolfOptions> {
     if (key === 'night') return this.nightAction(seat, input);
     if (key === 'witch') return this.witchAction(seat, input);
     if (key === 'hunter') return this.hunterAction(seat, input);
-    if (key === 'vote' || key === 'pk_vote') return this.voteAction(seat, input);
+    if (key === 'vote' || key === 'pk_vote' || key === 'sheriff_vote') return this.voteAction(seat, input);
+    if (key === 'claim') return this.claimAction(seat, input);
+    if (key === 'sheriff_signup') return this.signupAction(seat, input);
+    if (key === 'badge') return this.badgeAction(seat, input);
     if (key && SPEECH_KEYS.has(key)) return this.speechAction(seat, input, meta);
     this.requireTurn(seat, input.action);
     throw invalidAction(`当前阶段不能执行「${input.action}」。`);
@@ -933,7 +1287,9 @@ export class WerewolfGame extends BaseGame<WerewolfState, WerewolfOptions> {
     const speaker = ph && SPEECH_KEYS.has(ph.key) ? Number(Object.keys(ph.pending)[0]) : null;
     return {
       roles_config: Object.fromEntries(ROLE_KEYS.filter((r) => s.config[r] > 0).map((r) => [ROLE_NAME[r], s.config[r]])),
-      win_mode: this.options.win_mode === 'side' ? '屠边' : '屠城',
+      win_mode: this.winMode() === 'side' ? '屠边' : '屠城',
+      sheriff: this.sheriffSeat() || null,
+      today_claims: [...(s.claims ?? [])],
       witch_self_save: this.options.witch_self_save,
       round: this.rec.round,
       stage: ph ? ph.title : null,
@@ -942,10 +1298,10 @@ export class WerewolfGame extends BaseGame<WerewolfState, WerewolfOptions> {
       idiot_revealed: [...s.idiotRevealed],
       speaker_order: [...s.order],
       current_speaker: speaker,
-      today_speeches: s.speeches.map((x) => ({ seat: x.seat, type: x.kind === 'last_words' ? '遗言' : x.kind === 'pk_speech' ? 'PK发言' : '发言', text: x.text })),
+      today_speeches: s.speeches.map((x) => ({ seat: x.seat, type: SPEECH_TYPE[x.kind] ?? '发言', text: x.text })),
       vote_records: s.voteLog.map((v) => ({
         day: v.day,
-        type: v.kind === 'pk_vote' ? 'PK投票' : '投票',
+        type: v.kind === 'pk_vote' ? 'PK投票' : v.kind === 'sheriff_vote' ? '警长投票' : '投票',
         votes: Object.fromEntries(Object.entries(v.votes).map(([a, b]) => [`${a}号`, `${b}号`])),
         abstain: v.abstain,
         result: v.result,
@@ -1002,7 +1358,25 @@ export class WerewolfGame extends BaseGame<WerewolfState, WerewolfOptions> {
       if (/^(?:不开枪|不带走|放弃)$/u.test(bare) || isSkipWord(bare)) return { action: 'skip' };
       return null;
     }
-    if (key === 'vote' || key === 'pk_vote') {
+    if (key === 'claim') {
+      if (!this.pendingOf(seat)) return null;
+      if (/^(?:不跳|不起跳|不亮|不亮身份)$/u.test(bare) || isSkipWord(bare)) return { action: 'skip' };
+      if (/^(?:我)?(?:要)?(?:起跳|跳|亮身份)/u.test(bare)) return { action: 'claim' };
+      return null;
+    }
+    if (key === 'sheriff_signup') {
+      if (!this.pendingOf(seat)) return null;
+      if (/^(?:不上警|不竞选|不参选|不上)$/u.test(bare) || isSkipWord(bare)) return { action: 'skip' };
+      if (/^(?:我)?(?:要)?(?:上警|竞选|参选)/u.test(bare)) return { action: 'run' };
+      return null;
+    }
+    if (key === 'badge') {
+      if (!this.pendingOf(seat)) return null;
+      if (/^(?:撕警徽|撕掉警徽|撕掉|撕|不给)$/u.test(bare) || isSkipWord(bare)) return { action: 'skip' };
+      const tg = targetOf(/^(?:警徽给|警徽移交给?|移交给?|传给|给)\s*(.+)$/u);
+      return tg !== null ? { action: 'pass_badge', target: tg } : null;
+    }
+    if (key === 'vote' || key === 'pk_vote' || key === 'sheriff_vote') {
       if (!this.pendingOf(seat)) return null;
       const tg = targetOf(/^(?:我)?(?:投票给|投票|投给|投|票给|票)\s*(.+)$/u);
       if (tg !== null) return { action: 'vote', target: tg };
@@ -1025,6 +1399,9 @@ export class WerewolfGame extends BaseGame<WerewolfState, WerewolfOptions> {
     if (SPEECH_KEYS.has(ph.key)) {
       if (this.player(seat).kind === 'human' && ph.data.spoke) return { action: 'end_speech' };
       return { action: 'speech', text: pick(this.rng, CANNED) };
+    }
+    if (ph.key === 'claim' || ph.key === 'sheriff_signup') {
+      return this.rng.int(100) < 25 ? { action: ph.key === 'claim' ? 'claim' : 'run' } : { action: 'skip' };
     }
     const acts = req.actions.filter((a) => a.action !== 'team_chat');
     const real = acts.filter((a) => a.action !== 'skip');
@@ -1063,12 +1440,19 @@ export const werewolfDefinition: GameDefinition<WerewolfOptions> = {
   summary: '经典身份推理：狼人夜间刀人，好人白天发言投票。含预言家、女巫、猎人、守卫、白痴，身份与结算全由程序决定。',
   rules: RULES,
   playerTips:
-    '- 好人：认真分析发言与投票，预言家验到狼人后要想办法让大家信任。\n- 狼人：夜间可密谈（speak channel=team），白天不要暴露队友；可以悍跳预言家。\n- 夜里的私密信息只写在自己的视角里，不要在群里复述工具内容。\n- 白天发言只说话，不要在发言里透露不该公开的程序信息。',
+    '- 好人：认真分析发言与投票，预言家验到狼人后要想办法让大家信任。\n- 不要只说「等预言家」「先听听」：每次发言至少点出一个怀疑对象和理由，没有信息就分析别人的发言和投票。\n- 预言家：一般第 1 天就起跳（或上警）报出查验结果，并说明今晚打算验谁；被悍跳时要对跳，讲清楚对方哪里不像。\n- 女巫：可以在合适时机报出银水（救下的人）或毒了谁来帮好人站边；被投票威胁时亮身份自保。\n- 起跳环节：有身份或信息要先说的就「起跳」（claim）；警长（1.5 票）最后发言时要明确归票。\n- 狼人：夜间可密谈（speak channel=team），白天不要暴露队友；可以悍跳预言家。\n- 夜里的私密信息只写在自己的视角里，不要在群里复述工具内容。\n- 白天发言只说话，不要在发言里透露不该公开的程序信息。',
   optionsSchema,
   optionsHelp: {
     ...commonOptionsHelp,
     roles: '自定义身份数量 {werewolf,villager,seer,witch,hunter,guard,idiot}，合计须等于玩家数；13~16 人必填',
-    win_mode: 'side=屠边（默认，神职或村民全灭则狼胜）；all=屠城（好人全灭才狼胜）',
+    win_mode: 'auto=6~7 人屠城、8 人及以上屠边（默认）；side=屠边（神职或村民全灭则狼胜）；all=屠城（好人全灭才狼胜）',
+    claim_phase: '每天讨论前是否有起跳环节，起跳者先发言（默认 true；有警长竞选的那天跳过）',
+    claim_timeout_s: '起跳环节限时（秒，默认 30）',
+    second_round: '每天是否进行第二轮补充发言再投票（默认 false）',
+    second_round_timeout_s: '第二轮补充发言限时（秒，默认 60）',
+    sheriff: "警长竞选：auto=8 人及以上开启（默认）；true/false 强制开关。警长 1.5 票、最后发言归票、出局可移交警徽",
+    sheriff_signup_timeout_s: '上警报名限时（秒，默认 30）',
+    badge_timeout_s: '警长出局移交警徽限时（秒，默认 30）',
     witch_self_save: 'first_night=仅首夜可自救（默认）；never=不可自救；always=可自救',
     first_night_last_words: '第一夜死者是否有遗言（默认 true）',
     night_timeout_s: '夜晚行动限时（秒，默认 60）',
