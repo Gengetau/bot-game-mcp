@@ -8,9 +8,19 @@ import { driveAssets, localAssets, splitAsset } from '../../src/core/assets.js';
 const PNG = Buffer.from('89504e470d0a1a0a0000000d49484452', 'hex');
 
 describe('assets: references', () => {
+  it('matches pack folders named by id or starting with it', async () => {
+    const { folderMatchesPack } = await import('../../src/core/assets.js');
+    expect(folderMatchesPack('045', '045')).toBe(true);
+    expect(folderMatchesPack('045-夜总会杀人夜（6人封闭）', '045')).toBe(true);
+    expect(folderMatchesPack('804霸道总裁爱上我【售】', '804')).toBe(true);
+    expect(folderMatchesPack('0451-别的本', '045')).toBe(false);
+    expect(folderMatchesPack('同学会', '045')).toBe(false);
+  });
+
   it('rejects path traversal and non-image files', () => {
-    expect(splitAsset('045/地图.png')).toEqual({ pack: '045', file: '地图.png' });
-    for (const bad of ['../x.png', '045/../../etc/passwd', '045/a/b.png', '045/.hidden.png', '045/x.txt', 'x.png', '/x.png']) {
+    expect(splitAsset('045/地图.png')).toEqual({ pack: '045', file: '地图.png', segs: ['地图.png'] });
+    expect(splitAsset('371/线索/04.jpg').segs).toEqual(['线索', '04.jpg']);
+    for (const bad of ['../x.png', '045/../../etc/passwd', '045/../x.png', '045/a/../b.png', '045/.git/b.png', '045/a/b/c/d/e.png', '045/.hidden.png', '045/x.txt', 'x.png', '/x.png', '045//x.png']) {
       expect(() => splitAsset(bad)).toThrow();
     }
   });
@@ -49,8 +59,10 @@ describe('assets: Google Drive', () => {
       const u = new URL(url);
       if (u.pathname === '/drive/v3/files') {
         const query = u.searchParams.get('q')!;
-        if (query.startsWith("'ROOT' in parents and name = '045'")) return Response.json({ files: [{ id: 'F045' }] });
+        if (query.startsWith("'ROOT' in parents and mimeType")) return Response.json({ files: [{ id: 'F0451', name: '0451-别的本' }, { id: 'F045', name: '045-夜总会杀人夜（6人封闭）' }] });
         if (query.startsWith("'F045' in parents and name = 'map.png'")) return Response.json({ files: [{ id: 'IMG1', size: '16' }] });
+        if (query.startsWith("'F045' in parents and name = '线索'")) return Response.json({ files: [{ id: 'DCLUE' }] });
+        if (query.startsWith("'DCLUE' in parents and name = '04.png'")) return Response.json({ files: [{ id: 'IMG1', size: '16' }] });
         return Response.json({ files: [] });
       }
       if (u.pathname === '/drive/v3/files/IMG1' && u.searchParams.get('alt') === 'media') return new Response(PNG);
@@ -73,6 +85,10 @@ describe('assets: Google Drive', () => {
     expect(await s.exists('045/map.png')).toBe(true);
     expect(await s.exists('045/none.png')).toBe(false);
     await expect(s.load('JB-AB12', '045/none.png')).rejects.toThrow(/找不到/);
+    // 子文件夹里的图
+    expect((await s.load('JB-AB12', '045/线索/04.png')).data.equals(PNG)).toBe(true);
+    expect(existsSync(join(cache, 'JB-AB12', '045', '线索', '04.png'))).toBe(true);
+    expect(await s.exists('999/map.png')).toBe(false);
 
     s.sweep(new Set(['JB-AB12']));
     expect(existsSync(join(cache, 'JB-AB12'))).toBe(true);
