@@ -23,6 +23,8 @@ import {
   resolveSeat,
   sanitizeName,
   sanitizeUserText,
+  cqToSpeech,
+  splitTrailingEnd,
   stripTrailing,
 } from './text.js';
 import type {
@@ -1303,11 +1305,11 @@ export class GameManager {
     if (rec.status === 'running' && this.isReferee(rec, actor) && this.hostedElsewhere(rec, msg.hostId)) {
       return { recognized: false, accepted: false, message: this.hostedNote(rec) };
     }
-    const text = this.stripAddressing(String(msg.text ?? ''), rec, actor);
+    const addressed = this.stripAddressing(String(msg.text ?? ''), rec, actor);
 
     if (rec.status === 'lobby') {
       this.assertLobbyHelper(rec, actor);
-      const t = stripTrailing(normalizeText(text)).replace(/^[\/#！!]/u, '');
+      const t = stripTrailing(normalizeText(addressed)).replace(/^[\/#！!]/u, '');
       if (/^(加入|报名|上车|参加|我要玩|我玩|join|\+1)/iu.test(t)) {
         if (this.isKeyedAgent(userId)) {
           return { recognized: true, accepted: false, message: this.keyedAgentNote(rec, sanitizeName(msg.nickname ?? '') || userId) };
@@ -1333,6 +1335,8 @@ export class GameManager {
     }
     const inst = this.inst(rec);
     const channel = msg.channel === 'private' ? 'private' : 'group';
+    // QQ 的 @ 变成「@昵称」（@ 局外的人、回复引用、图片表情去掉），发言里就不会出现 CQ 码；「投@昵称」仍能识别
+    const text = cqToSpeech(addressed, rec.players);
     if (channel === 'private' && !msg.action && isIdentityQuery(text)) {
       const n = this.resendRole(rec, inst, player.seat);
       this.pump(rec, inst, false);
@@ -1343,12 +1347,32 @@ export class GameManager {
     const structured = Boolean(msg.action);
     if (msg.action) input = this.normalizeInput(rec, msg.action as ActionInput & Record<string, unknown>);
     else input = inst.parseCommand(player.seat, text, channel);
+    // 发言末尾带「过」：先记发言，再结束发言
+    let endAfter = false;
+    if (input?.action === 'speech' && input.text !== undefined && !structured) {
+      const sp = splitTrailingEnd(input.text);
+      if (sp.end && sp.body) {
+        input = { ...input, text: sp.body };
+        endAfter = true;
+      }
+    }
     if (input?.text !== undefined) input = { ...input, text: sanitizeUserText(input.text) };
     if (!input) {
       return { recognized: false, accepted: false, message: '不是当前阶段的游戏指令，已忽略（无需处理）。' };
     }
     try {
+      const phaseBefore = rec.phase ? `${rec.phase.key}@${rec.phase.openedAt}` : '';
       const fb = inst.onAction(player.seat, input, { via: 'relay', channel });
+      // 只结束同一个阶段里自己的发言（一句话就自动轮到下一阶段的游戏，不能误结束下一轮）
+      const samePhase = rec.phase ? `${rec.phase.key}@${rec.phase.openedAt}` === phaseBefore : false;
+      if (endAfter && samePhase && rec.status === 'running') {
+        try {
+          inst.onAction(player.seat, { action: 'end_speech' }, { via: 'relay', channel });
+        } catch (e) {
+          // 有的游戏一句话就结束本轮发言，这里再结束会报错：忽略
+          if (!(e instanceof GameError)) throw e;
+        }
+      }
       if (structured) {
         inst.systemTell(player.seat, `🧾 裁判已代你提交指令：${this.describeInput(input)}。如非本意请立即私聊裁判。`, 'feedback');
       } else if (channel === 'private' && fb) {

@@ -202,6 +202,18 @@ describe('night', () => {
     expect(g.rec.phase!.pending[String(w)]!.actions.map((a) => a.action)).not.toContain('save');
   });
 
+  it('witch_sees_victim=always: the witch still learns the victim after the antidote is gone', () => {
+    const g = make({ werewolf: 2, witch: 1, seer: 1, villager: 3 }, { witch_sees_victim: 'always' });
+    const w = g.seatsOf('witch')[0]!;
+    const [v1, v2] = g.seatsOf('villager');
+    g.drive({ night: (s) => (g.roleOf(s) === 'werewolf' ? { action: 'kill', target: v1! } : { action: 'skip' }) }, () => g.key() === 'witch');
+    g.act(w, { action: 'save' });
+    g.drive({ night: (s) => (g.roleOf(s) === 'werewolf' ? { action: 'kill', target: v2! } : { action: 'skip' }) }, () => g.key() === 'witch' && g.rec.round === 2);
+    expect(g.rec.phase!.pending[String(w)]!.prompt).toContain(`${v2}号 被狼人袭击`);
+    expect((g.manager.getView(identityOf(g.rec, w), g.gameId) as any).you.tonight_victim).toBe(v2);
+    expect(g.rec.phase!.pending[String(w)]!.actions.map((a) => a.action)).not.toContain('save');
+  });
+
   it('wolf votes: plurality, tie, 空刀, re-submission, team chat', () => {
     const roles = { werewolf: 3, seer: 1, villager: 4 };
     const victims = (votes: (wolves: number[], vil: number[]) => (number | 0)[], seed = 1) => {

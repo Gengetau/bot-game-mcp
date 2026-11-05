@@ -64,6 +64,8 @@ export interface RefereeOptions {
   lobbyTimeoutSeconds?: number;
   /** 两条 QQ 消息之间的最小间隔（毫秒），默认 300 */
   sendGapMs?: number;
+  /** 自己发群的 bot 发言后，最多等多久（毫秒）让它的话出现在群里，再发下一条（默认 60000，0 = 不等） */
+  postWaitMs?: number;
   /** 额外的嗓子账号：报名了的会进裁判抽签池，抽中就用它发消息 */
   voices?: VoiceSpec[];
   /** 本进程的标识（引擎用它区分「代行进程」和「账号自己的模型」），默认主机名。重启后要保持不变 */
@@ -412,6 +414,9 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
   const autoStart = Math.max(0, opts.autoStartSeconds ?? 0);
   const lobbyTimeout = Math.max(0, opts.lobbyTimeoutSeconds ?? 0);
   const sendGap = opts.sendGapMs ?? 300;
+  const postWaitMs = opts.postWaitMs ?? 60_000;
+  /** 群里每个人最后一次说话的时间（判断自己发群的 bot 的发言是否已出现） */
+  const lastGroupPost = new Map<string, number>();
   const hostId = (opts.hostId ?? hostname()).trim().slice(0, 100) || 'referee';
   const follower = opts.follower ?? false;
   const selfInPool = follower ? false : (opts.selfInPool ?? true);
@@ -1053,6 +1058,7 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
     const uid = String(ev.user_id ?? '');
     if (!uid) return;
     const nick = String(ev.sender?.card || ev.sender?.nickname || uid).trim() || uid;
+    if (ev.message_type === 'group' && String(ev.group_id) === opts.groupId) lastGroupPost.set(uid, Date.now());
     const cq = segmentsToCq(ev.message ?? ev.raw_message ?? '');
     if (ev.message_type === 'private' && undelivered.has(uid)) flushUndelivered(uid);
     let job: () => Promise<void>;
@@ -1082,6 +1088,12 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
   }
 
   async function deliver(v: Voice, d: Json): Promise<void> {
+    // 自己发群的 bot 刚发言：等它的话真的出现在群里再发下一条（最多等到它发言后 60 秒）
+    const wf = d.wait_for_post as { qq?: string; since?: number } | undefined;
+    if (wf?.qq && typeof wf.since === 'number') {
+      const until = wf.since + postWaitMs;
+      while (!stopped && Date.now() < until && (lastGroupPost.get(String(wf.qq)) ?? 0) < wf.since - 1000) await pause(500);
+    }
     if (d.to === 'group') await sendGroupAs(v, d.message);
     else if (d.to === 'private') {
       // 带图片的私聊（剧本杀线索图）发消息段；私聊里不能 @，去掉 at 段

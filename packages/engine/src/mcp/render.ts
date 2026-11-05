@@ -55,5 +55,7 @@ export function renderDelivery(d: Delivery, format: DeliveryFormat) {
     // cq / onebot 格式也附上纯文本：私聊里不能 @，接入方可以直接发 text
     ...(format !== 'text' ? { text: d.text } : {}),
     ...(format === 'text' && d.mentions.length ? { mentions: d.mentions.map((m) => ({ qq: m.id, name: m.name })) } : {}),
+    // 发这条之前先等这个 bot 的发言出现在群里（最多等到 since 之后 60 秒）
+    ...(d.waitForPost ? { wait_for_post: { qq: d.waitForPost.qq, since: d.waitForPost.since } } : {}),
   };
 }

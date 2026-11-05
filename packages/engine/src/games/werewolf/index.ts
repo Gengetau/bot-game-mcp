@@ -49,6 +49,8 @@ const optionsSchema = z.object({
   sheriff_signup_timeout_s: secondsOption(30),
   badge_timeout_s: secondsOption(30),
   witch_self_save: z.enum(['first_night', 'never', 'always']).default('first_night'),
+  /** 女巫能否看到刀口：until_antidote（常见规则：解药用掉后就看不到）/ always（没解药也告诉她） */
+  witch_sees_victim: z.enum(['until_antidote', 'always']).default('until_antidote'),
   first_night_last_words: z.boolean().default(true),
   night_timeout_s: secondsOption(60),
   witch_timeout_s: secondsOption(40),
@@ -187,7 +189,7 @@ const RULES = `## 狼人杀
 6. 🗣 依次发言（随机玩家起顺时针，真人说完发「过」；\`second_round\` 开启时所有人再补充发言一轮）→ 🗳 投票放逐得票最多者；平票则平票者 PK 发言，再由其他人投票，仍平票则无人出局。
 7. 被放逐者有遗言；猎人可开枪；白痴被放逐则翻牌免死但失去投票权。同样，若放逐（或猎人开枪）已使某一方满足胜利条件，游戏立即结束，不再有猎人开枪和遗言。
 **胜负**：狼人全灭 → 好人胜。\`win_mode=side\`（屠边）：所有神职死光 或 所有村民死光 → 狼人胜；\`all\`（屠城）：所有好人死光 → 狼人胜；\`auto\`（默认）：6~7 人屠城、8 人及以上屠边。结束时公布身份并**复盘每一夜**（刀谁、守谁、救/毒、验人结果）。
-**选项**：\`witch_self_save\`（first_night 默认/never/always）、\`first_night_last_words\`、各阶段超时（秒）、\`night_min_s\`（夜晚与女巫阶段最短时长，默认 20 秒，防止通过结算速度推断谁还活着；只要板子里有女巫，每晚都会开启女巫阶段，女巫死亡或药用完时只是空等）。
+**选项**：\`witch_self_save\`（first_night 默认/never/always）、\`witch_sees_victim\`（until_antidote 默认：解药用掉后看不到刀口，这是常见规则；always：没解药也告诉女巫刀口）、\`first_night_last_words\`、各阶段超时（秒）、\`night_min_s\`（夜晚与女巫阶段最短时长，默认 20 秒，防止通过结算速度推断谁还活着；只要板子里有女巫，每晚都会开启女巫阶段，女巫死亡或药用完时只是空等）。
 **超时**：未行动视为放弃（空刀/空守/不用药/弃票/过）；发言超时会公告，投票结果里「未投票（超时）」和主动「弃票」分开标出。连续 6 个昼夜无人死亡视为平局。
 
 **真人指令**：夜间私聊——狼人「刀3」「空刀」、预言家「验3」、守卫「守3」「空守」、女巫「救」「毒3」「不用」；白天——「上警」「不上警」、「起跳」「不跳」，发言直接说，结束发「过」；投票「投3」「弃票」；猎人「开枪3」「不开枪」；警长出局「警徽给3」「撕警徽」。
@@ -561,6 +563,10 @@ export class WerewolfGame extends BaseGame<WerewolfState, WerewolfOptions> {
     return rule === 'always' || (rule === 'first_night' && this.rec.round === 1);
   }
 
+  private witchSeesVictim(hasAntidote: boolean): boolean {
+    return hasAntidote || this.options.witch_sees_victim === 'always';
+  }
+
   private openWitch(): boolean {
     // 板子里只要有女巫，每晚都开启女巫阶段（女巫死亡/药用完时 requests 为空），
     // 否则公开的阶段名与倒计时会泄露女巫是否存活、是否还有药。
@@ -573,7 +579,7 @@ export class WerewolfGame extends BaseGame<WerewolfState, WerewolfOptions> {
       if (!p.antidote && !p.poison) continue;
       const actions: ActionSpec[] = [];
       let info: string;
-      if (p.antidote) info = t.victim ? `今晚 ${t.victim}号 被狼人袭击。` : '今晚无人被狼人袭击（平安夜）。';
+      if (this.witchSeesVictim(p.antidote)) info = t.victim ? `今晚 ${t.victim}号 被狼人袭击。` : '今晚无人被狼人袭击（平安夜）。';
       else info = '你的解药已用完，无法得知今晚谁被袭击。';
       if (p.antidote && t.victim && this.selfSaveOk(w, t.victim)) {
         actions.push({ action: 'save', label: '使用解药', example: 'act({"action":"save"})', command: '救' });
@@ -1262,7 +1268,7 @@ export class WerewolfGame extends BaseGame<WerewolfState, WerewolfOptions> {
     if (role === 'witch') {
       const p = this.state.potions[String(seat)]!;
       view.potions = { antidote: p.antidote ? '有' : '已用', poison: p.poison ? '有' : '已用' };
-      if (ph?.key === 'witch' && this.pendingOf(seat) && p.antidote) view.tonight_victim = this.state.tonight.victim || '无人被刀';
+      if (ph?.key === 'witch' && this.pendingOf(seat) && this.witchSeesVictim(p.antidote)) view.tonight_victim = this.state.tonight.victim || '无人被刀';
       view.witch_self_save = this.options.witch_self_save;
     }
     if (role === 'guard') {
@@ -1291,6 +1297,7 @@ export class WerewolfGame extends BaseGame<WerewolfState, WerewolfOptions> {
       sheriff: this.sheriffSeat() || null,
       today_claims: [...(s.claims ?? [])],
       witch_self_save: this.options.witch_self_save,
+      witch_sees_victim: this.options.witch_sees_victim,
       round: this.rec.round,
       stage: ph ? ph.title : null,
       alive: this.players.filter((p) => p.alive).map((p) => ({ seat: p.seat, name: p.name, can_vote: this.canVote(p.seat) })),
