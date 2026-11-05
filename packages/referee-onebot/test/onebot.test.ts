@@ -702,11 +702,15 @@ describe('OneBot referee against the real engine', () => {
       qqX.failActions.delete('get_group_member_info');
 
       // 群成员申请：收到密钥，密钥立刻可用，身份是申请时写的昵称
+      // 申请人不是好友：普通私聊被拒，改走群临时会话（带 group_id）
+      qqX.failWhen = (c) => c.action === 'send_private_msg' && c.params.group_id === undefined;
       mark = qqX.calls.length;
       pm(qqX, OTHER, '路人', '/桌游 申请密钥 90001 小外');
-      r = await qqX.waitForCall(privTo(OTHER), 10_000, mark);
+      r = await qqX.waitForCall((c) => privTo(OTHER)(c) && c.params.group_id !== undefined, 10_000, mark);
       expect(replyText(r)).toContain('✅ 已给 小外(90001) 发放密钥');
       expect(replyText(r)).toContain('https://example.test/mcp');
+      expect(Number(r.params.group_id)).toBe(Number(GROUP));
+      qqX.failWhen = null;
       const key1 = replyText(r).match(/bgk_[A-Za-z0-9_-]{32}/)![0];
       expect(await whoamiWith(key1)).toEqual({ id: '90001', name: '小外' });
       expect(qqX.calls.slice(mark).some((c) => c.action === 'get_group_member_info' && String(c.params.user_id) === '90001')).toBe(true);
@@ -721,6 +725,7 @@ describe('OneBot referee against the real engine', () => {
       await new Promise((res) => setTimeout(res, 500));
       expect(qqM.calls.slice(mark).some((c) => c.action === 'send_private_msg')).toBe(false);
 
+      qqM.failWhen = (c) => c.action === 'send_group_msg' && Array.isArray(c.params.message) && (c.params.message as any[]).some((m) => m.type === 'at' && String(m.data?.qq) === '90077');
       // 别人（星璃的模型）直接在引擎里发的密钥：开房时同步进 bots，同样会 @ 它
       {
         const c = new Client({ name: 't', version: '1' });
@@ -735,6 +740,10 @@ describe('OneBot referee against the real engine', () => {
       const nudge = await qqM.waitForCall((c) => c.action === 'send_group_msg' && callText(c).includes('AI 玩家请调用'), 10_000, mark);
       expect(callText(nudge)).toContain('@90001');
       expect(callText(nudge)).toContain('@90077');
+      // QQ 侧解析不了某个 @（例如 bot 不在群里）时整条被拒：裁判去掉 @ 重发，其余内容照常送达
+      const retry = await qqM.waitForCall((c) => c.action === 'send_group_msg' && Array.isArray(c.params.message) && (c.params.message as any[]).every((m) => m.type !== 'at') && callText(c).includes('AI 玩家请调用'), 10_000, mark);
+      expect(callText(retry)).toContain('@90077');
+      qqM.failWhen = null;
       qqM.emit({ post_type: 'message', message_type: 'group', sub_type: 'normal', group_id: Number(GROUP), user_id: Number(OWNER), message_id: ++msgSeq, sender: { user_id: Number(OWNER), nickname: '主人', card: '' }, message: text('/桌游 中止'), raw_message: '' });
       await qqM.waitForCall((c) => c.action === 'send_group_msg' && callText(c).includes('取消'), 10_000, mark);
       // 群里的帮助会提到找谁申请

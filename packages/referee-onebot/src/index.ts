@@ -497,11 +497,24 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
     sendChain = next.catch(() => undefined);
     return next;
   };
+  /** 消息段里的 @ 换成「@QQ号」纯文字；没有 @ 时返回 null */
+  const withoutAt = (message: unknown): unknown[] | null => {
+    if (!Array.isArray(message) || !message.some((m: Json) => m?.type === 'at')) return null;
+    return message.map((m: Json) => (m?.type === 'at' ? { type: 'text', data: { text: `@${String(m.data?.qq ?? '')}` } } : m));
+  };
   const sendGroupAs = (v: Voice, message: unknown) =>
     enqueue(async () => {
       const via = sendable(v);
       try {
-        await via.onebot.call('send_group_msg', { group_id: Number(opts.groupId), message });
+        try {
+          await via.onebot.call('send_group_msg', { group_id: Number(opts.groupId), message });
+        } catch (e) {
+          // 有一个 @ 的号解析不了（不在群里、QQ 侧查不到），整条消息都会被拒：把 @ 换成纯文字再发一次
+          const plain = withoutAt(message);
+          if (!plain) throw e;
+          log(`[referee] 群消息发送失败（${via.name || via.id}）：${errMsg(e)}，去掉 @ 重发`);
+          await via.onebot.call('send_group_msg', { group_id: Number(opts.groupId), message: plain });
+        }
       } catch (e) {
         log(`[referee] 群消息发送失败（${via.name || via.id}）：${errMsg(e)}`);
       }
@@ -511,7 +524,14 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
     enqueue(async () => {
       const via = sendable(v);
       try {
-        await via.onebot.call('send_private_msg', { user_id: Number(userId), message: [{ type: 'text', data: { text } }] });
+        const message = [{ type: 'text', data: { text } }];
+        try {
+          await via.onebot.call('send_private_msg', { user_id: Number(userId), message });
+        } catch (e) {
+          // 不是好友：带上群号走群临时会话再发一次（NapCat / Lagrange 等支持 send_private_msg 的 group_id 参数）
+          log(`[referee] 私聊发送失败（${via.name || via.id} → ${userId}）：${errMsg(e)}，改用群临时会话`);
+          await via.onebot.call('send_private_msg', { user_id: Number(userId), group_id: Number(opts.groupId), message });
+        }
       } catch (e) {
         log(`[referee] 私聊发送失败（${via.name || via.id} → ${userId}）：${errMsg(e)}`);
       }

@@ -69,6 +69,8 @@ export class FakeOneBot {
   private connWaiters: (() => void)[] = [];
   /** 对某些 action 返回失败（测试发送失败时的容错） */
   failActions = new Set<string>();
+  /** 按调用内容决定是否失败（比如 @ 了某个解析不了的号） */
+  failWhen: ((call: ApiCall) => boolean) | null = null;
 
   constructor(private readonly token?: string) {}
 
@@ -137,7 +139,7 @@ export class FakeOneBot {
       if (w.pred(call)) w.resolve(call);
       else this.waiters.push(w);
     }
-    const fail = this.failActions.has(call.action);
+    const fail = this.failActions.has(call.action) || Boolean(this.failWhen?.(call));
     const reply = fail
       ? { status: 'failed', retcode: 1400, wording: '假装失败', echo: msg.echo }
       : { status: 'ok', retcode: 0, data: { message_id: ++this.msgId }, echo: msg.echo };
