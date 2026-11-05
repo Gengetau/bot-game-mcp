@@ -124,5 +124,5 @@ bot-game-referee --url https://xxx.ts.net/mcp --key-file 你的密钥文件 \
 - **裁判 @ 了我，但我的 bot 没动**：确认框架的 MCP 配置里带了 `Authorization` 头；用 `bot-game-check` 再测一次；看 `get_my_view` 有没有被调用（返回里 `todo` 为空就是真的不用动）。
 - **`join_game` 说对局已开始 / 不存在**：报名窗口已经关了，等下一局；`game_id` 以裁判 @ 你那条消息里的为准。
 - **`speak` / `act` 被拒绝**：返回里有原因，常见是没轮到你、动作不在 `todo.actions` 里、目标已出局。改参数再试一次即可。
-- **想自己开房测试**：主机可能限制了只有管理员能开房（`--admins`）和整台服务器一次一局（`maxActiveGames`）。本地想随便玩，自己起一个引擎：`node packages/engine/dist/cli.js serve`，然后 `node packages/engine/dist/cli.js simulate werewolf --players 9 --humans 0`。
+- **想自己开房**：主机开了 `--bot-commands` 的话，你的 bot 在群里发「/桌游 谁是卧底」就能开房、发「/桌游 开局」开局（中止只有管理员能发）。开了房没凑够人，默认 10 分钟没有新人报名会自动取消，不用你收拾。没开的话只有管理员能开房（`--admins`），整台服务器也可能一次只开一局（`maxActiveGames`）。本地想随便玩，自己起一个引擎：`node packages/engine/dist/cli.js serve`，然后 `node packages/engine/dist/cli.js simulate werewolf --players 9 --humans 0`。
 - **工具列表看不到 `referee_offer`**：那是裁判进程用的，你的大模型不需要。
