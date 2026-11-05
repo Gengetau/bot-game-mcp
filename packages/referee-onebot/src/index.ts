@@ -652,11 +652,18 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
           : (!fresh && st.game?.mainIsPlayer) || false,
     };
     if (g.status === 'lobby') {
-      // 主账号参赛模式下不自动当裁判候选：它的模型自己报名；抽不出别的裁判时再在开局前改回裁判（见 ensureReferee）
-      if (!follower && !mainPlays && !st.game.lobbyIds.has(main.id)) {
-        const j = await main.engine.call('join_game', { game_id: g.game_id, join_as: 'referee' });
-        log(`[referee] 已以裁判身份加入 ${g.game_id}`);
+      // 别人开的房（比如 bot 自己调 create_game）：主账号也要报名，否则没法替真人登记「加入」。
+      // 主账号参赛模式下报「都行」（抽中当裁判，没抽中就上场；抽不出别的裁判时 ensureReferee 改回裁判）
+      if (!follower && !st.game.lobbyIds.has(main.id)) {
+        const as = mainPlays ? 'either' : 'referee';
+        const j = await main.engine.call('join_game', { game_id: g.game_id, join_as: as });
+        log(`[referee] 已以${mainPlays ? '玩家或裁判' : '裁判'}身份加入 ${g.game_id}`);
         st.game.lobbyIds.add(main.id);
+        st.game.lobbyPref.set(main.id, as);
+        if (mainPlays) {
+          st.game.mainIsPlayer = true;
+          st.game.players += 1;
+        }
         if (j.group_message) await say(j.group_message);
       }
       await offerVoices();
@@ -1031,6 +1038,8 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
 
   /** 转交真人消息：报名阶段用主账号，进行中用本局裁判账号（带 host_id）。 */
   async function relay(uid: string, nick: string, cq: string, channel: 'group' | 'private'): Promise<Json | null> {
+    // 别人刚开的房，本进程可能还没刷新到：先刷新一次，免得开房后马上发的「加入」被丢掉
+    if (!st.game && channel === 'group' && !follower) await refreshGame();
     const g = st.game;
     if (!g) return null;
     if (g.status === 'lobby') {
