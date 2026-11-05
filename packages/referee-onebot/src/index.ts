@@ -871,7 +871,8 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
           } catch {
             return void (await say('选项格式不对：用 key=value，或者一个 JSON 对象。'));
           }
-          const r = await main.engine.call('create_game', { game_type: head, group_id: opts.groupId, join_as: 'referee', options });
+          // 主账号参赛模式：开房就以「都行」报名：抽中当裁判，没抽中就上场当玩家（抽不出别人时 ensureReferee 改回裁判）
+          const r = await main.engine.call('create_game', { game_type: head, group_id: opts.groupId, join_as: mainPlays ? 'either' : 'referee', options });
           const id = String(r.summary?.game_id ?? r.game_id ?? '');
           const sum = r.summary ?? {};
           st.game = {
@@ -887,8 +888,8 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
             refereeIdleS: null,
             hosted: new Set(),
             lobbyIds: new Set([main.id]),
-            lobbyPref: new Map([[main.id, 'referee']]),
-            mainIsPlayer: false,
+            lobbyPref: new Map([[main.id, mainPlays ? 'either' : 'referee']]),
+            mainIsPlayer: mainPlays,
           };
           st.lastSeq = -1;
           st.lobby = { count: -1, changedAt: 0, announced: false };

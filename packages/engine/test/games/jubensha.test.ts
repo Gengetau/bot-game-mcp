@@ -113,6 +113,18 @@ describe('jubensha: start checks', () => {
     ).toThrow(/角色 ghost/);
   });
 
+  it('the DM named by host is never drawn as referee, even when signed up as a referee candidate', () => {
+    const a = setup(1, undefined, { scripts: lib() });
+    const { summary } = a.manager.createGame(bot(5), { type: 'jubensha', groupId: '9000', options: { host: '105' }, joinAs: 'referee', selfPost: false });
+    for (const n of [1, 2, 3, 4]) a.manager.joinGame(bot(n), summary.game_id, { as: 'player', selfPost: false });
+    a.manager.joinGame(REF, summary.game_id, { as: 'referee' });
+    a.manager.startGame(bot(5), summary.game_id);
+    const rec = a.manager.getRecord(summary.game_id);
+    expect(rec.referee?.id).toBe(REF.id);
+    expect(rec.players.find((p) => p.id === '105')).toBeDefined();
+    expect(rec.players.find((p) => p.seat === rec.state.host)?.id).toBe('105');
+  });
+
   it('a host who did not sign up just means the program hosts', () => {
     const g = game({ options: { host: '777' } });
     expect(g.rec.state.host).toBe(0);

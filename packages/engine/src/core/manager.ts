@@ -601,13 +601,15 @@ export class GameManager {
 
     // —— 1. 抽签选裁判（程序决定）——
     // 名单外的账号（比如名单收紧之前报的名）不进任何裁判候选
-    const agents = rec.lobby.filter((e) => e.kind === 'agent' && this.canReferee(e.id));
+    const must = new Set((def.mustPlay?.(rec.options as never) ?? []).filter(Boolean));
+    const mustPlay = (e: LobbyEntry) => must.has(e.id) || must.has(e.name);
+    const agents = rec.lobby.filter((e) => e.kind === 'agent' && this.canReferee(e.id) && !mustPlay(e));
     let referee: LobbyEntry | null = null;
     let standby: LobbyEntry[] = [];
     const refPref = agents.filter((e) => e.pref === 'referee');
     const either = agents.filter((e) => e.pref === 'either');
     // 代行登记过的账号组成抽签池：非玩家的候选随时可抽；玩家报名的候选只有在抽走一人后人数仍够时才可抽
-    const playerCount = rec.lobby.filter((e) => e.pref !== 'referee').length;
+    const playerCount = rec.lobby.filter((e) => e.pref !== 'referee' || mustPlay(e)).length;
     const pool = agents.filter((e) => e.hostedBy && (e.pref === 'referee' || playerCount - 1 >= def.minPlayers));
     let draw: RefereeDraw | null = null;
     if (!rec.autoReferee) {
@@ -631,7 +633,7 @@ export class GameManager {
     }
 
     // —— 2. 确定玩家并检查人数 ——
-    const entries = rec.lobby.filter((e) => e !== referee && e.pref !== 'referee');
+    const entries = rec.lobby.filter((e) => e !== referee && (e.pref !== 'referee' || mustPlay(e)));
     const n = entries.length;
     if (n < def.minPlayers || n > def.maxPlayers) {
       throw invalidState(

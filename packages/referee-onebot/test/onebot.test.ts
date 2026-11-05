@@ -686,7 +686,9 @@ describe('OneBot referee against the real engine', () => {
       msgAll(OWNER, '主人', '/桌游 数字炸弹');
       await qqM.waitForCall((c) => sendM(c) && callText(c).includes('报名'), 10_000, mark);
       let gameId: string = (await callOn(brainMain, 'list_games', { group_id: GROUP })).games[0].game_id;
-      await callOn(brainMain, 'join_game', { game_id: gameId, join_as: 'player' });
+      // 开房时主账号已经以「都行」报名（抽不中就上场），它的模型不用自己报名
+      const lobby0 = (await callOn(brainMain, 'get_my_view', { game_id: gameId })) as any;
+      expect(JSON.stringify(lobby0)).toContain('either');
       msgAll(OWNER, '主人', '加入');
       // 主账号 + 主人 = 2 人，但主账号得坐庄 → 有效 1 人，不够最少 2 人，不会开
       await new Promise((res) => setTimeout(res, 2500));
@@ -708,7 +710,6 @@ describe('OneBot referee against the real engine', () => {
       msgAll(OWNER, '主人', '/桌游 数字炸弹');
       await qqM.waitForCall((c) => sendM(c) && callText(c).includes('报名'), 10_000, mark);
       gameId = (await callOn(brainMain, 'list_games', { group_id: GROUP })).games[0].game_id;
-      await callOn(brainMain, 'join_game', { game_id: gameId, join_as: 'player' });
       await callOn(brainA, 'join_game', { game_id: gameId, join_as: 'player' });
       msgAll(OWNER, '主人', '加入');
       msgAll('777', '路人甲', '加入');
