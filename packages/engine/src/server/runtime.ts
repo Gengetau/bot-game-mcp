@@ -31,6 +31,7 @@ export function createRuntime(config: BotGameConfig, log: (msg: string) => void 
     idleGameTtlMs: config.idleGameTtlMinutes * 60_000,
     allowedGroups: config.allowedGroups,
     maxActiveGames: config.maxActiveGames,
+    refereeIds: config.refereeIds,
   });
   const auth = new Authenticator(resolveAuth(config), manager, log);
   const timer = setInterval(() => {

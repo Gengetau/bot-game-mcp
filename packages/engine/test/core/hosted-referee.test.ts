@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { GameError } from '../../src/core/errors.js';
-import { REF, bot, human, setup } from '../helpers.js';
+import { GameManager } from '../../src/core/manager.js';
+import { SeededRng } from '../../src/core/rng.js';
+import { createRegistry } from '../../src/games/index.js';
+import { FakeClock, REF, bot, human, setup } from '../helpers.js';
 
 const HOST = 'nia-server';
 
@@ -106,5 +109,45 @@ describe('代行裁判：referee_offer 与开局抽签', () => {
     expect(rec.referee!.hostedBy).toBe('other-host');
     const old = await manager.refereeStep(bot(9), id, { hostId: HOST });
     expect(old.hosted).toBe(true);
+  });
+});
+
+describe('refereeIds：裁判只从指定账号里抽', () => {
+  const mk = (seed: number) =>
+    new GameManager({ registry: createRegistry(), now: new FakeClock().now, rng: new SeededRng(seed), refereeIds: ['999', '101'] });
+
+  it('keeps outsiders out of every referee path, but lets them play', () => {
+    for (let seed = 1; seed <= 15; seed++) {
+      const manager = mk(seed);
+      const { summary } = manager.createGame(REF, { type: 'number_bomb', groupId: 'g', joinAs: 'none' });
+      const id = summary.game_id;
+      manager.offerReferee(REF, id, HOST);
+      manager.joinGame(bot(1), id, { as: 'player' });
+      manager.offerReferee(bot(1), id, HOST);
+      // 外来 bot：要当裁判被拒；「都行」按玩家；代行登记被拒
+      expect(() => manager.joinGame(bot(7), id, { as: 'referee' })).toThrow(/不能当裁判/);
+      const j = manager.joinGame(bot(7), id, { as: 'either' });
+      expect(j.message).toContain('玩家');
+      expect(() => manager.offerReferee(bot(7), id, 'outsider-host')).toThrow(/抽签池/);
+      manager.joinGame(bot(8), id); // 默认 either
+      const r = manager.startGame(REF, id);
+      expect(r.referee_draw!.candidates.map((c) => c.id).sort()).toEqual(['101', '999']);
+      const rec = manager.getRecord(id);
+      expect(['101', '999']).toContain(rec.referee!.id);
+      expect(rec.players.map((p) => p.id)).toEqual(expect.arrayContaining(['107', '108']));
+      // 进行中：外来 bot 不能登记候补，也不能接管
+      expect(() => manager.joinGame(bot(9), id, { as: 'referee' })).toThrow(/不能当裁判/);
+      expect(() => manager.refereeTakeover(bot(9), id)).toThrow(/不能接管/);
+    }
+  });
+
+  it('an outsider who creates a room joins as a player; no listed account means no referee', () => {
+    const manager = mk(1);
+    const { summary } = manager.createGame(bot(7), { type: 'number_bomb', groupId: 'g' });
+    const id = summary.game_id;
+    expect(manager.summary(manager.getRecord(id)).lobby![0]!.join_as).toBe('player');
+    expect(() => manager.createGame(bot(8), { type: 'undercover', groupId: 'g2', joinAs: 'referee' })).toThrow(/不能当裁判/);
+    manager.joinGame(bot(8), id);
+    expect(() => manager.startGame(bot(7), id)).toThrow(/没有可担任裁判/);
   });
 });

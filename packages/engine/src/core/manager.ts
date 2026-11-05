@@ -57,6 +57,8 @@ export interface ManagerOptions {
   allowedGroups?: string[];
   /** 整个服务器同时最多几局（报名中 + 进行中）；0 为不限制。 */
   maxActiveGames?: number;
+  /** 只有这些 QQ 号能当裁判（抽签、候补、接管）；空数组为不限制。名单外的 AI 只能当玩家。 */
+  refereeIds?: string[];
 }
 
 export interface CreateGameInput {
@@ -146,6 +148,7 @@ export class GameManager {
   private readonly keepFinishedGames: number;
   private readonly allowedGroups: Set<string>;
   private readonly maxActiveGames: number;
+  private readonly refereeIds: Set<string>;
 
   private readonly games = new Map<string, GameRecord>();
   private readonly instances = new Map<string, BaseGame>();
@@ -164,6 +167,7 @@ export class GameManager {
     this.keepFinishedGames = opts.keepFinishedGames ?? 100;
     this.allowedGroups = new Set(opts.allowedGroups ?? []);
     this.maxActiveGames = opts.maxActiveGames ?? 0;
+    this.refereeIds = new Set(opts.refereeIds ?? []);
     this.emitter.setMaxListeners(0);
     const loaded = this.store?.load();
     if (loaded) this.restore(loaded);
@@ -324,6 +328,20 @@ export class GameManager {
     throw badRequest(`你同时参与了多个对局：${mine.map((g) => g.id).join('、')}，请指定 game_id。`);
   }
 
+  /** 这个账号能不能当裁判（服务器配置了 refereeIds 时只有名单里的能） */
+  canReferee(id: string): boolean {
+    return this.refereeIds.size === 0 || this.refereeIds.has(id);
+  }
+
+  /** 名单外的账号：想当裁判就拒绝，「都行」就按玩家处理 */
+  private refereeGate(actor: Identity, pref: JoinPreference): JoinPreference {
+    if (this.canReferee(actor.id)) return pref;
+    if (pref === 'referee') {
+      throw forbidden('这台服务器的裁判只从指定账号里抽，你不能当裁判。', '可以 join_as="player" 报名当玩家。');
+    }
+    return pref === 'either' ? 'player' : pref;
+  }
+
   // ═══════════════════════════ 大厅 ═══════════════════════════
 
   createGame(actor: Identity, input: CreateGameInput): { summary: GameSummary; group_message: string } {
@@ -396,7 +414,8 @@ export class GameManager {
       result: null,
       state: {},
     };
-    const joinAs = input.joinAs ?? 'either';
+    const rawJoin = input.joinAs ?? 'either';
+    const joinAs = rawJoin === 'none' ? 'none' : this.refereeGate(actor, rawJoin);
     if (joinAs !== 'none') {
       rec.lobby.push({ id: actor.id, name: this.nameOf(actor), kind: 'agent', pref: joinAs, selfPost: input.selfPost ?? true, joinedAt: now });
     }
@@ -415,7 +434,7 @@ export class GameManager {
   joinGame(actor: Identity, gameId: string, opts: { as?: JoinPreference; selfPost?: boolean } = {}) {
     const rec = this.getRecord(gameId);
     const def = this.def(rec);
-    const pref = opts.as ?? 'either';
+    const pref = this.refereeGate(actor, opts.as ?? 'either');
     if (rec.status === 'running' && pref === 'referee') {
       if (this.seatOf(rec, actor.id) !== null) throw forbidden('你是本局玩家，不能担任裁判。');
       if (!rec.standbyReferees.some((r) => r.id === actor.id) && rec.referee?.id !== actor.id) {
@@ -469,6 +488,7 @@ export class GameManager {
     if (rec.status !== 'lobby') throw invalidState(`对局 ${rec.id} 不在报名阶段，不能登记代行裁判。`);
     const host = String(hostId ?? '').trim();
     if (!host || host.length > 100) throw badRequest('需要 host_id（裁判进程的标识，1~100 字符）。');
+    if (!withdraw && !this.canReferee(actor.id)) throw forbidden('这台服务器的裁判只从指定账号里抽，你的账号不能进抽签池。');
     let entry = rec.lobby.find((e) => e.id === actor.id);
     if (entry && entry.kind === 'human') throw badRequest('该 QQ 号已作为真人玩家报名。');
     if (withdraw) {
@@ -564,7 +584,8 @@ export class GameManager {
     }
 
     // —— 1. 抽签选裁判（程序决定）——
-    const agents = rec.lobby.filter((e) => e.kind === 'agent');
+    // 名单外的账号（比如名单收紧之前报的名）不进任何裁判候选
+    const agents = rec.lobby.filter((e) => e.kind === 'agent' && this.canReferee(e.id));
     let referee: LobbyEntry | null = null;
     let standby: LobbyEntry[] = [];
     const refPref = agents.filter((e) => e.pref === 'referee');
@@ -1338,6 +1359,7 @@ export class GameManager {
     if (rec.autoReferee) throw invalidState('本局由程序自动主持，没有 AI 裁判，无需接管。');
     if (this.seatOf(rec, actor.id) !== null) throw forbidden('玩家不能担任裁判。');
     if (rec.referee?.id === actor.id) return { message: '你已经是本局裁判。', summary: this.summary(rec) };
+    if (!actor.admin && !this.canReferee(actor.id)) throw forbidden('这台服务器的裁判只从指定账号里抽，你不能接管。');
     if (!actor.admin && !rec.standbyReferees.some((r) => r.id === actor.id)) {
       throw forbidden(
         '只有候补裁判可以接管。',

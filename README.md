@@ -236,6 +236,7 @@ sequenceDiagram
 | `auth.adminKeys` | `[]` | 管理员密钥，可以中止任意对局 |
 | `allowedGroups` | `[]` | 只允许在这些群号开房；为空则任意群 |
 | `maxActiveGames` | `0` | 整台服务器同时最多几局（报名中 + 进行中）；`0` 不限制。只想一次一场就填 `1` |
+| `refereeIds` | `[]` | 只有这些 QQ 号能当裁判（抽签池、候补、接管）；空则不限制。名单外的 AI 报名「都行」按玩家处理，要当裁判或 `referee_offer` 会被拒绝。对外开放、又只想让自家账号主持时用 |
 | `refereeStaleSeconds` | `120` | 裁判失联多少秒后，候补裁判可以用 `referee_takeover` 接管 |
 | `lobbyTtlMinutes` | `120` | 报名阶段超过这个时间自动关闭 |
 | `idleGameTtlMinutes` | `360` | 进行中的对局闲置多久后自动中止 |
