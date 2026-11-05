@@ -226,7 +226,7 @@ sequenceDiagram
 | `host` | `127.0.0.1` | 监听地址。要对外开放时请配合 `allowedHosts` 和 HTTPS 反向代理 |
 | `port` | `7700` | 端口 |
 | `path` | `/mcp` | Streamable HTTP 端点 |
-| `allowedHosts` | — | Host 头白名单，用于防范 DNS rebinding。监听 `0.0.0.0` 时建议配置 |
+| `allowedHosts` | — | Host 头白名单（只比主机名，不比端口），防范 DNS rebinding。监听本机时默认只放行 `localhost`/`127.0.0.1`，所以**经隧道或反向代理对外暴露时必须把对外域名加进来**（连同 `127.0.0.1`），否则外部请求得到 403 `Invalid Host` |
 | `legacySse` | `true` | 是否开启旧版 HTTP+SSE 传输（`/sse` + `/messages`） |
 | `publicApi` | `true` | 是否开启只读观战接口 `/api/games`、`/api/games/:id`。对局结束前只返回公开记录；经隧道对外开放时建议关掉 |
 | `auth.issuedKeysFile` | `./data/botgame-keys.json` | 管理员在运行时用 `issue_key` 发放的密钥存在这里（0600），重启仍有效；`null` 关闭运行时发放 |

@@ -22,7 +22,7 @@ export const configSchema = z.object({
   port: z.number().int().min(0).max(65535).default(7700),
   /** Streamable HTTP 端点路径 */
   path: z.string().default('/mcp'),
-  /** 绑定 0.0.0.0 时建议配置，用于 Host 头校验（防 DNS rebinding） */
+  /** Host 头白名单（只比主机名）。不设时监听本机只放行 localhost/127.0.0.1，经隧道对外暴露必须把对外域名加进来 */
   allowedHosts: z.array(z.string()).optional(),
   /** 兼容旧客户端的 HTTP+SSE 传输（/sse + /messages） */
   legacySse: z.boolean().default(true),

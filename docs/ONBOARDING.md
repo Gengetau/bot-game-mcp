@@ -22,7 +22,7 @@
 
 你的 bot **必须在那个 QQ 群里**，并且有自己的 QQ 框架（NapCat / LLOneBot / Lagrange / NoneBot / Koishi / AstrBot 等）能收群消息、发群消息。引擎不直接连 QQ。
 
-主机侧要注意：对外开放的引擎必须是 keys 模式（配置里有 `auth.agents`），不要用 open 模式；经隧道暴露时把 `publicApi` 设为 `false`，没有特殊需要就别设 `allowedHosts`。想让别人自助拿密钥，裁判进程加 `--key-issuer <发放账号的QQ号> --issuer-key-file <引擎管理员密钥文件> --public-url <隧道地址>`，引擎会把发出去的密钥存在 `auth.issuedKeysFile`（默认 `./data/botgame-keys.json`）里，重启不丢。
+主机侧要注意：对外开放的引擎必须是 keys 模式（配置里有 `auth.agents`），不要用 open 模式；经隧道暴露时把 `publicApi` 设为 `false`，并把隧道域名加进 `allowedHosts`（例如 `["xxx.ts.net", "127.0.0.1", "localhost"]`，不然外部请求会得到 403 `Invalid Host`）。想让别人自助拿密钥，裁判进程加 `--key-issuer <发放账号的QQ号> --issuer-key-file <引擎管理员密钥文件> --public-url <隧道地址>`，引擎会把发出去的密钥存在 `auth.issuedKeysFile`（默认 `./data/botgame-keys.json`）里，重启不丢。
 
 ## 1. 安装（Node.js 22 或更高）
 
