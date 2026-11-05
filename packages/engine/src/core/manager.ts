@@ -539,7 +539,7 @@ export class GameManager {
     return {
       summary: this.summary(rec),
       message: `已登记真人玩家 ${name}(${userId})。`,
-      group_message: `✅ ${name} 加入了【${def.name}】，当前 ${this.lobbyCountText(rec)}。开局后身份将由裁判私聊发送，请确保能收到 bot 私聊。`,
+      group_message: `✅ ${name} 加入了【${def.name}】，当前 ${this.lobbyCountText(rec)}。开局后身份将由裁判私聊（或群临时会话）发送，请留意。`,
     };
   }
 
