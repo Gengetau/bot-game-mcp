@@ -127,6 +127,8 @@ bot-game-referee --url http://127.0.0.1:7700/mcp --key-file 裁判密钥文件 \
   --admins 主人QQ号 --bots 其他bot的QQ号,… --options '{"nudge_ai":true}'
 ```
 
+常用开关（全部见 [packages/referee-onebot/README.md](packages/referee-onebot/README.md)）：`--auto-start 60` 报名够人后 60 秒没新人就自动开局；`--lobby-timeout 600` 人数不够 10 分钟没人报名就取消房间；`--bot-commands` 让 `--bots` 里的 bot 也能发「/桌游 谁是卧底」开房；`--voices` 带多个账号进裁判抽签池；`--main-plays` 让主账号也报名当玩家、抽不出别的裁判时才坐庄；`--follower` 给外接 bot 用，只进抽签池、不开房不响应指令。
+
 给 agent 的系统提示词可以直接用 MCP prompt：裁判用 `referee`，玩家用 `player`（也可以读取资源 `botgame://guide/referee`、`botgame://guide/player`）。
 
 ## 一局游戏是怎么跑起来的
@@ -147,11 +149,11 @@ AI 玩家的私密信息只出现在它自己的 `get_my_view` 里，不经过�
 
 ### 流程
 
-1. **开房**：某个 bot 调用 `create_game(game_type, group_id)`，把返回的 `group_message` 发到群里。
+1. **开房**：某个 bot 调用 `create_game(game_type, group_id)`，把返回的 `group_message` 发到群里；用代码裁判的话，群里发「/桌游 狼人杀」就行（开了 `--bot-commands` 后 bot 也能这样开）。
 2. **报名**：其他 bot 调用 `join_game`，可以选择当玩家（`player`）、只当裁判（`referee`）或都行（`either`）。真人在群里发「加入」，由已报名的 AI 用 `relay_human_message` 转交；也可以直接用 `add_human_player` 登记。
 3. **开局**：房主调用 `start_game`。程序抽签选出裁判，随机排座位、发身份。用代码裁判时不用手动开局：报名够人后一段时间没有新人，或凑满指定人数，它会自动开。
 
-- **随机裁判**：代码裁判可以带多个账号（`--voices`）。报名的 bot 里凡是它能替其说话的，都登记进抽签池；开局时程序抽一个当裁判，裁判进程就用那个账号发公告和私聊，并发一张转盘图。被抽中账号自己的模型拿不到任何该发的话（引擎只认带 `host_id` 的调用），所以裁判的每句话都是程序发的。外接的 bot 在自己那边跑一份 `bot-game-referee`（用自己的密钥和 OneBot）就能进池子，token 不用交给别人。
+- **随机裁判**：代码裁判可以带多个账号（`--voices`）。报名的 bot 里凡是它能替其说话的，都登记进抽签池；开局时程序抽一个当裁判，裁判进程就用那个账号发公告和私聊，并发一张转盘图。被抽中账号自己的模型拿不到任何该发的话（引擎只认带 `host_id` 的调用），所以裁判的每句话都是程序发的。主账号默认只当裁判候选，`--main-plays` 让它也由自己的模型报名当玩家，只有抽不出别的裁判时才坐庄。外接的 bot 在自己那边跑一份 `bot-game-referee --follower`（用自己的密钥和 OneBot）就能进池子，token 不用交给别人，接入步骤见 [docs/ONBOARDING.md](docs/ONBOARDING.md)。
 4. **裁判循环**：裁判反复调用 `referee_step(wait_seconds=25)`。拿到 `deliveries` 后按顺序发送：`to=group` 的发到群里，`to=private` 的私聊给对应的真人。期间收到的每一条真人消息（群聊和私聊都算）都用 `relay_human_message` 转交。直到返回 `finished=true` 为止。
 5. **AI 玩家行动**：两种方式。自己跑循环的 agent 反复调用 `get_my_view(wait_seconds=50)`，轮到自己才返回；只会被 @ 唤醒的聊天 bot 则在裁判 @ 它时调用一次 `get_my_view(wait_seconds=0)`（见下面的 `nudge_ai`）。然后调用 `speak` 或 `act`，可用的动作和参数都在返回的 `todo.actions` 里。
 6. **结算**：程序公布胜负和所有人的身份。之后任何人都能用 `get_game_log` 查看完整复盘。
