@@ -60,12 +60,40 @@ export async function startHttpServer(rt: Runtime, log: (msg: string) => void = 
 
   const deps = { manager, auth, version: rt.version };
 
+  /**
+   * 接回重启前的会话：用原来的会话 ID 新建一个已初始化的传输。
+   * SDK 没有公开「跳过 initialize」的接口，只能直接设置内部状态（SDK 1.x 的 WebStandard 传输）。
+   */
+  async function reviveSession(sid: string, ctx: SessionContext, key: string | undefined): Promise<Session | undefined> {
+    if (!/^[0-9a-f-]{8,64}$/i.test(sid) || sessions.size >= 10_000) return undefined;
+    const server = createMcpServer(deps, ctx);
+    const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: () => sid });
+    const inner = (transport as unknown as { _webStandardTransport?: { sessionId?: string; _initialized?: boolean } })._webStandardTransport;
+    if (!inner || !('_initialized' in inner)) return undefined;
+    inner.sessionId = sid;
+    inner._initialized = true;
+    transport.onclose = () => {
+      if (sessions.get(sid)?.transport === transport) sessions.delete(sid);
+    };
+    await server.connect(transport);
+    const s: Session = { transport, server, ctx, key, lastSeen: Date.now() };
+    sessions.set(sid, s);
+    log(`[mcp] 接回会话 ${sid.slice(0, 8)} ${ctx.identity ? `${ctx.identity.name}(${ctx.identity.id})` : ''}`);
+    return s;
+  }
+
   // ───────── Streamable HTTP ─────────
   const handleMcp = async (req: Request, res: Response) => {
     try {
       const sid = req.header('mcp-session-id');
       if (sid) {
-        const s = sessions.get(sid);
+        let s = sessions.get(sid);
+        if (!s && req.method !== 'DELETE') {
+          // 引擎重启后内存里的会话都没了：带有效密钥的请求原地接回同一个会话 ID，客户端不用重新 initialize
+          const a = authenticate(req, res);
+          if (!a.ok) return;
+          if (a.ctx.identity) s = await reviveSession(sid, a.ctx, a.key);
+        }
         if (!s || !(s.transport instanceof StreamableHTTPServerTransport)) {
           jsonRpcError(res, 404, 'Session not found（会话已过期，请重新初始化）', -32001);
           return;

@@ -721,6 +721,7 @@ describe('OneBot referee against the real engine', () => {
       await new Promise((res) => setTimeout(res, 500));
       expect(qqM.calls.slice(mark).some((c) => c.action === 'send_private_msg')).toBe(false);
 
+      qqM.failWhen = (c) => c.action === 'send_group_msg' && Array.isArray(c.params.message) && (c.params.message as any[]).some((m) => m.type === 'at' && String(m.data?.qq) === '90077');
       // 别人（星璃的模型）直接在引擎里发的密钥：开房时同步进 bots，同样会 @ 它
       {
         const c = new Client({ name: 't', version: '1' });
@@ -735,6 +736,10 @@ describe('OneBot referee against the real engine', () => {
       const nudge = await qqM.waitForCall((c) => c.action === 'send_group_msg' && callText(c).includes('AI 玩家请调用'), 10_000, mark);
       expect(callText(nudge)).toContain('@90001');
       expect(callText(nudge)).toContain('@90077');
+      // QQ 侧解析不了某个 @（例如 bot 不在群里）时整条被拒：裁判去掉 @ 重发，其余内容照常送达
+      const retry = await qqM.waitForCall((c) => c.action === 'send_group_msg' && Array.isArray(c.params.message) && (c.params.message as any[]).every((m) => m.type !== 'at') && callText(c).includes('AI 玩家请调用'), 10_000, mark);
+      expect(callText(retry)).toContain('@90077');
+      qqM.failWhen = null;
       qqM.emit({ post_type: 'message', message_type: 'group', sub_type: 'normal', group_id: Number(GROUP), user_id: Number(OWNER), message_id: ++msgSeq, sender: { user_id: Number(OWNER), nickname: '主人', card: '' }, message: text('/桌游 中止'), raw_message: '' });
       await qqM.waitForCall((c) => c.action === 'send_group_msg' && callText(c).includes('取消'), 10_000, mark);
       // 群里的帮助会提到找谁申请
