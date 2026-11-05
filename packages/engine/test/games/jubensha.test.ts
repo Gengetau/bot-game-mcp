@@ -1,10 +1,12 @@
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import type { ActionInput, GameRecord, Seat } from '../../src/core/types.js';
 import { chunkText, directoryLibrary, memoryLibrary, parsePack } from '../../src/games/jubensha/index.js';
 import type { JubenshaState } from '../../src/games/jubensha/index.js';
+import { localAssets } from '../../src/core/assets.js';
+import { toCq, toOneBot } from '../../src/mcp/render.js';
 import { REF, bot, human, identityOf, pendingSeats, playToEnd, setup, startGame } from '../helpers.js';
 
 const DEMO_FILE = join(__dirname, '../../examples/jubensha/demo-rainy-bookshop.json');
@@ -285,5 +287,113 @@ describe('jubensha: random play', () => {
       await playToEnd(manager, gameId, { clock });
       expect(rec.status).toBe('ended');
     }
+  });
+});
+
+describe('jubensha: image clues', () => {
+  const PNG = Buffer.from('89504e470d0a1a0a0000000d49484452', 'hex');
+  const PACK = {
+    ...DEMO,
+    images: [
+      { id: 'map', file: 'map.png', caption: '书屋平面图：前厅、里间、库房。' },
+      { id: 'receipt', file: 'receipt.png', caption: '一张当铺收据，抬头写着「雨窗集」。' },
+    ],
+    intro_images: ['map'],
+    acts: DEMO.acts.map((a: any, i: number) => (i === 0 ? { ...a, private_images: { lin: ['receipt'] } } : a)),
+    truth_images: ['receipt'],
+  };
+
+  function withImages(opts: { humans?: number; cast?: Record<string, string>; missing?: boolean } = {}) {
+    const dir = mkdtempSync(join(tmpdir(), 'jbs-img-'));
+    mkdirSync(join(dir, 'demo'));
+    writeFileSync(join(dir, 'demo', 'map.png'), PNG);
+    if (!opts.missing) writeFileSync(join(dir, 'demo', 'receipt.png'), PNG);
+    const prepared: string[][] = [];
+    const base = localAssets(dir);
+    const assets = { ...base, prepare: (_g: string, list: string[]) => void prepared.push(list) };
+    const { manager, clock } = setup(1, undefined, { scripts: memoryLibrary([PACK]), assets });
+    const nb = 4 - (opts.humans ?? 0);
+    const { gameId, rec } = startGame(manager, 'jubensha', {
+      players: Array.from({ length: nb }, (_, i) => bot(i + 1)),
+      humans: Array.from({ length: opts.humans ?? 0 }, (_, i) => human(i + 1)),
+      referee: REF,
+      options: { random_seats: false, cast: opts.cast ?? {} },
+    });
+    return { manager, clock, gameId, rec: rec as Rec, prepared };
+  }
+  const imgs = (d: { segments: any[] }) => d.segments.filter((s) => s.type === 'image');
+
+  it('validates image references', () => {
+    expect(parsePack(PACK).images).toHaveLength(2);
+    expect(() => parsePack({ ...PACK, intro_images: ['nope'] })).toThrow(/nope/);
+    expect(() => parsePack({ ...PACK, images: [{ id: 'x', file: '../x.png', caption: 'c' }] })).toThrow(/文件名/);
+    expect(() => parsePack({ ...PACK, images: [{ id: 'x', file: 'x.txt', caption: 'c' }] })).toThrow(/文件名/);
+    expect(() => parsePack({ ...PACK, acts: [{ title: 't', private_images: { ghost: ['map'] } }] })).toThrow(/ghost/);
+  });
+
+  it('prefetches at start, sends public images to the group and private ones only to their owner', async () => {
+    const g = withImages({ humans: 1, cast: { '201': 'lin' } });
+    expect(g.prepared).toEqual([['demo/map.png', 'demo/receipt.png']]);
+    const group = g.rec.outbox.filter((d) => d.target.type === 'group');
+    const map = group.find((d) => imgs(d).length)!;
+    expect(imgs(map)[0].asset).toBe('demo/map.png');
+    expect(map.text).toBe('[图片]🖼 书屋平面图：前厅、里间、库房。');
+
+    // 推进到第一幕：收据只私发给小林（真人）
+    const step = (inline = true) => g.manager.refereeStep(REF, g.gameId, { inlineImages: inline });
+    for (let i = 0; i < 20 && g.rec.phase?.key !== 'read'; i++) {
+      await step();
+      for (const s of pendingSeats(g.rec)) {
+        const p = g.rec.players.find((x) => x.seat === s)!;
+        if (p.kind === 'human') g.manager.relayHumanMessage(REF, g.gameId, { userId: p.id, text: '过', channel: 'group' });
+        else g.manager.act({ id: p.id, name: p.name }, g.gameId, { action: 'speech', text: '你好。' });
+      }
+    }
+    const receipt = g.rec.outbox.filter((d) => imgs(d).some((s) => s.asset === 'demo/receipt.png'));
+    expect(receipt).toHaveLength(1);
+    expect(receipt[0]!.target).toMatchObject({ type: 'private', userId: '201' });
+    expect(g.rec.outbox.some((d) => d.target.type === 'group' && d.text.includes('当铺收据'))).toBe(false);
+    expect(g.rec.log.filter((e) => e.audience.type === 'public').some((e) => e.text.includes('当铺收据'))).toBe(false);
+
+    // 代码裁判取消息时内嵌 base64；存档里不带图片数据
+    const r = await g.manager.refereeStep(REF, g.gameId, { sinceSeq: receipt[0]!.seq - 1, inlineImages: true });
+    const seg = imgs(r.deliveries.find((d) => d.seq === receipt[0]!.seq)!)[0];
+    expect(Buffer.from(seg.data, 'base64').equals(PNG)).toBe(true);
+    expect(seg.mime).toBe('image/png');
+    expect(imgs(receipt[0]!)[0].data).toBeUndefined();
+    const plain = await g.manager.refereeStep(REF, g.gameId, { sinceSeq: receipt[0]!.seq - 1 });
+    expect(imgs(plain.deliveries.find((d) => d.seq === receipt[0]!.seq)!)[0].data).toBeUndefined();
+  });
+
+  it('AI players see the caption in their view; others do not', async () => {
+    const g = withImages({ cast: { '101': 'lin' } });
+    for (let i = 0; i < 50 && g.rec.phase?.key !== 'read'; i++) {
+      await g.manager.refereeStep(REF, g.gameId);
+      for (const s of pendingSeats(g.rec)) g.manager.act(identityOf(g.rec, s), g.gameId, { action: 'speech', text: '你好。' });
+    }
+    const lin = g.manager.getView(identityOf(g.rec, 1), g.gameId) as any;
+    expect(lin.you.acts[0].images).toEqual(['一张当铺收据，抬头写着「雨窗集」。']);
+    const other = g.manager.getView(identityOf(g.rec, 2), g.gameId) as any;
+    expect(JSON.stringify(other)).not.toContain('当铺收据');
+  });
+
+  it('a missing image still goes out as its caption', async () => {
+    const g = withImages({ missing: true });
+    const r = await g.manager.refereeStep(REF, g.gameId, { inlineImages: true });
+    const map = r.deliveries.find((d) => imgs(d).length)!;
+    expect(imgs(map)[0].data).toBeTruthy();
+    // 收据缺失：真相公布时不带数据，只有说明
+    const fake = { ...map, seq: 99999, segments: [{ type: 'image' as const, asset: 'demo/receipt.png', caption: 'c' }] };
+    g.rec.outbox.push(fake);
+    const r2 = await g.manager.refereeStep(REF, g.gameId, { sinceSeq: 0, inlineImages: true });
+    expect(imgs(r2.deliveries.find((d) => d.seq === 99999)!)[0].data).toBeUndefined();
+    g.rec.outbox.pop();
+  });
+
+  it('onebot / cq rendering', () => {
+    const segs = [{ type: 'image' as const, asset: 'demo/map.png', caption: 'c', data: 'QUJD' }, { type: 'text' as const, text: '🖼 c' }];
+    expect(toOneBot(segs)).toEqual([{ type: 'image', data: { file: 'base64://QUJD' } }, { type: 'text', data: { text: '🖼 c' } }]);
+    expect(toCq(segs)).toBe('[CQ:image,file=base64://QUJD]🖼 c');
+    expect(toOneBot([{ type: 'image', asset: 'demo/map.png', caption: 'c' }])).toEqual([{ type: 'text', data: { text: '[图片]' } }]);
   });
 });

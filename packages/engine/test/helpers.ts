@@ -14,7 +14,7 @@ export class FakeClock {
 
 export function setup(seed: string | number = 1, store?: StateStore, registry: RegistryOptions = {}) {
   const clock = new FakeClock();
-  const manager = new GameManager({ registry: createRegistry(registry), now: clock.now, rng: new SeededRng(seed), store });
+  const manager = new GameManager({ registry: createRegistry(registry), now: clock.now, rng: new SeededRng(seed), store, assets: registry.assets });
   return { clock, manager };
 }
 

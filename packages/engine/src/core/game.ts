@@ -58,7 +58,14 @@ export interface OpenPhaseSpec {
   data?: Record<string, any>;
 }
 
+/** 随消息附带的图片：引用（"剧本id/文件名"）+ 文字说明（AI 只看得到说明） */
+export interface ImageRef {
+  asset: string;
+  caption: string;
+}
+
 export interface AnnounceOptions {
+  image?: ImageRef;
   kind?: string;
   data?: Record<string, unknown>;
   delayMs?: number;
@@ -66,6 +73,7 @@ export interface AnnounceOptions {
 }
 
 export interface TellOptions {
+  image?: ImageRef;
   kind?: string;
   data?: Record<string, unknown>;
   category?: DeliveryCategory;
@@ -217,7 +225,7 @@ export abstract class BaseGame<S = any, O = any> {
 
   protected plain(text: string): string {
     return this.toSegments(text)
-      .map((s) => (s.type === 'text' ? s.text : `@${s.name}`))
+      .map((s) => (s.type === 'text' ? s.text : s.type === 'at' ? `@${s.name}` : '[图片]'))
       .join('');
   }
 
@@ -249,9 +257,10 @@ export abstract class BaseGame<S = any, O = any> {
     text: string,
     category: DeliveryCategory,
     delayMs = 0,
+    image?: ImageRef,
   ): Delivery {
     const now = this.now();
-    const segments = this.toSegments(text);
+    const segments: MessageSegment[] = [...(image ? [{ type: 'image' as const, asset: image.asset, caption: image.caption }] : []), ...this.toSegments(text)];
     const notBefore = Math.max(now + delayMs, this.rec.notBeforeFloor);
     this.rec.notBeforeFloor = notBefore;
     const delivery: Delivery = {
@@ -260,7 +269,7 @@ export abstract class BaseGame<S = any, O = any> {
       notBefore,
       target,
       segments,
-      text: segments.map((s) => (s.type === 'text' ? s.text : `@${s.name}`)).join(''),
+      text: segments.map((s) => (s.type === 'text' ? s.text : s.type === 'at' ? `@${s.name}` : '[图片]')).join(''),
       mentions: segments.flatMap((s) => (s.type === 'at' ? [{ id: s.id, name: s.name }] : [])),
       category,
     };
@@ -271,7 +280,7 @@ export abstract class BaseGame<S = any, O = any> {
   /** 公告：写公开日志 + 让裁判发到群里。文本中可用 this.at(seat) 产生 @。 */
   protected announce(text: string, opts: AnnounceOptions = {}): void {
     this.addLog(opts.kind ?? 'announce', text, PUBLIC, opts.data ? { data: opts.data } : {});
-    this.pushDelivery({ type: 'group', groupId: this.rec.groupId }, text, opts.category ?? 'announce', opts.delayMs ?? 0);
+    this.pushDelivery({ type: 'group', groupId: this.rec.groupId }, text, opts.category ?? 'announce', opts.delayMs ?? 0, opts.image);
   }
 
   /** 私密信息：仅该座位可见；若是真人则由裁判私聊发送。 */
@@ -288,7 +297,7 @@ export abstract class BaseGame<S = any, O = any> {
     for (const seat of seats) {
       const p = this.player(seat);
       if (p.kind === 'human') {
-        this.pushDelivery({ type: 'private', userId: p.id, name: p.name, seat: p.seat }, text, opts.category ?? 'info');
+        this.pushDelivery({ type: 'private', userId: p.id, name: p.name, seat: p.seat }, text, opts.category ?? 'info', 0, opts.image);
       }
     }
   }

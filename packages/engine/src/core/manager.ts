@@ -11,6 +11,7 @@
 import { EventEmitter } from 'node:events';
 import { BaseGame, type GameEnv } from './game.js';
 import { GameError, badRequest, forbidden, invalidState, notFound } from './errors.js';
+import type { AssetStore } from './assets.js';
 import type { GameRegistry, GameDefinition } from './registry.js';
 import { CryptoRng, pick, shortCode, shuffle, type Rng } from './rng.js';
 import type { ClaimRecord, PersistedState, StateStore } from './store.js';
@@ -59,6 +60,8 @@ export interface ManagerOptions {
   maxActiveGames?: number;
   /** 只有这些 QQ 号能当裁判（抽签、候补、接管）；空数组为不限制。名单外的 AI 只能当玩家。 */
   refereeIds?: string[];
+  /** 图片素材（剧本杀线索图）；referee_step 的 inline_images=true 时从这里读图 */
+  assets?: AssetStore;
 }
 
 export interface CreateGameInput {
@@ -153,6 +156,7 @@ export class GameManager {
   isKeyedAgent: (id: string) => boolean = () => false;
 
   private readonly games = new Map<string, GameRecord>();
+  private readonly assets?: AssetStore;
   private readonly instances = new Map<string, BaseGame>();
   private readonly viewCursors = new Map<string, number>();
   private readonly emitter = new EventEmitter();
@@ -170,6 +174,7 @@ export class GameManager {
     this.allowedGroups = new Set(opts.allowedGroups ?? []);
     this.maxActiveGames = opts.maxActiveGames ?? 0;
     this.refereeIds = new Set(opts.refereeIds ?? []);
+    this.assets = opts.assets;
     this.emitter.setMaxListeners(0);
     const loaded = this.store?.load();
     if (loaded) this.restore(loaded);
@@ -1172,7 +1177,7 @@ export class GameManager {
   async refereeStep(
     actor: Identity,
     gameId: string | undefined,
-    opts: { sinceSeq?: number; waitMs?: number; hostId?: string } = {},
+    opts: { sinceSeq?: number; waitMs?: number; hostId?: string; inlineImages?: boolean } = {},
     signal?: AbortSignal,
   ): Promise<RefereeStepResult> {
     const rec = this.resolveGame(actor, gameId, 'referee');
@@ -1212,12 +1217,13 @@ export class GameManager {
       opts.sinceSeq !== undefined
         ? Math.max(0, ref ? Math.min(opts.sinceSeq, ref.cursor) : opts.sinceSeq)
         : (ref?.cursor ?? 0);
-    const deliveries: Delivery[] = [];
+    let deliveries: Delivery[] = [];
     for (const d of rec.outbox) {
       if (d.seq <= from) continue;
       if (d.notBefore > now) break;
       deliveries.push(d);
     }
+    if (opts.inlineImages) deliveries = await this.inlineImages(rec.id, deliveries);
     this.assertNotCancelled(signal, 'referee_step');
     if (ref && deliveries.length > 0) ref.cursor = Math.max(ref.cursor, deliveries[deliveries.length - 1]!.seq);
     if (rec.status === 'running') this.pump(rec, inst, true);
@@ -1251,6 +1257,33 @@ export class GameManager {
       next_call_hint: hint,
       finished,
     };
+  }
+
+  /** 进行中（含报名中）的对局 ID，用于清理图片缓存。 */
+  activeGameIds(): Set<string> {
+    return new Set([...this.games.values()].filter((g) => g.status === 'running' || g.status === 'lobby').map((g) => g.id));
+  }
+
+  /** 把图片段的数据以 base64 填进副本（存档里的原消息不变）。读不到的图只留文字说明。 */
+  private async inlineImages(gameId: string, ds: Delivery[]): Promise<Delivery[]> {
+    if (!ds.some((d) => d.segments.some((s) => s.type === 'image'))) return ds;
+    return Promise.all(
+      ds.map(async (d) => {
+        if (!d.segments.some((s) => s.type === 'image')) return d;
+        const segments = await Promise.all(
+          d.segments.map(async (s) => {
+            if (s.type !== 'image' || !this.assets) return s;
+            try {
+              const img = await withTimeout(this.assets.load(gameId, s.asset), 30_000);
+              return { ...s, data: img.data.toString('base64'), mime: img.mime };
+            } catch {
+              return s;
+            }
+          }),
+        );
+        return { ...d, segments };
+      }),
+    );
   }
 
   /**
@@ -1447,3 +1480,19 @@ export function isIdentityQuery(text: string): boolean {
   );
 }
 
+function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const t = setTimeout(() => reject(new Error('timeout')), ms);
+    t.unref?.();
+    p.then(
+      (v) => {
+        clearTimeout(t);
+        resolve(v);
+      },
+      (e) => {
+        clearTimeout(t);
+        reject(e);
+      },
+    );
+  });
+}

@@ -11,14 +11,33 @@ export type DeliveryFormat = 'text' | 'cq' | 'onebot';
 const escapeCqText = (s: string) => s.replace(/&/g, '&amp;').replace(/\[/g, '&#91;').replace(/\]/g, '&#93;');
 const escapeCqParam = (s: string) => escapeCqText(s).replace(/,/g, '&#44;');
 
+/** 没有内嵌图片数据时，图片段以这段文字代替（图片说明紧跟在后面的文字段里）。 */
+const IMAGE_PLACEHOLDER = '[图片]';
+
 export function toCq(segments: MessageSegment[]): string {
   return segments
-    .map((s) => (s.type === 'text' ? escapeCqText(s.text) : `[CQ:at,qq=${escapeCqParam(s.id)}]`))
+    .map((s) =>
+      s.type === 'text'
+        ? escapeCqText(s.text)
+        : s.type === 'at'
+          ? `[CQ:at,qq=${escapeCqParam(s.id)}]`
+          : s.data
+            ? `[CQ:image,file=base64://${s.data}]`
+            : escapeCqText(IMAGE_PLACEHOLDER),
+    )
     .join('');
 }
 
 export function toOneBot(segments: MessageSegment[]) {
-  return segments.map((s) => (s.type === 'text' ? { type: 'text', data: { text: s.text } } : { type: 'at', data: { qq: s.id } }));
+  return segments.map((s) =>
+    s.type === 'text'
+      ? { type: 'text', data: { text: s.text } }
+      : s.type === 'at'
+        ? { type: 'at', data: { qq: s.id } }
+        : s.data
+          ? { type: 'image', data: { file: `base64://${s.data}` } }
+          : { type: 'text', data: { text: IMAGE_PLACEHOLDER } },
+  );
 }
 
 export function renderDelivery(d: Delivery, format: DeliveryFormat) {

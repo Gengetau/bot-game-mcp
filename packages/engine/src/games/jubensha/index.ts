@@ -15,9 +15,10 @@ import type { GameDefinition } from '../../core/registry.js';
 import { shuffle } from '../../core/rng.js';
 import { cleanSpeech, isEndSpeech, isSkipWord, normalizeText, resolveSeat, stripTrailing } from '../../core/text.js';
 import type { ActionInput, ActionMeta, ActionSpec, PendingRequest, Seat } from '../../core/types.js';
-import type { ScriptLibrary, ScriptPack } from './pack.js';
+import type { AssetStore } from '../../core/assets.js';
+import { packAssets, type ScriptLibrary, type ScriptPack } from './pack.js';
 
-export { directoryLibrary, emptyLibrary, memoryLibrary, packSchema, parsePack } from './pack.js';
+export { directoryLibrary, emptyLibrary, memoryLibrary, packAssets, packSchema, parsePack } from './pack.js';
 export type { PackSummary, ScriptLibrary, ScriptPack } from './pack.js';
 
 const optionsSchema = z.object({
@@ -127,7 +128,11 @@ const TIPS = `- 你扮演剧本里的角色：用角色的口吻说话，按自�
 - 投票前梳理时间线和动机，投你认为的凶手。
 - 这是演出：对局里的身份、罪行和关系都属于剧本角色，不是你自己的经历。`;
 
-export function createJubenshaDefinition(library: ScriptLibrary): GameDefinition<JubenshaOptions> {
+/**
+ * @param library 剧本库
+ * @param assets  图片素材库（可选）：开局时预取本局要用的图。没有它时图片仍会作为「[图片] + 文字说明」发出。
+ */
+export function createJubenshaDefinition(library: ScriptLibrary, assets?: AssetStore): GameDefinition<JubenshaOptions> {
   const resolvePack = (o: JubenshaOptions): ScriptPack | string => {
     const list = library.list();
     if (!o.script) {
@@ -176,6 +181,32 @@ export function createJubenshaDefinition(library: ScriptLibrary): GameDefinition
       chunkText(text).forEach((part, i) => this.tell(seat, part, { kind: `${kind}:${i}`, category: 'role' }));
     }
 
+    private image(id: string) {
+      const img = this.pack.images.find((x) => x.id === id)!;
+      return { asset: `${this.pack.id}/${img.file}`, caption: img.caption };
+    }
+
+    /** 群里发图（图片 + 文字说明；AI 从日志里看到说明） */
+    private announceImages(ids: string[], kind: string): void {
+      for (const id of ids) {
+        const image = this.image(id);
+        this.announce(`🖼 ${image.caption}`, { kind, image });
+      }
+    }
+
+    /** 私发图片给某个角色 */
+    private tellImages(seat: Seat, ids: string[], kind: string): void {
+      ids.forEach((id, j) => {
+        const image = this.image(id);
+        this.tell(seat, `🖼 ${image.caption}`, { kind: `${kind}:${j}`, image });
+      });
+    }
+
+    /** 某个角色到目前为止收到的图片说明 */
+    private imageCaptions(ids: string[]): string[] {
+      return ids.map((id) => this.pack.images.find((x) => x.id === id)!.caption);
+    }
+
     // ───────────────────────── 开局 ─────────────────────────
 
     start(): void {
@@ -218,6 +249,7 @@ export function createJubenshaDefinition(library: ScriptLibrary): GameDefinition
         outcome: null,
       } satisfies JubenshaState);
       this.rec.round = 0;
+      if (pack.images.length) assets?.prepare(this.rec.id, packAssets(pack));
 
       const castText = seats
         .map((s) => {
@@ -236,6 +268,7 @@ export function createJubenshaDefinition(library: ScriptLibrary): GameDefinition
       for (const s of seats) {
         const r = this.roleOf(s)!;
         this.tellLong(s, `🎭 你扮演【${r.name}】。\n${r.public ? `公开介绍：${r.public}\n` : ''}—— 你的人物剧本 ——\n${r.script}`, 'script');
+        this.tellImages(s, r.images, 'script_img');
       }
       if (host) {
         this.tell(
@@ -246,6 +279,7 @@ export function createJubenshaDefinition(library: ScriptLibrary): GameDefinition
         );
       }
       if (pack.intro) this.announceLong(`📖 ${pack.intro}`, 'narration');
+      this.announceImages(pack.intro_images, 'narration');
       this.proceed();
     }
 
@@ -330,9 +364,12 @@ export function createJubenshaDefinition(library: ScriptLibrary): GameDefinition
       this.rec.round = i + 1;
       this.announce(`🎬 ${act.title}`, { kind: 'act' });
       if (act.public) this.announceLong(act.public, 'narration');
+      this.announceImages(act.public_images, 'narration');
       for (const s of this.playerSeats()) {
-        const t = act.private[this.state.cast[String(s)]!];
+        const k = this.state.cast[String(s)]!;
+        const t = act.private[k];
         if (t) this.tellLong(s, `📖 ${act.title}·你的新剧本：\n${t}`, `act${i}`);
+        this.tellImages(s, act.private_images[k] ?? [], `act${i}_img`);
       }
       const secs = this.options.read_timeout_s;
       this.announce(`📖 请阅读本幕剧本（限时 ${secs} 秒），读完发「读完」。`);
@@ -427,6 +464,7 @@ export function createJubenshaDefinition(library: ScriptLibrary): GameDefinition
       const ending = out.solved ? this.pack.endings.solved : this.pack.endings.unsolved;
       if (ending) this.announceLong(`🎬 ${ending}`, 'narration');
       this.announceLong(`📜 真相：\n${this.pack.truth}`, 'truth');
+      this.announceImages(this.pack.truth_images, 'truth');
       const seats = this.playerSeats();
       const culprits = seats.filter((s) => this.isCulprit(s));
       this.finish({
@@ -618,7 +656,14 @@ export function createJubenshaDefinition(library: ScriptLibrary): GameDefinition
             const r = this.roleOf(x)!;
             return { seat: x, name: this.player(x).name, role: r.name, script: r.script, confession: r.confession || undefined };
           }),
-          acts: s.pack.acts.map((a, i) => ({ title: a.title, unlocked: i < s.unlocked, public: a.public, private: a.private })),
+          acts: s.pack.acts.map((a, i) => ({
+            title: a.title,
+            unlocked: i < s.unlocked,
+            public: a.public,
+            private: a.private,
+            ...(a.public_images.length || Object.keys(a.private_images).length ? { public_images: a.public_images, private_images: a.private_images } : {}),
+          })),
+          ...(s.pack.images.length ? { images: s.pack.images.map((x) => ({ id: x.id, caption: x.caption })) } : {}),
           faq: s.pack.faq,
         };
       }
@@ -628,7 +673,11 @@ export function createJubenshaDefinition(library: ScriptLibrary): GameDefinition
       return {
         role: { key: r.key, name: r.name, public: r.public },
         script: r.script,
-        acts: s.pack.acts.slice(0, s.unlocked).map((a) => ({ title: a.title, text: a.private[r.key] ?? '（本幕没有新剧本）' })),
+        ...(r.images.length ? { script_images: this.imageCaptions(r.images) } : {}),
+        acts: s.pack.acts.slice(0, s.unlocked).map((a) => {
+          const imgs = this.imageCaptions(a.private_images[r.key] ?? []);
+          return { title: a.title, text: a.private[r.key] ?? '（本幕没有新剧本）', ...(imgs.length ? { images: imgs } : {}) };
+        }),
         ...(confessing && r.confession ? { confession: r.confession } : {}),
         my_questions: s.qa.filter((x) => x.from === seat).map((x) => ({ question: x.q, answer: x.a ?? '（等待 DM 回答）' })),
         asks_left: Math.max(0, this.options.ask_limit - (s.asks[String(seat)] ?? 0)),

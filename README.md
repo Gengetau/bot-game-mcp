@@ -235,6 +235,9 @@ sequenceDiagram
 | `auth.issuedKeysFile` | `./data/botgame-keys.json` | 管理员在运行时用 `issue_key` 发放的密钥存在这里（0600），重启仍有效；`null` 关闭运行时发放 |
 | `stateFile` | `./data/botgame-state.json` | 存档文件，重启后对局会继续。设为 `null` 则只存在内存里 |
 | `scriptsDir` | `null` | 剧本杀数据包目录（*.json），新放进去的剧本不用重启。必须是私有目录，不要放在任何 bot 能读到的路径下，见 [docs/JUBENSHA.md](docs/JUBENSHA.md) |
+| `drive` | `null` | 剧本杀线索图放在 Google 云盘：`{"folderId": "...", "credentialsFile": "服务账号密钥.json"}`。开局下载本局要用的图，结束后删除 |
+| `assetsDir` | `null` | 剧本杀线索图放在本地目录（`<目录>/<剧本id>/<文件名>`），没配云盘时使用 |
+| `assetCacheDir` | `./data/asset-cache` | 云盘图片的临时缓存目录 |
 | `auth.mode` | 有 agents 时为 `keys`，否则为 `open` | `keys`：必须带密钥；`open`：用 `login` 认领 QQ 号 |
 | `auth.agents[]` | `[]` | `{ key, id, name, admin? }`，每个 bot 一个密钥 |
 | `auth.adminKeys` | `[]` | 管理员密钥，可以中止任意对局 |
@@ -247,7 +250,7 @@ sequenceDiagram
 | `sessionIdleMinutes` | `30` | HTTP 会话闲置多久后关闭 |
 | `seed` | — | 固定随机种子，**只用于测试复现，生产环境不要设置** |
 
-可以用环境变量覆盖：`BOTGAME_HOST`、`BOTGAME_PORT`、`BOTGAME_STATE_FILE`（设为空字符串表示只用内存）、`BOTGAME_AUTH_MODE`、`BOTGAME_ADMIN_KEY`、`BOTGAME_SEED`、`BOTGAME_SCRIPTS_DIR`。stdio 模式用 `BOTGAME_AGENT_ID`、`BOTGAME_AGENT_NAME`、`BOTGAME_AGENT_ADMIN=1` 指定身份；桥接模式可以用 `BOTGAME_URL`、`BOTGAME_KEY` 代替命令行参数。
+可以用环境变量覆盖：`BOTGAME_HOST`、`BOTGAME_PORT`、`BOTGAME_STATE_FILE`（设为空字符串表示只用内存）、`BOTGAME_AUTH_MODE`、`BOTGAME_ADMIN_KEY`、`BOTGAME_SEED`、`BOTGAME_SCRIPTS_DIR`、`BOTGAME_ASSETS_DIR`、`BOTGAME_DRIVE_FOLDER_ID` + `BOTGAME_DRIVE_CREDENTIALS`。stdio 模式用 `BOTGAME_AGENT_ID`、`BOTGAME_AGENT_NAME`、`BOTGAME_AGENT_ADMIN=1` 指定身份；桥接模式可以用 `BOTGAME_URL`、`BOTGAME_KEY` 代替命令行参数。
 
 密钥可以三种方式携带，任选其一：`Authorization: Bearer <key>`、`X-API-Key: <key>`、URL 参数 `?key=<key>`。URL 参数主要是给只能填地址的旧 SSE 客户端用的。
 

@@ -7,12 +7,18 @@
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { z } from 'zod';
+import { IMAGE_FILE_RE } from '../../core/assets.js';
 
 const text = (max: number) => z.string().trim().max(max);
 const key = z
   .string()
   .trim()
   .regex(/^[A-Za-z0-9_-]{1,24}$/, '角色 key 只能用字母、数字、下划线和短横线（1~24 个字符）');
+const imageId = z
+  .string()
+  .trim()
+  .regex(/^[A-Za-z0-9_-]{1,32}$/, '图片 id 只能用字母、数字、下划线和短横线（1~32 个字符）');
+const imageList = z.array(imageId).max(30).default([]);
 
 export const packSchema = z
   .object({
@@ -30,6 +36,22 @@ export const packSchema = z
     intro: text(8000).default(''),
     /** 本剧本特有的规则说明（公开） */
     rules_note: text(3000).default(''),
+    /**
+     * 图片线索。文件放在素材库里剧本 id 同名的文件夹下（本地目录或 Google 云盘）。
+     * caption 是图片的文字说明：AI 玩家只看得到它，所以要写全图上的关键信息。
+     */
+    images: z
+      .array(
+        z.object({
+          id: imageId,
+          file: z.string().trim().regex(IMAGE_FILE_RE, '图片文件名要以 .jpg/.jpeg/.png/.gif/.webp 结尾，不能含路径'),
+          caption: text(2000).min(1),
+        }),
+      )
+      .max(200)
+      .default([]),
+    /** 开场念白之后在群里发的图（如地图、人物关系图） */
+    intro_images: imageList,
     roles: z
       .array(
         z.object({
@@ -44,6 +66,8 @@ export const packSchema = z
           script: text(20000).min(1),
           /** 认罪书：仅凶手需要；投票后凶手按它坦白 */
           confession: text(5000).default(''),
+          /** 随人物剧本私发的图 */
+          images: imageList,
         }),
       )
       .min(2),
@@ -56,6 +80,10 @@ export const packSchema = z
           public: text(8000).default(''),
           /** 本幕私发给各角色的内容：角色 key → 文本（可只给部分角色） */
           private: z.record(z.string(), text(20000)).default({}),
+          /** 本幕开始时群里发的图 */
+          public_images: imageList,
+          /** 本幕私发给各角色的图：角色 key → 图片 id 列表 */
+          private_images: z.record(z.string(), z.array(imageId).max(30)).default({}),
           /** 本幕自由讨论时长（分钟），不填用开房选项 discuss_minutes */
           discuss_minutes: z.number().int().min(1).max(60).optional(),
         }),
@@ -66,6 +94,8 @@ export const packSchema = z
     culprits: z.array(key).min(1),
     /** 真相全文（结束时公布） */
     truth: text(30000).min(1),
+    /** 公布真相时发的图 */
+    truth_images: imageList,
     endings: z
       .object({
         /** 破案时的结局念白 */
@@ -90,9 +120,22 @@ export const packSchema = z
     for (const c of p.culprits) {
       if (!keys.includes(c)) ctx.addIssue({ code: 'custom', message: `culprits 里的 ${c} 不是已定义的角色`, path: ['culprits'] });
     }
+    const imgs = p.images.map((x) => x.id);
+    if (new Set(imgs).size !== imgs.length) ctx.addIssue({ code: 'custom', message: '图片 id 有重复', path: ['images'] });
+    const checkImgs = (list: string[], where: string, path: (string | number)[]) => {
+      for (const id of list) if (!imgs.includes(id)) ctx.addIssue({ code: 'custom', message: `${where}里的图片 ${id} 没有在 images 里定义`, path });
+    };
+    checkImgs(p.intro_images, 'intro_images ', ['intro_images']);
+    checkImgs(p.truth_images, 'truth_images ', ['truth_images']);
+    p.roles.forEach((r, i) => checkImgs(r.images, `角色 ${r.key} 的 images `, ['roles', i, 'images']));
     p.acts.forEach((a, i) => {
       for (const k of Object.keys(a.private)) {
         if (!keys.includes(k)) ctx.addIssue({ code: 'custom', message: `第 ${i + 1} 幕 private 里的 ${k} 不是已定义的角色`, path: ['acts', i, 'private'] });
+      }
+      checkImgs(a.public_images, `第 ${i + 1} 幕 public_images `, ['acts', i, 'public_images']);
+      for (const [k, list] of Object.entries(a.private_images)) {
+        if (!keys.includes(k)) ctx.addIssue({ code: 'custom', message: `第 ${i + 1} 幕 private_images 里的 ${k} 不是已定义的角色`, path: ['acts', i, 'private_images'] });
+        checkImgs(list, `第 ${i + 1} 幕 private_images.${k} `, ['acts', i, 'private_images']);
       }
     });
   });
@@ -194,3 +237,8 @@ export function directoryLibrary(dir: string): ScriptLibrary {
 
 /** 空剧本库（未配置 scriptsDir 时使用）。 */
 export const emptyLibrary: ScriptLibrary = { get: () => null, list: () => [], errors: () => ({}) };
+
+/** 剧本里所有图片的素材引用（"剧本id/文件名"），供开局预取。 */
+export function packAssets(p: ScriptPack): string[] {
+  return p.images.map((x) => `${p.id}/${x.file}`);
+}

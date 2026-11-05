@@ -397,13 +397,22 @@ export function createMcpServer(deps: ServerDeps, ctx: SessionContext): McpServe
           .enum(['text', 'cq', 'onebot'])
           .optional()
           .describe('消息格式：text（默认，@昵称 + mentions）/ cq（CQ 码）/ onebot（OneBot v11 消息段数组）'),
+        inline_images: z
+          .boolean()
+          .optional()
+          .describe('代码裁判用：cq / onebot 格式里把图片以 base64 内嵌（剧本杀线索图）。默认不内嵌，图片位置显示为「[图片]」，后面跟着图片的文字说明'),
       },
     },
     async (a, extra) => {
       const r = await manager.refereeStep(
         me(),
         a.game_id,
-        { sinceSeq: a.since_seq, waitMs: Math.min(a.wait_seconds ?? 0, MAX_WAIT_SECONDS) * 1000, hostId: a.host_id },
+        {
+          sinceSeq: a.since_seq,
+          waitMs: Math.min(a.wait_seconds ?? 0, MAX_WAIT_SECONDS) * 1000,
+          hostId: a.host_id,
+          inlineImages: Boolean(a.inline_images) && (a.format === 'cq' || a.format === 'onebot'),
+        },
         extra.signal,
       );
       const fmt: DeliveryFormat = a.format ?? 'text';

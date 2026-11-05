@@ -80,8 +80,14 @@ export type DeliveryCategory =
   | 'feedback' // 对真人指令的回执
   | 'speech'; // 代发的 bot 发言
 
-/** 消息片段（与 OneBot v11 的 text / at 段一一对应）。 */
-export type MessageSegment = { type: 'text'; text: string } | { type: 'at'; id: string; name: string };
+/**
+ * 消息片段（与 OneBot v11 的 text / at / image 段对应）。
+ * image 只存引用（"剧本id/文件名"）和文字说明；data（base64）只在 referee_step 的 inline_images=true 时临时填入，不进存档。
+ */
+export type MessageSegment =
+  | { type: 'text'; text: string }
+  | { type: 'at'; id: string; name: string }
+  | { type: 'image'; asset: string; caption: string; data?: string; mime?: string };
 
 /** 需要裁判发到 QQ 的消息（群消息或给真人的私聊）。 */
 export interface Delivery {
