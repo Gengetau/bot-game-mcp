@@ -16,13 +16,14 @@ const HELP = `bot-game-referee ${VERSION} —— bot-game-mcp 的代码裁判（
 用法：
   bot-game-referee --url http://主机:7700/mcp --key 密钥|--key-file 文件 --onebot ws://127.0.0.1:3001/ --group 群号
                    [--onebot-token-file 文件] [--admins QQ,QQ] [--bots QQ,QQ] [--bot-commands] [--options '{"nudge_ai":true}']
-                   [--prefix /桌游] [--wait 25] [--auto-start 60]
+                   [--prefix /桌游] [--wait 25] [--auto-start 60] [--lobby-timeout 600]
                    [--voices voices.json] [--host-id 标识] [--no-self-in-pool] [--wheel-font unifont.hex.gz] [--no-wheel] [--follower]
 
   用一个或多个 OneBot v11 账号（正向 WebSocket）把引擎的消息发到群里和私聊里，转交真人消息，响应「/桌游」指令。
   它只用裁判能用的那几个工具，没有任何能影响结果的接口。
   --bot-commands：允许 --bots 里的账号发「/桌游 <游戏>」开房、「/桌游 开局」开局（中止仍只有管理员能用）。
   --auto-start N：报名够人后 N 秒没有新人加入就自动开局（默认 60，0 为关闭）；开房时写人数（/桌游 狼人杀 7）则凑满立刻开局。
+  --lobby-timeout N：人数还不够时 N 秒没有新人报名就取消房间（默认 600，0 为关闭）。
   --voices 文件：额外的嗓子账号，JSON 数组，每项 {"keyFile"|"key", "onebot", "onebotTokenFile"|"onebotToken"}。
     报名了的嗓子账号会进裁判抽签池，抽中谁就用谁的账号主持；抽中账号自己的模型拿不到任何该发的话。
   --host-id：本进程的标识（默认主机名），重启后要保持一致。--no-self-in-pool：主账号不进抽签池。
@@ -66,6 +67,7 @@ async function main(argv: string[]): Promise<void> {
       prefix: { type: 'string' },
       wait: { type: 'string' },
       'auto-start': { type: 'string' },
+      'lobby-timeout': { type: 'string' },
       voices: { type: 'string' },
       'host-id': { type: 'string' },
       'no-self-in-pool': { type: 'boolean' },
@@ -108,6 +110,7 @@ async function main(argv: string[]): Promise<void> {
     commandPrefix: str('prefix'),
     stepWaitSeconds: str('wait') ? Number(str('wait')) : undefined,
     autoStartSeconds: str('auto-start') !== undefined ? Number(str('auto-start')) : 60,
+    lobbyTimeoutSeconds: str('lobby-timeout') !== undefined ? Number(str('lobby-timeout')) : 600,
     voices,
     hostId: str('host-id') ?? process.env.BOTGAME_HOST_ID,
     selfInPool: !values['no-self-in-pool'],

@@ -60,6 +60,8 @@ export interface RefereeOptions {
    * 开房指令里写一个数字（如「/桌游 狼人杀 7」）表示凑满这么多人立刻开局；人数达到上限也立刻开局。
    */
   autoStartSeconds?: number;
+  /** 报名兜底：人数还不够最少人数时，这么多秒没有新人报名就取消房间（0 或不填 = 不取消），默认 0 */
+  lobbyTimeoutSeconds?: number;
   /** 两条 QQ 消息之间的最小间隔（毫秒），默认 300 */
   sendGapMs?: number;
   /** 额外的嗓子账号：报名了的会进裁判抽签池，抽中就用它发消息 */
@@ -378,6 +380,7 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
   const botCommands = opts.botCommands ?? false;
   const stepWait = Math.max(1, Math.min(50, opts.stepWaitSeconds ?? 25));
   const autoStart = Math.max(0, opts.autoStartSeconds ?? 0);
+  const lobbyTimeout = Math.max(0, opts.lobbyTimeoutSeconds ?? 0);
   const sendGap = opts.sendGapMs ?? 300;
   const hostId = (opts.hostId ?? hostname()).trim().slice(0, 100) || 'referee';
   const follower = opts.follower ?? false;
@@ -492,7 +495,13 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
     `报名：发「加入」；游戏中按提示在群里发指令（如「投3号」），夜间行动私聊本局裁判。` +
     (voices.length > 1 || selfInPool ? `\n裁判由程序在报名的 bot（含我）里抽签决定，抽中谁就用谁的账号主持。` : '') +
     (botCommands && bots.size > 0 ? `\nbot 也可以发「${prefix} <游戏>」开房、「${prefix} 开局」开局。` : '') +
-    (autoStart > 0 ? `\n报名够人后 ${autoStart} 秒没有新人加入就自动开局；开房时写人数（如「${prefix} 狼人杀 7」）则凑满立刻开局。` : '');
+    (autoStart > 0 ? `\n报名够人后 ${autoStart} 秒没有新人加入就自动开局；开房时写人数（如「${prefix} 狼人杀 7」）则凑满立刻开局。` : '') +
+    (lobbyTimeout > 0 ? `\n人数不够时 ${fmtDuration(lobbyTimeout)} 没有新人报名，房间自动取消。` : '');
+
+  function fmtDuration(sec: number): string {
+    if (sec % 60 === 0) return `${sec / 60} 分钟`;
+    return sec >= 60 ? `${Math.floor(sec / 60)} 分 ${sec % 60} 秒` : `${sec} 秒`;
+  }
 
   async function refreshGame(): Promise<void> {
     const r = await main.engine.call('list_games', { group_id: opts.groupId });
@@ -593,13 +602,22 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
     await refreshGame();
   }
 
-  /** 自动开局：报名够人且一段时间没有新人就开；凑满目标人数或上限立刻开。 */
+  /** 自动开局：报名够人且一段时间没有新人就开；凑满目标人数或上限立刻开。人数不够且长时间没人报名则取消房间。 */
   async function maybeAutoStart(): Promise<void> {
     const g = st.game;
-    if (autoStart <= 0 || !g || g.status !== 'lobby') return;
+    if (!g || g.status !== 'lobby') return;
     const now = Date.now();
     if (g.players !== st.lobby.count) st.lobby = { count: g.players, changedAt: now, announced: false };
-    if (g.players < g.min) return;
+    if (g.players < g.min) {
+      if (lobbyTimeout > 0 && now - st.lobby.changedAt >= lobbyTimeout * 1000) {
+        log(`[referee] 房间 ${g.id} 报名 ${fmtDuration(lobbyTimeout)} 没凑够人，取消`);
+        await main.engine.call('abort_game', { game_id: g.id, reason: `报名 ${fmtDuration(lobbyTimeout)} 没凑够人` });
+        await say(`⌛ 房间 ${g.id} 报名 ${fmtDuration(lobbyTimeout)} 只有 ${g.players} 人（最少 ${g.min} 人），已取消。想玩再发「${prefix} <游戏>」开房。`);
+        await refreshGame();
+      }
+      return;
+    }
+    if (autoStart <= 0) return;
     if ((g.target && g.players >= g.target) || (g.max > 0 && g.players >= g.max)) return startNow(`已凑满 ${g.players} 人`);
     if (!st.lobby.announced) {
       st.lobby.announced = true;

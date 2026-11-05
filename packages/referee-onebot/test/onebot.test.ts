@@ -484,6 +484,48 @@ describe('OneBot referee against the real engine', () => {
     }
   }, 60_000);
 
+  it('lobby-timeout: a lobby that never fills is cancelled after the quiet period', async () => {
+    const qq4 = new FakeOneBot('tok4');
+    await qq4.start();
+    const ac4 = new AbortController();
+    const done = runReferee({
+      url: http.url,
+      key: KEYS.ref,
+      onebotUrl: qq4.url,
+      onebotToken: 'tok4',
+      groupId: GROUP,
+      admins: [OWNER],
+      bots: [AI_ID],
+      stepWaitSeconds: 1,
+      sendGapMs: 0,
+      autoStartSeconds: 0,
+      lobbyTimeoutSeconds: 2,
+      selfInPool: false,
+      signal: ac4.signal,
+      log: (l) => logs.push(l),
+    });
+    await qq4.waitForConnection();
+    const send4 = (c: ApiCall) => c.action === 'send_group_msg' && String(c.params.group_id) === GROUP;
+    const msg4 = (uid: string, nick: string, t: string) =>
+      qq4.emit({ post_type: 'message', message_type: 'group', sub_type: 'normal', group_id: Number(GROUP), user_id: Number(uid), message_id: ++msgSeq, sender: { user_id: Number(uid), nickname: nick, card: '' }, message: text(t), raw_message: t });
+    try {
+      let mark = qq4.calls.length;
+      msg4(OWNER, '主人', '/桌游 数字炸弹');
+      await qq4.waitForCall((c) => send4(c) && callText(c).includes('报名'), 10_000, mark);
+      msg4(OWNER, '主人', '加入'); // 只有 1 人，不够最少人数
+      const cancelled = await qq4.waitForCall((c) => send4(c) && callText(c).includes('已取消'), 15_000, mark);
+      expect(callText(cancelled)).toContain('只有 1 人');
+      // 房间真的没了，可以再开
+      mark = qq4.calls.length;
+      msg4(OWNER, '主人', '/桌游 状态');
+      await qq4.waitForCall((c) => send4(c) && callText(c).includes('没有对局'), 10_000, mark);
+    } finally {
+      ac4.abort();
+      await Promise.race([done, new Promise((res) => setTimeout(res, 5000))]);
+      await qq4.close();
+    }
+  }, 60_000);
+
   it('rejects a wrong OneBot token', async () => {
     const bad = new FakeOneBot('right');
     await bad.start();
