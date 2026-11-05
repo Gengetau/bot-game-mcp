@@ -164,7 +164,7 @@ export class LiarsDiceGame extends BaseGame<LiarsDiceState, LiarsDiceOptions> {
         `命数：${livesText}\n由 ${this.at(starter)} 先叫。`,
     );
     for (const s of this.aliveSeats()) {
-      this.tell(s, `🎲 你的骰子：${this.diceText(st.dice[String(s)])}`, { kind: 'dice' });
+      this.tell(s, `🎲 你的骰子：${this.diceText(st.dice[String(s)])}`, { kind: 'dice', category: 'role' });
     }
     this.openTurn();
   }

@@ -53,6 +53,12 @@ export function toHumanText(input: ActionInput): string | null {
       return t !== undefined ? `毒${t}` : null;
     case 'shoot':
       return t !== undefined ? `开枪${t}` : null;
+    case 'claim':
+      return '起跳';
+    case 'run':
+      return '上警';
+    case 'pass_badge':
+      return t !== undefined ? `警徽给${t}` : null;
     case 'guess':
       return input.number !== undefined ? String(input.number) : null;
     case 'bid':

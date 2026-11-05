@@ -520,6 +520,12 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
       }
       await pause(sendGap);
     });
+  /**
+   * 私聊（好友和临时会话）都发不出去的消息先存着：QQ 只有对方先发起过临时会话才能回，
+   * 所以在群里 @ 对方请他私聊这个账号一句，收到后按原顺序补发。
+   */
+  const undelivered = new Map<string, { v: Voice; text: string }[]>();
+  const askedToOpen = new Map<string, number>();
   const sendPrivateAs = (v: Voice, userId: string, text: string) =>
     enqueue(async () => {
       const via = sendable(v);
@@ -533,10 +539,39 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
           await via.onebot.call('send_private_msg', { user_id: Number(userId), group_id: Number(opts.groupId), message });
         }
       } catch (e) {
-        log(`[referee] 私聊发送失败（${via.name || via.id} → ${userId}）：${errMsg(e)}`);
+        log(`[referee] 私聊发送失败（${via.name || via.id} → ${userId}）：${errMsg(e)}，等对方私聊后补发`);
+        const list = undelivered.get(userId) ?? [];
+        if (list.length < 50) list.push({ v, text });
+        undelivered.set(userId, list);
+        const last = askedToOpen.get(userId) ?? 0;
+        if (Date.now() - last > 10 * 60_000) {
+          askedToOpen.set(userId, Date.now());
+          // 不等待：本函数正在发送队列里，等待会卡住队列
+          void sendGroupAs(via, [
+            { type: 'at', data: { qq: userId } },
+            {
+              type: 'text',
+              data: { text: ` 私聊发不过去（不是好友，也还没有临时会话）。请点我的头像发起临时会话，随便发一句话，我把身份和私聊消息补发给你。` },
+            },
+          ]);
+        }
       }
       await pause(sendGap);
     });
+  /** 对局结束：没送达的私聊（身份牌、夜间提示）已经没用了 */
+  const clearUndelivered = (): void => {
+    undelivered.clear();
+    askedToOpen.clear();
+  };
+  /** 对方私聊过来了（临时会话已建立）：补发之前没送达的私聊 */
+  const flushUndelivered = (userId: string): void => {
+    const list = undelivered.get(userId);
+    if (!list?.length) return;
+    undelivered.delete(userId);
+    askedToOpen.delete(userId);
+    log(`[referee] 给 ${userId} 补发 ${list.length} 条私聊`);
+    for (const m of list) void sendPrivateAs(m.v, userId, m.text);
+  };
   const sendGroup = (message: unknown) => sendGroupAs(speaker(), message);
   const say = (text: string) => sendGroup([{ type: 'text', data: { text } }]);
   const sayTo = (userId: string, text: string) =>
@@ -567,6 +602,7 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
     const g = (r.games ?? []).find((x: Json) => x.status === 'lobby' || x.status === 'running');
     if (!g) {
       if (st.game) log(`[referee] 对局 ${st.game.id} 已结束`);
+      if (st.game) clearUndelivered();
       st.game = null;
       st.active = null;
       st.lastSeq = -1;
@@ -1017,6 +1053,7 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
     if (!uid) return;
     const nick = String(ev.sender?.card || ev.sender?.nickname || uid).trim() || uid;
     const cq = segmentsToCq(ev.message ?? ev.raw_message ?? '');
+    if (ev.message_type === 'private' && undelivered.has(uid)) flushUndelivered(uid);
     let job: () => Promise<void>;
     const keyBody = keyIssuer && ev.message_type === 'private' && v.id === keyIssuer && !myIds().has(uid) ? stripPrefix(cqToPlain(cq)) : null;
     if (keyBody !== null && KEY_CMD_RE.test(keyBody)) {
@@ -1126,6 +1163,7 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
         }
         if (r.finished) {
           log(`[referee] 对局 ${cur.id} 结束，消息已全部发出`);
+          clearUndelivered();
           st.game = null;
           st.active = null;
           st.lastSeq = -1;

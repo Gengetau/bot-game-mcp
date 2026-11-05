@@ -715,6 +715,19 @@ describe('OneBot referee against the real engine', () => {
       expect(await whoamiWith(key1)).toEqual({ id: '90001', name: '小外' });
       expect(qqX.calls.slice(mark).some((c) => c.action === 'get_group_member_info' && String(c.params.user_id) === '90001')).toBe(true);
 
+      // 好友和临时会话都发不出去（对方还没发起过临时会话）：群里 @ 对方，等他私聊一句后补发
+      qqX.failWhen = (c) => c.action === 'send_private_msg' && String(c.params.user_id) === '4444';
+      mark = qqX.calls.length;
+      pm(qqX, '4444', '新人', '密钥');
+      const tip = await qqX.waitForCall((c) => c.action === 'send_group_msg' && callText(c).includes('发起临时会话'), 10_000, mark);
+      expect(callText(tip)).toContain('@4444');
+      qqX.failWhen = null;
+      mark = qqX.calls.length;
+      pm(qqX, '4444', '新人', '在吗');
+      r = await qqX.waitForCall(privTo('4444'), 10_000, mark);
+      expect(replyText(r)).toContain('申请密钥 <bot的QQ号>');
+      expect(lines.some((l) => l.includes('给 4444 补发 1 条私聊'))).toBe(true);
+
       // 发错格式 / 只发「密钥」得到帮助；主账号的私聊不管密钥
       mark = qqX.calls.length;
       pm(qqX, OTHER, '路人', '密钥');

@@ -5,11 +5,14 @@ import { REF, bot, human, identityOf, pendingSeats, playToEnd, setup, startGame 
 type Roles = Partial<Record<'werewolf' | 'villager' | 'seer' | 'witch' | 'hunter' | 'guard' | 'idiot', number>>;
 const sum = (r: Roles) => Object.values(r).reduce((a, b) => a + (b ?? 0), 0);
 
+/** 老测试按「无起跳、无警长、屠边」的经典流程写；新机制的测试显式打开。 */
+const LEGACY = { claim_phase: false, sheriff: false, win_mode: 'side' };
+
 function make(roles: Roles, extra: Record<string, unknown> = {}, seed: string | number = 1) {
   const n = sum(roles);
   const { manager, clock } = setup(seed);
   const players = Array.from({ length: n }, (_, i) => bot(i + 1));
-  const { gameId, rec } = startGame(manager, 'werewolf', { players, autoReferee: true, options: { roles, night_min_s: 0, ...extra } });
+  const { gameId, rec } = startGame(manager, 'werewolf', { players, autoReferee: true, options: { roles, night_min_s: 0, ...LEGACY, ...extra } });
   const roleOf = (s: number): string => rec.state.roles[String(s)];
   const seatsOf = (role: string): number[] =>
     Object.entries(rec.state.roles as Record<string, string>)
@@ -22,7 +25,7 @@ function make(roles: Roles, extra: Record<string, unknown> = {}, seed: string | 
   const inst = () => (manager as any).inst(rec);
   const trace: string[] = [];
   const DEFAULT = (k: string): ActionInput =>
-    k === 'vote' || k === 'pk_vote' || k === 'night' || k === 'witch' || k === 'hunter'
+    ['vote', 'pk_vote', 'sheriff_vote', 'night', 'witch', 'hunter', 'claim', 'sheriff_signup', 'badge'].includes(k)
       ? { action: 'skip' }
       : { action: 'speech', text: '过' };
   /** 按阶段 key 覆盖行为，直到 until() 为真。 */
@@ -669,6 +672,30 @@ describe('referee view & privacy', () => {
     expect(cards.filter((d: any) => rec.players.find((p) => p.id === d.target.userId)?.kind === 'agent')).toHaveLength(0);
   });
 
+  it('a human asking 「我身份呢」 in private gets the role card again (not relayed as wolf chat)', async () => {
+    const { manager } = setup(21);
+    const { gameId, rec } = startGame(manager, 'werewolf', {
+      players: [bot(1), bot(2), bot(3)],
+      humans: [human(1), human(2), human(3)],
+      referee: REF,
+    });
+    await manager.refereeStep(REF, gameId);
+    const logLen = rec.log.length;
+    for (const h of rec.players.filter((p) => p.kind === 'human')) {
+      const r = manager.relayHumanMessage(REF, gameId, { userId: h.id, text: '我身份呢？', channel: 'private' });
+      expect(r).toMatchObject({ recognized: true, accepted: true });
+      const step = await manager.refereeStep(REF, gameId);
+      const mine = step.deliveries.filter((d: any) => d.target.type === 'private' && d.target.userId === h.id);
+      expect(mine.some((d: any) => d.category === 'role' && d.text.startsWith('🔁 补发：🎴 你的身份是【'))).toBe(true);
+      if (rec.state.roles[String(h.seat)] === 'werewolf') expect(mine.some((d: any) => d.text.includes('狼队友') || d.text.includes('只有你'))).toBe(true);
+    }
+    // 没有被当成狼队密谈或别的指令
+    expect(rec.log.slice(logLen).some((e) => e.kind === 'team_chat' || e.text.includes('我身份呢'))).toBe(false);
+    // 群里问不补发（身份是秘密）
+    const h1 = rec.players.find((p) => p.kind === 'human')!;
+    expect(manager.relayHumanMessage(REF, gameId, { userId: h1.id, text: '我身份呢', channel: 'group' }).message).not.toContain('补发');
+  });
+
   it('never leaks bot identities in public logs or referee deliveries', async () => {
     for (const seed of [1, 2, 3, 4, 5]) {
       const { manager, clock } = setup(`leak${seed}`);
@@ -728,3 +755,121 @@ describe('full random games', () => {
     expect(outcomes['狼人阵营']).toBeGreaterThan(0);
   }, 120_000);
 });
+
+describe('day flow options (claim / second round / sheriff / recap)', () => {
+  it('win_mode auto: 6–7 players play 屠城, 8+ play 屠边', () => {
+    for (const [n, mode] of [[6, 'all'], [7, 'all'], [8, 'side'], [12, 'side']] as const) {
+      const { manager } = setup(n);
+      const { rec } = startGame(manager, 'werewolf', { players: Array.from({ length: n }, (_, i) => bot(i + 1)), autoReferee: true });
+      expect(rec.state.winMode).toBe(mode);
+    }
+    const g = make({ werewolf: 2, seer: 1, witch: 1, villager: 2 }, { win_mode: 'side' });
+    expect(g.rec.state.winMode).toBe('side');
+  });
+
+  it('claim phase: claimers speak first in claim order, then the rest', () => {
+    const g = make({ werewolf: 2, seer: 1, witch: 1, villager: 2 }, { claim_phase: true });
+    g.drive({}, () => g.key() === 'claim');
+    expect(pendingSeats(g.rec).length).toBe(6);
+    const p = (s: number, t: string) => g.inst().parseCommand(s, t, 'group');
+    expect(p(1, '起跳')).toEqual({ action: 'claim' });
+    expect(p(1, '我跳预言家')).toEqual({ action: 'claim' });
+    expect(p(1, '不跳')).toEqual({ action: 'skip' });
+    expect(p(1, '今天天气不错')).toBeNull();
+    g.act(5, { action: 'claim' });
+    g.act(2, { action: 'claim' });
+    g.drive({}, () => g.key() === 'speech');
+    expect(g.rec.state.order.slice(0, 2)).toEqual([5, 2]);
+    expect(g.rec.state.order.length).toBe(6);
+    expect(g.rec.log.some((e) => e.text.includes('起跳：5号') || e.text.includes('起跳：'))).toBe(true);
+    expect(g.inst().publicView().today_claims).toEqual([5, 2]);
+  });
+
+  it('second round: every alive player speaks twice before the vote', () => {
+    const g = make({ werewolf: 2, seer: 1, witch: 1, villager: 2 }, { second_round: true });
+    g.drive({}, () => g.key() === 'vote');
+    expect(g.trace).toContain('speech2');
+    const kinds = g.rec.state.speeches.map((x: { kind: string }) => x.kind);
+    expect(kinds.filter((k: string) => k === 'speech').length).toBe(6);
+    expect(kinds.filter((k: string) => k === 'speech2').length).toBe(6);
+  });
+
+  it('sheriff: election, 1.5 votes, speaks last, passes the badge on exile', () => {
+    const g = make({ werewolf: 3, seer: 1, witch: 1, hunter: 1, villager: 2 }, { sheriff: true, claim_phase: true });
+    g.drive({}, () => g.key() === 'sheriff_signup');
+    const p = (s: number, t: string) => g.inst().parseCommand(s, t, 'group');
+    expect(p(1, '上警')).toEqual({ action: 'run' });
+    expect(p(1, '不上警')).toEqual({ action: 'skip' });
+    // 当天有竞选就不再起跳
+    g.drive({ sheriff_signup: (s) => (s === 1 || s === 2 ? { action: 'run' } : { action: 'skip' }), sheriff_vote: () => ({ action: 'vote', target: 1 }) }, () => g.key() === 'speech');
+    expect(g.trace).toContain('sheriff_speech');
+    expect(g.trace).not.toContain('claim');
+    expect(g.rec.state.sheriff).toBe(1);
+    expect(g.inst().publicView().sheriff).toBe(1);
+    const order = g.rec.state.order as number[];
+    expect(order[order.length - 1]).toBe(1);
+    expect(order[0]).toBe(2);
+    // 警长 1 号 + 3 号投 4 号（2.5 票），其余 6 人中 2 人投 5 号、其余弃票 → 4 号出局
+    g.drive({ vote: (s) => (s === 1 || s === 3 ? { action: 'vote', target: 4 } : s === 6 || s === 7 ? { action: 'vote', target: 5 } : { action: 'skip' }) }, () => g.key() !== 'speech' && g.key() !== 'vote');
+    const tallyText = g.rec.log.filter((e) => e.text.includes('1.5 票')).map((e) => e.text);
+    expect(tallyText.length).toBeGreaterThan(0);
+    expect(g.alive(4)).toBe(false);
+    expect(g.alive(5)).toBe(true);
+    // 第二天把警长投出去 → 遗言 → 移交警徽
+    g.drive({}, () => g.key() === 'vote' || g.rec.status !== 'running');
+    if (g.rec.status !== 'running') return;
+    g.drive({ vote: (s) => (s === 1 ? { action: 'skip' } : { action: 'vote', target: 1 }) }, () => g.key() === 'badge' || g.rec.status !== 'running');
+    if (g.rec.status !== 'running') return;
+    expect(pendingSeats(g.rec)).toEqual([1]);
+    expect(p(1, '警徽给3')).toEqual({ action: 'pass_badge', target: 3 });
+    expect(p(1, '撕警徽')).toEqual({ action: 'skip' });
+    g.act(1, { action: 'pass_badge', target: 3 });
+    g.drive({}, () => g.key() !== 'badge');
+    expect(g.rec.state.sheriff).toBe(3);
+  });
+
+  it('sheriff: tie goes to PK, second tie loses the badge; sole candidate is elected', () => {
+    const g = make({ werewolf: 3, seer: 1, witch: 1, hunter: 1, villager: 2 }, { sheriff: true });
+    g.drive(
+      {
+        sheriff_signup: (s) => (s <= 2 ? { action: 'run' } : { action: 'skip' }),
+        sheriff_vote: (s) => ({ action: 'vote', target: s % 2 === 0 ? 1 : 2 }),
+      },
+      () => g.key() === 'speech',
+    );
+    expect(g.trace.filter((k) => k === 'sheriff_vote').length).toBe(2);
+    expect(g.rec.state.sheriff).toBe(0);
+    expect(g.rec.log.some((e) => e.text.includes('警徽流失'))).toBe(true);
+
+    const h = make({ werewolf: 3, seer: 1, witch: 1, hunter: 1, villager: 2 }, { sheriff: true });
+    h.drive({ sheriff_signup: (s) => (s === 7 ? { action: 'run' } : { action: 'skip' }) }, () => h.key() === 'speech');
+    expect(h.rec.state.sheriff).toBe(7);
+    expect(h.trace).not.toContain('sheriff_vote');
+  });
+
+  it('sheriff auto: only boards of 8+ hold an election', () => {
+    for (const [n, has] of [[7, false], [8, true]] as const) {
+      const { manager } = setup(n);
+      const { rec } = startGame(manager, 'werewolf', { players: Array.from({ length: n }, (_, i) => bot(i + 1)), autoReferee: true, options: { night_min_s: 0 } });
+      expect(rec.log.some((e) => e.text.includes('竞选警长'))).toBe(has);
+    }
+  });
+
+  it('game over includes a night-by-night recap', () => {
+    const g = make({ werewolf: 2, seer: 1, witch: 1, villager: 2 });
+    const seer = g.seatsOf('seer')[0]!;
+    const wolf = g.seatsOf('werewolf')[0]!;
+    g.drive({
+      night: (s) => (g.roleOf(s) === 'seer' && g.alive(wolf) ? { action: 'check', target: wolf } : { action: 'skip' }),
+      vote: (s) => {
+        const w = g.seatsOf('werewolf').find((x) => g.alive(x) && x !== s);
+        return w ? { action: 'vote', target: w } : { action: 'skip' };
+      },
+    });
+    const over = g.rec.log.find((e) => e.kind === 'game_over')!;
+    expect(over.text).toContain('夜间复盘');
+    expect(over.text).toContain(`第1夜：狼人空刀`);
+    expect(over.text).toContain(`预言家 ${seer}号 验 ${wolf}号=狼人`);
+  });
+});
+
