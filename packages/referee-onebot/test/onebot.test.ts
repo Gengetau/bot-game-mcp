@@ -424,6 +424,66 @@ describe('OneBot referee against the real engine', () => {
     }
   }, 60_000);
 
+  it('bot-commands: a bot account may open a room and start it, but not abort; other bot chatter stays ignored', async () => {
+    const qq3 = new FakeOneBot('tok3');
+    await qq3.start();
+    const ac3 = new AbortController();
+    const lines: string[] = [];
+    const done = runReferee({
+      url: http.url,
+      key: KEYS.ref,
+      onebotUrl: qq3.url,
+      onebotToken: 'tok3',
+      groupId: GROUP,
+      admins: [OWNER],
+      bots: [AI_ID],
+      botCommands: true,
+      stepWaitSeconds: 1,
+      sendGapMs: 0,
+      autoStartSeconds: 0,
+      selfInPool: false,
+      signal: ac3.signal,
+      log: (l) => {
+        lines.push(l);
+        logs.push(l);
+      },
+    });
+    await qq3.waitForConnection();
+    const send3 = (c: ApiCall) => c.action === 'send_group_msg' && String(c.params.group_id) === GROUP;
+    const msg3 = (uid: string, nick: string, t: string) =>
+      qq3.emit({ post_type: 'message', message_type: 'group', sub_type: 'normal', group_id: Number(GROUP), user_id: Number(uid), message_id: ++msgSeq, sender: { user_id: Number(uid), nickname: nick, card: '' }, message: text(t), raw_message: t });
+    try {
+      // bot 开房
+      let mark = qq3.calls.length;
+      msg3(AI_ID, '克蕾雅', '/桌游 数字炸弹');
+      const opened = await qq3.waitForCall((c) => send3(c) && callText(c).includes('报名'), 10_000, mark);
+      expect(callText(opened)).toContain('数字炸弹');
+      // bot 的「加入」不是真人报名，不转交；真人两个报名
+      msg3(AI_ID, '克蕾雅', '加入');
+      msg3(OWNER, '主人', '加入');
+      msg3('777', '路人甲', '加入');
+      await qq3.waitForCall((c) => send3(c) && callText(c).includes('路人甲'), 10_000, mark);
+      expect(qq3.calls.slice(mark).some((c) => send3(c) && callText(c).includes('克蕾雅') && callText(c).includes('报名'))).toBe(false);
+      // bot 不能中止
+      msg3(AI_ID, '克蕾雅', '/桌游 中止');
+      await new Promise((res) => setTimeout(res, 500));
+      expect(qq3.calls.slice(mark).some((c) => send3(c) && callText(c).includes('已取消'))).toBe(false);
+      // bot 开局
+      msg3(AI_ID, '克蕾雅', '/桌游 开局');
+      await qq3.waitForCall((c) => send3(c) && callText(c).includes('数字炸弹开始'), 15_000, mark);
+      // 收尾由管理员中止
+      mark = qq3.calls.length;
+      msg3(OWNER, '主人', '/桌游 中止');
+      await qq3.waitForCall((c) => send3(c) && callText(c).includes('中止'), 10_000, mark);
+      expect(lines.some((l) => l.includes('bot 可开房'))).toBe(true);
+    } finally {
+      if (process.env.REF_DEBUG) console.log(['--- bot-commands calls', ...qq3.calls.map((c) => `${c.action} ${callText(c)}`)].join('\n'));
+      ac3.abort();
+      await Promise.race([done, new Promise((res) => setTimeout(res, 5000))]);
+      await qq3.close();
+    }
+  }, 60_000);
+
   it('rejects a wrong OneBot token', async () => {
     const bad = new FakeOneBot('right');
     await bad.start();

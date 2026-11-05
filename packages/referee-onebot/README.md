@@ -19,6 +19,7 @@ bot-game-referee --url http://127.0.0.1:7700/mcp --key-file 裁判密钥文件 \
 | `--group` | 只服务这个群 |
 | `--admins` | 能开房、开局、中止的 QQ 号；不填则人人可用 |
 | `--bots` | 玩家 bot 的 QQ 号：开房时 @ 它们报名，它们的群消息不当作真人指令 |
+| `--bot-commands` | 允许 `--bots` 里的账号发「/桌游 <游戏>」开房、「/桌游 开局」开局；它们的其余群消息照旧忽略，「中止」仍只有管理员能用 |
 | `--options` | 每局默认的 `create_game` 选项（JSON），常用 `nudge_ai`（阶段开始时 @ AI 玩家）和各阶段超时 |
 | `--auto-start` | 报名够最少人数后，多少秒没有新人加入就自动开局（默认 60；`0` 关闭，只认「/桌游 开局」）。开房时写了人数（`/桌游 狼人杀 7`）则凑满就开 |
 | `--voices` | 额外账号的 JSON 文件：`[{"keyFile": "claire.key", "onebot": "ws://127.0.0.1:3011/", "onebotTokenFile": "claire.token"}, …]`，路径相对该文件。报名了的这些账号进裁判抽签池 |

@@ -3,7 +3,7 @@
  * bot-game-referee 命令行：代码驱动的裁判（OneBot v11 正向 WebSocket）。
  *
  *   bot-game-referee --url http://主机:7700/mcp --key 密钥|--key-file 文件 --onebot ws://127.0.0.1:3001/ --group 群号
- *                    [--onebot-token-file 文件] [--admins QQ,QQ] [--bots QQ,QQ] [--options '{"nudge_ai":true}']
+ *                    [--onebot-token-file 文件] [--admins QQ,QQ] [--bots QQ,QQ] [--bot-commands] [--options '{"nudge_ai":true}']
  */
 import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
@@ -15,12 +15,13 @@ const HELP = `bot-game-referee ${VERSION} —— bot-game-mcp 的代码裁判（
 
 用法：
   bot-game-referee --url http://主机:7700/mcp --key 密钥|--key-file 文件 --onebot ws://127.0.0.1:3001/ --group 群号
-                   [--onebot-token-file 文件] [--admins QQ,QQ] [--bots QQ,QQ] [--options '{"nudge_ai":true}']
+                   [--onebot-token-file 文件] [--admins QQ,QQ] [--bots QQ,QQ] [--bot-commands] [--options '{"nudge_ai":true}']
                    [--prefix /桌游] [--wait 25] [--auto-start 60]
                    [--voices voices.json] [--host-id 标识] [--no-self-in-pool] [--wheel-font unifont.hex.gz] [--no-wheel] [--follower]
 
   用一个或多个 OneBot v11 账号（正向 WebSocket）把引擎的消息发到群里和私聊里，转交真人消息，响应「/桌游」指令。
   它只用裁判能用的那几个工具，没有任何能影响结果的接口。
+  --bot-commands：允许 --bots 里的账号发「/桌游 <游戏>」开房、「/桌游 开局」开局（中止仍只有管理员能用）。
   --auto-start N：报名够人后 N 秒没有新人加入就自动开局（默认 60，0 为关闭）；开房时写人数（/桌游 狼人杀 7）则凑满立刻开局。
   --voices 文件：额外的嗓子账号，JSON 数组，每项 {"keyFile"|"key", "onebot", "onebotTokenFile"|"onebotToken"}。
     报名了的嗓子账号会进裁判抽签池，抽中谁就用谁的账号主持；抽中账号自己的模型拿不到任何该发的话。
@@ -71,6 +72,7 @@ async function main(argv: string[]): Promise<void> {
       'wheel-font': { type: 'string' },
       'no-wheel': { type: 'boolean' },
       follower: { type: 'boolean' },
+      'bot-commands': { type: 'boolean' },
       help: { type: 'boolean', short: 'h' },
       version: { type: 'boolean', short: 'v' },
     },
@@ -101,6 +103,7 @@ async function main(argv: string[]): Promise<void> {
     groupId,
     admins: list(str('admins') ?? process.env.BOTGAME_ADMINS),
     bots: list(str('bots') ?? process.env.BOTGAME_BOTS),
+    botCommands: Boolean(values['bot-commands']),
     defaultOptions: str('options') ? JSON.parse(str('options')!) : undefined,
     commandPrefix: str('prefix'),
     stepWaitSeconds: str('wait') ? Number(str('wait')) : undefined,

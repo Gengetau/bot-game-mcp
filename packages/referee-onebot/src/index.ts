@@ -3,7 +3,7 @@
  *
  *   bot-game-referee --url http://127.0.0.1:7700/mcp --key 密钥 \
  *       --onebot ws://127.0.0.1:3001/ [--onebot-token-file 文件] --group 群号 \
- *       [--admins QQ,QQ] [--bots QQ,QQ] [--options '{"nudge_ai":true}'] [--voices voices.json]
+ *       [--admins QQ,QQ] [--bots QQ,QQ] [--bot-commands] [--options '{"nudge_ai":true}'] [--voices voices.json]
  *
  * 它只是一条消息总线：
  *  - 引擎要发的消息（referee_step）按顺序发到群里，或私聊给对应的真人；
@@ -44,6 +44,11 @@ export interface RefereeOptions {
   admins?: string[];
   /** 其他 bot 的 QQ 号：它们通过 MCP 自己参与，群里的话不转交 */
   bots?: string[];
+  /**
+   * 允许 bots 里的账号在群里发「/桌游 <游戏>」开房、「/桌游 开局」开局（以及状态、规则、帮助）。
+   * 它们的其余群消息照旧忽略，「中止」仍然只有管理员能用。默认 false：bot 的群消息全部忽略。
+   */
+  botCommands?: boolean;
   /** 开房时的默认选项（指令里写的选项会覆盖） */
   defaultOptions?: Record<string, unknown>;
   /** referee_step 的长轮询秒数（1~50），默认 25 */
@@ -370,6 +375,7 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
   const prefix = opts.commandPrefix ?? '/桌游';
   const admins = new Set(opts.admins ?? []);
   const bots = new Set(opts.bots ?? []);
+  const botCommands = opts.botCommands ?? false;
   const stepWait = Math.max(1, Math.min(50, opts.stepWaitSeconds ?? 25));
   const autoStart = Math.max(0, opts.autoStartSeconds ?? 0);
   const sendGap = opts.sendGapMs ?? 300;
@@ -485,6 +491,7 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
     `${prefix} 开局 · ${prefix} 中止 · ${prefix} 状态 · ${prefix} 规则 狼人杀\n` +
     `报名：发「加入」；游戏中按提示在群里发指令（如「投3号」），夜间行动私聊本局裁判。` +
     (voices.length > 1 || selfInPool ? `\n裁判由程序在报名的 bot（含我）里抽签决定，抽中谁就用谁的账号主持。` : '') +
+    (botCommands && bots.size > 0 ? `\nbot 也可以发「${prefix} <游戏>」开房、「${prefix} 开局」开局。` : '') +
     (autoStart > 0 ? `\n报名够人后 ${autoStart} 秒没有新人加入就自动开局；开房时写人数（如「${prefix} 狼人杀 7」）则凑满立刻开局。` : '');
 
   async function refreshGame(): Promise<void> {
@@ -620,9 +627,10 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
     }
   }
 
-  async function handleCommand(uid: string, nick: string, rest: string): Promise<void> {
+  async function handleCommand(uid: string, nick: string, rest: string, fromBot = false): Promise<void> {
     const [head, ...tail] = rest.split(/\s+/).filter(Boolean);
-    const canAdmin = admins.size === 0 || admins.has(uid);
+    // bot 账号（--bot-commands）可以开房、开局，但不能中止别人的对局
+    const canAdmin = fromBot || admins.size === 0 || admins.has(uid);
     try {
       switch (head) {
         case undefined:
@@ -667,7 +675,7 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
         case '中止':
         case 'abort':
         case '结束': {
-          if (!canAdmin) return void (await sayTo(uid, '只有管理员能中止对局。'));
+          if (!canAdmin || fromBot) return void (await sayTo(uid, '只有管理员能中止对局。'));
           await refreshGame();
           if (!st.game) return void (await say('本群没有进行中的对局。'));
           const wasLobby = st.game.status === 'lobby';
@@ -771,11 +779,18 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
   function onEvent(v: Voice, ev: Json): void {
     if (ev.post_type !== 'message') return;
     const uid = String(ev.user_id ?? '');
-    if (!uid || myIds().has(uid) || bots.has(uid)) return;
+    if (!uid || myIds().has(uid)) return;
     const nick = String(ev.sender?.card || ev.sender?.nickname || uid).trim() || uid;
     const cq = segmentsToCq(ev.message ?? ev.raw_message ?? '');
     let job: () => Promise<void>;
-    if (ev.message_type === 'group') {
+    if (bots.has(uid)) {
+      // bot 账号的话从不转交；开了 --bot-commands 才认它们的「/桌游」指令（跟随模式不响应任何指令）
+      if (!botCommands || follower || ev.message_type !== 'group' || String(ev.group_id) !== opts.groupId) return;
+      const plain = cqToPlain(cq);
+      if (!plain.startsWith(prefix)) return;
+      if (dedupe(`${ev.group_id}:${ev.message_id ?? `${uid}:${cq}`}`)) return;
+      job = () => handleCommand(uid, nick, plain.slice(prefix.length).trim(), true);
+    } else if (ev.message_type === 'group') {
       if (String(ev.group_id) !== opts.groupId) return;
       if (dedupe(`${ev.group_id}:${ev.message_id ?? `${uid}:${cq}`}`)) return;
       job = () => handleGroup(uid, nick, cq);
@@ -808,7 +823,7 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
       v.onebot.start();
     }
     log(
-      `[referee] 身份 ${main.name}(${main.id})，群 ${opts.groupId}，引擎 ${opts.url}，host_id ${hostId}${follower ? '，跟随模式' : ''}` +
+      `[referee] 身份 ${main.name}(${main.id})，群 ${opts.groupId}，引擎 ${opts.url}，host_id ${hostId}${follower ? '，跟随模式' : ''}${botCommands && bots.size > 0 ? '，bot 可开房' : ''}` +
         (voices.length > 1 ? `，嗓子账号：${voices.filter((v) => !v.main).map((v) => `${v.name}(${v.id})`).join('、')}` : ''),
     );
 
