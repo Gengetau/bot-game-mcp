@@ -18,6 +18,7 @@ const HELP = `bot-game-referee ${VERSION} —— bot-game-mcp 的代码裁判（
                    [--onebot-token-file 文件] [--admins QQ,QQ] [--bots QQ,QQ] [--bot-commands] [--main-plays] [--options '{"nudge_ai":true}']
                    [--prefix /桌游] [--wait 25] [--auto-start 60] [--lobby-timeout 600]
                    [--voices voices.json] [--host-id 标识] [--no-self-in-pool] [--wheel-font unifont.hex.gz] [--no-wheel] [--follower]
+                   [--key-issuer QQ --issuer-key-file 管理员密钥文件 --public-url https://主机/mcp [--max-keys 3]]
 
   用一个或多个 OneBot v11 账号（正向 WebSocket）把引擎的消息发到群里和私聊里，转交真人消息，响应「/桌游」指令。
   它只用裁判能用的那几个工具，没有任何能影响结果的接口。
@@ -31,9 +32,11 @@ const HELP = `bot-game-referee ${VERSION} —— bot-game-mcp 的代码裁判（
   --host-id：本进程的标识（默认主机名），重启后要保持一致。--no-self-in-pool：主账号不进抽签池。
   --wheel-font：GNU Unifont 的 .hex/.hex.gz，用来在转盘图上写中文名；--no-wheel 不发转盘图。
   --follower：跟随模式，给外接 bot 用。不开房、不响应指令、不当候补，只在自己的账号报名后登记进抽签池，抽中了就用自己的账号主持。
+  --key-issuer QQ：这个账号（主账号或嗓子账号）负责发密钥：群成员私聊它「申请密钥 <bot的QQ号> <昵称>」就给那个 bot 发一把，
+    「撤销密钥 <QQ号>」作废；已发放的 bot 自动算进 --bots。要配 --issuer-key-file（引擎的管理员密钥）和 --public-url（告诉对方的地址）。
 
 环境变量：BOTGAME_URL BOTGAME_KEY BOTGAME_ONEBOT_URL BOTGAME_ONEBOT_TOKEN BOTGAME_GROUP BOTGAME_ADMINS BOTGAME_BOTS
-          BOTGAME_VOICES BOTGAME_HOST_ID BOTGAME_WHEEL_FONT`;
+          BOTGAME_VOICES BOTGAME_HOST_ID BOTGAME_WHEEL_FONT BOTGAME_KEY_ISSUER BOTGAME_ISSUER_KEY BOTGAME_PUBLIC_URL`;
 
 /** --voices 文件：[{ "keyFile": "...", "onebot": "ws://...", "onebotTokenFile": "..." }, …]，路径相对文件所在目录。 */
 function loadVoices(file: string): VoiceSpec[] {
@@ -78,6 +81,10 @@ async function main(argv: string[]): Promise<void> {
       follower: { type: 'boolean' },
       'bot-commands': { type: 'boolean' },
       'main-plays': { type: 'boolean' },
+      'key-issuer': { type: 'string' },
+      'issuer-key-file': { type: 'string' },
+      'public-url': { type: 'string' },
+      'max-keys': { type: 'string' },
       help: { type: 'boolean', short: 'h' },
       version: { type: 'boolean', short: 'v' },
     },
@@ -121,6 +128,10 @@ async function main(argv: string[]): Promise<void> {
     wheelImage: !values['no-wheel'],
     follower: Boolean(values.follower),
     wheelFont: str('wheel-font') ?? process.env.BOTGAME_WHEEL_FONT,
+    keyIssuer: str('key-issuer') ?? process.env.BOTGAME_KEY_ISSUER,
+    issuerKey: str('issuer-key-file') ? readFileSync(str('issuer-key-file')!, 'utf8').trim() : process.env.BOTGAME_ISSUER_KEY,
+    publicUrl: str('public-url') ?? process.env.BOTGAME_PUBLIC_URL,
+    maxKeysPerOwner: str('max-keys') ? Number(str('max-keys')) : undefined,
     signal: ac.signal,
   });
 }

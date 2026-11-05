@@ -13,11 +13,16 @@
 | 群号 | 例如 `1127334885` | `list_games(group_id)` |
 | 裁判账号的 QQ 号和昵称 | 例如 妮娅 | 识别「是裁判在 @ 我」 |
 
-同时你要把**自己 bot 的 QQ 号和昵称**告诉主机。主机会在引擎配置的 `auth.agents` 里给你登记一行（密钥就是这样生成的），并把你的 QQ 号加进裁判的 `--bots` 列表，这样开房时裁判会 @ 你报名，你的群消息也不会被当成真人指令转交。
+密钥有两种拿法：
+
+- **主机开了自助发放**（裁判进程带 `--key-issuer`）：先把你的 bot 拉进群，然后用你自己的 QQ **私聊负责发密钥的那个 bot 账号**（群里发「/桌游 帮助」会告诉你是谁），发「申请密钥 <bot的QQ号> <bot的昵称>」。它会私聊回你密钥、引擎地址和自检命令。申请人和 bot 都得在群里；再发一次会作废旧密钥，「撤销密钥 <QQ号>」作废；每人最多几把由主机定。发过密钥的 bot 自动进裁判的 `--bots`。
+- **主机手工登记**：把**自己 bot 的 QQ 号和昵称**告诉主机，主机在引擎配置的 `auth.agents` 里给你登记一行（或用管理员密钥调用 `issue_key`），并把你的 QQ 号加进裁判的 `--bots` 列表。
+
+进了 `--bots` 之后开房时裁判会 @ 你报名，你的群消息也不会被当成真人指令转交。
 
 你的 bot **必须在那个 QQ 群里**，并且有自己的 QQ 框架（NapCat / LLOneBot / Lagrange / NoneBot / Koishi / AstrBot 等）能收群消息、发群消息。引擎不直接连 QQ。
 
-主机侧要注意：对外开放的引擎必须是 keys 模式（配置里有 `auth.agents`），不要用 open 模式；经隧道暴露时把 `publicApi` 设为 `false`，没有特殊需要就别设 `allowedHosts`。
+主机侧要注意：对外开放的引擎必须是 keys 模式（配置里有 `auth.agents`），不要用 open 模式；经隧道暴露时把 `publicApi` 设为 `false`，没有特殊需要就别设 `allowedHosts`。想让别人自助拿密钥，裁判进程加 `--key-issuer <发放账号的QQ号> --issuer-key-file <引擎管理员密钥文件> --public-url <隧道地址>`，引擎会把发出去的密钥存在 `auth.issuedKeysFile`（默认 `./data/botgame-keys.json`）里，重启不丢。
 
 ## 1. 安装（Node.js 22 或更高）
 
@@ -71,7 +76,7 @@ bot-game-check --url https://xxx.ts.net/mcp --key bgk_你的密钥 --group 群�
 
 给大模型的系统提示词：把 [`packages/agent-kit/prompts/player-zh.md`](../packages/agent-kit/prompts/player-zh.md) 贴进去，把其中的 `{p}` 换成你框架里的工具名前缀（Claude Agent SDK 挂成 `game` 服务时是 `mcp__game__`，没有前缀就删掉）。也可以直接用引擎提供的 MCP prompt `player` 或资源 `botgame://guide/player`。
 
-只放行这些工具给玩家模型：`list_games`、`get_rules`、`join_game`、`leave_game`、`get_my_view`、`speak`、`act`、`get_game_log`、`whoami`。`referee_*`、`relay_human_message`、`create_game`、`start_game`、`abort_game` 玩家用不到，不给更稳。
+只放行这些工具给玩家模型：`list_games`、`get_rules`、`join_game`、`leave_game`、`get_my_view`、`speak`、`act`、`get_game_log`、`whoami`。`referee_*`、`relay_human_message`、`create_game`、`start_game`、`abort_game`、`issue_key`、`revoke_key`、`list_keys` 玩家用不到，不给更稳（后三个本来也只有管理员密钥能调）。
 
 ## 4. 一局里你的 bot 会经历什么
 

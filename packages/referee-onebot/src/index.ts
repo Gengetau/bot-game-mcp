@@ -82,6 +82,18 @@ export interface RefereeOptions {
    * 群里的开房、开局由主机那边的裁判进程负责。
    */
   follower?: boolean;
+  /**
+   * 发放密钥：这个账号（主账号或某个嗓子账号的 QQ 号）收到私聊「申请密钥 <bot的QQ号> <昵称>」时，
+   * 通过引擎的 issue_key 发一把密钥并私聊回给申请人（非管理员的申请人和 bot 都必须在本群里）。
+   * 引擎里已发放的密钥对应的 QQ 号自动算进 bots。
+   */
+  keyIssuer?: string;
+  /** 发放密钥时用的引擎密钥（得是管理员密钥）；不给则用 keyIssuer 账号自己的密钥 */
+  issuerKey?: string;
+  /** 告诉申请人的引擎地址（经隧道暴露给外网的那个）；默认和 url 一样 */
+  publicUrl?: string;
+  /** 每个申请人最多申请几把密钥（管理员不限），默认 3 */
+  maxKeysPerOwner?: number;
   /** 开局时把抽签结果画成转盘图发到群里（默认 true；候选只有一人时不画） */
   wheelImage?: boolean;
   /** 转盘图的字体：GNU Unifont .hex / .hex.gz 路径；不给则中文画成方块 */
@@ -104,6 +116,10 @@ const pause = (ms: number) => new Promise<void>((res) => setTimeout(res, ms));
 
 const escapeCqText = (s: string) => s.replace(/&/g, '&amp;').replace(/\[/g, '&#91;').replace(/\]/g, '&#93;');
 const escapeCqParam = (s: string) => escapeCqText(s).replace(/,/g, '&#44;');
+/** 去掉指令前缀（私聊里带不带「/桌游」都行） */
+let stripPrefix = (s: string) => s.trim();
+/** 昵称只留可见字符，最长 24 */
+const sanitizeNick = (s: string) => s.replace(/[\p{C}]/gu, '').trim().slice(0, 24);
 const unescapeCq = (s: string) => s.replace(/&#91;/g, '[').replace(/&#93;/g, ']').replace(/&#44;/g, ',').replace(/&amp;/g, '&');
 
 /** OneBot 消息（消息段数组或 CQ 字符串）→ CQ 码字符串。引擎的 relay_human_message 接受这种原文。 */
@@ -385,6 +401,10 @@ interface Voice {
 export async function runReferee(opts: RefereeOptions): Promise<void> {
   const log: Log = opts.log ?? ((l) => process.stderr.write(`${l}\n`));
   const prefix = opts.commandPrefix ?? '/桌游';
+  stripPrefix = (s: string) => {
+    const t = s.trim();
+    return (t.startsWith(prefix) ? t.slice(prefix.length) : t).trim();
+  };
   const admins = new Set(opts.admins ?? []);
   const bots = new Set(opts.bots ?? []);
   const botCommands = opts.botCommands ?? false;
@@ -397,6 +417,9 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
   const selfInPool = follower ? false : (opts.selfInPool ?? true);
   const mainPlays = !follower && (opts.mainPlays ?? false);
   const wheelImage = opts.wheelImage ?? true;
+  const keyIssuer = (opts.keyIssuer ?? '').trim();
+  const publicUrl = opts.publicUrl ?? opts.url;
+  const maxKeys = Math.max(1, opts.maxKeysPerOwner ?? 3);
 
   let stopped = false;
   // 放在对象里：闭包里会改它们，用裸 let 的话 TypeScript 的类型收窄会出错
@@ -459,6 +482,9 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
   for (const spec of opts.voices ?? []) makeVoice(spec.key, spec.onebotUrl, spec.onebotToken, false);
   const voiceOf = (id: string | null | undefined) => voices.find((v) => v.id === id) ?? null;
   const myIds = () => new Set(voices.map((v) => v.id).filter(Boolean));
+  /** 发放密钥用的引擎会话：单独的管理员密钥，或发放账号自己的 */
+  const issuerEngine = keyIssuer && opts.issuerKey ? new Engine(opts.url, opts.issuerKey, log) : null;
+  const keyEngine = () => issuerEngine ?? voiceOf(keyIssuer)?.engine ?? main.engine;
   /** 现在该用哪个账号说话：本局裁判是我的账号就用它，否则主账号 */
   const speaker = () => st.active ?? main;
   /** 账号的 OneBot 掉线时退回主账号发（宁可换个嗓子也别把消息吞掉） */
@@ -499,7 +525,7 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
       { type: 'text', data: { text: ` ${text}` } },
     ]);
 
-  const help =
+  const help = () =>
     `🎲 桌游指令（由程序主持，裁判不参与、不决定任何结果）：\n` +
     `${prefix} 狼人杀 | 谁是卧底 | 大话骰 | 数字炸弹 [人数] [选项，如 win_mode=all]  开房\n` +
     `${prefix} 开局 · ${prefix} 中止 · ${prefix} 状态 · ${prefix} 规则 狼人杀\n` +
@@ -508,7 +534,8 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
     (botCommands && bots.size > 0 ? `\nbot 也可以发「${prefix} <游戏>」开房、「${prefix} 开局」开局。` : '') +
     (mainPlays ? `\n${main.name} 也会报名当玩家；抽不出别的裁判时它坐庄。` : '') +
     (autoStart > 0 ? `\n报名够人后 ${autoStart} 秒没有新人加入就自动开局；开房时写人数（如「${prefix} 狼人杀 7」）则凑满立刻开局。` : '') +
-    (lobbyTimeout > 0 ? `\n人数不够时 ${fmtDuration(lobbyTimeout)} 没有新人报名，房间自动取消。` : '');
+    (lobbyTimeout > 0 ? `\n人数不够时 ${fmtDuration(lobbyTimeout)} 没有新人报名，房间自动取消。` : '') +
+    (keyIssuer ? `\n想接入自己的 bot：私聊 ${voiceOf(keyIssuer)?.name ?? keyIssuer} 发「申请密钥 <bot的QQ号> <bot的昵称>」。` : '');
 
   function fmtDuration(sec: number): string {
     if (sec % 60 === 0) return `${sec / 60} 分钟`;
@@ -711,7 +738,7 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
         case '帮助':
         case 'help':
         case '?':
-          await say(help);
+          await say(help());
           return;
         case '状态':
         case 'status': {
@@ -820,6 +847,95 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
     }
   }
 
+  // ───────── 密钥发放（私聊发放账号） ─────────
+
+  const KEY_CMD_RE = /^(申请密钥|撤销密钥|密钥列表|密钥帮助|密钥)(\s|$)/u;
+  const keyHelp = () =>
+    `🔑 密钥指令（私聊我）：\n` +
+    `申请密钥 <bot的QQ号> <bot的昵称>  给你的 bot 发一把接入密钥（bot 要先进群 ${opts.groupId}）\n` +
+    `撤销密钥 <bot的QQ号>  作废你申请的密钥\n` +
+    `接入指南：https://github.com/Gengetau/bot-game-mcp/blob/main/docs/ONBOARDING.md`;
+
+  /** 某个 QQ 号是不是本群成员（OneBot 查不到就当不是） */
+  async function inGroup(v: Voice, id: string): Promise<boolean> {
+    try {
+      const r = await v.onebot.call('get_group_member_info', { group_id: Number(opts.groupId), user_id: Number(id), no_cache: true });
+      return Boolean(r);
+    } catch {
+      return false;
+    }
+  }
+
+  /** 引擎里已发放的密钥对应的 QQ 号并进 bots（开房时会 @ 它们，它们的群消息也不转交） */
+  async function syncIssuedBots(): Promise<void> {
+    const r = await keyEngine().call('list_keys');
+    const ids = (r.keys ?? []).map((k: Json) => String(k.id)).filter((id: string) => !myIds().has(id));
+    for (const id of ids) bots.add(id);
+    log(`[keys] 已发放密钥的 bot：${ids.length ? ids.join('、') : '无'}`);
+  }
+
+  async function handleKeyCommand(v: Voice, uid: string, nick: string, body: string): Promise<void> {
+    const reply = (t: string) => sendPrivateAs(v, uid, t);
+    const [head, ...tail] = body.split(/\s+/).filter(Boolean);
+    const isAdmin = admins.has(uid);
+    const idOk = (id: string | undefined): id is string => Boolean(id && /^[\w.:-]{1,32}$/u.test(id));
+    try {
+      switch (head) {
+        case '申请密钥': {
+          const botId = tail[0];
+          const name = sanitizeNick(tail.slice(1).join(' ')) || (botId === uid ? nick : '');
+          if (!idOk(botId)) return void (await reply(`格式：申请密钥 <bot的QQ号> <bot的昵称>`));
+          if (!name) return void (await reply(`还差 bot 的群昵称：申请密钥 ${botId} <昵称>`));
+          if (myIds().has(botId)) return void (await reply('这是裁判自己的账号，不需要申请。'));
+          if (!isAdmin) {
+            if (!(await inGroup(v, uid))) return void (await reply(`你不在群 ${opts.groupId} 里，不能申请。`));
+            if (botId !== uid && !(await inGroup(v, botId))) return void (await reply(`QQ ${botId} 不在群 ${opts.groupId} 里：先把 bot 拉进群再申请。`));
+            const mine = ((await keyEngine().call('list_keys')).keys ?? []).filter((k: Json) => String(k.owner ?? '') === uid && String(k.id) !== botId);
+            if (mine.length >= maxKeys) return void (await reply(`你已经申请了 ${mine.length} 把密钥，最多 ${maxKeys} 把。先「撤销密钥 <QQ号>」再申请。`));
+          }
+          const r = await keyEngine().call('issue_key', { qq_id: botId, name, owner: uid, ...(isAdmin ? { force: true } : {}) });
+          bots.add(botId);
+          await reply(
+            `✅ 已给 ${name}(${botId}) 发放密钥${r.rotated ? '（旧密钥已作废）' : ''}：\n${r.key}\n\n` +
+              `引擎地址：${publicUrl}\n请求头：Authorization: Bearer ${r.key}\n` +
+              `自检：bot-game-check --url ${publicUrl} --key ${r.key} --group ${opts.groupId}\n` +
+              `接入指南：https://github.com/Gengetau/bot-game-mcp/blob/main/docs/ONBOARDING.md\n` +
+              `密钥只发这一次，别转给别人；再发一次「申请密钥」会作废旧的，「撤销密钥 ${botId}」可以作废。`,
+          );
+          log(`[keys] 给 ${name}(${botId}) 发了密钥，申请人 ${nick}(${uid})${r.rotated ? '，旧密钥作废' : ''}`);
+          return;
+        }
+        case '撤销密钥': {
+          const botId = tail[0];
+          if (!idOk(botId)) return void (await reply('格式：撤销密钥 <bot的QQ号>'));
+          const keys: Json[] = (await keyEngine().call('list_keys')).keys ?? [];
+          const entry = keys.find((k) => String(k.id) === botId);
+          if (!entry) return void (await reply(`QQ ${botId} 没有发放过密钥。`));
+          if (!isAdmin && String(entry.owner ?? '') !== uid) return void (await reply(`QQ ${botId} 的密钥不是你申请的。`));
+          await keyEngine().call('revoke_key', { qq_id: botId });
+          bots.delete(botId);
+          await reply(`已作废 ${entry.name}(${botId}) 的密钥。`);
+          log(`[keys] ${nick}(${uid}) 作废了 ${entry.name}(${botId}) 的密钥`);
+          return;
+        }
+        case '密钥列表': {
+          if (!isAdmin) return void (await reply('只有管理员能看密钥列表。'));
+          const keys: Json[] = (await keyEngine().call('list_keys')).keys ?? [];
+          await reply(keys.length ? keys.map((k) => `${k.name}(${k.id}) 申请人 ${k.owner ?? '?'}`).join('\n') : '还没有发放过密钥。');
+          return;
+        }
+        default:
+          await reply(keyHelp());
+      }
+    } catch (e) {
+      if (e instanceof ToolError) await reply(`❌ ${e.message.replace(/^(issue_key|revoke_key|list_keys)：/, '')}`);
+      else {
+        log(`[keys] 处理「${head}」失败：${errMsg(e)}`);
+        await reply('引擎暂时联系不上，稍后再试。');
+      }
+    }
+  }
+
   /** 转交真人消息：报名阶段用主账号，进行中用本局裁判账号（带 host_id）。 */
   async function relay(uid: string, nick: string, cq: string, channel: 'group' | 'private'): Promise<Json | null> {
     const g = st.game;
@@ -859,7 +975,10 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
     const nick = String(ev.sender?.card || ev.sender?.nickname || uid).trim() || uid;
     const cq = segmentsToCq(ev.message ?? ev.raw_message ?? '');
     let job: () => Promise<void>;
-    if (bots.has(uid)) {
+    const keyBody = keyIssuer && ev.message_type === 'private' && v.id === keyIssuer && !myIds().has(uid) ? stripPrefix(cqToPlain(cq)) : null;
+    if (keyBody !== null && KEY_CMD_RE.test(keyBody)) {
+      job = () => handleKeyCommand(v, uid, nick, keyBody);
+    } else if (bots.has(uid)) {
       // bot 账号的话从不转交；开了 --bot-commands 才认它们的「/桌游」指令（跟随模式不响应任何指令）。
       // 先于「自己的账号」判断：玩家 bot 往往同时是本进程的嗓子账号，它们自己说的话也要能当指令
       if (!botCommands || follower || ev.message_type !== 'group' || String(ev.group_id) !== opts.groupId) return;
@@ -901,8 +1020,16 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
       if (!v.id) throw new Error(`引擎没有返回${v.main ? '' : '嗓子账号的'}身份：请用 keys 模式并提供密钥。`);
       v.onebot.start();
     }
+    if (keyIssuer) {
+      if (!voiceOf(keyIssuer)) throw new Error(`发放密钥的账号 ${keyIssuer} 不是本进程的账号（主账号或 --voices 里的）。`);
+      try {
+        await syncIssuedBots();
+      } catch (e) {
+        throw new Error(`发放密钥的引擎会话没有管理员权限（${errMsg(e)}）：请用 --issuer-key-file 提供管理员密钥。`);
+      }
+    }
     log(
-      `[referee] 身份 ${main.name}(${main.id})，群 ${opts.groupId}，引擎 ${opts.url}，host_id ${hostId}${follower ? '，跟随模式' : ''}${botCommands && bots.size > 0 ? '，bot 可开房' : ''}${mainPlays ? '，主账号参赛' : ''}` +
+      `[referee] 身份 ${main.name}(${main.id})，群 ${opts.groupId}，引擎 ${opts.url}，host_id ${hostId}${follower ? '，跟随模式' : ''}${botCommands && bots.size > 0 ? '，bot 可开房' : ''}${mainPlays ? '，主账号参赛' : ''}${keyIssuer ? `，密钥由 ${voiceOf(keyIssuer)!.name}(${keyIssuer}) 发放` : ''}` +
         (voices.length > 1 ? `，嗓子账号：${voices.filter((v) => !v.main).map((v) => `${v.name}(${v.id})`).join('、')}` : ''),
     );
 
@@ -984,6 +1111,6 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
     opts.signal?.removeEventListener('abort', stop);
     for (const v of voices) v.onebot.close();
     await sendChain;
-    await Promise.all(voices.map((v) => v.engine.drop()));
+    await Promise.all([...voices.map((v) => v.engine.drop()), issuerEngine?.drop()]);
   }
 }

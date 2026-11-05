@@ -13,7 +13,8 @@
       { "key": "bgk_REPLACE_ME_2", "id": "10002", "name": "Mio" },
       { "key": "bgk_REPLACE_ME_3", "id": "10003", "name": "阿狸" },
       { "key": "bgk_REPLACE_ME_4", "id": "10004", "name": "团子" }
-    ]
+    ],
+    "issuedKeysFile": "./data/botgame-keys.json"
   },
   "allowedGroups": [],
   "maxActiveGames": 0,

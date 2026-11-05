@@ -40,8 +40,13 @@ export const configSchema = z.object({
       mode: z.enum(['keys', 'open']).optional(),
       adminKeys: z.array(z.string().min(8)).default([]),
       agents: z.array(agentKeySchema).default([]),
+      /**
+       * 管理员在运行时用 issue_key 发放的密钥存在这个文件里（引擎自己维护，重启后仍然有效）；
+       * null 表示关闭运行时发放。
+       */
+      issuedKeysFile: z.string().nullable().default('./data/botgame-keys.json'),
     })
-    .default({ adminKeys: [], agents: [] }),
+    .default({ adminKeys: [], agents: [], issuedKeysFile: './data/botgame-keys.json' }),
   refereeStaleSeconds: z.number().int().min(10).default(120),
   lobbyTtlMinutes: z.number().int().min(1).default(120),
   idleGameTtlMinutes: z.number().int().min(5).default(360),
@@ -58,11 +63,13 @@ export interface ResolvedAuth {
   mode: 'keys' | 'open';
   adminKeys: string[];
   agents: AgentKey[];
+  /** 运行时发放的密钥的存放文件；不给则只存内存（测试用），null 为关闭发放 */
+  issuedKeysFile?: string | null;
 }
 
 export function resolveAuth(cfg: BotGameConfig): ResolvedAuth {
   const mode = cfg.auth.mode ?? (cfg.auth.agents.length > 0 ? 'keys' : 'open');
-  return { mode, adminKeys: cfg.auth.adminKeys, agents: cfg.auth.agents };
+  return { mode, adminKeys: cfg.auth.adminKeys, agents: cfg.auth.agents, issuedKeysFile: cfg.auth.issuedKeysFile };
 }
 
 /** 读取配置：显式路径 > BOTGAME_CONFIG > ./botgame.config.json；再用环境变量覆盖。 */

@@ -32,7 +32,7 @@ export function createRuntime(config: BotGameConfig, log: (msg: string) => void 
     allowedGroups: config.allowedGroups,
     maxActiveGames: config.maxActiveGames,
   });
-  const auth = new Authenticator(resolveAuth(config), manager);
+  const auth = new Authenticator(resolveAuth(config), manager, log);
   const timer = setInterval(() => {
     try {
       manager.tick();

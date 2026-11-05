@@ -75,6 +75,13 @@ export async function startHttpServer(rt: Runtime, log: (msg: string) => void = 
           jsonRpcError(res, 403, 'Forbidden: 会话与密钥不匹配');
           return;
         }
+        if (s.key !== undefined && auth.identityFromKey(s.key) === null) {
+          // 密钥在会话期间被作废/轮换：立刻失效
+          sessions.delete(sid);
+          void s.transport.close().catch(() => undefined);
+          jsonRpcError(res, 401, 'Unauthorized: 密钥已失效');
+          return;
+        }
         s.lastSeen = Date.now();
         await s.transport.handleRequest(req, res, req.body);
         return;
