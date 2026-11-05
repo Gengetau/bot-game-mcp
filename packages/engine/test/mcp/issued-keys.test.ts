@@ -109,6 +109,48 @@ describe('runtime key issuance', () => {
     expect(JSON.parse(readFileSync(keysFile, 'utf8')).keys).toHaveLength(0);
   });
 
+  it('a keyIssuer agent can manage issued keys but has no other admin power', async () => {
+    const XL = `bgk_${'x'.repeat(32)}`;
+    const file2 = join(dir, 'issuer', 'keys.json');
+    const cfg = configSchema.parse({
+      host: '127.0.0.1',
+      port: 0,
+      stateFile: null,
+      auth: {
+        mode: 'keys',
+        adminKeys: [ADMIN],
+        agents: [
+          { key: NIA, id: '2362232313', name: '妮娅' },
+          { key: XL, id: '3842854846', name: '星璃', keyIssuer: true },
+        ],
+        issuedKeysFile: file2,
+      },
+    });
+    const rt2 = createRuntime(cfg, () => undefined);
+    const http2 = await startHttpServer(rt2, () => undefined);
+    try {
+      const xl = await connect(http2.url, XL);
+      expect((await call(xl, 'whoami')).identity).toEqual({ id: '3842854846', name: '星璃', keyIssuer: true });
+      const r = await call(xl, 'issue_key', { qq_id: '20001', name: '阿豆', owner: '1156798139' });
+      expect(r.issuedBy).toBe('3842854846');
+      const adou = await connect(http2.url, r.key);
+      expect((await call(adou, 'whoami')).identity).toEqual({ id: '20001', name: '阿豆' });
+      // 发出去的密钥不带任何权限
+      await expect(call(adou, 'issue_key', { qq_id: '20002', name: 'x' })).rejects.toThrow(/负责发密钥/);
+      expect((await call(xl, 'list_keys')).keys.map((k: any) => k.id)).toEqual(['20001']);
+      // force 只有管理员能用；不是管理员，中止不了别人的对局
+      await expect(call(xl, 'issue_key', { qq_id: '20001', name: '抢', owner: '9', force: true })).rejects.toThrow(/force/);
+      const nia = await connect(http2.url, NIA);
+      const g = await call(nia, 'create_game', { game_type: 'number_bomb', group_id: 'g1', join_as: 'referee' });
+      await expect(call(xl, 'abort_game', { game_id: g.summary.game_id })).rejects.toThrow();
+      expect((await call(xl, 'revoke_key', { qq_id: '20001' })).revoked).toBe(true);
+      await expect(call(xl, 'issue_key', { qq_id: '2362232313', name: 'x' })).rejects.toThrow(/配置文件/);
+    } finally {
+      await http2.close();
+      rt2.close();
+    }
+  });
+
   it('issuing is disabled when issuedKeysFile is null', async () => {
     const cfg = configSchema.parse({ host: '127.0.0.1', port: 0, stateFile: null, auth: { adminKeys: [ADMIN], agents: [], issuedKeysFile: null } });
     const rt2 = createRuntime(cfg, () => undefined);

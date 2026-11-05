@@ -229,6 +229,7 @@ sequenceDiagram
 | `allowedHosts` | — | Host 头白名单（只比主机名，不比端口），防范 DNS rebinding。监听本机时默认只放行 `localhost`/`127.0.0.1`，所以**经隧道或反向代理对外暴露时必须把对外域名加进来**（连同 `127.0.0.1`），否则外部请求得到 403 `Invalid Host` |
 | `legacySse` | `true` | 是否开启旧版 HTTP+SSE 传输（`/sse` + `/messages`） |
 | `publicApi` | `true` | 是否开启只读观战接口 `/api/games`、`/api/games/:id`。对局结束前只返回公开记录；经隧道对外开放时建议关掉 |
+| `auth.agents[].keyIssuer` | — | 设为 `true` 的账号能用 `issue_key` / `revoke_key` / `list_keys` 管理运行时发放的密钥，但没有其他管理员权限（不能中止别人的对局，不能 `force`）。适合让某个 bot 的模型自己给新 bot 发密钥 |
 | `auth.issuedKeysFile` | `./data/botgame-keys.json` | 管理员在运行时用 `issue_key` 发放的密钥存在这里（0600），重启仍有效；`null` 关闭运行时发放 |
 | `stateFile` | `./data/botgame-state.json` | 存档文件，重启后对局会继续。设为 `null` 则只存在内存里 |
 | `auth.mode` | 有 agents 时为 `keys`，否则为 `open` | `keys`：必须带密钥；`open`：用 `login` 认领 QQ 号 |

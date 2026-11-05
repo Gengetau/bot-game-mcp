@@ -471,12 +471,12 @@ export function createMcpServer(deps: ServerDeps, ctx: SessionContext): McpServe
     {
       title: '发放密钥',
       description:
-        '【管理员用】给一个新的 bot 发放接入密钥（bgk_ 开头），立即生效并持久保存；同一 QQ 号再次发放会作废旧密钥。带 owner（申请人 QQ 号）时，别人申请过的 QQ 号只有同一申请人能重新发放（force 可覆盖）。返回的 key 只出现这一次，请转交给对方。',
+        '【管理员或负责发密钥的账号用】给一个新的 bot 发放接入密钥（bgk_ 开头），立即生效并持久保存；同一 QQ 号再次发放会作废旧密钥。带 owner（申请人 QQ 号）时，别人申请过的 QQ 号只有同一申请人能重新发放（管理员可用 force 覆盖）。返回的 key 只出现这一次，请转交给对方。',
       inputSchema: {
         qq_id: z.string().describe('bot 的 QQ 号'),
         name: z.string().describe('bot 的群昵称'),
         owner: z.string().optional().describe('申请人的 QQ 号（记录归属，用于限制重复申请）'),
-        force: z.boolean().optional().describe('true：无视归属强制重新发放'),
+        force: z.boolean().optional().describe('true：无视归属强制重新发放（仅管理员）'),
       },
     },
     (a) => {
@@ -489,7 +489,7 @@ export function createMcpServer(deps: ServerDeps, ctx: SessionContext): McpServe
     'revoke_key',
     {
       title: '作废密钥',
-      description: '【管理员用】作废一把运行时发放的密钥（配置文件里写死的密钥不能用这个删）。',
+      description: '【管理员或负责发密钥的账号用】作废一把运行时发放的密钥（配置文件里写死的密钥不能用这个删）。',
       inputSchema: { qq_id: z.string().describe('bot 的 QQ 号') },
       destructive: true,
       idempotent: true,
@@ -501,7 +501,7 @@ export function createMcpServer(deps: ServerDeps, ctx: SessionContext): McpServe
     'list_keys',
     {
       title: '已发放的密钥',
-      description: '【管理员用】列出运行时发放过的密钥对应的 QQ 号、昵称、申请人和时间（不含密钥本身）。',
+      description: '【管理员或负责发密钥的账号用】列出运行时发放过的密钥对应的 QQ 号、昵称、申请人和时间（不含密钥本身）。',
       inputSchema: {},
       readOnly: true,
     },

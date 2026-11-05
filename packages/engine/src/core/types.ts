@@ -22,6 +22,8 @@ export interface Identity {
   id: string;
   name: string;
   admin?: boolean;
+  /** 能用 issue_key / revoke_key / list_keys 管理运行时发放的密钥（不含其他管理员权限） */
+  keyIssuer?: boolean;
 }
 
 export interface LobbyEntry {
