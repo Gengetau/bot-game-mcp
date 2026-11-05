@@ -282,7 +282,9 @@ export abstract class BaseGame<S = any, O = any> {
   /** 发给多个座位（如狼队）。每个真人都会收到私聊。 */
   protected tellMany(seats: Seat[], text: string, opts: TellOptions = {}): void {
     if (seats.length === 0) return;
-    this.addLog(opts.kind ?? 'private', text, { type: 'seats', seats: [...seats] }, opts.data ? { data: opts.data } : {});
+    // 身份牌类消息打上标记：真人私聊问「我身份呢」时可以补发
+    const data = opts.category === 'role' ? { ...(opts.data ?? {}), role: true } : opts.data;
+    this.addLog(opts.kind ?? 'private', text, { type: 'seats', seats: [...seats] }, data ? { data } : {});
     for (const seat of seats) {
       const p = this.player(seat);
       if (p.kind === 'human') {

@@ -669,6 +669,30 @@ describe('referee view & privacy', () => {
     expect(cards.filter((d: any) => rec.players.find((p) => p.id === d.target.userId)?.kind === 'agent')).toHaveLength(0);
   });
 
+  it('a human asking 「我身份呢」 in private gets the role card again (not relayed as wolf chat)', async () => {
+    const { manager } = setup(21);
+    const { gameId, rec } = startGame(manager, 'werewolf', {
+      players: [bot(1), bot(2), bot(3)],
+      humans: [human(1), human(2), human(3)],
+      referee: REF,
+    });
+    await manager.refereeStep(REF, gameId);
+    const logLen = rec.log.length;
+    for (const h of rec.players.filter((p) => p.kind === 'human')) {
+      const r = manager.relayHumanMessage(REF, gameId, { userId: h.id, text: '我身份呢？', channel: 'private' });
+      expect(r).toMatchObject({ recognized: true, accepted: true });
+      const step = await manager.refereeStep(REF, gameId);
+      const mine = step.deliveries.filter((d: any) => d.target.type === 'private' && d.target.userId === h.id);
+      expect(mine.some((d: any) => d.category === 'role' && d.text.startsWith('🔁 补发：🎴 你的身份是【'))).toBe(true);
+      if (rec.state.roles[String(h.seat)] === 'werewolf') expect(mine.some((d: any) => d.text.includes('狼队友') || d.text.includes('只有你'))).toBe(true);
+    }
+    // 没有被当成狼队密谈或别的指令
+    expect(rec.log.slice(logLen).some((e) => e.kind === 'team_chat' || e.text.includes('我身份呢'))).toBe(false);
+    // 群里问不补发（身份是秘密）
+    const h1 = rec.players.find((p) => p.kind === 'human')!;
+    expect(manager.relayHumanMessage(REF, gameId, { userId: h1.id, text: '我身份呢', channel: 'group' }).message).not.toContain('补发');
+  });
+
   it('never leaks bot identities in public logs or referee deliveries', async () => {
     for (const seed of [1, 2, 3, 4, 5]) {
       const { manager, clock } = setup(`leak${seed}`);

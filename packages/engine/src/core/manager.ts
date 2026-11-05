@@ -1300,6 +1300,12 @@ export class GameManager {
     }
     const inst = this.inst(rec);
     const channel = msg.channel === 'private' ? 'private' : 'group';
+    if (channel === 'private' && !msg.action && isIdentityQuery(text)) {
+      const n = this.resendRole(rec, inst, player.seat);
+      this.pump(rec, inst, false);
+      this.touch(rec);
+      return { recognized: true, accepted: n > 0, message: n > 0 ? `已补发身份信息（${n} 条）。` : '本局没有可补发的身份信息。' };
+    }
     let input: ActionInput | null;
     const structured = Boolean(msg.action);
     if (msg.action) input = this.normalizeInput(rec, msg.action as ActionInput & Record<string, unknown>);
@@ -1325,6 +1331,19 @@ export class GameManager {
       this.touch(rec);
       return { recognized: true, accepted: false, action: input, message: `指令未生效：${tip}` };
     }
+  }
+
+  /** 把发给这个座位的身份牌类私密消息（每种只取最新一条）重新私聊给他 */
+  private resendRole(rec: GameRecord, inst: BaseGame, seat: number): number {
+    const latest = new Map<string, string>();
+    for (const e of rec.log) {
+      if (e.audience.type !== 'seats' || !e.audience.seats.includes(seat) || !e.data?.role) continue;
+      latest.delete(e.kind); // 保持原来的先后顺序
+      latest.set(e.kind, e.text);
+    }
+    for (const text of latest.values()) inst.systemTell(seat, `🔁 补发：${text}`, 'role');
+    if (latest.size === 0) inst.systemTell(seat, '本局没有需要私聊的身份信息。', 'feedback');
+    return latest.size;
   }
 
   /**
@@ -1416,3 +1435,15 @@ export class GameManager {
     return formatDuration(ph.deadline - this.now());
   }
 }
+
+/** 真人私聊里问自己的身份（「我身份呢」「我是什么身份」「补发身份」「我的词」「我的骰子」） */
+export function isIdentityQuery(text: string): boolean {
+  const t = stripTrailing(normalizeText(text)).replace(/[?？。!！~～\s]/gu, '');
+  return (
+    /^(请|麻烦)?(补发|重发|再发)(一下|一遍)?(我的?)?(身份|身份牌|词|词语|骰子)/u.test(t) ||
+    /^(我的?|我是)?(什么|啥)?(身份|身份牌|底牌|词|词语|骰子)(是什么|是啥|呢|呀|啊|在哪|没收到|发一下)*$/u.test(t) ||
+    /^我?(是)?(什么|啥)(身份|牌)(来着)?$/u.test(t) ||
+    /^(没|没有)收到(我的)?(身份|身份牌|词|骰子)/u.test(t)
+  );
+}
+

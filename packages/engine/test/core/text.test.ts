@@ -94,3 +94,15 @@ describe('misc', () => {
     expect(isSkipWord('不用药')).toBe(true);
   });
 });
+
+describe('isIdentityQuery', () => {
+  it('recognizes questions about one’s own identity, and nothing else', async () => {
+    const { isIdentityQuery } = await import('../../src/core/manager.js');
+    for (const t of ['我身份呢', '我身份呢？', '身份', '我的身份', '我是什么身份', '我什么身份来着', '补发身份', '请重发一下身份牌', '没收到身份', '我的词呢', '我的骰子']) {
+      expect(isIdentityQuery(t), t).toBe(true);
+    }
+    for (const t of ['刀3', '查验2号', '我觉得3号身份可疑', '投4', '身份不重要，先刀1', '你什么身份']) {
+      expect(isIdentityQuery(t), t).toBe(false);
+    }
+  });
+});
