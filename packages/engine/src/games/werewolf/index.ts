@@ -1109,7 +1109,7 @@ export class WerewolfGame extends BaseGame<WerewolfState, WerewolfOptions> {
     this.announce(
       pk
         ? `🗳️ PK 投票开始！请非平票玩家在 ${secs} 秒内投给 ${this.seatList(tied)} 之一，或弃票（群里发「投3」，也可私聊裁判）。`
-        : `🗳️ 投票开始！请所有存活玩家在 ${secs} 秒内投票（群里发「投3」「弃票」，也可私聊裁判）。所有票数将在结束后统一公布。`,
+        : `🗳️ 投票开始！请所有存活玩家在 ${secs} 秒内投票（群里发「投3」「弃票」，也可私聊裁判）。所有票数将在结束后统一公布。\n存活：${this.seatList(alive)}`,
     );
     this.openPhase({
       key: pk ? 'pk_vote' : 'vote',

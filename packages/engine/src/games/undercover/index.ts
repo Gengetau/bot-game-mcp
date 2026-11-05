@@ -11,7 +11,7 @@ import { BaseGame } from '../../core/game.js';
 import { commonOptionShape, commonOptionsHelp, secondsOption } from '../../core/options.js';
 import type { GameDefinition } from '../../core/registry.js';
 import { shuffle } from '../../core/rng.js';
-import { cleanSpeech, isSkipWord, normalizeText, resolveSeat, stripTrailing } from '../../core/text.js';
+import { cleanSpeech, isSkipWord, normalizeText, splitVoteReason, stripTrailing } from '../../core/text.js';
 import type { ActionInput, ActionMeta, PendingRequest, Seat } from '../../core/types.js';
 import { CATEGORIES, allPairs } from './words.js';
 
@@ -34,6 +34,8 @@ const optionsSchema = z
     category: z.string().default('all'),
     word_pairs: z.array(pairSchema).max(200).default([]),
     forbid_word: z.boolean().default(true),
+    discussion: z.boolean().default(false),
+    discuss_timeout_s: secondsOption(60),
     describe_timeout_s: secondsOption(60),
     vote_timeout_s: secondsOption(45),
     pk_timeout_s: secondsOption(45),
@@ -55,7 +57,7 @@ const ROLE_NAME: Record<Role, string> = { civilian: '平民', undercover: '卧�
 interface DescriptionRec {
   seat: Seat;
   text: string;
-  stage: 'describe' | 'pk';
+  stage: 'describe' | 'pk' | 'discuss';
   auto?: boolean;
 }
 interface VoteRec {
@@ -63,6 +65,8 @@ interface VoteRec {
   voter: Seat;
   /** null 表示弃票 */
   target: Seat | null;
+  /** 公开的投票理由（可选） */
+  reason?: string;
 }
 interface RoundLog {
   round: number;
@@ -109,20 +113,23 @@ const RULES = `## 谁是卧底
 - 大多数人（平民）拿到同一个词，少数人（卧底）拿到一个相近但不同的词；可选「白板」没有词。
 - **描述阶段**：按座位顺时针依次用一句话描述自己的词，**不能直接说出词本身**（\`forbid_word\` 开启时说出即淘汰）。
   - 第 1 轮从随机座位开始；之后从上一位被淘汰者的下一位开始。
+- **讨论**（\`discussion\`，默认关闭）：描述结束后，按同样顺序每人再说一句，可以分析别人的描述、说出怀疑谁（同样不能说出自己的词）。
 - **投票阶段**：所有存活玩家投票淘汰一个人（不能投自己，可弃票）。得票最多者出局；平票则**PK**：平票者各再描述一次，其余玩家在平票者中再投一次，仍平票则本轮无人出局。全员弃票也无人出局。
 - 被淘汰者的身份（平民 / 卧底 / 白板，不含词）会公布（\`reveal_on_elimination\`）。
 - **胜负**：
   - 所有卧底和白板都被淘汰 → 平民获胜。
   - 存活的卧底阵营（卧底 + 白板）人数 ≥ 存活平民，或存活总人数 ≤ \`final_count\`（默认 3）且仍有卧底阵营存活 → 卧底阵营获胜。
 - 超时未描述记为「（超时未发言）」，超时未投票视为弃票。
+- 投票时可以附一句理由，结果公布时和票一起显示。
 
-**真人指令**：轮到你描述时，直接在群里发一句话即可（发出的第一条消息就是你的描述）；投票发「投3」「投票 3号」「票@昵称」或「弃票」。
-**bot 指令**：描述 \`speak({"text":"..."})\`；投票 \`act({"action":"vote","target":3})\` 或 \`act({"action":"skip"})\`。`;
+**真人指令**：轮到你描述时，直接在群里发一句话即可（发出的第一条消息就是你的描述）；投票发「投3」「投票 3号」「票@昵称」或「弃票」，想附理由就写在后面：「投3 他说天气，太宽泛」。
+**bot 指令**：描述 \`speak({"text":"..."})\`；投票 \`act({"action":"vote","target":3,"text":"一句理由（可选，会公开）"})\` 或 \`act({"action":"skip"})\`。`;
 
 const TIPS = `- 你只知道自己的词，不知道自己是平民还是卧底：先从别人的描述里判断多数人的词是否和你的相近。
 - 描述要有信息量，但不要太具体——太具体会暴露卧底，太含糊又像卧底。
 - 发现自己可能是卧底时，向大多数靠拢；发现某人描述明显偏离时，可以投他。
-- 白板没有词，要从别人的描述里推测词并蒙混过关。`;
+- 白板没有词，要从别人的描述里推测词并蒙混过关。
+- 投票时用 text 附一句简短理由（指出对方哪句描述可疑），会和票一起公开，让观众看懂你的判断。`;
 
 function normalizeForMatch(s: string): string {
   return normalizeText(s).toLowerCase().replace(/\s+/g, '');
@@ -152,7 +159,7 @@ export class UndercoverGame extends BaseGame<UndercoverState, UndercoverOptions>
 
   private timeoutFor(key: string): number {
     const o = this.options;
-    return (key === 'describe' ? o.describe_timeout_s : key === 'vote' ? o.vote_timeout_s : o.pk_timeout_s) * 1000;
+    return (key === 'describe' ? o.describe_timeout_s : key === 'discuss' ? o.discuss_timeout_s : key === 'vote' ? o.vote_timeout_s : o.pk_timeout_s) * 1000;
   }
 
   // ───────────────────────── 开局 ─────────────────────────
@@ -229,27 +236,34 @@ export class UndercoverGame extends BaseGame<UndercoverState, UndercoverOptions>
     this.openDescribe(order, 0, 'describe');
   }
 
-  private openDescribe(order: Seat[], idx: number, stage: 'describe' | 'pk', tied?: Seat[]): void {
+  private openDescribe(order: Seat[], idx: number, stage: 'describe' | 'pk' | 'discuss', tied?: Seat[]): void {
     const seat = order[idx]!;
-    const key = stage === 'pk' ? 'pk_describe' : 'describe';
-    const secs = stage === 'pk' ? this.options.pk_timeout_s : this.options.describe_timeout_s;
+    const key = stage === 'pk' ? 'pk_describe' : stage === 'discuss' ? 'discuss' : 'describe';
+    const secs = stage === 'pk' ? this.options.pk_timeout_s : stage === 'discuss' ? this.options.discuss_timeout_s : this.options.describe_timeout_s;
+    const discuss = stage === 'discuss';
     this.openPhase({
       key,
-      title: `第${this.rec.round}轮·${stage === 'pk' ? 'PK描述' : '描述'}·${seat}号`,
+      title: `第${this.rec.round}轮·${stage === 'pk' ? 'PK描述' : discuss ? '讨论' : '描述'}·${seat}号`,
       timeoutMs: secs * 1000,
       requests: [
         {
           seat,
           kind: 'speech',
-          prompt: `请用一句话描述你的词（不能直接说出词本身）。${stage === 'pk' ? '这是平票后的 PK 描述。' : ''}`,
+          prompt: discuss
+            ? '讨论：用一句话说说你怀疑谁、为什么（可以引用别人的描述；不能说出自己的词）。'
+            : `请用一句话描述你的词（不能直接说出词本身）。${stage === 'pk' ? '这是平票后的 PK 描述。' : ''}`,
           channel: 'group',
-          actions: [this.specSpeech('直接在群里发一句话描述你的词（发出的第一条消息就是你的描述）')],
+          actions: [
+            this.specSpeech(discuss ? '直接在群里发一句话（发出的第一条消息就是你的发言）' : '直接在群里发一句话描述你的词（发出的第一条消息就是你的描述）'),
+          ],
         },
       ],
       data: { seat, order, idx, stage, ...(tied ? { tied } : {}) },
     });
     this.announce(
-      `🎤 请 ${this.at(seat)} ${stage === 'pk' ? 'PK 再次' : ''}描述你的词（一句话，不能说出词本身，限时 ${secs} 秒）`,
+      discuss
+        ? `💬 讨论：请 ${seat}号 ${this.at(seat)} 说说你怀疑谁、为什么（一句话，限时 ${secs} 秒）`
+        : `🎤 请 ${seat}号 ${this.at(seat)} ${stage === 'pk' ? 'PK 再次' : ''}描述你的词（一句话，不能说出词本身，限时 ${secs} 秒）`,
     );
   }
 
@@ -257,7 +271,7 @@ export class UndercoverGame extends BaseGame<UndercoverState, UndercoverOptions>
 
   onAction(seat: Seat, input: ActionInput, meta: ActionMeta): string {
     const key = this.phase?.key;
-    if (key === 'describe' || key === 'pk_describe') return this.onDescribe(seat, input, meta);
+    if (key === 'describe' || key === 'pk_describe' || key === 'discuss') return this.onDescribe(seat, input, meta);
     return this.onVote(seat, input);
   }
 
@@ -270,16 +284,16 @@ export class UndercoverGame extends BaseGame<UndercoverState, UndercoverOptions>
   private onDescribe(seat: Seat, input: ActionInput, meta: ActionMeta): string {
     this.requireTurn(seat, input.action);
     const text = cleanSpeech(String(input.text ?? ''));
-    if (!text) throw invalidAction('描述不能为空，请用一句话描述你的词。');
+    if (!text) throw invalidAction(this.phase?.key === 'discuss' ? '发言不能为空。' : '描述不能为空，请用一句话描述你的词。');
     const violated = this.options.forbid_word && this.containsOwnWord(seat, text);
     if (violated && meta.via === 'agent') {
       throw invalidAction('描述里不能包含你自己的词本身，请换一种说法重新描述。');
     }
     const data = this.phase!.data;
-    const stage = data.stage as 'describe' | 'pk';
-    this.recordSpeech(seat, text, 'speech', stage === 'pk' ? 'PK' : undefined);
+    const stage = data.stage as 'describe' | 'pk' | 'discuss';
+    this.recordSpeech(seat, text, 'speech', stage === 'pk' ? 'PK' : stage === 'discuss' ? '讨论' : undefined);
     this.cur().descriptions.push({ seat, text, stage });
-    (this.state.speeches[String(seat)] ??= []).push(text);
+    if (stage !== 'discuss') (this.state.speeches[String(seat)] ??= []).push(text);
     if (violated) data.violation = true;
     this.markDone(seat);
     return violated ? '已记录（但你的描述包含了自己的词）。' : '已记录你的描述。';
@@ -296,13 +310,15 @@ export class UndercoverGame extends BaseGame<UndercoverState, UndercoverOptions>
     }
     const target = this.requireTarget(req, 'vote', input.target);
     data.votes[String(seat)] = target;
+    const reason = cleanSpeech(String(input.text ?? '')).slice(0, 60);
+    if (reason) (data.reasons ??= {})[String(seat)] = reason;
     this.markDone(seat);
-    return `你投了 ${target} 号。`;
+    return `你投了 ${target} 号${reason ? '（理由会随结果公开）' : ''}。`;
   }
 
   protected override timeoutDefault(seat: Seat, _req: PendingRequest): void {
     const ph = this.phase!;
-    if (ph.key === 'describe' || ph.key === 'pk_describe') {
+    if (ph.key === 'describe' || ph.key === 'pk_describe' || ph.key === 'discuss') {
       this.cur().descriptions.push({ seat, text: '（超时未发言）', stage: ph.data.stage, auto: true });
       this.announce(`⏰ ${this.label(seat)} 超时未发言。`);
     } else {
@@ -315,7 +331,7 @@ export class UndercoverGame extends BaseGame<UndercoverState, UndercoverOptions>
 
   advance(): void {
     const key = this.phase!.key;
-    if (key === 'describe' || key === 'pk_describe') this.advanceDescribe();
+    if (key === 'describe' || key === 'pk_describe' || key === 'discuss') this.advanceDescribe();
     else this.tally();
   }
 
@@ -323,7 +339,7 @@ export class UndercoverGame extends BaseGame<UndercoverState, UndercoverOptions>
     const d = this.phase!.data;
     const seat = d.seat as Seat;
     const order = d.order as Seat[];
-    const stage = d.stage as 'describe' | 'pk';
+    const stage = d.stage as 'describe' | 'pk' | 'discuss';
     if (d.violation) {
       this.announce(`🚫 ${this.label(seat)} 的描述里说出了自己的词，违规出局！`);
       this.eliminate(seat, 'violation');
@@ -335,7 +351,15 @@ export class UndercoverGame extends BaseGame<UndercoverState, UndercoverOptions>
       this.openDescribe(order, idx, stage, d.tied);
       return;
     }
-    if (stage === 'describe') {
+    if (stage === 'describe' && this.options.discussion) {
+      const alive = order.filter((s) => this.isAlive(s));
+      if (alive.length > 0) {
+        this.announce('💬 描述结束，进入讨论：按同样顺序每人一句，说说你怀疑谁、为什么。');
+        this.openDescribe(alive, 0, 'discuss');
+        return;
+      }
+    }
+    if (stage === 'describe' || stage === 'discuss') {
       this.openVote('vote', this.aliveSeats(), this.aliveSeats());
       return;
     }
@@ -360,16 +384,20 @@ export class UndercoverGame extends BaseGame<UndercoverState, UndercoverOptions>
           seat: v,
           prompt: stage === 'vote' ? '投票淘汰你认为的卧底（不能投自己，可弃票）。' : `PK 投票：只能在 ${targets.map((t) => `${t}号`).join('、')} 中选择，也可弃票。`,
           channel: 'group' as const,
-          actions: [this.specTarget('vote', '投票', ts, '投3 / 投票 3号 / 票@昵称'), this.specSkip('弃票', '弃票')],
+          actions: [
+            { ...this.specTarget('vote', '投票', ts, '投3 / 投票 3号 / 票@昵称，可在后面附理由：投3 他说天气太宽泛'), example: `act({"action":"vote","target":${ts[0] ?? 1},"text":"一句理由（可选，会公开）"})` },
+            this.specSkip('弃票', '弃票'),
+          ],
         };
       }),
       data: { stage, votes: {}, targets },
     });
-    const list = voters.map((v) => this.at(v)).join(' ');
+    const list = voters.map((v) => `${v}号${this.at(v)}`).join(' ');
+    const how = `群里发「投${targets[0] ?? 3}」或「弃票」，可附理由「投${targets[0] ?? 3} 理由」，限时 ${secs} 秒`;
     this.announce(
       stage === 'vote'
-        ? `🗳️ 描述结束，进入投票！请 ${list} 投出你认为的卧底（群里发「投3」或「弃票」，限时 ${secs} 秒）。`
-        : `⚔️ PK 投票！平票者：${targets.map((t) => this.at(t)).join(' ')} 已再次描述。请 ${list} 在平票者中投票（「投3」或「弃票」，限时 ${secs} 秒）。`,
+        ? `🗳️ 进入投票！请 ${list} 投出你认为的卧底（${how}）。\n可投：${targets.map((t) => this.label(t)).join("、")}`
+        : `⚔️ PK 投票！平票者：${targets.map((t) => this.label(t)).join("、")} 已再次描述。请 ${list} 在平票者中投票（${how}）。`,
     );
   }
 
@@ -377,14 +405,16 @@ export class UndercoverGame extends BaseGame<UndercoverState, UndercoverOptions>
     const d = this.phase!.data;
     const stage = d.stage as 'vote' | 'pk_vote';
     const votes = d.votes as Record<string, number>;
+    const reasons = (d.reasons ?? {}) as Record<string, string>;
     const counts = new Map<number, number>();
     const lines: string[] = [];
     for (const [v, t] of Object.entries(votes).sort((a, b) => Number(a[0]) - Number(b[0]))) {
       const voter = Number(v);
-      this.cur().votes.push({ stage, voter, target: t === 0 ? null : t });
+      const reason = t === 0 ? undefined : reasons[v];
+      this.cur().votes.push({ stage, voter, target: t === 0 ? null : t, ...(reason ? { reason } : {}) });
       if (t === 0) lines.push(`${this.label(voter)} → 弃票`);
       else {
-        lines.push(`${this.label(voter)} → ${this.label(t)}`);
+        lines.push(`${this.label(voter)} → ${this.label(t)}${reason ? `：「${reason}」` : ''}`);
         counts.set(t, (counts.get(t) ?? 0) + 1);
       }
     }
@@ -495,9 +525,9 @@ export class UndercoverGame extends BaseGame<UndercoverState, UndercoverOptions>
       round: this.rec.round,
       counts: s.counts,
       phase: ph ? ph.key : null,
-      current_speaker: ph && (ph.key === 'describe' || ph.key === 'pk_describe') ? ph.data.seat : null,
+      current_speaker: ph && (ph.key === 'describe' || ph.key === 'pk_describe' || ph.key === 'discuss') ? ph.data.seat : null,
       pk_tied: ph?.data.stage === 'pk' || ph?.key === 'pk_vote' ? (ph.data.tied ?? ph.data.targets ?? null) : null,
-      order: ph && (ph.key === 'describe' || ph.key === 'pk_describe') ? ph.data.order : null,
+      order: ph && (ph.key === 'describe' || ph.key === 'pk_describe' || ph.key === 'discuss') ? ph.data.order : null,
       alive: this.aliveSeats(),
       eliminated: s.eliminated.map((e) => ({
         seat: e.seat,
@@ -509,7 +539,7 @@ export class UndercoverGame extends BaseGame<UndercoverState, UndercoverOptions>
       rounds: s.rounds.map((r) => ({
         round: r.round,
         descriptions: r.descriptions.map((d) => ({ seat: d.seat, stage: d.stage, text: d.text })),
-        votes: r.votes.map((v) => ({ stage: v.stage, voter: v.voter, target: v.target === null ? '弃票' : v.target })),
+        votes: r.votes.map((v) => ({ stage: v.stage, voter: v.voter, target: v.target === null ? '弃票' : v.target, ...(v.reason ? { reason: v.reason } : {}) })),
         result: r.result || (r.round === this.rec.round ? '进行中' : '无人出局'),
       })),
       ...(ended ? { words: { civilian: s.pair[0], undercover: s.pair[1] }, result: this.rec.result } : {}),
@@ -521,7 +551,7 @@ export class UndercoverGame extends BaseGame<UndercoverState, UndercoverOptions>
   override parseCommand(seat: Seat, text: string, channel: 'group' | 'private'): ActionInput | null {
     const key = this.phase?.key;
     if (!key || !this.pendingOf(seat)) return null;
-    if (key === 'describe' || key === 'pk_describe') {
+    if (key === 'describe' || key === 'pk_describe' || key === 'discuss') {
       if (channel === 'private') return null;
       const t = cleanSpeech(text);
       return t ? { action: 'speech', text: t } : null;
@@ -530,8 +560,9 @@ export class UndercoverGame extends BaseGame<UndercoverState, UndercoverOptions>
     if (/^(弃票|弃权|放弃|过|跳过|不投)$/u.test(t) || (isSkipWord(t) && t !== '')) return { action: 'skip' };
     const m = t.match(/^(?:我)?(?:投票给|投票|投给|投|票给|票)\s*(.+)$/u);
     if (!m) return null;
-    const target = resolveSeat(m[1]!, this.players);
-    return target === null ? null : { action: 'vote', target };
+    const r = splitVoteReason(m[1]!, this.players);
+    if (r === null) return null;
+    return r.reason ? { action: 'vote', target: r.target, text: r.reason } : { action: 'vote', target: r.target };
   }
 
   override randomAction(seat: Seat): ActionInput | null {
@@ -566,6 +597,8 @@ export const undercoverDefinition: GameDefinition<UndercoverOptions> = {
     category: `词库分类：all（默认）或 ${CATEGORIES.join('、')}`,
     word_pairs: '自定义词对列表，如 [["苹果","梨"]]；设置后只从中随机抽取（谁拿哪个词仍由程序随机）',
     forbid_word: '描述里说出自己的词是否违规（默认 true；AI 会被拒绝重说，真人会被淘汰）',
+    discussion: '描述后是否加一轮讨论（每人一句说怀疑谁，默认 false）',
+    discuss_timeout_s: '讨论每人限时（秒，默认 60）',
     describe_timeout_s: '每人描述限时（秒，默认 60）',
     vote_timeout_s: '投票限时（秒，默认 45）',
     pk_timeout_s: 'PK 描述与 PK 投票限时（秒，默认 45）',
