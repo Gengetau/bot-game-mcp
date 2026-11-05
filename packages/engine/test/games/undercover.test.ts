@@ -515,3 +515,44 @@ describe('undercover: random full games', () => {
     }
   }, 120_000);
 });
+
+describe('undercover: vote reasons, seat numbers, discussion', () => {
+  it('vote announcement lists seat numbers next to names', () => {
+    const { manager, rec } = botGame(6);
+    describeAll(manager, rec);
+    const ann = rec.log.filter((e) => e.text.includes('进入投票')).pop()!;
+    expect(ann.text).toMatch(/1号@?/);
+    expect(ann.text).toContain(`可投：1号 ${rec.players[0]!.name}`);
+  });
+
+  it('bots and humans can attach a public reason to a vote', () => {
+    const { manager, rec } = botGame(6);
+    describeAll(manager, rec);
+    manager.act(identityOf(rec, 1), rec.id, { action: 'vote', target: 2, text: '他说得太宽泛了' });
+    for (const s of pendingSeats(rec)) vote(manager, rec, s, s === 2 ? 1 : 2);
+    const res = rec.log.filter((e) => e.kind === 'vote').pop()!;
+    expect(res.text).toContain(`→ 2号 ${rec.players[1]!.name}：「他说得太宽泛了」`);
+    expect(rec.state.rounds[0]!.votes.find((v) => v.voter === 1)?.reason).toBe('他说得太宽泛了');
+
+    // 真人投票指令里的理由：另开一局停在投票阶段
+    const g = botGame(6, {}, 2);
+    describeAll(g.manager, g.rec);
+    const q = (t: string) => (g.manager as any).inst(g.rec).parseCommand(3, t, 'group');
+    expect(q('投2')).toEqual({ action: 'vote', target: 2 });
+    expect(q('投2 他说天气，太宽泛')).toEqual({ action: 'vote', target: 2, text: '他说天气,太宽泛' });
+    expect(q('投票 2号，像在凑')).toEqual({ action: 'vote', target: 2, text: '像在凑' });
+    expect(q('弃票')).toEqual({ action: 'skip' });
+  });
+
+  it('discussion: everyone says one line after describing, then the vote', () => {
+    const { manager, rec } = botGame(6, { discussion: true });
+    describeAll(manager, rec);
+    expect(rec.phase?.key).toBe('discuss');
+    for (let i = 0; i < 6; i++) say(manager, rec, pendingSeats(rec)[0]!, '我怀疑 3 号');
+    expect(rec.phase?.key).toBe('vote');
+    const r = rec.state.rounds[0]!;
+    expect(r.descriptions.filter((d) => d.stage === 'discuss').length).toBe(6);
+    // 讨论内容不算作描述
+    expect(Object.values(rec.state.speeches).every((l) => l.length === 1)).toBe(true);
+  });
+});

@@ -144,6 +144,21 @@ export function resolveSeat(rawTarget: string, players: readonly Player[]): Seat
   return null;
 }
 
+/**
+ * 解析「3 他说天气，太宽泛」这类带理由的投票目标：先按第一个分隔符切开，前半能解析成座位就把后半当理由；
+ * 否则整体当目标（没有理由）。理由未经清洗，调用方负责 cleanSpeech/截断。
+ */
+export function splitVoteReason(rawTarget: string, players: readonly Player[]): { target: Seat; reason?: string } | null {
+  const t = rawTarget.trim();
+  const m = t.match(/^(\S+?)[\s,，、。:：;；]+(.+)$/u);
+  if (m) {
+    const seat = resolveSeat(m[1]!, players);
+    if (seat !== null) return { target: seat, reason: m[2]!.trim() };
+  }
+  const seat = resolveSeat(t, players);
+  return seat === null ? null : { target: seat };
+}
+
 /** 常见的「结束发言」说法。 */
 export function isEndSpeech(text: string): boolean {
   const t = stripTrailing(normalizeText(text)).toLowerCase();
