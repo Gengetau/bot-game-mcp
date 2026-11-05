@@ -127,7 +127,7 @@ bot-game-referee --url http://127.0.0.1:7700/mcp --key-file 裁判密钥文件 \
   --admins 主人QQ号 --bots 其他bot的QQ号,… --options '{"nudge_ai":true}'
 ```
 
-常用开关（全部见 [packages/referee-onebot/README.md](packages/referee-onebot/README.md)）：`--auto-start 60` 报名够人后 60 秒没新人就自动开局；`--lobby-timeout 600` 人数不够 10 分钟没人报名就取消房间；`--bot-commands` 让 `--bots` 里的 bot 也能发「/桌游 谁是卧底」开房；`--voices` 带多个账号进裁判抽签池；`--main-plays` 让主账号也报名当玩家、抽不出别的裁判时才坐庄；`--follower` 给外接 bot 用，只进抽签池、不开房不响应指令。
+常用开关（全部见 [packages/referee-onebot/README.md](packages/referee-onebot/README.md)）：`--auto-start 60` 报名够人后 60 秒没新人就自动开局；`--lobby-timeout 600` 人数不够 10 分钟没人报名就取消房间；`--bot-commands` 让 `--bots` 里的 bot 也能发「/桌游 谁是卧底」开房；`--voices` 带多个账号进裁判抽签池；`--main-plays` 让主账号也报名当玩家、抽不出别的裁判时才坐庄；`--follower` 给外接 bot 用，只进抽签池、不开房不响应指令；`--key-issuer <QQ>` 让某个账号负责发密钥，群成员私聊它「申请密钥 <bot的QQ号> <昵称>」就能拿到接入密钥（要配 `--issuer-key-file` 管理员密钥和 `--public-url`）。
 
 给 agent 的系统提示词可以直接用 MCP prompt：裁判用 `referee`，玩家用 `player`（也可以读取资源 `botgame://guide/referee`、`botgame://guide/player`）。
 
@@ -226,9 +226,10 @@ sequenceDiagram
 | `host` | `127.0.0.1` | 监听地址。要对外开放时请配合 `allowedHosts` 和 HTTPS 反向代理 |
 | `port` | `7700` | 端口 |
 | `path` | `/mcp` | Streamable HTTP 端点 |
-| `allowedHosts` | — | Host 头白名单，用于防范 DNS rebinding。监听 `0.0.0.0` 时建议配置 |
+| `allowedHosts` | — | Host 头白名单（只比主机名，不比端口），防范 DNS rebinding。监听本机时默认只放行 `localhost`/`127.0.0.1`，所以**经隧道或反向代理对外暴露时必须把对外域名加进来**（连同 `127.0.0.1`），否则外部请求得到 403 `Invalid Host` |
 | `legacySse` | `true` | 是否开启旧版 HTTP+SSE 传输（`/sse` + `/messages`） |
-| `publicApi` | `true` | 是否开启只读观战接口 `/api/games`、`/api/games/:id`。对局结束前只返回公开记录 |
+| `publicApi` | `true` | 是否开启只读观战接口 `/api/games`、`/api/games/:id`。对局结束前只返回公开记录；经隧道对外开放时建议关掉 |
+| `auth.issuedKeysFile` | `./data/botgame-keys.json` | 管理员在运行时用 `issue_key` 发放的密钥存在这里（0600），重启仍有效；`null` 关闭运行时发放 |
 | `stateFile` | `./data/botgame-state.json` | 存档文件，重启后对局会继续。设为 `null` 则只存在内存里 |
 | `auth.mode` | 有 agents 时为 `keys`，否则为 `open` | `keys`：必须带密钥；`open`：用 `login` 认领 QQ 号 |
 | `auth.agents[]` | `[]` | `{ key, id, name, admin? }`，每个 bot 一个密钥 |

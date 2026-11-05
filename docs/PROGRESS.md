@@ -1,5 +1,13 @@
 # 开发进度与测试记录
 
+## 2026-11-05：公网通道 + 星璃自助发密钥
+
+主人确认开隧道，并要求「加上认证，由星璃发放」。引擎新增运行时发放密钥：管理员密钥可调 `issue_key(qq_id, name, owner?, force?)`、`revoke_key`、`list_keys`；发出去的密钥存在 `auth.issuedKeysFile`（默认 `./data/botgame-keys.json`，0600，原子写入），重启后仍有效，和配置文件里的 `agents` 冲突时以配置为准。同一 QQ 号再发会作废旧密钥；带 `owner` 时别人申请过的号只有同一申请人能重发（`force` 覆盖）。会话期间密钥被作废或轮换的，下一个请求就 401。裁判进程新增 `--key-issuer <QQ> --issuer-key-file <管理员密钥> --public-url <隧道地址> [--max-keys 3]`：群成员私聊那个账号「申请密钥 <bot的QQ号> <昵称>」，进程用 OneBot `get_group_member_info` 确认申请人和 bot 都在群里（管理员不限），调 `issue_key` 后把密钥、地址、`bot-game-check` 命令私聊回去；「撤销密钥」只有申请人或管理员能用；发过密钥的 QQ 号自动进 `--bots`，启动时从引擎 `list_keys` 读回。测试：引擎 `issued-keys.test.ts`（发放、轮换、列表、作废、文件权限、重启保留、关闭发放），裁判 `onebot.test.ts` 新增一例（非群成员被拒、群成员拿到可用密钥、主账号的私聊不管密钥、新 bot 被开房 @、每人上限、别人不能撤销、申请人撤销后密钥失效、bot 自己申请可省昵称）。
+
+线上：服务器 clone 更新到 d5fb1e1 并重新构建；引擎配置改为 `publicApi: false`、`issuedKeysFile` 指到 state 目录，引擎和裁判都已重启，裁判带 `--key-issuer 3842854846（星璃） --issuer-key-file keys/admin.key --public-url https://oracle-tokyo.tail8c4463.ts.net:10000/mcp`，启动日志「密钥由 星璃 发放」，六个 OneBot 连接齐全。Funnel 还没开：`tailscale funnel` 要 root，MCP 服务受 NoNewPrivileges 保护、规则禁止绕过，需要主人在服务器上执行一次 `sudo tailscale funnel --bg --https=10000 http://127.0.0.1:18790`（或 `sudo tailscale set --operator=ubuntu` 一次后由进程自己开）。开通后外接 bot 的地址就是上面的 `--public-url`。
+
+主人随后开了 Funnel（`:10000 → 127.0.0.1:18790`）。第一次外部请求全部 403 `Invalid Host`：MCP SDK 在监听本机时默认只放行 `localhost`/`127.0.0.1` 的 Host 头，引擎配置加 `allowedHosts: ["oracle-tokyo.tail8c4463.ts.net", "127.0.0.1", "localhost"]` 并重启后正常。外网验证：`/health` 通、无密钥和错密钥 initialize 都 401、`/api/games` 404、用克蕾雅的密钥跑 `bot-game-check` 三项 ✅。文档里「没有特殊需要就别设 allowedHosts」的说法是错的，已改。CI 另外挂过一次端到端 S4b：数字炸弹范围 1~400，玩家随机猜，裁判失联前就有人踩雷、对局结束，接管检查无从测起；范围放大到 1~100000。
+
 ## 2026-11-05：主账号也能参赛（裁判 --main-plays）；线上第一局 bot 自己开的谁是卧底
 
 线上 UC-T9AP（qqA游戏群）：克蕾雅用文字指令开房，五个 bot 报名，60 秒自动开局，程序在 6 个候选里抽到岚汐当裁判，妮娅发转盘图，之后全部裁判消息由岚汐的账号发出；一轮投出卧底，平民胜。整条链路第一次完整跑通。小毛病：开局公告「请开始主持（调用 referee_step）」在代行时措辞不对；房间开了之后别的 bot 又发开房指令，妮娅重复回了「已有对局」；被抽中的岚汐的模型插了一句闲聊（不影响流程）。

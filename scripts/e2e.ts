@@ -1236,7 +1236,7 @@ async function scenarioStartup(env: Env): Promise<Scenario> {
   const who = await ref.call('whoami');
   sc.check('keys 模式下密钥绑定身份（裁判 bot）', who.identity?.id === env.ref.id && who.auth_mode === 'keys', JSON.stringify(who.identity));
   const tools = await ref.client!.listTools();
-  sc.check('暴露 18 个工具', tools.tools.length === 18, `实际 ${tools.tools.length}`);
+  sc.check('暴露 21 个工具', tools.tools.length === 21, `实际 ${tools.tools.length}`);
   let loginRefused = false;
   try {
     await ref.call('login', { qq_id: '1', nickname: 'x' }, { retry: false });
@@ -1441,7 +1441,8 @@ async function scenarioNumberBomb(env: Env, rng: Rng): Promise<Scenario> {
   const qq = prepareQQ(sc, groupId, env, aiCfgs, humanSpecs);
   const refConn = sc.conn(env, 'ref', env.ref.key);
   const ais = aiCfgs.map((cfg, i) => ({ cfg, selfPost: false, conn: sc.conn(env, `ai${i + 1}`, cfg.key) }));
-  const gameId = await lobby(env, sc, refConn, 'number_bomb', groupId, { min: 1, max: 400, turn_timeout_s: 30, speech_gap_ms: 200 }, ais.map((a) => ({ conn: a.conn, selfPost: a.selfPost })), humanSpecs);
+  // 范围要够大：玩家是随机猜的，范围太小会有可观的概率在裁判失联前就有人踩雷、对局结束，接管检查就没得测（CI 上出现过 1~400 时秒结束）
+  const gameId = await lobby(env, sc, refConn, 'number_bomb', groupId, { min: 1, max: 100_000, turn_timeout_s: 30, speech_gap_ms: 200 }, ais.map((a) => ({ conn: a.conn, selfPost: a.selfPost })), humanSpecs);
   log('S4b', `数字炸弹 ${gameId} 开局：3 AI + 2 真人`);
 
   const standby = sc.conn(env, 'standby', standbyCfg.key);

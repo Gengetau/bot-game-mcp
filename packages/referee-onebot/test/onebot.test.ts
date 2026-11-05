@@ -1,3 +1,6 @@
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
@@ -37,6 +40,7 @@ describe('OneBot referee against the real engine', () => {
   let rt: Runtime;
   let http: HttpHandle;
   let qq: FakeOneBot;
+  const keysDir = mkdtempSync(join(tmpdir(), 'botgame-referee-keys-'));
   const ac = new AbortController();
   const logs: string[] = [];
   let refereeDone: Promise<void>;
@@ -50,6 +54,7 @@ describe('OneBot referee against the real engine', () => {
       auth: {
         mode: 'keys',
         adminKeys: [KEYS.admin],
+        issuedKeysFile: join(keysDir, 'keys.json'),
         agents: [
           { key: KEYS.ref, id: REF_ID, name: '妮娅' },
           { key: KEYS.ai, id: AI_ID, name: '克蕾雅' },
@@ -86,6 +91,7 @@ describe('OneBot referee against the real engine', () => {
     await qq.close();
     await http.close();
     rt.close();
+    rmSync(keysDir, { recursive: true, force: true });
   });
 
   const groupMsg = (uid: string, nick: string, message: unknown) =>
@@ -641,6 +647,128 @@ describe('OneBot referee against the real engine', () => {
       await Promise.all([brainMain.close(), brainA.close(), qqM.close(), qqA.close()]);
     }
   }, 90_000);
+
+  it('key-issuer: a voice account hands out engine keys over private chat', async () => {
+    const qqM = new FakeOneBot('tm2');
+    const qqX = new FakeOneBot('tx2');
+    await Promise.all([qqM.start(), qqX.start()]);
+    const acK = new AbortController();
+    const lines: string[] = [];
+    const done = runReferee({
+      url: http.url,
+      key: KEYS.ref,
+      onebotUrl: qqM.url,
+      onebotToken: 'tm2',
+      groupId: GROUP,
+      admins: [OWNER],
+      bots: [AI_ID],
+      voices: [{ key: KEYS.ai2, onebotUrl: qqX.url, onebotToken: 'tx2' }],
+      keyIssuer: AI2_ID,
+      issuerKey: KEYS.admin,
+      publicUrl: 'https://example.test/mcp',
+      maxKeysPerOwner: 2,
+      stepWaitSeconds: 1,
+      sendGapMs: 0,
+      selfInPool: false,
+      hostId: 'key-issuer-host',
+      signal: acK.signal,
+      log: (l) => lines.push(l),
+    });
+    await Promise.all([qqM.waitForConnection(), qqX.waitForConnection()]);
+    const pm = (q: FakeOneBot, uid: string, nick: string, t: string) =>
+      q.emit({ post_type: 'message', message_type: 'private', sub_type: 'friend', user_id: Number(uid), message_id: ++msgSeq, sender: { user_id: Number(uid), nickname: nick }, message: text(t), raw_message: t });
+    const privTo = (uid: string) => (c: ApiCall) => c.action === 'send_private_msg' && String(c.params.user_id) === uid;
+    const replyText = (c: ApiCall) => (c.params.message as any[]).map((s) => String(s.data?.text ?? '')).join('');
+    const whoamiWith = async (key: string) => {
+      const c = new Client({ name: 't', version: '1' });
+      await c.connect(new StreamableHTTPClientTransport(new URL(http.url), { requestInit: { headers: { Authorization: `Bearer ${key}` } } }));
+      try {
+        const r: any = await c.callTool({ name: 'whoami', arguments: {} });
+        return JSON.parse(r.content[0].text).identity;
+      } finally {
+        await c.close();
+      }
+    };
+    try {
+      // 不在群里的人不能申请
+      let mark = qqX.calls.length;
+      qqX.failActions.add('get_group_member_info');
+      pm(qqX, OTHER, '路人', '申请密钥 90001 小外');
+      let r = await qqX.waitForCall(privTo(OTHER), 10_000, mark);
+      expect(replyText(r)).toContain('不在群');
+      for (let i = 0; i < 50 && !lines.some((l) => l.includes('密钥由 艾莉希娅')); i++) await new Promise((res) => setTimeout(res, 100));
+      expect(lines.some((l) => l.includes('密钥由 艾莉希娅'))).toBe(true);
+      expect(lines.some((l) => l.includes('[keys] 已发放密钥的 bot：无'))).toBe(true);
+      qqX.failActions.delete('get_group_member_info');
+
+      // 群成员申请：收到密钥，密钥立刻可用，身份是申请时写的昵称
+      mark = qqX.calls.length;
+      pm(qqX, OTHER, '路人', '/桌游 申请密钥 90001 小外');
+      r = await qqX.waitForCall(privTo(OTHER), 10_000, mark);
+      expect(replyText(r)).toContain('✅ 已给 小外(90001) 发放密钥');
+      expect(replyText(r)).toContain('https://example.test/mcp');
+      const key1 = replyText(r).match(/bgk_[A-Za-z0-9_-]{32}/)![0];
+      expect(await whoamiWith(key1)).toEqual({ id: '90001', name: '小外' });
+      expect(qqX.calls.slice(mark).some((c) => c.action === 'get_group_member_info' && String(c.params.user_id) === '90001')).toBe(true);
+
+      // 发错格式 / 只发「密钥」得到帮助；主账号的私聊不管密钥
+      mark = qqX.calls.length;
+      pm(qqX, OTHER, '路人', '密钥');
+      r = await qqX.waitForCall(privTo(OTHER), 10_000, mark);
+      expect(replyText(r)).toContain('申请密钥 <bot的QQ号>');
+      mark = qqM.calls.length;
+      pm(qqM, OTHER, '路人', '申请密钥 90009 不该发');
+      await new Promise((res) => setTimeout(res, 500));
+      expect(qqM.calls.slice(mark).some((c) => c.action === 'send_private_msg')).toBe(false);
+
+      // 新 bot 自动算进 bots：开房时会 @ 它
+      mark = qqM.calls.length;
+      qqM.emit({ post_type: 'message', message_type: 'group', sub_type: 'normal', group_id: Number(GROUP), user_id: Number(OWNER), message_id: ++msgSeq, sender: { user_id: Number(OWNER), nickname: '主人', card: '' }, message: text('/桌游 数字炸弹'), raw_message: '' });
+      const nudge = await qqM.waitForCall((c) => c.action === 'send_group_msg' && callText(c).includes('AI 玩家请调用'), 10_000, mark);
+      expect(callText(nudge)).toContain('@90001');
+      qqM.emit({ post_type: 'message', message_type: 'group', sub_type: 'normal', group_id: Number(GROUP), user_id: Number(OWNER), message_id: ++msgSeq, sender: { user_id: Number(OWNER), nickname: '主人', card: '' }, message: text('/桌游 中止'), raw_message: '' });
+      await qqM.waitForCall((c) => c.action === 'send_group_msg' && callText(c).includes('取消'), 10_000, mark);
+      // 群里的帮助会提到找谁申请
+      mark = qqM.calls.length;
+      qqM.emit({ post_type: 'message', message_type: 'group', sub_type: 'normal', group_id: Number(GROUP), user_id: Number(OWNER), message_id: ++msgSeq, sender: { user_id: Number(OWNER), nickname: '主人', card: '' }, message: text('/桌游 帮助'), raw_message: '' });
+      const help = await qqM.waitForCall((c) => c.action === 'send_group_msg' && callText(c).includes('桌游指令'), 10_000, mark);
+      expect(callText(help)).toContain('私聊 艾莉希娅 发「申请密钥');
+
+      // 每人最多 2 把；别人不能撤销；申请人能撤销，撤销后密钥失效
+      mark = qqX.calls.length;
+      pm(qqX, OTHER, '路人', '申请密钥 90002 小外二');
+      r = await qqX.waitForCall(privTo(OTHER), 10_000, mark);
+      expect(replyText(r)).toContain('90002');
+      mark = qqX.calls.length;
+      pm(qqX, OTHER, '路人', '申请密钥 90003 小外三');
+      r = await qqX.waitForCall(privTo(OTHER), 10_000, mark);
+      expect(replyText(r)).toContain('最多 2 把');
+      mark = qqX.calls.length;
+      pm(qqX, '777', '甲', '撤销密钥 90001');
+      r = await qqX.waitForCall(privTo('777'), 10_000, mark);
+      expect(replyText(r)).toContain('不是你申请的');
+      mark = qqX.calls.length;
+      pm(qqX, OWNER, '主人', '密钥列表');
+      r = await qqX.waitForCall(privTo(OWNER), 10_000, mark);
+      expect(replyText(r)).toContain(`小外(90001) 申请人 ${OTHER}`);
+      mark = qqX.calls.length;
+      pm(qqX, OTHER, '路人', '撤销密钥 90001');
+      r = await qqX.waitForCall(privTo(OTHER), 10_000, mark);
+      expect(replyText(r)).toContain('已作废 小外(90001)');
+      await expect(whoamiWith(key1)).rejects.toThrow();
+      // 申请人自己就是 bot：昵称可以省略
+      mark = qqX.calls.length;
+      pm(qqX, OTHER, '路人', '申请密钥 55555');
+      r = await qqX.waitForCall(privTo(OTHER), 10_000, mark);
+      const key2 = replyText(r).match(/bgk_[A-Za-z0-9_-]{32}/)![0];
+      expect(await whoamiWith(key2)).toEqual({ id: OTHER, name: '路人' });
+    } finally {
+      if (process.env.REF_DEBUG) console.log(['--- logs', ...lines, '--- X calls', ...qqX.calls.map((c) => `${c.action} ${JSON.stringify(c.params)}`)].join('\n'));
+      acK.abort();
+      await Promise.race([done, new Promise((res) => setTimeout(res, 5000))]);
+      await Promise.all([qqM.close(), qqX.close()]);
+    }
+  }, 60_000);
 
   it('rejects a wrong OneBot token', async () => {
     const bad = new FakeOneBot('right');

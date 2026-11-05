@@ -60,6 +60,9 @@ const EXPECTED_TOOLS = [
   'relay_human_message',
   'referee_takeover',
   'referee_offer',
+  'issue_key',
+  'revoke_key',
+  'list_keys',
 ];
 
 describe('MCP over in-memory transport', () => {
