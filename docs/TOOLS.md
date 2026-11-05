@@ -222,6 +222,7 @@
 - `botgame://rules/undercover` —— 游戏规则
 - `botgame://rules/liars_dice` —— 游戏规则
 - `botgame://rules/number_bomb` —— 游戏规则
+- `botgame://rules/jubensha` —— 游戏规则
 - `botgame://rules/{game_type}` —— 游戏规则
 
 ## 提示词（prompts）

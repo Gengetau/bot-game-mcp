@@ -10,13 +10,14 @@
  *   bot-game-mcp init-config      生成示例配置 botgame.config.json
  */
 import { randomBytes } from 'node:crypto';
-import { existsSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { parseArgs } from 'node:util';
 import { loadConfig } from './config.js';
 import { startBridge } from './server/bridge.js';
 import { startHttpServer } from './server/http.js';
 import { createRuntime } from './server/runtime.js';
 import { startStdioServer } from './server/stdio.js';
+import { directoryLibrary, parsePack } from './games/jubensha/index.js';
 import { simulate } from './sim/simulate.js';
 import { VERSION } from './version.js';
 
@@ -28,6 +29,8 @@ const HELP = `bot-game-mcp ${VERSION} —— QQ 群桌游引擎（MCP 服务器�
   bot-game-mcp bridge  --url http://主机:7700/mcp [--key 密钥]
   bot-game-mcp simulate <werewolf|undercover|liars_dice|number_bomb> [--players 9] [--humans 0]
                        [--seed 42] [--options '{"win_mode":"all"}'] [--afk 0.1] [--cq]
+                       [--scripts <剧本目录>]（剧本杀用）
+  bot-game-mcp check-script <剧本.json> [...]   校验剧本杀数据包格式
   bot-game-mcp gen-key [-n 3]
   bot-game-mcp init-config [--force]
 
@@ -74,6 +77,7 @@ async function main(argv: string[]): Promise<void> {
       seed: { type: 'string' },
       options: { type: 'string' },
       afk: { type: 'string' },
+      scripts: { type: 'string' },
       cq: { type: 'boolean' },
       n: { type: 'string', short: 'n' },
       force: { type: 'boolean' },
@@ -149,8 +153,26 @@ async function main(argv: string[]): Promise<void> {
         options: str('options') ? JSON.parse(str('options')!) : undefined,
         afk: str('afk') ? Number(str('afk')) : undefined,
         format: values.cq ? 'cq' : 'text',
+        ...(str('scripts') ? { scripts: directoryLibrary(str('scripts')!) } : {}),
       });
       process.exitCode = res.status === 'ended' ? 0 : 1;
+      return;
+    }
+    case 'check-script': {
+      const files = positionals.slice(1);
+      if (files.length === 0) throw new Error('用法：bot-game-mcp check-script <剧本.json> [...]');
+      let bad = 0;
+      for (const f of files) {
+        try {
+          const p = parsePack(JSON.parse(readFileSync(f, 'utf8')), f);
+          const chars = JSON.stringify(p).length;
+          console.log(`✅ ${f}：《${p.title}》id=${p.id}，${p.players} 人，${p.acts.length} 幕，凶手 ${p.culprits.join('、')}，约 ${chars} 字符`);
+        } catch (e) {
+          bad++;
+          console.log(`❌ ${e instanceof Error ? e.message : String(e)}`);
+        }
+      }
+      process.exitCode = bad ? 1 : 0;
       return;
     }
     case 'gen-key': {

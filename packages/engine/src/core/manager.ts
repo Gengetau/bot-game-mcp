@@ -630,7 +630,7 @@ export class GameManager {
         n < def.minPlayers ? '请继续拉人报名（真人发送「加入」，AI 调用 join_game）。' : '请让部分人退出报名。',
       );
     }
-    const extra = def.checkStart?.(n, rec.options);
+    const extra = def.checkStart?.(n, rec.options, entries.map((e) => ({ id: e.id, name: e.name, kind: e.kind })));
     if (extra) throw invalidState(extra);
 
     // —— 3. 随机座位 ——

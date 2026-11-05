@@ -2,7 +2,7 @@ import { GameManager } from '../src/core/manager.js';
 import { SeededRng } from '../src/core/rng.js';
 import type { StateStore } from '../src/core/store.js';
 import type { ActionInput, GameRecord, Identity, Seat } from '../src/core/types.js';
-import { createRegistry } from '../src/games/index.js';
+import { createRegistry, type RegistryOptions } from '../src/games/index.js';
 
 export class FakeClock {
   t = 1_700_000_000_000;
@@ -12,9 +12,9 @@ export class FakeClock {
   }
 }
 
-export function setup(seed: string | number = 1, store?: StateStore) {
+export function setup(seed: string | number = 1, store?: StateStore, registry: RegistryOptions = {}) {
   const clock = new FakeClock();
-  const manager = new GameManager({ registry: createRegistry(), now: clock.now, rng: new SeededRng(seed), store });
+  const manager = new GameManager({ registry: createRegistry(registry), now: clock.now, rng: new SeededRng(seed), store });
   return { clock, manager };
 }
 

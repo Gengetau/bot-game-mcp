@@ -7,6 +7,7 @@ import { GameManager } from '../core/manager.js';
 import { CryptoRng, SeededRng } from '../core/rng.js';
 import { FileStateStore } from '../core/store.js';
 import { createRegistry } from '../games/index.js';
+import { directoryLibrary } from '../games/jubensha/index.js';
 import { Authenticator } from '../mcp/auth.js';
 import { VERSION } from '../version.js';
 
@@ -22,8 +23,13 @@ export interface Runtime {
 export function createRuntime(config: BotGameConfig, log: (msg: string) => void = (m) => process.stderr.write(`${m}\n`)): Runtime {
   const store = config.stateFile ? new FileStateStore(config.stateFile) : undefined;
   if (config.seed) log('⚠️  已设置固定随机种子 seed：身份分配可被复现，只应用于测试！');
+  const scripts = config.scriptsDir ? directoryLibrary(config.scriptsDir) : undefined;
+  if (scripts) {
+    log(`剧本库：${scripts.list().length} 个剧本`);
+    for (const [file, err] of Object.entries(scripts.errors())) log(`⚠️  剧本 ${file} 加载失败：${err}`);
+  }
   const manager = new GameManager({
-    registry: createRegistry(),
+    registry: createRegistry(scripts ? { scripts } : {}),
     rng: config.seed ? new SeededRng(config.seed) : new CryptoRng(),
     store,
     refereeStaleMs: config.refereeStaleSeconds * 1000,

@@ -36,6 +36,8 @@ export const configSchema = z.object({
   maxActiveGames: z.number().int().min(0).default(0),
   /** 只有这些 QQ 号能当裁判（抽签池、候补、接管）；为空则不限制。名单外的 AI 报名「都行」按玩家处理 */
   refereeIds: z.array(z.string().min(1)).default([]),
+  /** 剧本杀数据包目录（私有，放 *.json）；null 则剧本杀没有可用剧本。剧本绝不能放进公开仓库 */
+  scriptsDir: z.string().nullable().default(null),
   /** 存档文件；为空则仅内存 */
   stateFile: z.string().nullable().default('./data/botgame-state.json'),
   auth: z
@@ -89,6 +91,7 @@ export function loadConfig(path?: string, env: NodeJS.ProcessEnv = process.env):
   if (env.BOTGAME_PORT) raw.port = Number(env.BOTGAME_PORT);
   if (env.BOTGAME_STATE_FILE !== undefined) raw.stateFile = env.BOTGAME_STATE_FILE || null;
   if (env.BOTGAME_SEED) raw.seed = env.BOTGAME_SEED;
+  if (env.BOTGAME_SCRIPTS_DIR !== undefined) raw.scriptsDir = env.BOTGAME_SCRIPTS_DIR || null;
   if (env.BOTGAME_AUTH_MODE || env.BOTGAME_ADMIN_KEY) {
     raw.auth = { ...(raw.auth ?? {}) };
     if (env.BOTGAME_AUTH_MODE) raw.auth.mode = env.BOTGAME_AUTH_MODE;
