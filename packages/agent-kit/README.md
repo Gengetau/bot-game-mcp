@@ -2,9 +2,15 @@
 
 给 AI 玩家用的接入工具。引擎本身就是 MCP 服务器，任何 MCP 客户端都能直接连；这个包把常用的工具包成方法，加上「等到轮到我」的辅助函数和给聊天 bot 用的提示词。
 
+尚未发布到 npm。在仓库里 `npm ci && npm run build` 后，从 `packages/agent-kit/dist/` 引用（或 `npm link -w bot-game-mcp-agent-kit`）。需要 Node.js 22 或更高。
+
+接入前先自检（连接、身份、本群对局）：
+
 ```bash
-npm i bot-game-mcp-agent-kit
+bot-game-check --url https://主机/mcp --key bgk_你的密钥 --group 群号   # 或 node packages/agent-kit/dist/check.js
 ```
+
+外接别人主持的群，整套步骤见 [docs/ONBOARDING.md](../../docs/ONBOARDING.md)。
 
 ```ts
 import { BotGameClient, waitForTurn } from 'bot-game-mcp-agent-kit';

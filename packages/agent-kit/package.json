@@ -6,6 +6,9 @@
   "license": "MIT",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "bin": {
+    "bot-game-check": "dist/check.js"
+  },
   "files": ["dist", "README.md", "examples", "prompts"],
   "engines": { "node": ">=22" },
   "scripts": {

@@ -34,17 +34,17 @@ flowchart LR
 - [已知限制](#已知限制)
 - [开发](#开发)
 
-更多文档：[游戏规则与选项](docs/GAMES.md) · [MCP 接口参考](docs/TOOLS.md) · [接入各类客户端与 QQ 框架](docs/CLIENTS.md) · [架构与新增游戏](docs/ARCHITECTURE.md) · [开发进度与测试记录](docs/PROGRESS.md)
+更多文档：[外接 bot 接入指南](docs/ONBOARDING.md)（想把自己的 bot 接进别人的群，从这页开始） · [游戏规则与选项](docs/GAMES.md) · [MCP 接口参考](docs/TOOLS.md) · [接入各类客户端与 QQ 框架](docs/CLIENTS.md) · [架构与新增游戏](docs/ARCHITECTURE.md) · [开发进度与测试记录](docs/PROGRESS.md)
 
 ## 仓库结构
 
-这是一个 npm 工作区，按用途分成三个独立发布的包，用哪个装哪个（尚未发布到 npm，目前从仓库构建）：
+这是一个 npm 工作区，按用途分成三个包。**尚未发布到 npm**：先 `git clone` 再 `npm ci && npm run build`，构建产物在各包的 `dist/` 里（见下面的安装步骤；外接 bot 看 [docs/ONBOARDING.md](docs/ONBOARDING.md)）。
 
-| 包 | 用途 | 安装 |
+| 包 | 用途 | 构建后的命令 |
 |---|---|---|
-| [`bot-game-mcp`](packages/engine) | 引擎：MCP 服务器、四款游戏、HTTP/SSE/stdio 传输、离线模拟器，命令行 `bot-game-mcp` | `npm i bot-game-mcp` |
-| [`bot-game-mcp-referee-onebot`](packages/referee-onebot) | 代码裁判：用一个 OneBot v11 账号主持 QQ 群桌游，命令行 `bot-game-referee`。只依赖 MCP SDK，不依赖引擎 | `npm i bot-game-mcp-referee-onebot` |
-| [`bot-game-mcp-agent-kit`](packages/agent-kit) | 接入端：给 AI 玩家用的 TypeScript 客户端、等待回合的辅助函数、提示词文本，以及 Claude Agent SDK / OpenAI Agents SDK 的接入示例 | `npm i bot-game-mcp-agent-kit` |
+| [`bot-game-mcp`](packages/engine) | 引擎：MCP 服务器、四款游戏、HTTP/SSE/stdio 传输、离线模拟器 | `node packages/engine/dist/cli.js`（`npm link` 后是 `bot-game-mcp`） |
+| [`bot-game-mcp-referee-onebot`](packages/referee-onebot) | 代码裁判：用一个或多个 OneBot v11 账号主持 QQ 群桌游。只依赖 MCP SDK，不依赖引擎 | `node packages/referee-onebot/dist/cli.js`（`bot-game-referee`） |
+| [`bot-game-mcp-agent-kit`](packages/agent-kit) | 接入端：给 AI 玩家用的 TypeScript 客户端、等待回合的辅助函数、提示词文本、连通性自检，以及 Claude Agent SDK / OpenAI Agents SDK 的接入示例 | `node packages/agent-kit/dist/check.js`（`bot-game-check`） |
 
 三个包之间只通过 MCP 协议和引擎的只读 HTTP 接口说话，裁判和接入端都不 import 引擎内部代码。文档统一放在根目录 `docs/`。
 
@@ -71,7 +71,7 @@ cd bot-game-mcp
 npm ci
 npm run build       # 构建三个包
 # 引擎命令：node packages/engine/dist/cli.js；裁判命令：node packages/referee-onebot/dist/cli.js
-# 可选：npm link -w bot-game-mcp -w bot-game-mcp-referee-onebot，之后直接用 bot-game-mcp / bot-game-referee
+# 可选：npm link -w bot-game-mcp -w bot-game-mcp-referee-onebot -w bot-game-mcp-agent-kit，之后直接用 bot-game-mcp / bot-game-referee / bot-game-check
 ```
 
 ### 2. 先离线看一局（不需要任何 agent）
@@ -119,10 +119,10 @@ claude mcp add --transport http bot-game http://127.0.0.1:7700/mcp \
 
 只支持 stdio 的客户端可以用桥接模式（`bot-game-mcp bridge --url … --key …`）。其他客户端和 QQ 框架的接法见 [docs/CLIENTS.md](docs/CLIENTS.md)，配置样例在 [examples/](examples/)。
 
-裁判不一定要是大模型。自带的代码裁判 `bot-game-mcp referee` 用一个 OneBot v11 账号（正向 WebSocket）发消息、转交真人消息，群里发「/桌游 狼人杀」就开房，零 token、不会走神：
+裁判不一定要是大模型。自带的代码裁判 `bot-game-referee`（包 `bot-game-mcp-referee-onebot`）用一个 OneBot v11 账号（正向 WebSocket）发消息、转交真人消息，群里发「/桌游 狼人杀」就开房，零 token、不会走神：
 
 ```bash
-bot-game-mcp referee --url http://127.0.0.1:7700/mcp --key-file 裁判密钥文件 \
+bot-game-referee --url http://127.0.0.1:7700/mcp --key-file 裁判密钥文件 \
   --onebot ws://127.0.0.1:3001/ --onebot-token-file onebot密钥文件 --group 群号 \
   --admins 主人QQ号 --bots 其他bot的QQ号,… --options '{"nudge_ai":true}'
 ```
@@ -153,7 +153,7 @@ AI 玩家的私密信息只出现在它自己的 `get_my_view` 里，不经过�
 
 - **随机裁判**：代码裁判可以带多个账号（`--voices`）。报名的 bot 里凡是它能替其说话的，都登记进抽签池；开局时程序抽一个当裁判，裁判进程就用那个账号发公告和私聊，并发一张转盘图。被抽中账号自己的模型拿不到任何该发的话（引擎只认带 `host_id` 的调用），所以裁判的每句话都是程序发的。外接的 bot 在自己那边跑一份 `bot-game-referee`（用自己的密钥和 OneBot）就能进池子，token 不用交给别人。
 4. **裁判循环**：裁判反复调用 `referee_step(wait_seconds=25)`。拿到 `deliveries` 后按顺序发送：`to=group` 的发到群里，`to=private` 的私聊给对应的真人。期间收到的每一条真人消息（群聊和私聊都算）都用 `relay_human_message` 转交。直到返回 `finished=true` 为止。
-5. **AI 玩家循环**：AI 玩家反复调用 `get_my_view(wait_seconds=50)`，轮到自己时再调用 `speak` 或 `act`。可用的动作和参数都在返回的 `todo.actions` 里。
+5. **AI 玩家行动**：两种方式。自己跑循环的 agent 反复调用 `get_my_view(wait_seconds=50)`，轮到自己才返回；只会被 @ 唤醒的聊天 bot 则在裁判 @ 它时调用一次 `get_my_view(wait_seconds=0)`（见下面的 `nudge_ai`）。然后调用 `speak` 或 `act`，可用的动作和参数都在返回的 `todo.actions` 里。
 6. **结算**：程序公布胜负和所有人的身份。之后任何人都能用 `get_game_log` 查看完整复盘。
 
 ```mermaid

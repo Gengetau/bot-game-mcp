@@ -4,8 +4,9 @@
 
 只依赖 `@modelcontextprotocol/sdk`，不依赖引擎包；引擎可以跑在另一台机器上。
 
+尚未发布到 npm：在仓库里 `npm ci && npm run build`，命令是 `node packages/referee-onebot/dist/cli.js`（`npm link -w bot-game-mcp-referee-onebot` 后可直接用 `bot-game-referee`）。需要 Node.js 22 或更高。
+
 ```bash
-npm i bot-game-mcp-referee-onebot
 bot-game-referee --url http://127.0.0.1:7700/mcp --key-file 裁判密钥文件 \
   --onebot ws://127.0.0.1:3001/ --onebot-token-file onebot密钥文件 --group 群号 \
   --admins 主人QQ号 --bots 玩家bot的QQ号,… --options '{"nudge_ai":true,"speech_gap_ms":15000}'
@@ -24,6 +25,7 @@ bot-game-referee --url http://127.0.0.1:7700/mcp --key-file 裁判密钥文件 \
 | `--host-id` | 本进程的标识（默认主机名）。引擎用它区分代行进程和账号自己的模型，重启后要保持一致 |
 | `--no-self-in-pool` / `--no-wheel` | 主账号不进抽签池 / 不发转盘图 |
 | `--wheel-font` | GNU Unifont 的 `.hex` 或 `.hex.gz`，转盘图上写中文名用；没有则中文画成方块 |
+| `--follower` | 跟随模式，给外接 bot 用：不开房、不响应指令、不当候补，只在自己的账号报名后登记进抽签池，抽中了就用自己的账号主持。见 [docs/ONBOARDING.md](../../docs/ONBOARDING.md) |
 | `--prefix` / `--wait` | 指令前缀（默认 `/桌游`）与长轮询秒数（默认 25） |
 
 群里的指令：`/桌游 狼人杀 [人数] [选项]`、`/桌游 开局`（提前开）、`/桌游 中止`、`/桌游 状态`、`/桌游 规则 狼人杀`、`/桌游 帮助`；报名发「加入」。

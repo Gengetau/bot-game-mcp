@@ -17,7 +17,7 @@ const HELP = `bot-game-referee ${VERSION} —— bot-game-mcp 的代码裁判（
   bot-game-referee --url http://主机:7700/mcp --key 密钥|--key-file 文件 --onebot ws://127.0.0.1:3001/ --group 群号
                    [--onebot-token-file 文件] [--admins QQ,QQ] [--bots QQ,QQ] [--options '{"nudge_ai":true}']
                    [--prefix /桌游] [--wait 25] [--auto-start 60]
-                   [--voices voices.json] [--host-id 标识] [--no-self-in-pool] [--wheel-font unifont.hex.gz] [--no-wheel]
+                   [--voices voices.json] [--host-id 标识] [--no-self-in-pool] [--wheel-font unifont.hex.gz] [--no-wheel] [--follower]
 
   用一个或多个 OneBot v11 账号（正向 WebSocket）把引擎的消息发到群里和私聊里，转交真人消息，响应「/桌游」指令。
   它只用裁判能用的那几个工具，没有任何能影响结果的接口。
@@ -26,6 +26,7 @@ const HELP = `bot-game-referee ${VERSION} —— bot-game-mcp 的代码裁判（
     报名了的嗓子账号会进裁判抽签池，抽中谁就用谁的账号主持；抽中账号自己的模型拿不到任何该发的话。
   --host-id：本进程的标识（默认主机名），重启后要保持一致。--no-self-in-pool：主账号不进抽签池。
   --wheel-font：GNU Unifont 的 .hex/.hex.gz，用来在转盘图上写中文名；--no-wheel 不发转盘图。
+  --follower：跟随模式，给外接 bot 用。不开房、不响应指令、不当候补，只在自己的账号报名后登记进抽签池，抽中了就用自己的账号主持。
 
 环境变量：BOTGAME_URL BOTGAME_KEY BOTGAME_ONEBOT_URL BOTGAME_ONEBOT_TOKEN BOTGAME_GROUP BOTGAME_ADMINS BOTGAME_BOTS
           BOTGAME_VOICES BOTGAME_HOST_ID BOTGAME_WHEEL_FONT`;
@@ -69,6 +70,7 @@ async function main(argv: string[]): Promise<void> {
       'no-self-in-pool': { type: 'boolean' },
       'wheel-font': { type: 'string' },
       'no-wheel': { type: 'boolean' },
+      follower: { type: 'boolean' },
       help: { type: 'boolean', short: 'h' },
       version: { type: 'boolean', short: 'v' },
     },
@@ -107,6 +109,7 @@ async function main(argv: string[]): Promise<void> {
     hostId: str('host-id') ?? process.env.BOTGAME_HOST_ID,
     selfInPool: !values['no-self-in-pool'],
     wheelImage: !values['no-wheel'],
+    follower: Boolean(values.follower),
     wheelFont: str('wheel-font') ?? process.env.BOTGAME_WHEEL_FONT,
     signal: ac.signal,
   });
