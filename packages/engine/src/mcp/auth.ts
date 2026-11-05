@@ -111,8 +111,11 @@ export class Authenticator {
   /** 从密钥解析身份：undefined 表示没带密钥；null 表示密钥无效。 */
   identityFromKey(key: string | undefined | null): Identity | null | undefined {
     if (!key) return undefined;
-    for (const a of [...this.auth.agents, ...this.issued]) {
-      if (safeEqual(a.key, key)) return { id: a.id, name: a.name, ...('admin' in a && a.admin ? { admin: true } : {}) };
+    for (const a of this.auth.agents) {
+      if (safeEqual(a.key, key)) return { id: a.id, name: a.name, ...(a.admin ? { admin: true } : {}), ...(a.keyIssuer ? { keyIssuer: true } : {}) };
+    }
+    for (const a of this.issued) {
+      if (safeEqual(a.key, key)) return { id: a.id, name: a.name };
     }
     for (const [i, k] of this.auth.adminKeys.entries()) {
       if (safeEqual(k, key)) return { id: `admin${i + 1}`, name: `管理员${i + 1}`, admin: true };
@@ -126,7 +129,7 @@ export class Authenticator {
   }
 
   private requireAdmin(actor: Identity): void {
-    if (!actor.admin) throw new GameError('FORBIDDEN', '只有管理员密钥能管理其他 bot 的密钥。');
+    if (!actor.admin && !actor.keyIssuer) throw new GameError('FORBIDDEN', '只有管理员或负责发密钥的账号能管理其他 bot 的密钥。');
     if (!this.canIssue) throw new GameError('FORBIDDEN', '服务器关闭了运行时发放密钥（issuedKeysFile 为 null）。', '请管理员直接改配置文件里的 auth.agents。');
   }
 
@@ -147,6 +150,7 @@ export class Authenticator {
     }
     const idx = this.issued.findIndex((a) => a.id === id);
     const old = idx >= 0 ? this.issued[idx]! : null;
+    if (input.force && !actor.admin) throw new GameError('FORBIDDEN', '只有管理员能用 force 强制重新发放。');
     if (old && old.owner && owner !== undefined && old.owner !== owner && !input.force) {
       throw new GameError('FORBIDDEN', `QQ ${id} 的密钥是 ${old.owner} 申请的，只有申请人能重新申请。`, '管理员可以用 force 覆盖。');
     }

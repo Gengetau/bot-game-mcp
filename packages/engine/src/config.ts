@@ -15,6 +15,8 @@ const agentKeySchema = z.object({
   /** 昵称 */
   name: z.string().min(1),
   admin: z.boolean().optional(),
+  /** 只能管理运行时发放的密钥（issue_key / revoke_key / list_keys），没有其他管理员权限 */
+  keyIssuer: z.boolean().optional(),
 });
 
 export const configSchema = z.object({
