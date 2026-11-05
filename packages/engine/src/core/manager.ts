@@ -129,6 +129,8 @@ export interface RefereeStepResult {
   finished: boolean;
   /** true：裁判事务由代行进程执行，这次调用没有推进也没有消息（调用方这局休息） */
   hosted?: true;
+  /** 现在不该在群里说话的 AI 玩家 QQ 号（秘密阶段，例如狼人杀的夜晚；出局的不算）。代码裁判据此撤回并禁言。 */
+  quiet_ids?: string[];
 }
 
 export interface RelayResult {
@@ -1176,6 +1178,12 @@ export class GameManager {
    * 裁判的「推进」：处理超时/结算 → 交出到期的待发消息 → 开放下一阶段。
    * 消息按 seq 顺序交付；since_seq 可用于重发（例如上一批没发出去）。
    */
+  /** 秘密阶段里不该在群里说话的存活 AI 玩家。 */
+  private quietIds(rec: GameRecord): string[] {
+    if (rec.status !== 'running' || !rec.phase?.secret) return [];
+    return rec.players.filter((p) => p.alive && p.kind !== 'human').map((p) => p.id);
+  }
+
   async refereeStep(
     actor: Identity,
     gameId: string | undefined,
@@ -1258,6 +1266,7 @@ export class GameManager {
       waiting_for: this.refereeWaiting(rec),
       next_call_hint: hint,
       finished,
+      quiet_ids: this.quietIds(rec),
     };
   }
 

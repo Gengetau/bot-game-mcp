@@ -64,6 +64,10 @@ export function toHumanText(input: ActionInput): string | null {
       return '起跳';
     case 'run':
       return '上警';
+    case 'forward':
+      return '顺序';
+    case 'backward':
+      return '逆序';
     case 'pass_badge':
       return t !== undefined ? `警徽给${t}` : null;
     case 'guess':
