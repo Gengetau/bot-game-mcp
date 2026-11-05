@@ -1441,7 +1441,8 @@ async function scenarioNumberBomb(env: Env, rng: Rng): Promise<Scenario> {
   const qq = prepareQQ(sc, groupId, env, aiCfgs, humanSpecs);
   const refConn = sc.conn(env, 'ref', env.ref.key);
   const ais = aiCfgs.map((cfg, i) => ({ cfg, selfPost: false, conn: sc.conn(env, `ai${i + 1}`, cfg.key) }));
-  const gameId = await lobby(env, sc, refConn, 'number_bomb', groupId, { min: 1, max: 400, turn_timeout_s: 30, speech_gap_ms: 200 }, ais.map((a) => ({ conn: a.conn, selfPost: a.selfPost })), humanSpecs);
+  // 范围要够大：玩家是随机猜的，范围太小会有可观的概率在裁判失联前就有人踩雷、对局结束，接管检查就没得测（CI 上出现过 1~400 时秒结束）
+  const gameId = await lobby(env, sc, refConn, 'number_bomb', groupId, { min: 1, max: 100_000, turn_timeout_s: 30, speech_gap_ms: 200 }, ais.map((a) => ({ conn: a.conn, selfPost: a.selfPost })), humanSpecs);
   log('S4b', `数字炸弹 ${gameId} 开局：3 AI + 2 真人`);
 
   const standby = sc.conn(env, 'standby', standbyCfg.key);
