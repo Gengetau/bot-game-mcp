@@ -535,6 +535,113 @@ describe('OneBot referee against the real engine', () => {
     }
   }, 60_000);
 
+  it('main-plays: the main account joins as a player through its own model; it hosts only when no other referee can be drawn', async () => {
+    const qqM = new FakeOneBot('tm');
+    const qqA = new FakeOneBot('ta');
+    await Promise.all([qqM.start(), qqA.start()]);
+    const ac5 = new AbortController();
+    const lines: string[] = [];
+    const done = runReferee({
+      url: http.url,
+      key: KEYS.ref,
+      onebotUrl: qqM.url,
+      onebotToken: 'tm',
+      groupId: GROUP,
+      admins: [OWNER],
+      bots: [AI_ID],
+      voices: [{ key: KEYS.ai, onebotUrl: qqA.url, onebotToken: 'ta' }],
+      hostId: 'main-plays-host',
+      mainPlays: true,
+      defaultOptions: { turn_timeout_s: 60 },
+      stepWaitSeconds: 1,
+      sendGapMs: 0,
+      autoStartSeconds: 1,
+      signal: ac5.signal,
+      log: (l) => lines.push(l),
+    });
+    await Promise.all([qqM.waitForConnection(), qqA.waitForConnection()]);
+    const sendM = (c: ApiCall) => c.action === 'send_group_msg' && String(c.params.group_id) === GROUP;
+    const msgAll = (uid: string, nick: string, t: string) => {
+      const ev = { post_type: 'message', message_type: 'group', sub_type: 'normal', group_id: Number(GROUP), user_id: Number(uid), message_id: ++msgSeq, sender: { user_id: Number(uid), nickname: nick, card: '' }, message: text(t), raw_message: t };
+      qqM.emit(ev);
+      qqA.emit(ev);
+    };
+    const mcp = async (key: string) => {
+      const c = new Client({ name: 'brain', version: '1.0.0' });
+      await c.connect(new StreamableHTTPClientTransport(new URL(http.url), { requestInit: { headers: { Authorization: `Bearer ${key}` } } }));
+      return c;
+    };
+    const callOn = async (c: Client, name: string, args: Record<string, unknown> = {}) => {
+      const r: any = await c.callTool({ name, arguments: args });
+      const t = r.content?.[0]?.text ?? '';
+      if (r.isError) throw new Error(t);
+      return JSON.parse(t);
+    };
+    const brainMain = await mcp(KEYS.ref); // 主账号自己的模型
+    const brainA = await mcp(KEYS.ai);
+    const allSends = () => [...qqM.calls, ...qqA.calls].filter(sendM).map(callText);
+    try {
+      // —— 1. 人数只够最少：主账号报名了玩家，但抽不出别的裁判 → 它坐庄 ——
+      let mark = qqM.calls.length;
+      msgAll(OWNER, '主人', '/桌游 数字炸弹');
+      await qqM.waitForCall((c) => sendM(c) && callText(c).includes('报名'), 10_000, mark);
+      let gameId: string = (await callOn(brainMain, 'list_games', { group_id: GROUP })).games[0].game_id;
+      await callOn(brainMain, 'join_game', { game_id: gameId, join_as: 'player' });
+      msgAll(OWNER, '主人', '加入');
+      // 主账号 + 主人 = 2 人，但主账号得坐庄 → 有效 1 人，不够最少 2 人，不会开
+      await new Promise((res) => setTimeout(res, 2500));
+      expect(allSends().some((t) => t.includes('数字炸弹开始'))).toBe(false);
+      msgAll('777', '路人甲', '加入');
+      const sitOut = await qqM.waitForCall((c) => sendM(c) && callText(c).includes('坐庄'), 15_000, mark);
+      expect(callText(sitOut)).toContain('妮娅');
+      await qqM.waitForCall((c) => sendM(c) && callText(c).includes('数字炸弹开始'), 15_000, mark);
+      let sum = (await callOn(brainMain, 'list_games', { group_id: GROUP })).games[0];
+      expect(sum.referee_id).toBe(REF_ID);
+      expect(sum.referee_hosted_by).toBe('main-plays-host');
+      expect(sum.players).toBe(2);
+      mark = qqM.calls.length;
+      msgAll(OWNER, '主人', '/桌游 中止');
+      await qqM.waitForCall((c) => sendM(c) && callText(c).includes('中止'), 10_000, mark);
+
+      // —— 2. 人数充裕：主账号和 bot 都报名玩家，抽走一个仍够 → 程序在两人里抽裁判，另一个上场 ——
+      mark = qqM.calls.length;
+      msgAll(OWNER, '主人', '/桌游 数字炸弹');
+      await qqM.waitForCall((c) => sendM(c) && callText(c).includes('报名'), 10_000, mark);
+      gameId = (await callOn(brainMain, 'list_games', { group_id: GROUP })).games[0].game_id;
+      await callOn(brainMain, 'join_game', { game_id: gameId, join_as: 'player' });
+      await callOn(brainA, 'join_game', { game_id: gameId, join_as: 'player' });
+      msgAll(OWNER, '主人', '加入');
+      msgAll('777', '路人甲', '加入');
+      const started = await Promise.race([
+        qqM.waitForCall((c) => sendM(c) && callText(c).includes('数字炸弹开始'), 15_000, mark),
+        qqA.waitForCall((c) => sendM(c) && callText(c).includes('数字炸弹开始'), 15_000),
+      ]);
+      expect(callText(started)).toBeTruthy();
+      sum = (await callOn(brainMain, 'list_games', { group_id: GROUP })).games[0];
+      expect([REF_ID, AI_ID]).toContain(sum.referee_id);
+      expect(sum.referee_hosted_by).toBe('main-plays-host');
+      expect(sum.players).toBe(3);
+      expect(sum.referee_draw.candidates.map((c: any) => c.id).sort()).toEqual([AI_ID, REF_ID].sort());
+      expect(allSends().filter((t) => t.includes('坐庄'))).toHaveLength(1); // 只有第一局坐庄
+      // 没抽中的那个账号是玩家，能看到自己的行动面板
+      const playerBrain = sum.referee_id === REF_ID ? brainA : brainMain;
+      const view = await callOn(playerBrain, 'get_my_view', { game_id: gameId });
+      expect(view.you?.role ?? view.you?.seat).toBeDefined();
+      mark = qqM.calls.length;
+      msgAll(OWNER, '主人', '/桌游 中止');
+      await Promise.race([
+        qqM.waitForCall((c) => sendM(c) && callText(c).includes('中止'), 10_000, mark),
+        qqA.waitForCall((c) => sendM(c) && callText(c).includes('中止'), 10_000),
+      ]);
+      expect(lines.some((l) => l.includes('主账号参赛'))).toBe(true);
+    } finally {
+      if (process.env.REF_DEBUG) console.log(['--- main-plays logs', ...lines, '--- calls', ...qqM.calls.map((c) => `${c.action} ${callText(c)}`)].join('\n'));
+      ac5.abort();
+      await Promise.race([done, new Promise((res) => setTimeout(res, 5000))]);
+      await Promise.all([brainMain.close(), brainA.close(), qqM.close(), qqA.close()]);
+    }
+  }, 90_000);
+
   it('rejects a wrong OneBot token', async () => {
     const bad = new FakeOneBot('right');
     await bad.start();

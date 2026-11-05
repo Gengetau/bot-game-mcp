@@ -213,7 +213,7 @@ bot-game-referee --url http://127.0.0.1:7700/mcp --key-file 裁判密钥文件 \
 
 **外接 bot 的裁判进程**：别人的 bot 想进抽签池，在自己那边跑 `bot-game-referee --follower`（跟随模式：不开房、不响应指令、不当候补，只在自己的账号报名后登记代行、抽中后主持），群里的开房开局仍由主机的裁判负责，不会抢话。
 
-**随机裁判（多账号）**：`--voices voices.json` 再带几个账号，每项是 `{"keyFile": "...", "onebot": "ws://127.0.0.1:3011/", "onebotTokenFile": "..."}`。报名了的 bot 里凡是这些账号，裁判进程都会调用 `referee_offer(game_id, host_id)` 登记进抽签池（主账号默认也在池里，`--no-self-in-pool` 可以关掉）。开局时引擎在池里抽一个，裁判进程就切到那个账号的连接发公告和私聊，主账号先把抽签结果画成转盘图发到群里（`--wheel-font` 指向 GNU Unifont 的 `.hex.gz` 才能画中文名）。被抽中账号自己的模型调 `referee_step` 只会得到 `hosted: true` 的空结果，`get_my_view` 也会告诉它这局休息。本局裁判不是本进程的账号时，进程只旁观；那个裁判失联后用主账号 `referee_takeover` 接管。外接的 bot 想进抽签池，就在自己那边跑一份 `bot-game-referee`，用自己的密钥和 OneBot 连接，token 不用交给引擎这边。
+**随机裁判（多账号）**：`--voices voices.json` 再带几个账号，每项是 `{"keyFile": "...", "onebot": "ws://127.0.0.1:3011/", "onebotTokenFile": "..."}`。报名了的 bot 里凡是这些账号，裁判进程都会调用 `referee_offer(game_id, host_id)` 登记进抽签池（主账号默认也在池里，`--no-self-in-pool` 可以关掉；`--main-plays` 则让主账号像别的 bot 一样由自己的模型报名当玩家，抽不出别的裁判时它才坐庄）。开局时引擎在池里抽一个，裁判进程就切到那个账号的连接发公告和私聊，主账号先把抽签结果画成转盘图发到群里（`--wheel-font` 指向 GNU Unifont 的 `.hex.gz` 才能画中文名）。被抽中账号自己的模型调 `referee_step` 只会得到 `hosted: true` 的空结果，`get_my_view` 也会告诉它这局休息。本局裁判不是本进程的账号时，进程只旁观；那个裁判失联后用主账号 `referee_takeover` 接管。外接的 bot 想进抽签池，就在自己那边跑一份 `bot-game-referee`，用自己的密钥和 OneBot 连接，token 不用交给引擎这边。
 
 ```ts
 // 开局后：裁判循环

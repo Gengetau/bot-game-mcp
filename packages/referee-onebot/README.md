@@ -26,6 +26,7 @@ bot-game-referee --url http://127.0.0.1:7700/mcp --key-file 裁判密钥文件 \
 | `--voices` | 额外账号的 JSON 文件：`[{"keyFile": "claire.key", "onebot": "ws://127.0.0.1:3011/", "onebotTokenFile": "claire.token"}, …]`，路径相对该文件。报名了的这些账号进裁判抽签池 |
 | `--host-id` | 本进程的标识（默认主机名）。引擎用它区分代行进程和账号自己的模型，重启后要保持一致 |
 | `--no-self-in-pool` / `--no-wheel` | 主账号不进抽签池 / 不发转盘图 |
+| `--main-plays` | 主账号也参赛：开房时不自动当裁判候选，由它自己的模型 `join_game` 报名当玩家，报名了就进抽签池（抽中由本进程代行裁判，没抽中就上场玩）。抽不出别的裁判时开局前把它改回裁判，这局坐庄。它的模型没报名时和原来一样当裁判 |
 | `--wheel-font` | GNU Unifont 的 `.hex` 或 `.hex.gz`，转盘图上写中文名用；没有则中文画成方块 |
 | `--follower` | 跟随模式，给外接 bot 用：不开房、不响应指令、不当候补，只在自己的账号报名后登记进抽签池，抽中了就用自己的账号主持。见 [docs/ONBOARDING.md](../../docs/ONBOARDING.md) |
 | `--prefix` / `--wait` | 指令前缀（默认 `/桌游`）与长轮询秒数（默认 25） |
