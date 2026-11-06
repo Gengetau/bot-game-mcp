@@ -16,7 +16,12 @@ export interface ServerDeps {
   manager: GameManager;
   auth: Authenticator;
   version: string;
+  /** 有它时每次工具调用记一行：谁、哪个工具、成败、耗时（不记参数和内容） */
+  log?: (msg: string) => void;
 }
+
+/** 成功时不记的高频工具（代码裁判每几十秒一次的长轮询）；失败照记 */
+const QUIET_TOOLS = new Set(['referee_step']);
 
 const MAX_WAIT_SECONDS = 50;
 
@@ -33,6 +38,13 @@ function fail(err: unknown): CallToolResult {
   }
   const msg = err instanceof Error ? err.message : String(err);
   return { isError: true, content: [{ type: 'text', text: `❌ 服务器内部错误：${msg}` }] };
+}
+
+/** 失败结果里的错误码（GameError 的 code，否则 INTERNAL） */
+function callErrorCode(res: CallToolResult): string {
+  const first = res.content?.[0];
+  const text = first && first.type === 'text' ? first.text : '';
+  return text.match(/\(code: ([A-Z_]+)\)/)?.[1] ?? 'INTERNAL';
 }
 
 const gameIdOpt = z.string().optional().describe('对局 ID（如 WW-7K3Q）。不填则自动使用你当前参与的对局');
@@ -97,11 +109,19 @@ export function createMcpServer(deps: ServerDeps, ctx: SessionContext): McpServe
         },
       },
       (async (args: any, extra: any) => {
+        const t0 = Date.now();
+        let res: CallToolResult;
         try {
-          return ok(await handler(args, extra));
+          res = ok(await handler(args, extra));
         } catch (e) {
-          return fail(e);
+          res = fail(e);
         }
+        if (deps.log && (res.isError || !QUIET_TOOLS.has(name))) {
+          const who = ctx.identity ? `${ctx.identity.name}(${ctx.identity.id})` : '(未登录)';
+          const code = res.isError ? ` ✗ ${callErrorCode(res)}` : ' ok';
+          deps.log(`[call] ${who} ${name}${code} ${Date.now() - t0}ms`);
+        }
+        return res;
       }) as any,
     );
   }
