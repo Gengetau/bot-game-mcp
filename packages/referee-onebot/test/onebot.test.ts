@@ -70,6 +70,7 @@ describe('OneBot referee against the real engine', () => {
       seed: 'referee-test',
       scriptsDir,
       assetsDir,
+      refereeIds: [REF_ID, AI_ID, AI2_ID],
       auth: {
         mode: 'keys',
         adminKeys: [KEYS.admin],
@@ -636,6 +637,7 @@ describe('OneBot referee against the real engine', () => {
   }, 60_000);
 
   it('main-plays: the main account joins as a player through its own model; it hosts only when no other referee can be drawn', async () => {
+    const GROUP_MP = '1127300555';
     const qqM = new FakeOneBot('tm');
     const qqA = new FakeOneBot('ta');
     await Promise.all([qqM.start(), qqA.start()]);
@@ -646,7 +648,7 @@ describe('OneBot referee against the real engine', () => {
       key: KEYS.ref,
       onebotUrl: qqM.url,
       onebotToken: 'tm',
-      groupId: GROUP,
+      groupId: GROUP_MP,
       admins: [OWNER],
       bots: [AI_ID],
       voices: [{ key: KEYS.ai, onebotUrl: qqA.url, onebotToken: 'ta' }],
@@ -660,9 +662,9 @@ describe('OneBot referee against the real engine', () => {
       log: (l) => lines.push(l),
     });
     await Promise.all([qqM.waitForConnection(), qqA.waitForConnection()]);
-    const sendM = (c: ApiCall) => c.action === 'send_group_msg' && String(c.params.group_id) === GROUP;
+    const sendM = (c: ApiCall) => c.action === 'send_group_msg' && String(c.params.group_id) === GROUP_MP;
     const msgAll = (uid: string, nick: string, t: string) => {
-      const ev = { post_type: 'message', message_type: 'group', sub_type: 'normal', group_id: Number(GROUP), user_id: Number(uid), message_id: ++msgSeq, sender: { user_id: Number(uid), nickname: nick, card: '' }, message: text(t), raw_message: t };
+      const ev = { post_type: 'message', message_type: 'group', sub_type: 'normal', group_id: Number(GROUP_MP), user_id: Number(uid), message_id: ++msgSeq, sender: { user_id: Number(uid), nickname: nick, card: '' }, message: text(t), raw_message: t };
       qqM.emit(ev);
       qqA.emit(ev);
     };
@@ -685,7 +687,7 @@ describe('OneBot referee against the real engine', () => {
       let mark = qqM.calls.length;
       msgAll(OWNER, '主人', '/桌游 数字炸弹');
       await qqM.waitForCall((c) => sendM(c) && callText(c).includes('报名'), 10_000, mark);
-      let gameId: string = (await callOn(brainMain, 'list_games', { group_id: GROUP })).games[0].game_id;
+      let gameId: string = (await callOn(brainMain, 'list_games', { group_id: GROUP_MP })).games[0].game_id;
       // 开房时主账号已经以「都行」报名（抽不中就上场），它的模型不用自己报名
       const lobby0 = (await callOn(brainMain, 'get_my_view', { game_id: gameId })) as any;
       expect(JSON.stringify(lobby0)).toContain('either');
@@ -697,7 +699,7 @@ describe('OneBot referee against the real engine', () => {
       const sitOut = await qqM.waitForCall((c) => sendM(c) && callText(c).includes('坐庄'), 15_000, mark);
       expect(callText(sitOut)).toContain('妮娅');
       await qqM.waitForCall((c) => sendM(c) && callText(c).includes('数字炸弹开始'), 15_000, mark);
-      let sum = (await callOn(brainMain, 'list_games', { group_id: GROUP })).games[0];
+      let sum = (await callOn(brainMain, 'list_games', { group_id: GROUP_MP })).games[0];
       expect(sum.referee_id).toBe(REF_ID);
       expect(sum.referee_hosted_by).toBe('main-plays-host');
       expect(sum.players).toBe(2);
@@ -709,7 +711,7 @@ describe('OneBot referee against the real engine', () => {
       mark = qqM.calls.length;
       msgAll(OWNER, '主人', '/桌游 数字炸弹');
       await qqM.waitForCall((c) => sendM(c) && callText(c).includes('报名'), 10_000, mark);
-      gameId = (await callOn(brainMain, 'list_games', { group_id: GROUP })).games[0].game_id;
+      gameId = (await callOn(brainMain, 'list_games', { group_id: GROUP_MP })).games[0].game_id;
       await callOn(brainA, 'join_game', { game_id: gameId, join_as: 'player' });
       msgAll(OWNER, '主人', '加入');
       msgAll('777', '路人甲', '加入');
@@ -718,7 +720,7 @@ describe('OneBot referee against the real engine', () => {
         qqA.waitForCall((c) => sendM(c) && callText(c).includes('数字炸弹开始'), 15_000),
       ]);
       expect(callText(started)).toBeTruthy();
-      sum = (await callOn(brainMain, 'list_games', { group_id: GROUP })).games[0];
+      sum = (await callOn(brainMain, 'list_games', { group_id: GROUP_MP })).games[0];
       expect([REF_ID, AI_ID]).toContain(sum.referee_id);
       expect(sum.referee_hosted_by).toBe('main-plays-host');
       expect(sum.players).toBe(3);
@@ -734,6 +736,28 @@ describe('OneBot referee against the real engine', () => {
         qqM.waitForCall((c) => sendM(c) && callText(c).includes('中止'), 10_000, mark),
         qqA.waitForCall((c) => sendM(c) && callText(c).includes('中止'), 10_000),
       ]);
+      // —— 3. bot 自己调 create_game 开房：开房后马上「加入」也能登记；主账号也报名（都行）；能自动开局 ——
+      await new Promise((res) => setTimeout(res, 500));
+      const created = await callOn(brainA, 'create_game', { game_type: 'number_bomb', group_id: GROUP_MP, join_as: 'player' });
+      const gid3: string = created.summary?.game_id ?? created.game_id;
+      const [markM3, markA3] = [qqM.calls.length, qqA.calls.length];
+      const newSends = () => [...qqM.calls.slice(markM3), ...qqA.calls.slice(markA3)].filter(sendM).map(callText);
+      const until = async (pred: (t: string) => boolean, ms: number) => {
+        const end = Date.now() + ms;
+        while (Date.now() < end) {
+          if (newSends().some(pred)) return;
+          await new Promise((res) => setTimeout(res, 100));
+        }
+        throw new Error('等不到群消息');
+      };
+      msgAll(OWNER, '主人', '加入');
+      await until((t) => t.includes('主人 加入了'), 10_000);
+      await until((t) => t.includes('数字炸弹开始'), 15_000);
+      const g3 = (await callOn(brainMain, 'list_games', { group_id: GROUP_MP })).games.find((x: any) => x.game_id === gid3);
+      expect(g3.status).toBe('running');
+      expect(g3.players).toBe(2); // 克蕾雅、主人、妮娅 三人里抽一个当裁判
+      expect(lines.some((l) => l.includes('处理消息失败') || l.includes('引擎拒绝'))).toBe(false);
+      await callOn(brainMain, 'abort_game', { game_id: gid3 }).catch(() => callOn(brainA, 'abort_game', { game_id: gid3 }));
       expect(lines.some((l) => l.includes('主账号参赛'))).toBe(true);
     } finally {
       if (process.env.REF_DEBUG) console.log(['--- main-plays logs', ...lines, '--- calls', ...qqM.calls.map((c) => `${c.action} ${callText(c)}`)].join('\n'));

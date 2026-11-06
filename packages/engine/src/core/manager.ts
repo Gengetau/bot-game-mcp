@@ -595,7 +595,9 @@ export class GameManager {
     if (rec.status !== 'lobby') throw invalidState(`对局 ${rec.id} 不在报名阶段。`);
     const hostPresent = rec.lobby.some((e) => e.id === rec.hostId);
     const isLobbyAgent = rec.lobby.some((e) => e.id === actor.id && e.kind === 'agent');
-    if (!(actor.admin || rec.hostId === actor.id || (!hostPresent && isLobbyAgent))) {
+    // 服务器指定的裁判账号（refereeIds）报了名也能开局：bot 自己开的房由代码裁判自动开局
+    const trustedReferee = this.refereeIds.size > 0 && this.refereeIds.has(actor.id) && isLobbyAgent;
+    if (!(actor.admin || rec.hostId === actor.id || (!hostPresent && isLobbyAgent) || trustedReferee)) {
       throw forbidden('只有房主可以开始游戏。');
     }
 
