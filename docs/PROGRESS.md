@@ -12,6 +12,13 @@
 
 测试：引擎和裁判共 236 个全部通过。裁判测试新增一项：bot 开房后马上「加入」，能登记、能自动开局。
 
+**小屋 bot 自己开房**：引擎的 `create_game` 本来就对所有有密钥的 agent 开放，不用改。小屋 bot 用不了，是因为 bridge.py 的 `GAME_TOOLS` 白名单里没有它，而且提示词写着「你没有开房和开局的工具」。bridge.py 归主人所有，所以这里没有改它，只在服务器上准备了补丁 `bot-game-live/bridge-patches/2026-11-06-create-game.patch`，内容是：
+
+- 白名单加上 `create_game` 和 `start_game`；
+- 提示词改为：有人想玩、而且群里没有房间时可以开房；`join_as` 必须是 `player`。小屋 bot 都在 `refereeIds` 里，写 `either` 可能被抽成裁判，而它们没有裁判工具。
+
+补丁已对线上 bridge.py dry-run 通过。要等本 PR 部署后再应用。
+
 ## 2026-11-05：复盘 WW-NYZY 后的修补
 
 - **女巫在解药用掉后能否看到刀口**：新增狼人杀选项 `witch_sees_victim`：
