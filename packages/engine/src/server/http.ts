@@ -18,6 +18,7 @@ import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
 import { extractKey, type SessionContext } from '../mcp/auth.js';
 import { createMcpServer } from '../mcp/server.js';
 import type { Runtime } from './runtime.js';
+import { stderrLog } from './log.js';
 
 interface Session {
   transport: StreamableHTTPServerTransport | SSEServerTransport;
@@ -38,7 +39,7 @@ function jsonRpcError(res: Response, status: number, message: string, code = -32
   res.status(status).json({ jsonrpc: '2.0', error: { code, message }, id: null });
 }
 
-export async function startHttpServer(rt: Runtime, log: (msg: string) => void = console.error): Promise<HttpHandle> {
+export async function startHttpServer(rt: Runtime, log: (msg: string) => void = stderrLog): Promise<HttpHandle> {
   const { config, manager, auth } = rt;
   const app = createMcpExpressApp({ host: config.host, allowedHosts: config.allowedHosts });
   const sessions = new Map<string, Session>();
@@ -58,7 +59,7 @@ export async function startHttpServer(rt: Runtime, log: (msg: string) => void = 
     return { ok: true, key, ctx: { identity: identity ?? null, fixed: Boolean(identity), transport: 'http' } };
   }
 
-  const deps = { manager, auth, version: rt.version };
+  const deps = { manager, auth, version: rt.version, log };
 
   /**
    * 接回重启前的会话：用原来的会话 ID 新建一个已初始化的传输。

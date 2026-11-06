@@ -12,6 +12,7 @@ import { driveAssets, localAssets, type AssetStore, type ServiceAccount } from '
 import { directoryLibrary } from '../games/jubensha/index.js';
 import { Authenticator } from '../mcp/auth.js';
 import { VERSION } from '../version.js';
+import { stderrLog } from './log.js';
 
 export interface Runtime {
   config: BotGameConfig;
@@ -22,7 +23,7 @@ export interface Runtime {
   close(): void;
 }
 
-export function createRuntime(config: BotGameConfig, log: (msg: string) => void = (m) => process.stderr.write(`${m}\n`)): Runtime {
+export function createRuntime(config: BotGameConfig, log: (msg: string) => void = stderrLog): Runtime {
   const store = config.stateFile ? new FileStateStore(config.stateFile) : undefined;
   if (config.seed) log('⚠️  已设置固定随机种子 seed：身份分配可被复现，只应用于测试！');
   const scripts = config.scriptsDir ? directoryLibrary(config.scriptsDir) : undefined;
