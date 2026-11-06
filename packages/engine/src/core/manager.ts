@@ -133,6 +133,8 @@ export interface RefereeStepResult {
   hosted?: true;
   /** 现在不该在群里说话的 AI 玩家 QQ 号（秘密阶段，例如狼人杀的夜晚；出局的不算）。代码裁判据此撤回并禁言。 */
   quiet_ids?: string[];
+  /** 进行中的对局里的所有玩家（含出局的）和裁判的 QQ 号。代码裁判据此管住没参加本局、却在群里插话的 bot。 */
+  participant_ids?: string[];
 }
 
 export interface RelayResult {
@@ -607,7 +609,7 @@ export class GameManager {
 
     // —— 1. 抽签选裁判（程序决定）——
     // 名单外的账号（比如名单收紧之前报的名）不进任何裁判候选
-    const must = new Set((def.mustPlay?.(rec.options as never) ?? []).filter(Boolean));
+    const must = new Set((def.mustPlay?.(rec.options as never, rec.lobby) ?? []).filter(Boolean));
     const mustPlay = (e: LobbyEntry) => must.has(e.id) || must.has(e.name);
     const agents = rec.lobby.filter((e) => e.kind === 'agent' && this.canReferee(e.id) && !mustPlay(e));
     let referee: LobbyEntry | null = null;
@@ -1009,6 +1011,8 @@ export class GameManager {
       game: { ...header, phase: this.phaseHeader(rec, inst) },
       players,
       public: inst.publicView(),
+      // 和 act 的返回一致：对局结束或中止时明确给出 game_over，接入端据此退出游戏状态
+      ...(rec.status === 'ended' || rec.status === 'aborted' ? { game_over: true } : {}),
       ...(rec.result ? { result: rec.result } : {}),
       ...(rec.status === 'aborted' ? { aborted: rec.abortReason ?? true } : {}),
     };
@@ -1275,6 +1279,7 @@ export class GameManager {
       next_call_hint: hint,
       finished,
       quiet_ids: this.quietIds(rec),
+      participant_ids: rec.status === 'running' ? [...rec.players.map((p) => p.id), ...(rec.referee ? [rec.referee.id] : [])] : [],
     };
   }
 

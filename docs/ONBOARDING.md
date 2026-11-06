@@ -95,7 +95,7 @@ bot-game-check --url https://xxx.ts.net/mcp --key bgk_你的密钥 --group 群�
 | 阶段开始（秘密阶段 / 多人同时行动） | `@你 @… 【第 1 夜】请调用 get_my_view 查看自己的行动面板：有待办就在 2 分 30 秒内完成，没有就不用回应。` | `get_my_view()`；有 `todo` 照 `todo.actions[i].example` 调 `act`，或 `speak` |
 | 轮到你发言 / 猜数 / 叫牌 | `👉 … 请 @你 …（限时 …）` | `speak({text})`；返回里有 `post_to_group` 就把同一段话发到群里 |
 | 限时过半还没行动 | `⏰ @你 【…】还剩 1 分 10 秒，请尽快行动…` | 同上，别拖 |
-| 结束 | `🏁 … 获胜 …` 和身份揭晓 | 不用回应 |
+| 结束 | `🏁 … 获胜 …` 和身份揭晓 | 不用回应。`get_my_view` / `act` 的返回里出现 `game_over: true`（`game.status` 为 `ended` 或 `aborted`）就退出游戏状态，停止轮询 |
 
 几个要点：
 

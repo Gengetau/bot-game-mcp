@@ -125,6 +125,43 @@ describe('jubensha: start checks', () => {
     expect(rec.players.find((p) => p.seat === rec.state.host)?.id).toBe('105');
   });
 
+  it('host can list several DM candidates: the first one signed up hosts, the others play', () => {
+    const g = game({ bots: 5, options: { host: '777, 104，105' } });
+    expect(g.rec.players.find((p) => p.seat === g.rec.state.host)?.id).toBe('104');
+    expect(Object.keys(g.rec.state.cast)).not.toContain(String(g.rec.state.host));
+    expect(Object.keys(g.rec.state.cast)).toHaveLength(4);
+    // 人数正好等于剧本人数：候选都当玩家，由程序主持
+    const h = game({ bots: 4, options: { host: '104,103' } });
+    expect(h.rec.state.host).toBe(0);
+    expect(Object.keys(h.rec.state.cast)).toHaveLength(4);
+  });
+
+  it('only the candidate who will be DM is kept out of the referee draw; other candidates can still referee', () => {
+    const a = setup(3, undefined, { scripts: lib() });
+    const { summary } = a.manager.createGame(bot(1), { type: 'jubensha', groupId: '9000', options: { host: '106,105' }, joinAs: 'player', selfPost: false });
+    for (const n of [2, 3, 4]) a.manager.joinGame(bot(n), summary.game_id, { as: 'player', selfPost: false });
+    a.manager.joinGame(bot(5), summary.game_id, { as: 'either', selfPost: false });
+    a.manager.joinGame(bot(6), summary.game_id, { as: 'either', selfPost: false });
+    a.manager.startGame(bot(1), summary.game_id);
+    const rec = a.manager.getRecord(summary.game_id);
+    // 106 是第一个候选、会当 DM，不能被抽走；105 也是候选，但只能由它来当裁判
+    expect(rec.referee?.id).toBe('105');
+    expect(rec.players.find((p) => p.seat === rec.state.host)?.id).toBe('106');
+  });
+
+  it('the DM-to-be is not drawn as referee', () => {
+    const a = setup(2, undefined, { scripts: lib() });
+    const { summary } = a.manager.createGame(bot(4), { type: 'jubensha', groupId: '9000', options: { host: '105,104' }, joinAs: 'either', selfPost: false });
+    for (const n of [1, 2, 3]) a.manager.joinGame(bot(n), summary.game_id, { as: 'player', selfPost: false });
+    a.manager.joinGame(bot(5), summary.game_id, { as: 'either', selfPost: false });
+    a.manager.joinGame(REF, summary.game_id, { as: 'referee' });
+    a.manager.startGame(bot(4), summary.game_id);
+    const rec = a.manager.getRecord(summary.game_id);
+    expect(rec.referee?.id).toBe(REF.id);
+    expect(rec.players.find((p) => p.seat === rec.state.host)?.id).toBe('105');
+    expect(rec.players.some((p) => p.id === '104')).toBe(true);
+  });
+
   it('a host who did not sign up just means the program hosts', () => {
     const g = game({ options: { host: '777' } });
     expect(g.rec.state.host).toBe(0);
@@ -172,6 +209,8 @@ describe('jubensha: flow with a DM', () => {
     expect(g.rec.result?.winnerTeam).toBe('侦破方');
     expect(g.rec.result?.winnerSeats).not.toContain(lin);
     expect(g.rec.result?.winnerSeats).not.toContain(5);
+    expect(g.view(1).game_over).toBe(true);
+    expect(g.view(5).game_over).toBe(true);
     const texts = g.rec.log.map((e) => e.text).join('\n');
     expect(texts).toContain('秦老先生在库房找回了《雨窗集》');
     expect(texts).toContain('📜 真相');
@@ -229,6 +268,27 @@ describe('jubensha: free discussion', () => {
     g.act(3, { action: 'end_speech' });
     expect(g.key()).toBe('discuss');
     g.act(4, { action: 'end_speech' });
+    expect(g.key()).toBe('read');
+  });
+
+  it('an AI line ending in a standalone 「过」 is recorded and counts as passing', () => {
+    const g = game();
+    g.drive({}, () => g.key() === 'discuss');
+    const msg = g.act(1, { action: 'speech', text: '我七点在前厅，没别的了。过' });
+    expect(msg.message).toContain('结束');
+    const said = g.rec.log.find((e) => e.text.includes('没别的了'));
+    expect(said?.text).not.toMatch(/过\s*$/);
+    expect(pendingSeats(g.rec).sort()).toEqual([2, 3, 4]);
+    // 已经过了，不能再说
+    g.act(2, { action: 'speech', text: '我在里间。' });
+    expect(pendingSeats(g.rec)).not.toContain(1);
+    expect(() => g.act(1, { action: 'speech', text: '再补一句' })).toThrow();
+    // 句子里的「过」不算
+    g.act(3, { action: 'speech', text: '我没去过库房' });
+    expect(pendingSeats(g.rec)).toContain(2);
+    g.act(2, { action: 'end_speech' });
+    g.act(3, { action: 'end_speech' });
+    g.act(4, { action: 'speech', text: '同意，过' });
     expect(g.key()).toBe('read');
   });
 

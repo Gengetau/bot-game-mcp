@@ -79,6 +79,9 @@ describe('undercover: setup', () => {
     }
     const words = all.flat();
     for (const p of GENERIC_PHRASES) for (const w of words) expect(p.includes(w)).toBe(false);
+    // 程序自己的公告（开局座位表、裁判说明、结束公告）里常见的词不能当词语，否则看起来像泄露、也会误导玩家
+    const SYSTEM = '🎲【谁是卧底】对局开始！本局裁判（AI，由程序抽签产生，只负责推进流程，不参与游戏、不决定任何结果）座位表（程序随机分配）🏁 游戏结束！获胜方 原因 获胜玩家 身份揭晓 投票 发言 出局';
+    for (const w of words) expect(SYSTEM.includes(w), w).toBe(false);
   });
 
   it('assigns the right number of undercovers by player count', () => {

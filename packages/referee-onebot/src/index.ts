@@ -73,6 +73,12 @@ export interface RefereeOptions {
   nightMute?: boolean;
   /** 夜晚开始后多久才开始管（毫秒，默认 15000）：给 bot 回完白天最后一句话留出时间 */
   quietGraceMs?: number;
+  /**
+   * 旁观禁言（默认开）：本进程主持的对局进行中，没参加本局的人（bot 和真人都算）在群里说话，
+   * 就撤回并禁言到对局结束（结束时解除）。管理员（--admins）、以指令前缀开头的消息和本进程自己的账号不管。
+   * 同样需要裁判账号是群管理员；QQ 群主和群管理员禁言不了，只撤回并提醒。
+   */
+  spectatorMute?: boolean;
   /** 额外的嗓子账号：报名了的会进裁判抽签池，抽中就用它发消息 */
   voices?: VoiceSpec[];
   /** 本进程的标识（引擎用它区分「代行进程」和「账号自己的模型」），默认主机名。重启后要保持不变 */
@@ -428,6 +434,10 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
   const quietGrace = opts.quietGraceMs ?? 15_000;
   /** 夜间禁言：现在不该说话的人、从什么时候开始管、已禁言的、这一夜已提醒过的 */
   const quiet = { ids: new Set<string>(), activeAt: Infinity, muted: new Set<string>(), warned: new Set<string>() };
+  const spectatorMute = opts.spectatorMute ?? true;
+  /** 旁观 bot 禁言：本局参与者、已禁言的（QQ 号 → 禁言时间，禁言一小时后再说话会再禁）、已提醒过的 */
+  const spect = { ids: new Set<string>(), muted: new Map<string, number>(), warned: new Set<string>() };
+  const SPECT_BAN_S = 3600;
   const hostId = (opts.hostId ?? hostname()).trim().slice(0, 100) || 'referee';
   const follower = opts.follower ?? false;
   const selfInPool = follower ? false : (opts.selfInPool ?? true);
@@ -1101,6 +1111,23 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
       return;
     }
     const cq = segmentsToCq(ev.message ?? ev.raw_message ?? '');
+    if (
+      spectatorMute &&
+      ev.message_type === 'group' &&
+      String(ev.group_id) === opts.groupId &&
+      st.active &&
+      spect.ids.size > 0 &&
+      !admins.has(uid) &&
+      !spect.ids.has(uid) &&
+      !myIds().has(uid) &&
+      !cqToPlain(cq).startsWith(prefix)
+    ) {
+      if (dedupe(`${ev.group_id}:${ev.message_id ?? `${uid}:${Date.now()}`}`)) return;
+      const via = st.active;
+      const job = () => punishSpectator(via, uid, nick, ev.message_id);
+      inbound = inbound.then(job, job).catch((e) => log(`[referee] 旁观禁言失败：${errMsg(e)}`));
+      return;
+    }
     if (ev.message_type === 'private' && undelivered.has(uid)) flushUndelivered(uid);
     let job: () => Promise<void>;
     const keyBody = keyIssuer && ev.message_type === 'private' && v.id === keyIssuer && !myIds().has(uid) ? stripPrefix(cqToPlain(cq)) : null;
@@ -1163,6 +1190,61 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
         },
       },
     ]);
+  }
+
+  /** 没参加本局的人在群里插话：撤回 + 禁言到对局结束（禁不了就提醒一次）。 */
+  async function punishSpectator(v: Voice, uid: string, nick: string, messageId: unknown): Promise<void> {
+    if (spect.ids.size === 0 || spect.ids.has(uid)) return;
+    let recalled = false;
+    if (messageId !== undefined && messageId !== null) {
+      try {
+        await v.onebot.call('delete_msg', { message_id: messageId });
+        recalled = true;
+      } catch (e) {
+        log(`[referee] 撤回旁观者 ${uid} 的消息失败：${errMsg(e)}`);
+      }
+    }
+    const since = spect.muted.get(uid);
+    if (since !== undefined && Date.now() - since < (SPECT_BAN_S - 60) * 1000) return;
+    let banned = false;
+    try {
+      await v.onebot.call('set_group_ban', { group_id: Number(opts.groupId), user_id: Number(uid), duration: SPECT_BAN_S });
+      spect.muted.set(uid, Date.now());
+      banned = true;
+    } catch (e) {
+      log(`[referee] 禁言旁观者 ${uid} 失败：${errMsg(e)}`);
+    }
+    log(`[referee] 没参加本局的 ${nick}(${uid}) 在群里说话：${recalled ? '已撤回' : '未撤回'}，${banned ? '已禁言' : '未禁言'}`);
+    if (quiet.warned.has(uid) || spect.warned.has(uid)) return;
+    spect.warned.add(uid);
+    const name = sanitizeNick(nick);
+    await sendGroupAs(v, [
+      {
+        type: 'text',
+        data: {
+          text: banned
+            ? `🔇 ${name} 没有参加本局，对局中请不要插话${recalled ? '（消息已撤回）' : ''}，禁言到本局结束。`
+            : `⚠️ ${name} 没有参加本局，对局中请不要插话${recalled ? '（消息已撤回）' : ''}。`,
+        },
+      },
+    ]);
+  }
+
+  /** 按引擎给的 participant_ids 更新本局参与者；对局结束（空名单）时解除所有旁观禁言。 */
+  async function updateSpectators(v: Voice | null, ids: unknown): Promise<void> {
+    const next = new Set(Array.isArray(ids) ? ids.map(String) : []);
+    spect.ids = next;
+    if (next.size === 0) spect.warned.clear();
+    for (const uid of [...spect.muted.keys()]) {
+      if (next.size > 0 && !next.has(uid)) continue; // 还在进行、仍是旁观者：保持禁言
+      spect.muted.delete(uid);
+      if (!v) continue;
+      try {
+        await v.onebot.call('set_group_ban', { group_id: Number(opts.groupId), user_id: Number(uid), duration: 0 });
+      } catch (e) {
+        log(`[referee] 解除 ${uid} 的禁言失败：${errMsg(e)}`);
+      }
+    }
   }
 
   /** 按引擎给的 quiet_ids 更新夜间禁言名单；不在名单里的解除禁言。 */
@@ -1255,6 +1337,7 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
         if (r.hosted) {
           // 引擎认为代行者不是我（比如 host_id 变了）：退回旁观
           log(`[referee] 引擎不接受本进程代行（${r.next_call_hint ?? ''}）`);
+          await updateSpectators(active, []);
           st.active = null;
           await idle(5000);
           continue;
@@ -1271,6 +1354,7 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
           }
         }
         if (nightMute) await updateQuiet(active, r.finished ? [] : r.quiet_ids);
+        if (spectatorMute) await updateSpectators(active, r.finished ? [] : r.participant_ids);
         for (const d of r.deliveries ?? []) {
           if (typeof d.seq === 'number' && d.seq <= st.lastSeq) continue;
           if (typeof d.seq === 'number') st.lastSeq = d.seq;
