@@ -133,6 +133,8 @@ export interface RefereeStepResult {
   hosted?: true;
   /** 现在不该在群里说话的 AI 玩家 QQ 号（秘密阶段，例如狼人杀的夜晚；出局的不算）。代码裁判据此撤回并禁言。 */
   quiet_ids?: string[];
+  /** 进行中的对局里的所有玩家（含出局的）和裁判的 QQ 号。代码裁判据此管住没参加本局、却在群里插话的 bot。 */
+  participant_ids?: string[];
 }
 
 export interface RelayResult {
@@ -1275,6 +1277,7 @@ export class GameManager {
       next_call_hint: hint,
       finished,
       quiet_ids: this.quietIds(rec),
+      participant_ids: rec.status === 'running' ? [...rec.players.map((p) => p.id), ...(rec.referee ? [rec.referee.id] : [])] : [],
     };
   }
 

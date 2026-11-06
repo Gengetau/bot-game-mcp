@@ -13,7 +13,7 @@ import { BaseGame } from '../../core/game.js';
 import { commonOptionShape, commonOptionsHelp, secondsOption } from '../../core/options.js';
 import type { GameDefinition } from '../../core/registry.js';
 import { shuffle } from '../../core/rng.js';
-import { cleanSpeech, isEndSpeech, isSkipWord, normalizeText, resolveSeat, stripTrailing } from '../../core/text.js';
+import { cleanSpeech, isEndSpeech, isSkipWord, normalizeText, resolveSeat, splitTrailingEnd, stripTrailing } from '../../core/text.js';
 import type { ActionInput, ActionMeta, ActionSpec, PendingRequest, Seat } from '../../core/types.js';
 import type { AssetStore } from '../../core/assets.js';
 import { packAssets, type ScriptLibrary, type ScriptPack } from './pack.js';
@@ -26,7 +26,7 @@ const optionsSchema = z.object({
   /** 剧本编号；剧本库里只有一个剧本时可以不填 */
   script: z.string().trim().max(32).default(''),
   /** DM 的 QQ 号或昵称；不填或此人没报名则由程序主持 */
-  host: z.string().trim().max(64).default(''),
+  host: z.string().trim().max(300).default(''),
   /** 指定选角：QQ 号 → 角色 key；没指定的随机分配 */
   cast: z.record(z.string(), z.string()).default({}),
   intro_timeout_s: secondsOption(120),
@@ -78,6 +78,20 @@ const MAX_CHUNK = 1500;
 const CANNED = ['我先听听大家怎么说。', '我那段时间的行踪可以说清楚。', '这里面有个时间对不上。', '我想问问几位当时在哪。', '我没有更多要补充的了。'];
 
 /** 按段落把长文切成不超过 max 字的几段（尽量不在句子中间切开）。 */
+/** 选项 host 里的 DM 候选（逗号/空格分隔，按优先级排列）。 */
+export function hostCandidates(host: string): string[] {
+  return host.split(/[,，、\s]+/u).map((x) => x.trim()).filter(Boolean);
+}
+
+/** 按候选顺序找第一个在场的人。 */
+function pickHost<T extends { id: string; name: string }>(host: string, list: readonly T[]): T | undefined {
+  for (const c of hostCandidates(host)) {
+    const hit = list.find((p) => p.id === c || p.name === c);
+    if (hit) return hit;
+  }
+  return undefined;
+}
+
 export function chunkText(text: string, max = MAX_CHUNK): string[] {
   const out: string[] = [];
   let cur = '';
@@ -106,7 +120,7 @@ export function chunkText(text: string, max = MAX_CHUNK): string[] {
 
 const RULES = `## 剧本杀
 
-剧本来自私有数据包（开房选项 \`script\`）。程序负责选角、按幕私发剧本、计时、计票和公布真相；可以另请一位玩家担任 **DM**（选项 \`host\`），DM 不扮演角色，负责串场、回答提问、掌握节奏，但**不能改变任何结果**。
+剧本来自私有数据包（开房选项 \`script\`）。程序负责选角、按幕私发剧本、计时、计票和公布真相；可以另请一位玩家担任 **DM**（选项 \`host\`，可写多个候选，取第一个报名的），DM 不扮演角色，负责串场、回答提问、掌握节奏，但**不能改变任何结果**。
 
 **流程**
 1. 开局：程序公布角色表（每人的公开介绍），私发每人的人物剧本；有开场念白的在群里播报。
@@ -214,8 +228,8 @@ export function createJubenshaDefinition(library: ScriptLibrary, assets?: AssetS
       const resolved = resolvePack(o);
       if (typeof resolved === 'string') throw invalidState(resolved);
       const pack = resolved;
-      const hostP = o.host ? this.players.find((p) => p.id === o.host || p.name === o.host) : undefined;
-      const host = hostP && this.players.length === pack.players + 1 ? hostP.seat : 0;
+      const hostP = this.players.length === pack.players + 1 ? pickHost(o.host, this.players) : undefined;
+      const host = hostP ? hostP.seat : 0;
       const seats = this.allSeats().filter((s) => s !== host);
 
       // 选角：先按 cast 指定，其余随机
@@ -541,7 +555,16 @@ export function createJubenshaDefinition(library: ScriptLibrary, assets?: AssetS
       if (meta.via === 'agent' && d.last === seat) {
         throw invalidAction('你刚刚说过，等别人接话后再说；没有要说的就 end_speech（过）。');
       }
-      const text = cleanSpeech(String(input.text ?? ''));
+      let text = cleanSpeech(String(input.text ?? ''));
+      // AI 常把「过」写在发言末尾而不调用 end_speech：记下发言，再按「过」处理（真人由 manager 拆分）
+      let endAfter = false;
+      if (meta.via === 'agent') {
+        const sp = splitTrailingEnd(text);
+        if (sp.end && sp.body) {
+          text = sp.body;
+          endAfter = true;
+        }
+      }
       if (!text) throw invalidAction('发言不能为空。');
       this.recordSpeech(seat, text);
       d.counts[String(seat)] = used + 1;
@@ -551,6 +574,10 @@ export function createJubenshaDefinition(library: ScriptLibrary, assets?: AssetS
       for (const r of Object.values(ph.pending)) {
         if (r.seat === seat || d.passed.includes(r.seat) || (d.counts[String(r.seat)] ?? 0) >= max) continue;
         r.done = false;
+      }
+      if (endAfter) {
+        d.passed.push(seat);
+        return '已记录，并结束了你本幕的发言。';
       }
       const left = max - used - 1;
       return left > 0 ? `已记录（本幕还能说 ${left} 条）。` : '已记录（本幕发言次数已用完）。';
@@ -785,7 +812,7 @@ export function createJubenshaDefinition(library: ScriptLibrary, assets?: AssetS
     optionsHelp: {
       ...commonOptionsHelp,
       script: '剧本编号（剧本库里只有一个剧本时可以不填）',
-      host: 'DM 的 QQ 号或昵称。此人报名后不扮演角色、负责主持答疑（报名人数要比剧本人数多 1）；不填或没报名则由程序主持',
+      host: 'DM 的 QQ 号或昵称；可以用逗号分隔写多个候选，按顺序取第一个报了名的当 DM，其余候选照常当玩家。DM 不扮演角色、负责主持答疑（报名人数要比剧本人数多 1）；不填、没人报名或人数不是剧本人数 +1 时由程序主持',
       cast: '指定选角 {"QQ号":"角色key"}；没指定的随机分配',
       intro_timeout_s: '自我介绍每人限时（秒，默认 120）',
       read_timeout_s: '每幕阅读限时（秒，默认 120）',
@@ -795,15 +822,15 @@ export function createJubenshaDefinition(library: ScriptLibrary, assets?: AssetS
       confess_timeout_s: '凶手坦白限时（秒，默认 180）',
       ask_limit: '每人每幕最多私下问 DM 几次（默认 3）',
     },
-    mustPlay: (o) => (o.host ? [o.host] : []),
+    mustPlay: (o) => hostCandidates(o.host),
     checkStart(n, o, entries) {
       const pack = resolvePack(o);
       if (typeof pack === 'string') return pack;
-      const hostEntry = o.host ? entries?.find((e) => e.id === o.host || e.name === o.host) : undefined;
+      const hostEntry = entries ? pickHost(o.host, entries) : undefined;
       if (hostEntry && n === pack.players + 1) {
         // 有 DM
       } else if (n !== pack.players) {
-        return `《${pack.title}》需要 ${pack.players} 名玩家${o.host ? `（另加 DM ${hostEntry ? hostEntry.name : o.host} 共 ${pack.players + 1} 人）` : ''}，当前报名 ${n} 人。`;
+        return `《${pack.title}》需要 ${pack.players} 名玩家${o.host ? `（另加 DM ${hostEntry ? hostEntry.name : hostCandidates(o.host).join('/')} 共 ${pack.players + 1} 人）` : ''}，当前报名 ${n} 人。`;
       }
       const keys = new Set(pack.roles.map((r) => r.key));
       const used = new Set<string>();
