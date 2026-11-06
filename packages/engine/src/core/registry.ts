@@ -27,8 +27,8 @@ export interface GameDefinition<O = any> {
   /** 选项说明：字段名 → 中文说明 */
   optionsHelp: Record<string, string>;
   /** 开局前根据人数与选项（以及报名的玩家，不含裁判）做额外校验，返回错误信息或 null */
-  /** 开局时必须上场、不能被抽去当裁判的报名者（QQ 号或昵称），例如剧本杀指定的 DM。 */
-  mustPlay?(options: O): string[];
+  /** 开局时必须上场、不能被抽去当裁判的报名者（QQ 号或昵称），例如剧本杀指定的 DM。lobby 为当前报名名单。 */
+  mustPlay?(options: O, lobby: readonly { id: string; name: string }[]): string[];
   checkStart?(playerCount: number, options: O, entries?: { id: string; name: string; kind: 'agent' | 'human' }[]): string | null;
   create(rec: GameRecord<any, O>, env: GameEnv): BaseGame<any, O>;
 }

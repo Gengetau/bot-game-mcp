@@ -822,7 +822,11 @@ export function createJubenshaDefinition(library: ScriptLibrary, assets?: AssetS
       confess_timeout_s: '凶手坦白限时（秒，默认 180）',
       ask_limit: '每人每幕最多私下问 DM 几次（默认 3）',
     },
-    mustPlay: (o) => hostCandidates(o.host),
+    // 只保护真正会当 DM 的那位（报了名的第一个候选），其他候选照常可以被抽去当裁判
+    mustPlay: (o, lobby) => {
+      const h = pickHost(o.host, lobby);
+      return h ? [h.id] : [];
+    },
     checkStart(n, o, entries) {
       const pack = resolvePack(o);
       if (typeof pack === 'string') return pack;

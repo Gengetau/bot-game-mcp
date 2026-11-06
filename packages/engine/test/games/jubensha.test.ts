@@ -136,7 +136,20 @@ describe('jubensha: start checks', () => {
     expect(Object.keys(h.rec.state.cast)).toHaveLength(4);
   });
 
-  it('no DM candidate is drawn as referee', () => {
+  it('only the candidate who will be DM is kept out of the referee draw; other candidates can still referee', () => {
+    const a = setup(3, undefined, { scripts: lib() });
+    const { summary } = a.manager.createGame(bot(1), { type: 'jubensha', groupId: '9000', options: { host: '106,105' }, joinAs: 'player', selfPost: false });
+    for (const n of [2, 3, 4]) a.manager.joinGame(bot(n), summary.game_id, { as: 'player', selfPost: false });
+    a.manager.joinGame(bot(5), summary.game_id, { as: 'either', selfPost: false });
+    a.manager.joinGame(bot(6), summary.game_id, { as: 'either', selfPost: false });
+    a.manager.startGame(bot(1), summary.game_id);
+    const rec = a.manager.getRecord(summary.game_id);
+    // 106 是第一个候选、会当 DM，不能被抽走；105 也是候选，但只能由它来当裁判
+    expect(rec.referee?.id).toBe('105');
+    expect(rec.players.find((p) => p.seat === rec.state.host)?.id).toBe('106');
+  });
+
+  it('the DM-to-be is not drawn as referee', () => {
     const a = setup(2, undefined, { scripts: lib() });
     const { summary } = a.manager.createGame(bot(4), { type: 'jubensha', groupId: '9000', options: { host: '105,104' }, joinAs: 'either', selfPost: false });
     for (const n of [1, 2, 3]) a.manager.joinGame(bot(n), summary.game_id, { as: 'player', selfPost: false });

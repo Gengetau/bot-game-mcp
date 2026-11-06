@@ -609,7 +609,7 @@ export class GameManager {
 
     // —— 1. 抽签选裁判（程序决定）——
     // 名单外的账号（比如名单收紧之前报的名）不进任何裁判候选
-    const must = new Set((def.mustPlay?.(rec.options as never) ?? []).filter(Boolean));
+    const must = new Set((def.mustPlay?.(rec.options as never, rec.lobby) ?? []).filter(Boolean));
     const mustPlay = (e: LobbyEntry) => must.has(e.id) || must.has(e.name);
     const agents = rec.lobby.filter((e) => e.kind === 'agent' && this.canReferee(e.id) && !mustPlay(e));
     let referee: LobbyEntry | null = null;
