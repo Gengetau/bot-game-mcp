@@ -1092,7 +1092,7 @@ export class WerewolfGame extends BaseGame<WerewolfState, WerewolfOptions> {
     const alive = this.aliveSeats();
     if (alive.length === 0) return false;
     const secs = this.options.badge_timeout_s;
-    this.announce(`👮 警长 ${this.at(seat)} 出局，请在 ${secs} 秒内移交警徽：发「警徽给3」，或发「撕警徽」。`);
+    this.announce(`👮 警长 ${this.at(seat)} 出局，请在 ${secs} 秒内移交警徽：发「${this.exampleCmd('警徽给3', alive)}」，或发「撕警徽」。`);
     this.openPhase({
       key: 'badge',
       title: `第${this.rec.round}天·移交警徽`,
@@ -1136,7 +1136,7 @@ export class WerewolfGame extends BaseGame<WerewolfState, WerewolfOptions> {
   private openHunter(seat: Seat): boolean {
     const alive = this.aliveSeats();
     this.announce(
-      `🔫 ${this.label(seat)} 是猎人！请在 ${this.options.hunter_timeout_s} 秒内在群里发「开枪3」带走 3号，或发「不开枪」放弃。`,
+      `🔫 ${this.label(seat)} 是猎人！请在 ${this.options.hunter_timeout_s} 秒内在群里发「${this.exampleCmd('开枪3', alive)}」带走 ${this.exampleCmd('3号', alive)}，或发「不开枪」放弃。`,
     );
     this.openPhase({
       key: 'hunter',
@@ -1194,8 +1194,8 @@ export class WerewolfGame extends BaseGame<WerewolfState, WerewolfOptions> {
     const secs = this.options.vote_timeout_s;
     this.announce(
       pk
-        ? `🗳️ PK 投票开始！请非平票玩家在 ${secs} 秒内投给 ${this.seatList(tied)} 之一，或弃票（群里发「投3」，也可私聊裁判）。`
-        : `🗳️ 投票开始！请所有存活玩家在 ${secs} 秒内投票（群里发「投3」「弃票」，也可私聊裁判）。所有票数将在结束后统一公布。\n存活：${this.seatList(alive)}`,
+        ? `🗳️ PK 投票开始！请非平票玩家在 ${secs} 秒内投给 ${this.seatList(tied)} 之一，或弃票（群里发「${this.exampleCmd('投3', tied)}」，也可私聊裁判）。`
+        : `🗳️ 投票开始！请所有存活玩家在 ${secs} 秒内投票（群里发「${this.exampleCmd('投3', alive)}」「弃票」，也可私聊裁判）。所有票数将在结束后统一公布。\n存活：${this.seatList(alive)}`,
     );
     this.openPhase({
       key: pk ? 'pk_vote' : 'vote',

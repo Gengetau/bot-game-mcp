@@ -165,6 +165,22 @@ describe('night', () => {
     expect(g2.alive(target)).toBe(false);
   });
 
+  it('command examples only name seats that can be picked', () => {
+    // 先把 3 号放逐，再让狼刀猎人：猎人提示里的「开枪N」不能举例举到已出局的 3 号
+    let g = make({ werewolf: 2, hunter: 1, witch: 1, villager: 2 }, { witch_self_save: 'never' });
+    for (let seed = 2; g.roleOf(3) !== 'villager'; seed++) g = make({ werewolf: 2, hunter: 1, witch: 1, villager: 2 }, { witch_self_save: 'never' }, seed);
+    const h = g.seatsOf('hunter')[0]!;
+    const out = 3;
+    g.drive({ vote: (s) => (s === out ? { action: 'skip' } : { action: 'vote', target: out }) }, () => g.rec.round === 2 && g.key() === 'night');
+    expect(g.alive(out)).toBe(false);
+    g.drive({ night: (s) => (g.roleOf(s) === 'werewolf' ? { action: 'kill', target: h } : { action: 'skip' }) }, () => g.key() === 'hunter');
+    const ann = g.rec.log.filter((e) => e.text.includes('是猎人')).pop()!.text;
+    const n = Number(ann.match(/「开枪(\d+)」/)![1]);
+    expect(g.alive(n)).toBe(true);
+    const req = g.rec.phase!.pending[String(h)]!;
+    expect(req.actions.find((a) => a.action === 'shoot')!.command).toBe(`开枪${n}`);
+  });
+
   it('witch self-save rules', () => {
     const run = (rule: string, secondNight: boolean) => {
       const g = make({ werewolf: 2, witch: 1, seer: 1, villager: 2 }, { witch_self_save: rule });
