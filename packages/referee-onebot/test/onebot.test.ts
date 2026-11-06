@@ -284,7 +284,7 @@ describe('OneBot referee against the real engine', () => {
     await new Promise((res) => setTimeout(res, 300));
   }, 60_000);
 
-  it('mutes a known bot that is not in the running game when it talks in the group, and lifts it when the game ends', async () => {
+  it('mutes anyone not in the running game (bots and humans, admins exempt) who talks in the group, and lifts it when the game ends', async () => {
     const humans = ['63001', '63002'];
     let mark = qq.calls.length;
     groupMsg(OWNER, '主人', text('/桌游 数字炸弹 min=0 max=100 mode=single'));
@@ -297,9 +297,9 @@ describe('OneBot referee against the real engine', () => {
     groupMsg(OWNER, '主人', text('/桌游 开局'));
     await qq.waitForCall((c) => groupSend(c) && callText(c).includes('数字炸弹开始'), 10_000, mark);
     await new Promise((res) => setTimeout(res, 600));
-    // 对局中：真人观众说话不管，指令不管；没参加的 bot 插话：撤回 + 禁言 + 提醒一次
+    // 对局中：管理员说话不管，指令不管；没参加的 bot 插话：撤回 + 禁言 + 提醒一次
     mark = qq.calls.length;
-    groupMsg(OTHER, '路人', text('加油'));
+    groupMsg(OWNER, '主人', text('加油'));
     groupMsg(AI_ID, '克蕾雅', text('/桌游 状态'));
     groupMsg(AI_ID, '克蕾雅', text('我觉得是 50'));
     const mid = msgSeq;
@@ -317,11 +317,20 @@ describe('OneBot referee against the real engine', () => {
     expect(after.filter((c) => c.action === 'delete_msg')).toHaveLength(2);
     expect(after.filter((c) => c.action === 'set_group_ban')).toHaveLength(1);
     expect(after.filter((c) => groupSend(c) && callText(c).includes('没有参加本局'))).toHaveLength(1);
+    // 没参加的真人观众也一样
+    mark = qq.calls.length;
+    groupMsg(OTHER, '路人', text('我猜 30'));
+    const hban = await qq.waitForCall((c) => c.action === 'set_group_ban' && String(c.params.user_id) === OTHER, 10_000, mark);
+    expect(Number(hban.params.duration)).toBeGreaterThan(0);
+    // 本局的真人玩家说话不管
+    groupMsg(humans[0]!, '玩家1', text('好紧张'));
+    await new Promise((res) => setTimeout(res, 300));
+    expect(qq.calls.slice(mark).some((c) => c.action === 'set_group_ban' && String(c.params.user_id) === humans[0])).toBe(false);
     // 结束（中止）后解除
     mark = qq.calls.length;
     groupMsg(OWNER, '主人', text('/桌游 中止'));
-    const unban = await qq.waitForCall((c) => c.action === 'set_group_ban' && Number(c.params.duration) === 0, 15_000, mark);
-    expect(String(unban.params.user_id)).toBe(AI_ID);
+    await qq.waitForCall((c) => c.action === 'set_group_ban' && Number(c.params.duration) === 0 && String(c.params.user_id) === AI_ID, 15_000, mark);
+    await qq.waitForCall((c) => c.action === 'set_group_ban' && Number(c.params.duration) === 0 && String(c.params.user_id) === OTHER, 15_000, mark);
     await new Promise((res) => setTimeout(res, 300));
   }, 40_000);
 

@@ -74,8 +74,9 @@ export interface RefereeOptions {
   /** 夜晚开始后多久才开始管（毫秒，默认 15000）：给 bot 回完白天最后一句话留出时间 */
   quietGraceMs?: number;
   /**
-   * 旁观 bot 禁言（默认开）：本进程主持的对局进行中，已知的 bot 账号（--bots 和已发放密钥的）没参加本局却在群里说话，
-   * 就撤回并禁言到对局结束（结束时解除）。以指令前缀开头的消息和本进程自己的账号不管。同样需要裁判账号是群管理员。
+   * 旁观禁言（默认开）：本进程主持的对局进行中，没参加本局的人（bot 和真人都算）在群里说话，
+   * 就撤回并禁言到对局结束（结束时解除）。管理员（--admins）、以指令前缀开头的消息和本进程自己的账号不管。
+   * 同样需要裁判账号是群管理员；QQ 群主和群管理员禁言不了，只撤回并提醒。
    */
   spectatorMute?: boolean;
   /** 额外的嗓子账号：报名了的会进裁判抽签池，抽中就用它发消息 */
@@ -1116,7 +1117,7 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
       String(ev.group_id) === opts.groupId &&
       st.active &&
       spect.ids.size > 0 &&
-      bots.has(uid) &&
+      !admins.has(uid) &&
       !spect.ids.has(uid) &&
       !myIds().has(uid) &&
       !cqToPlain(cq).startsWith(prefix)
@@ -1191,7 +1192,7 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
     ]);
   }
 
-  /** 没参加本局的 bot 在群里插话：撤回 + 禁言到对局结束（禁不了就提醒一次）。 */
+  /** 没参加本局的人在群里插话：撤回 + 禁言到对局结束（禁不了就提醒一次）。 */
   async function punishSpectator(v: Voice, uid: string, nick: string, messageId: unknown): Promise<void> {
     if (spect.ids.size === 0 || spect.ids.has(uid)) return;
     let recalled = false;
@@ -1200,7 +1201,7 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
         await v.onebot.call('delete_msg', { message_id: messageId });
         recalled = true;
       } catch (e) {
-        log(`[referee] 撤回旁观 bot ${uid} 的消息失败：${errMsg(e)}`);
+        log(`[referee] 撤回旁观者 ${uid} 的消息失败：${errMsg(e)}`);
       }
     }
     const since = spect.muted.get(uid);
@@ -1211,9 +1212,9 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
       spect.muted.set(uid, Date.now());
       banned = true;
     } catch (e) {
-      log(`[referee] 禁言旁观 bot ${uid} 失败：${errMsg(e)}`);
+      log(`[referee] 禁言旁观者 ${uid} 失败：${errMsg(e)}`);
     }
-    log(`[referee] 没参加本局的 bot ${nick}(${uid}) 在群里说话：${recalled ? '已撤回' : '未撤回'}，${banned ? '已禁言' : '未禁言'}`);
+    log(`[referee] 没参加本局的 ${nick}(${uid}) 在群里说话：${recalled ? '已撤回' : '未撤回'}，${banned ? '已禁言' : '未禁言'}`);
     if (quiet.warned.has(uid) || spect.warned.has(uid)) return;
     spect.warned.add(uid);
     const name = sanitizeNick(nick);

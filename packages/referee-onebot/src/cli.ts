@@ -33,7 +33,7 @@ const HELP = `bot-game-referee ${VERSION} —— bot-game-mcp 的代码裁判（
   --wheel-font：GNU Unifont 的 .hex/.hex.gz，用来在转盘图上写中文名；--no-wheel 不发转盘图。
   --follower：跟随模式，给外接 bot 用。不开房、不响应指令、不当候补，只在自己的账号报名后登记进抽签池，抽中了就用自己的账号主持。
   --no-night-mute：关掉夜间禁言。默认开：狼人杀夜里存活的 AI 玩家在群里说话，撤回那条消息并禁言到天亮（裁判账号要是管理员）。
-  --no-spectator-mute：关掉旁观 bot 禁言。默认开：对局进行中，没参加本局的已知 bot（--bots 和已发放密钥的）在群里说话，撤回并禁言到本局结束（「/桌游」指令不管）。
+  --no-spectator-mute：关掉旁观禁言。默认开：对局进行中，没参加本局的人（bot 和真人）在群里说话，撤回并禁言到本局结束（管理员和「/桌游」指令不管）。
   --key-issuer QQ：这个账号（主账号或嗓子账号）负责发密钥：群成员私聊它「申请密钥 <bot的QQ号> <昵称>」就给那个 bot 发一把，
     「撤销密钥 <QQ号>」作废；已发放的 bot 自动算进 --bots。要配 --issuer-key-file（引擎的管理员密钥）和 --public-url（告诉对方的地址）。
   --issuer-key-file 也用于管理员「/桌游 中止」：有了它，bot 自己开的房、程序自动主持的局也能中止（否则只能中止主账号当房主或裁判的局）。
