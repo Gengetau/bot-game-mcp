@@ -20,8 +20,8 @@ export interface ServerDeps {
   log?: (msg: string) => void;
 }
 
-/** 成功时不记的高频工具（代码裁判每几十秒一次的长轮询）；失败照记 */
-const QUIET_TOOLS = new Set(['referee_step']);
+/** 成功时不记的高频工具：代码裁判的长轮询，以及它每几秒一次的保活（whoami）和刷新（list_games）；失败照记 */
+const QUIET_TOOLS = new Set(['referee_step', 'whoami', 'list_games']);
 
 const MAX_WAIT_SECONDS = 50;
 
