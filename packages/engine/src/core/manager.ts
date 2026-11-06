@@ -1011,6 +1011,8 @@ export class GameManager {
       game: { ...header, phase: this.phaseHeader(rec, inst) },
       players,
       public: inst.publicView(),
+      // 和 act 的返回一致：对局结束或中止时明确给出 game_over，接入端据此退出游戏状态
+      ...(rec.status === 'ended' || rec.status === 'aborted' ? { game_over: true } : {}),
       ...(rec.result ? { result: rec.result } : {}),
       ...(rec.status === 'aborted' ? { aborted: rec.abortReason ?? true } : {}),
     };

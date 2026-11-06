@@ -196,6 +196,8 @@ describe('jubensha: flow with a DM', () => {
     expect(g.rec.result?.winnerTeam).toBe('侦破方');
     expect(g.rec.result?.winnerSeats).not.toContain(lin);
     expect(g.rec.result?.winnerSeats).not.toContain(5);
+    expect(g.view(1).game_over).toBe(true);
+    expect(g.view(5).game_over).toBe(true);
     const texts = g.rec.log.map((e) => e.text).join('\n');
     expect(texts).toContain('秦老先生在库房找回了《雨窗集》');
     expect(texts).toContain('📜 真相');
