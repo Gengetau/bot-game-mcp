@@ -211,7 +211,7 @@ describe('night', () => {
     g.drive({ night: (s) => (g.roleOf(s) === 'werewolf' ? { action: 'kill', target: v1! } : { action: 'skip' }) }, () => g.key() === 'witch');
     g.act(w, { action: 'save' });
     g.drive({ night: (s) => (g.roleOf(s) === 'werewolf' ? { action: 'kill', target: v2! } : { action: 'skip' }) }, () => g.key() === 'witch' && g.rec.round === 2);
-    expect(g.rec.phase!.pending[String(w)]!.prompt).toContain(`${v2}号 被狼人袭击`);
+    expect(g.rec.phase!.pending[String(w)]!.prompt).toMatch(new RegExp(`今晚 ${v2}号 \\S+ 被狼人袭击`));
     expect((g.manager.getView(identityOf(g.rec, w), g.gameId) as any).you.tonight_victim).toBe(v2);
     expect(g.rec.phase!.pending[String(w)]!.actions.map((a) => a.action)).not.toContain('save');
   });

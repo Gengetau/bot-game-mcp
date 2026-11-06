@@ -379,15 +379,10 @@ export abstract class BaseGame<S = any, O = any> {
     for (const req of Object.values(pending)) {
       const p = this.player(req.seat);
       if (p.kind === 'human' && req.channel === 'private') {
-        const cmds = req.actions
-          .filter((a) => a.command)
-          .map((a) => `「${a.command}」`)
-          .join(' / ');
-        this.tell(
-          req.seat,
-          `【${spec.title}】${req.prompt}${cmds ? `\n请私聊回复：${cmds}` : ''}\n限时 ${formatDuration(spec.timeoutMs)}。`,
-          { kind: 'prompt', category: 'prompt' },
-        );
+        this.tell(req.seat, `【${spec.title}】${this.privateHowTo(req)}\n限时 ${formatDuration(spec.timeoutMs)}。`, {
+          kind: 'prompt',
+          category: 'prompt',
+        });
       }
     }
     if ((this.rec.options as any)?.nudge_ai) this.nudgeAgents(phase, spec);
@@ -439,6 +434,33 @@ export abstract class BaseGame<S = any, O = any> {
       'prompt',
     );
     return true;
+  }
+
+  /** 真人私聊待办的说明：提示语、可选目标（号码 + 名字，不用回群里对照）、指令格式。 */
+  private privateHowTo(req: PendingRequest): string {
+    const lists = req.actions
+      .filter((a) => a.targets && a.targets.length > 0)
+      .map((a) => ({ label: a.label, text: a.targets!.map((s) => this.label(s)).join('、') }));
+    const same = lists.length > 0 && lists.every((l) => l.text === lists[0]!.text);
+    const choices = same
+      ? `\n可选：${lists[0]!.text}`
+      : lists.map((l) => `\n「${l.label}」可选：${l.text}`).join('');
+    const cmds = req.actions
+      .filter((a) => a.command)
+      .map((a) => `「${a.command}」`)
+      .join(' / ');
+    return `${req.prompt}${choices}${cmds ? `\n请私聊回复：${cmds}` : ''}`;
+  }
+
+  /**
+   * 真人私聊了一句没看懂的话：有私聊待办就重发说明，没有就返回 null（由框架决定要不要提示）。
+   * 只看这个座位自己的待办，不透露别人的情况。
+   */
+  privateHint(seat: Seat): string | null {
+    const ph = this.rec.phase;
+    const req = this.pendingOf(seat);
+    if (!ph || ph.openedAt === null || !req || req.channel !== 'private') return null;
+    return `没看懂这条指令。【${ph.title}】${this.privateHowTo(req)}`;
   }
 
   /** 当前阶段该座位的未完成待办（不存在返回 undefined）。 */

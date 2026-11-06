@@ -62,6 +62,8 @@ export interface ManagerOptions {
   maxActiveGames?: number;
   /** 只有这些 QQ 号能当裁判（抽签、候补、接管）；空数组为不限制。名单外的 AI 只能当玩家。 */
   refereeIds?: string[];
+  /** 开房时的默认选项（所有游戏共用，游戏不认识的键会被忽略；开房时传的选项覆盖它）。bot 直接调用 create_game 开的房也生效 */
+  defaultOptions?: Record<string, unknown>;
   /** 图片素材（剧本杀线索图）；referee_step 的 inline_images=true 时从这里读图 */
   assets?: AssetStore;
 }
@@ -156,6 +158,7 @@ export class GameManager {
   private readonly allowedGroups: Set<string>;
   private readonly maxActiveGames: number;
   private readonly refereeIds: Set<string>;
+  private readonly defaultOptions: Record<string, unknown>;
   /** 这个 QQ 号是不是持有密钥的 AI（由运行时接到鉴权上）。持有密钥的号不能以真人身份报名。 */
   isKeyedAgent: (id: string) => boolean = () => false;
 
@@ -178,6 +181,7 @@ export class GameManager {
     this.allowedGroups = new Set(opts.allowedGroups ?? []);
     this.maxActiveGames = opts.maxActiveGames ?? 0;
     this.refereeIds = new Set(opts.refereeIds ?? []);
+    this.defaultOptions = { ...(opts.defaultOptions ?? {}) };
     this.assets = opts.assets;
     this.emitter.setMaxListeners(0);
     const loaded = this.store?.load();
@@ -392,7 +396,7 @@ export class GameManager {
         '同一个群同时只能有一局。可以 join_game 加入它，或由房主/裁判 abort_game 结束后再开。',
       );
     }
-    const parsed = def.optionsSchema.safeParse(input.options ?? {});
+    const parsed = def.optionsSchema.safeParse({ ...this.defaultOptions, ...(input.options ?? {}) });
     if (!parsed.success) {
       const issues = parsed.error.issues.map((i) => `${i.path.join('.') || '(root)'}: ${i.message}`).join('；');
       throw badRequest(`选项无效：${issues}`, `可用选项：${Object.keys(def.optionsHelp).join('、')}（get_rules 可查看说明）`);
@@ -1371,6 +1375,20 @@ export class GameManager {
     }
     if (input?.text !== undefined) input = { ...input, text: sanitizeUserText(input.text) };
     if (!input) {
+      // 私聊里没看懂：轮到他私聊行动就重发说明；不轮到他、但像是指令（验3/刀2/毒5…）就说一声现在不是他的行动时间。
+      // 只回私聊本人，内容只涉及他自己的待办和公开的阶段名，不泄露秘密。闲聊不回。
+      if (channel === 'private') {
+        const ph = rec.phase;
+        const hint =
+          inst.privateHint(player.seat) ??
+          (ph && looksLikeCommand(text) ? `现在不是你的私聊行动时间（当前阶段：${ph.title}），这条指令没有生效。` : null);
+        if (hint) {
+          inst.systemTell(player.seat, `⚠️ ${hint}`, 'feedback');
+          this.pump(rec, inst, false);
+          this.touch(rec);
+          return { recognized: true, accepted: false, message: '指令未生效，已私聊提示该玩家。' };
+        }
+      }
       return { recognized: false, accepted: false, message: '不是当前阶段的游戏指令，已忽略（无需处理）。' };
     }
     try {
@@ -1515,6 +1533,13 @@ export function isIdentityQuery(text: string): boolean {
     /^我?(是)?(什么|啥)(身份|牌)(来着)?$/u.test(t) ||
     /^(没|没有)收到(我的)?(身份|身份牌|词|骰子)/u.test(t)
   );
+}
+
+/** 私聊里像是游戏指令的话（「验3」「刀 2号」「毒小明」「投5」「救」「过」），用来在不轮到他时提醒一声；闲聊不算 */
+export function looksLikeCommand(text: string): boolean {
+  const t = stripTrailing(normalizeText(text)).replace(/\s/gu, '');
+  if (!t || t.length > 20) return false;
+  return /^(查验|验|查|刀|杀|袭击|毒|救|守护|守|投|票|开枪|带走|空刀|空守|过|跳过|放弃|顺序|逆序)/u.test(t) || /^\d{1,2}号?$/u.test(t);
 }
 
 function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
