@@ -551,8 +551,17 @@ export abstract class BaseGame<S = any, O = any> {
       label,
       targets,
       example: `act({"action":"${action}","target":${targets[0] ?? 1}})`,
-      command,
+      command: this.exampleCmd(command, targets),
     };
+  }
+
+  /**
+   * 指令示例里的占位座位号 3 换成一个真能选的座位（如「开枪3」→「开枪5」），免得举例举到死人或不可选的人。
+   * 没有可选座位时原样返回。
+   */
+  protected exampleCmd(command: string, targets: readonly Seat[]): string {
+    const ex = targets[0];
+    return ex === undefined ? command : command.replace(/(?<!\d)3(?!\d)/g, String(ex));
   }
 
   protected specSkip(label = '放弃', command = '过'): ActionSpec {

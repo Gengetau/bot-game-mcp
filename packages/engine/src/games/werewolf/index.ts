@@ -22,7 +22,7 @@ import type { ActionInput, ActionMeta, ActionSpec, PendingRequest, Seat } from '
 
 // ───────────────────────── 选项 ─────────────────────────
 
-const ROLE_KEYS = ['werewolf', 'villager', 'seer', 'witch', 'hunter', 'guard', 'idiot'] as const;
+const ROLE_KEYS = ['werewolf', 'wolf_king', 'villager', 'seer', 'witch', 'hunter', 'guard', 'idiot'] as const;
 export type Role = (typeof ROLE_KEYS)[number];
 
 const cnt = () => z.number().int().min(0).max(16).default(0);
@@ -32,6 +32,7 @@ const optionsSchema = z.object({
   roles: z
     .object({
       werewolf: cnt(),
+      wolf_king: cnt(),
       villager: cnt(),
       seer: cnt(),
       witch: cnt(),
@@ -41,6 +42,10 @@ const optionsSchema = z.object({
     })
     .optional(),
   win_mode: z.enum(['auto', 'side', 'all']).default('auto'),
+  /** 默认板子里把一只普通狼换成狼王（自定义 roles 时直接写 wolf_king 数量） */
+  wolf_king: z.boolean().default(false),
+  /** 狼人白天能否自爆 */
+  self_explode: z.boolean().default(true),
   claim_phase: z.boolean().default(false),
   claim_timeout_s: secondsOption(30),
   second_round: z.boolean().default(false),
@@ -77,6 +82,7 @@ const PRESETS: Record<number, Partial<Record<Role, number>>> = {
 
 const ROLE_NAME: Record<Role, string> = {
   werewolf: '狼人',
+  wolf_king: '狼王',
   villager: '村民',
   seer: '预言家',
   witch: '女巫',
@@ -87,7 +93,9 @@ const ROLE_NAME: Record<Role, string> = {
 const GODS: Role[] = ['seer', 'witch', 'hunter', 'guard', 'idiot'];
 
 const ABILITY: Record<Role, string> = {
-  werewolf: '每晚与狼队友商量并选择一名玩家袭击（可空刀）；白天隐藏身份，帮狼队赢。',
+  werewolf: '每晚与狼队友商量并选择一名玩家袭击（可空刀）；白天隐藏身份，帮狼队赢。白天发言阶段可以自爆：亮明狼人身份立即出局（没有遗言），当天直接结束、不再投票，进入黑夜。',
+  wolf_king:
+    '狼人阵营，和狼队友一起刀人、密谈、可自爆。出局时（被刀、被放逐、被猎人带走）可以开枪带走一名玩家；被女巫毒死或自爆则不能开枪。',
   villager: '没有特殊技能，白天通过发言与投票找出狼人。',
   seer: '每晚可查验一名玩家（不含自己）是「好人」还是「狼人」。',
   witch: '拥有一瓶解药和一瓶毒药（各限一次，同一晚最多用一瓶）。解药可救当晚被刀的人，毒药可毒杀任意一人。',
@@ -97,7 +105,9 @@ const ABILITY: Record<Role, string> = {
 };
 
 const HUMAN_CMDS: Record<Role, string> = {
-  werewolf: '夜间私聊我：「刀3」选择袭击目标，「空刀」放弃；夜间发其他任意文字会转发给狼队友。',
+  werewolf: '夜间私聊我：「刀3」选择袭击目标，「空刀」放弃；夜间发其他任意文字会转发给狼队友。白天发言阶段在群里发「自爆」可以自爆。',
+  wolf_king:
+    '夜间私聊我：「刀3」选择袭击目标，「空刀」放弃；夜间发其他任意文字会转发给狼队友。白天发言阶段在群里发「自爆」可以自爆。出局时按提示发「开枪3」带走 3 号，或「不开枪」。',
   villager: '白天按提示在群里发言（说完发「过」），投票发「投3」或「弃票」。',
   seer: '夜间私聊我：「验3」查验 3 号。',
   witch: '夜间私聊我：「救」使用解药，「毒3」毒杀 3 号，「不用」跳过。',
@@ -106,7 +116,13 @@ const HUMAN_CMDS: Record<Role, string> = {
   idiot: '白天按提示发言、投票；被放逐时会自动翻牌。',
 };
 
-const teamOf = (r: Role) => (r === 'werewolf' ? '狼人阵营' : '好人阵营');
+const isWolf = (r: Role) => r === 'werewolf' || r === 'wolf_king';
+const teamOf = (r: Role) => (isWolf(r) ? '狼人阵营' : '好人阵营');
+/** 出局时能开枪的身份 */
+const isShooter = (r: Role) => r === 'hunter' || r === 'wolf_king';
+/** 可以自爆的阶段：白天的报名、竞选发言、定序、起跳和发言。遗言、开枪、移交警徽、投票时不能自爆。 */
+const EXPLODE_KEYS = new Set(['sheriff_signup', 'sheriff_speech', 'sheriff_order', 'claim', 'speech', 'speech2', 'pk_speech']);
+const ELECTION_KEYS = new Set(['sheriff_signup', 'sheriff_speech']);
 
 // ───────────────────────── 状态 ─────────────────────────
 
@@ -128,7 +144,7 @@ type Step =
   | { t: 'pk_speech'; seat: Seat }
   | { t: 'pk_vote'; tied: Seat[] };
 
-type Cause = 'wolf' | 'poison' | 'exile' | 'shot';
+type Cause = 'wolf' | 'poison' | 'exile' | 'shot' | 'explode';
 
 interface NightRecord {
   n: number;
@@ -184,8 +200,8 @@ const CANNED = ['我是好人，大家再听听后面的发言。', '目前信�
 
 const RULES = `## 狼人杀
 
-**阵营**：狼人阵营（狼人）vs 好人阵营（村民 + 神职：预言家、女巫、猎人、守卫、白痴）。
-**配置**：6~12 人有默认板子（6人：2狼 预 女 2民；7人：+猎人；8人：3狼；10人起加守卫……）；13~16 人或自定义需指定 \`roles\`。
+**阵营**：狼人阵营（狼人、狼王）vs 好人阵营（村民 + 神职：预言家、女巫、猎人、守卫、白痴）。
+**配置**：6~12 人有默认板子（6人：2狼 预 女 2民；7人：+猎人；8人：3狼；10人起加守卫……）；13~16 人或自定义需指定 \`roles\`。\`wolf_king=true\` 时默认板子里的一只狼换成**狼王**。
 **流程**：
 1. 🌙 夜晚（秘密）：守卫守人 → 狼人刀人（多狼取最多票，平票随机，可空刀；提交后到阶段结束前可改刀，可用私聊密谈）→ 预言家验人（立即得知结果）。
 2. 女巫：若有药，得知被刀的人（仅当还有解药时），可救 / 毒 / 不用，同夜最多用一瓶。
@@ -193,13 +209,15 @@ const RULES = `## 狼人杀
 4. 👮 警长竞选（\`sheriff\`，默认 8 人及以上开启）：仅第 1 天，在讨论前进行。想当警长的发「上警」→ 上警者依次竞选发言 → 未上警的人投票；平票则平票者再发言、再投一次，仍平票则警徽流失；只有一人上警直接当选。警长放逐投票算 **1.5 票**，每天讨论前由警长**决定发言顺序**（「顺序」号码从小到大 /「逆序」从大到小；昨夜单死时从死者的下一位开始，否则从警长的下一位开始），警长**最后发言归票**；警长出局时（遗言后）可「警徽给3」移交或「撕警徽」。
 5. 🙋 起跳（\`claim_phase\`，默认关闭；有警长或当天有警长竞选时跳过）：讨论前限时报名，发「起跳」的人按起跳先后**最先发言**，其余人随后。起跳只决定顺序，真跳悍跳都可以，具体内容在发言里讲。
 6. 🗣 依次发言（有警长按警长定的顺序；没有警长时，昨夜单死从死者的下一位开始，否则随机起点，方向随机；真人说完发「过」；\`second_round\` 开启时所有人再补充发言一轮）→ 🗳 投票放逐得票最多者；平票则平票者 PK 发言，再由其他人投票，仍平票则无人出局。
-7. 被放逐者有遗言；猎人可开枪；白痴被放逐则翻牌免死但失去投票权。同样，若放逐（或猎人开枪）已使某一方满足胜利条件，游戏立即结束，不再有猎人开枪和遗言。
-**胜负**：狼人全灭 → 好人胜。\`win_mode=side\`（屠边）：所有神职死光 或 所有村民死光 → 狼人胜；\`all\`（屠城）：所有好人死光 → 狼人胜；\`auto\`（默认）：6~7 人屠城、8 人及以上屠边。结束时公布身份并**复盘每一夜**（刀谁、守谁、救/毒、验人结果）。
+7. 💥 自爆（\`self_explode\`，默认开启）：白天的警长竞选报名/发言、警长定序、起跳、发言、PK 发言阶段，存活的狼人（含狼王）可以在群里发「自爆」：亮明狼人身份立即出局，**没有遗言**，当天剩下的发言和投票全部取消，直接进入黑夜。警长竞选中自爆则警徽流失；警长自爆，警徽也随之流失。遗言、开枪、移交警徽和投票时不能自爆。
+8. 被放逐者有遗言；猎人、狼王可开枪；白痴被放逐则翻牌免死但失去投票权。同样，若放逐（或猎人开枪）已使某一方满足胜利条件，游戏立即结束，不再有猎人开枪和遗言。
+**狼王**：狼人阵营，夜里和狼队友一起刀人；出局时（被刀、被放逐、被开枪带走）可以开枪带走一人，被女巫毒死或自爆则不能开枪。
+**胜负**：狼人（含狼王）全灭 → 好人胜。\`win_mode=side\`（屠边）：所有神职死光 或 所有村民死光 → 狼人胜；\`all\`（屠城）：所有好人死光 → 狼人胜；\`auto\`（默认）：6~7 人屠城、8 人及以上屠边。结束时公布身份并**复盘每一夜**（刀谁、守谁、救/毒、验人结果）。
 **选项**：\`witch_self_save\`（first_night 默认/never/always）、\`witch_sees_victim\`（until_antidote 默认：解药用掉后看不到刀口，这是常见规则；always：没解药也告诉女巫刀口）、\`first_night_last_words\`、各阶段超时（秒）、\`night_min_s\`（夜晚与女巫阶段最短时长，默认 20 秒，防止通过结算速度推断谁还活着；只要板子里有女巫，每晚都会开启女巫阶段，女巫死亡或药用完时只是空等）。
 **超时**：未行动视为放弃（空刀/空守/不用药/弃票/过）；发言超时会公告，投票结果里「未投票（超时）」和主动「弃票」分开标出。连续 6 个昼夜无人死亡视为平局。
 
-**真人指令**：夜间私聊——狼人「刀3」「空刀」、预言家「验3」、守卫「守3」「空守」、女巫「救」「毒3」「不用」；白天——「上警」「不上警」、警长定序「顺序」「逆序」，发言直接说，结束发「过」；投票「投3」「弃票」；猎人「开枪3」「不开枪」；警长出局「警徽给3」「撕警徽」。
-**bot 指令**：\`act({"action":"kill|check|guard|save|poison|vote|shoot|run|claim|forward|backward|pass_badge|skip","target":N})\`；发言 \`speak({"text":"…"})\`；狼人夜间密谈 \`speak({"text":"…","channel":"team"})\`。`;
+**真人指令**：夜间私聊——狼人「刀3」「空刀」、预言家「验3」、守卫「守3」「空守」、女巫「救」「毒3」「不用」；白天——「上警」「不上警」、警长定序「顺序」「逆序」，发言直接说，结束发「过」；投票「投3」「弃票」；猎人/狼王「开枪3」「不开枪」；狼人白天「自爆」；警长出局「警徽给3」「撕警徽」。
+**bot 指令**：\`act({"action":"kill|check|guard|save|poison|vote|shoot|run|claim|forward|backward|pass_badge|explode|skip","target":N})\`；发言 \`speak({"text":"…"})\`；狼人夜间密谈 \`speak({"text":"…","channel":"team"})\`。`;
 
 export class WerewolfGame extends BaseGame<WerewolfState, WerewolfOptions> {
   // ───────────────────────── 基础查询 ─────────────────────────
@@ -213,7 +231,7 @@ export class WerewolfGame extends BaseGame<WerewolfState, WerewolfOptions> {
   }
 
   private wolves(aliveOnly = true): Seat[] {
-    return this.seatsOfRole('werewolf', aliveOnly);
+    return this.players.filter((p) => (!aliveOnly || p.alive) && isWolf(this.roleOf(p.seat))).map((p) => p.seat);
   }
 
   private canVote(seat: Seat): boolean {
@@ -498,11 +516,11 @@ export class WerewolfGame extends BaseGame<WerewolfState, WerewolfOptions> {
     const a = input.action;
     const role = this.roleOf(seat);
     let req: PendingRequest | undefined = ph.pending[String(seat)];
-    const resubmit = role === 'werewolf' && (a === 'kill' || a === 'skip') && req?.done && ph.openedAt !== null;
+    const resubmit = isWolf(role) && (a === 'kill' || a === 'skip') && req?.done && ph.openedAt !== null;
     if (!resubmit) req = this.requireTurn(seat, a);
     const data = ph.data as { wolfVotes: Record<string, number>; guard: Record<string, number> };
 
-    if (role === 'werewolf') {
+    if (isWolf(role)) {
       let target = 0;
       if (a === 'kill') target = this.requireTarget(req!, 'kill', input.target);
       else if (a !== 'skip') throw invalidAction('狼人夜间可执行：kill（袭击）、skip（空刀）、team_chat（密谈）。');
@@ -527,7 +545,7 @@ export class WerewolfGame extends BaseGame<WerewolfState, WerewolfOptions> {
       }
       if (a !== 'check') throw invalidAction('预言家夜间可执行：check（查验）、skip。');
       const target = this.requireTarget(req!, 'check', input.target);
-      const wolf = this.roleOf(target) === 'werewolf';
+      const wolf = isWolf(this.roleOf(target));
       const list = (this.state.seerResults[String(seat)] ??= []);
       list.push({ night: this.rec.round, target, wolf });
       this.markDone(seat);
@@ -541,7 +559,7 @@ export class WerewolfGame extends BaseGame<WerewolfState, WerewolfOptions> {
   private teamChat(seat: Seat, input: ActionInput): string {
     const ph = this.phase;
     if (!ph || ph.key !== 'night' || ph.openedAt === null) throw invalidAction('只有夜晚阶段狼人才能密谈。');
-    if (!this.isAlive(seat) || this.roleOf(seat) !== 'werewolf') throw invalidAction('只有存活的狼人可以密谈。');
+    if (!this.isAlive(seat) || !isWolf(this.roleOf(seat))) throw invalidAction('只有存活的狼人可以密谈。');
     const text = cleanSpeech(input.text ?? '', 300);
     if (!text) throw invalidAction('密谈内容不能为空。');
     const mates = this.others(seat, this.wolves());
@@ -714,7 +732,7 @@ export class WerewolfGame extends BaseGame<WerewolfState, WerewolfOptions> {
     if (lastWords) for (const d of deaths) steps.push({ t: 'last_words', seat: d.seat });
     // 警长出局：遗言之后移交警徽
     for (const d of deaths) if (this.state.sheriff && this.state.sheriff === d.seat) steps.push({ t: 'badge', seat: d.seat });
-    for (const d of deaths) if (this.roleOf(d.seat) === 'hunter' && d.cause !== 'poison') steps.push({ t: 'hunter', seat: d.seat });
+    for (const d of deaths) if (isShooter(this.roleOf(d.seat)) && d.cause !== 'poison' && d.cause !== 'explode') steps.push({ t: 'hunter', seat: d.seat });
     this.push(...steps);
   }
 
@@ -744,7 +762,7 @@ export class WerewolfGame extends BaseGame<WerewolfState, WerewolfOptions> {
 
   private checkWin(): boolean {
     const alive = this.players.filter((p) => p.alive);
-    const aliveWolves = alive.filter((p) => this.roleOf(p.seat) === 'werewolf');
+    const aliveWolves = alive.filter((p) => isWolf(this.roleOf(p.seat)));
     const cfg = this.state.config;
     let winner: '好人阵营' | '狼人阵营' | null = null;
     let reason = '';
@@ -1092,7 +1110,7 @@ export class WerewolfGame extends BaseGame<WerewolfState, WerewolfOptions> {
     const alive = this.aliveSeats();
     if (alive.length === 0) return false;
     const secs = this.options.badge_timeout_s;
-    this.announce(`👮 警长 ${this.at(seat)} 出局，请在 ${secs} 秒内移交警徽：发「警徽给3」，或发「撕警徽」。`);
+    this.announce(`👮 警长 ${this.at(seat)} 出局，请在 ${secs} 秒内移交警徽：发「${this.exampleCmd('警徽给3', alive)}」，或发「撕警徽」。`);
     this.openPhase({
       key: 'badge',
       title: `第${this.rec.round}天·移交警徽`,
@@ -1135,17 +1153,18 @@ export class WerewolfGame extends BaseGame<WerewolfState, WerewolfOptions> {
 
   private openHunter(seat: Seat): boolean {
     const alive = this.aliveSeats();
+    const who = ROLE_NAME[this.roleOf(seat)];
     this.announce(
-      `🔫 ${this.label(seat)} 是猎人！请在 ${this.options.hunter_timeout_s} 秒内在群里发「开枪3」带走 3号，或发「不开枪」放弃。`,
+      `🔫 ${this.label(seat)} 是${who}！请在 ${this.options.hunter_timeout_s} 秒内在群里发「${this.exampleCmd('开枪3', alive)}」带走 ${this.exampleCmd('3号', alive)}，或发「不开枪」放弃。`,
     );
     this.openPhase({
       key: 'hunter',
-      title: `第${this.rec.round}天·猎人开枪`,
+      title: `第${this.rec.round}天·${who}开枪`,
       requests: [
         {
           seat,
           channel: 'group',
-          prompt: '你是猎人，请选择带走一名玩家，或不开枪。',
+          prompt: `你是${who}，请选择带走一名玩家，或不开枪。`,
           actions: [this.specTarget('shoot', '开枪', alive, '开枪3'), this.specSkip('不开枪', '不开枪')],
         },
       ],
@@ -1159,7 +1178,7 @@ export class WerewolfGame extends BaseGame<WerewolfState, WerewolfOptions> {
     const req = this.requireTurn(seat, input.action);
     const ph = this.phase!;
     if (input.action === 'shoot') ph.data.target = this.requireTarget(req, 'shoot', input.target);
-    else if (input.action !== 'skip') throw invalidAction('猎人可执行：shoot、skip。');
+    else if (input.action !== 'skip') throw invalidAction('开枪阶段可执行：shoot、skip。');
     this.markDone(seat);
     return input.action === 'shoot' ? `你选择开枪带走 ${this.label(ph.data.target)}。` : '你选择不开枪。';
   }
@@ -1173,11 +1192,62 @@ export class WerewolfGame extends BaseGame<WerewolfState, WerewolfOptions> {
       this.announce(`🔫 ${this.label(hunter)} 选择不开枪。`);
       return false;
     }
-    this.markDead(target, 'shot', `第${this.rec.round}天被猎人带走`);
+    this.markDead(target, 'shot', `第${this.rec.round}天被${ROLE_NAME[this.roleOf(hunter)]}带走`);
     this.announce(`🔫 ${this.label(hunter)} 开枪带走了 ${this.label(target)}。`, { kind: 'death', data: { seats: [target] } });
     if (this.checkWin()) return true;
     this.afterDeaths([{ seat: target, cause: 'shot' }], true);
     return false;
+  }
+
+  // ───────────────────────── 自爆 ─────────────────────────
+
+  /** 这个座位现在能不能自爆：存活的狼、规则开启、白天发言类阶段已开放。 */
+  private canExplode(seat: Seat): boolean {
+    const ph = this.phase;
+    return (
+      this.options.self_explode &&
+      this.isAlive(seat) &&
+      isWolf(this.roleOf(seat)) &&
+      ph !== null &&
+      ph.openedAt !== null &&
+      EXPLODE_KEYS.has(ph.key)
+    );
+  }
+
+  /**
+   * 狼人自爆：亮明身份立即出局（没有遗言，狼王也不能开枪），今天剩下的竞选、发言、投票全部取消，直接进入黑夜。
+   * 警长竞选中自爆则警徽流失；自爆的是警长，警徽也随之流失。
+   */
+  private explode(seat: Seat): string {
+    const ph = this.phase;
+    if (!this.options.self_explode) throw invalidAction('本局规则不允许自爆。');
+    if (!this.isAlive(seat) || !isWolf(this.roleOf(seat))) throw invalidAction('只有存活的狼人可以自爆。');
+    if (!ph || ph.openedAt === null || !EXPLODE_KEYS.has(ph.key)) {
+      throw invalidAction('只能在白天的发言阶段自爆（警长竞选报名/发言、起跳、发言、PK 发言），遗言、开枪、移交警徽和投票时不能自爆。');
+    }
+    const day = this.rec.round;
+    const inElection = ELECTION_KEYS.has(ph.key);
+    const wasSheriff = this.sheriffSeat() === seat;
+    this.markDead(seat, 'explode', `第${day}天自爆`);
+    const notes: string[] = [];
+    if (inElection) {
+      this.state.sheriff = 0;
+      this.state.sheriffElected = true;
+      notes.push('警长竞选中止，警徽流失，本局没有警长');
+    } else if (wasSheriff) {
+      this.state.sheriff = 0;
+      notes.push('警徽随之流失，本局不再有警长');
+    }
+    this.announce(
+      `💥 ${this.label(seat)} 自爆了！TA 是【${ROLE_NAME[this.roleOf(seat)]}】，立即出局，没有遗言。` +
+        `${notes.length ? `${notes.join('；')}。` : ''}今天的发言和投票全部取消，直接进入黑夜。`,
+      { kind: 'death', data: { seats: [seat], explode: true } },
+    );
+    this.state.voteLog.push({ day, kind: 'vote', votes: {}, abstain: [], result: `${seat}号 自爆，当天无放逐` });
+    if (this.checkWin()) return '你自爆了。';
+    this.state.agenda = [{ t: 'night', n: day + 1 }];
+    this.proceed();
+    return '你自爆了，天黑了。';
   }
 
   // ───────────────────────── 投票 ─────────────────────────
@@ -1194,8 +1264,8 @@ export class WerewolfGame extends BaseGame<WerewolfState, WerewolfOptions> {
     const secs = this.options.vote_timeout_s;
     this.announce(
       pk
-        ? `🗳️ PK 投票开始！请非平票玩家在 ${secs} 秒内投给 ${this.seatList(tied)} 之一，或弃票（群里发「投3」，也可私聊裁判）。`
-        : `🗳️ 投票开始！请所有存活玩家在 ${secs} 秒内投票（群里发「投3」「弃票」，也可私聊裁判）。所有票数将在结束后统一公布。\n存活：${this.seatList(alive)}`,
+        ? `🗳️ PK 投票开始！请非平票玩家在 ${secs} 秒内投给 ${this.seatList(tied)} 之一，或弃票（群里发「${this.exampleCmd('投3', tied)}」，也可私聊裁判）。`
+        : `🗳️ 投票开始！请所有存活玩家在 ${secs} 秒内投票（群里发「${this.exampleCmd('投3', alive)}」「弃票」，也可私聊裁判）。所有票数将在结束后统一公布。\n存活：${this.seatList(alive)}`,
     );
     this.openPhase({
       key: pk ? 'pk_vote' : 'vote',
@@ -1313,6 +1383,7 @@ export class WerewolfGame extends BaseGame<WerewolfState, WerewolfOptions> {
 
   onAction(seat: Seat, input: ActionInput, meta: ActionMeta): string {
     if (input.action === 'team_chat') return this.teamChat(seat, input);
+    if (input.action === 'explode') return this.explode(seat);
     const key = this.phase?.key;
     if (key === 'night') return this.nightAction(seat, input);
     if (key === 'witch') return this.witchAction(seat, input);
@@ -1337,7 +1408,7 @@ export class WerewolfGame extends BaseGame<WerewolfState, WerewolfOptions> {
       team: teamOf(role),
       ability: ABILITY[role],
     };
-    if (role === 'werewolf') {
+    if (isWolf(role)) {
       view.wolf_teammates = this.others(seat, this.wolves(false)).map((s) => ({ seat: s, alive: this.isAlive(s) }));
       if (ph?.key === 'night') {
         const wv = (ph.data.wolfVotes ?? {}) as Record<string, number>;
@@ -1363,7 +1434,11 @@ export class WerewolfGame extends BaseGame<WerewolfState, WerewolfOptions> {
       view.idiot_revealed = revealed;
       view.can_vote = !revealed;
     }
-    if (role === 'hunter') view.can_shoot = this.canShoot(seat);
+    if (isShooter(role)) view.can_shoot = this.canShoot(seat);
+    if (isWolf(role) && this.options.self_explode) {
+      view.can_explode_now = this.canExplode(seat);
+      view.explode = '白天发言阶段（含警长竞选报名/发言、起跳）可以 act({"action":"explode"}) 自爆：立即出局、没有遗言，当天直接结束进入黑夜；警长竞选时自爆则警徽流失。';
+    }
     view.can_vote = this.canVote(seat);
     return view;
   }
@@ -1411,10 +1486,13 @@ export class WerewolfGame extends BaseGame<WerewolfState, WerewolfOptions> {
     };
     const key = ph.key;
 
+    // 自爆：只有现在真能自爆的狼才认，别人说「自爆」当普通发言/闲聊，不暴露谁不是狼
+    if (/^(?:我)?(?:要)?自爆$/u.test(bare) && this.canExplode(seat)) return { action: 'explode' };
+
     if (key === 'night') {
       if (channel !== 'private' || !this.isAlive(seat)) return null;
       const role = this.roleOf(seat);
-      if (role === 'werewolf') {
+      if (isWolf(role)) {
         const tg = targetOf(/^(?:刀|杀|袭击|砍|咬)\s*(.+)$/u);
         if (tg !== null) return { action: 'kill', target: tg };
         if (/^(?:空刀|不刀|放弃)$/u.test(bare) || isSkipWord(bare)) return { action: 'skip' };
@@ -1509,18 +1587,23 @@ export class WerewolfGame extends BaseGame<WerewolfState, WerewolfOptions> {
 
 /** 解析本局身份配置；失败返回错误信息。 */
 export function resolveRoles(n: number, options: WerewolfOptions): Record<Role, number> | string {
-  const base: Record<Role, number> = { werewolf: 0, villager: 0, seer: 0, witch: 0, hunter: 0, guard: 0, idiot: 0 };
+  const base: Record<Role, number> = { werewolf: 0, wolf_king: 0, villager: 0, seer: 0, witch: 0, hunter: 0, guard: 0, idiot: 0 };
   if (options.roles) {
     Object.assign(base, options.roles);
     const sum = ROLE_KEYS.reduce((s, r) => s + base[r], 0);
     if (sum !== n) return `自定义 roles 的人数合计 ${sum}，但本局有 ${n} 名玩家，两者必须相等。`;
-    if (base.werewolf < 1) return '自定义 roles 至少需要 1 名狼人。';
-    if (n - base.werewolf < 1) return '自定义 roles 至少需要 1 名好人。';
+    const wolves = base.werewolf + base.wolf_king;
+    if (wolves < 1) return '自定义 roles 至少需要 1 名狼人（werewolf 或 wolf_king）。';
+    if (n - wolves < 1) return '自定义 roles 至少需要 1 名好人。';
     return base;
   }
   const preset = PRESETS[n];
   if (!preset) return `${n} 人局没有默认板子（默认支持 6~12 人），请通过 roles 选项自定义身份数量。`;
   Object.assign(base, preset);
+  if (options.wolf_king && base.werewolf > 0) {
+    base.werewolf -= 1;
+    base.wolf_king += 1;
+  }
   return base;
 }
 
@@ -1531,14 +1614,16 @@ export const werewolfDefinition: GameDefinition<WerewolfOptions> = {
   idPrefix: 'WW',
   minPlayers: 6,
   maxPlayers: 16,
-  summary: '经典身份推理：狼人夜间刀人，好人白天发言投票。含预言家、女巫、猎人、守卫、白痴，身份与结算全由程序决定。',
+  summary: '经典身份推理：狼人夜间刀人，好人白天发言投票。含预言家、女巫、猎人、守卫、白痴、狼王，狼人可自爆，身份与结算全由程序决定。',
   rules: RULES,
   playerTips:
-    '- 好人：认真分析发言与投票，预言家验到狼人后要想办法让大家信任。\n- 不要只说「等预言家」「先听听」：每次发言至少点出一个怀疑对象和理由，没有信息就分析别人的发言和投票。\n- 预言家：一般第 1 天就起跳（或上警）报出查验结果，并说明今晚打算验谁；被悍跳时要对跳，讲清楚对方哪里不像。\n- 女巫：可以在合适时机报出银水（救下的人）或毒了谁来帮好人站边；被投票威胁时亮身份自保。\n- 警长：每天讨论前用 forward（顺序）/ backward（逆序）决定发言方向，想先听谁就往那边排；警长（1.5 票）最后发言时要明确归票。\n- 狼人：夜间可密谈（speak channel=team），白天不要暴露队友；可以悍跳预言家。\n- 夜里的私密信息只写在自己的视角里，不要在群里复述工具内容。\n- 白天发言只说话，不要在发言里透露不该公开的程序信息。',
+    '- 好人：认真分析发言与投票，预言家验到狼人后要想办法让大家信任。\n- 不要只说「等预言家」「先听听」：每次发言至少点出一个怀疑对象和理由，没有信息就分析别人的发言和投票。\n- 预言家：一般第 1 天就起跳（或上警）报出查验结果，并说明今晚打算验谁；被悍跳时要对跳，讲清楚对方哪里不像。\n- 女巫：可以在合适时机报出银水（救下的人）或毒了谁来帮好人站边；被投票威胁时亮身份自保。\n- 警长：每天讨论前用 forward（顺序）/ backward（逆序）决定发言方向，想先听谁就往那边排；警长（1.5 票）最后发言时要明确归票。\n- 狼人：夜间可密谈（speak channel=team），白天不要暴露队友；可以悍跳预言家。局面不利时（队友今天要被票出、警徽要落到真预言家手里）可以 act({\"action\":\"explode\"}) 自爆，当天立即结束进入黑夜，代价是自己出局、没有遗言。狼王出局时还能开枪带走一人，优先带走神职。\n- 夜里的私密信息只写在自己的视角里，不要在群里复述工具内容。\n- 白天发言只说话，不要在发言里透露不该公开的程序信息。',
   optionsSchema,
   optionsHelp: {
     ...commonOptionsHelp,
-    roles: '自定义身份数量 {werewolf,villager,seer,witch,hunter,guard,idiot}，合计须等于玩家数；13~16 人必填',
+    roles: '自定义身份数量 {werewolf,wolf_king,villager,seer,witch,hunter,guard,idiot}，合计须等于玩家数；13~16 人必填',
+    wolf_king: '默认板子里把一只普通狼换成狼王（默认 false）。狼王出局时可开枪带走一人，被毒或自爆不能开枪',
+    self_explode: '狼人白天发言阶段能否自爆（默认 true）。自爆者立即出局、无遗言，当天结束直接进入黑夜；警长竞选时自爆则警徽流失',
     win_mode: 'auto=6~7 人屠城、8 人及以上屠边（默认）；side=屠边（神职或村民全灭则狼胜）；all=屠城（好人全灭才狼胜）',
     claim_phase: '没有警长时，每天讨论前是否有起跳环节，起跳者先发言（默认 false；有警长或当天竞选警长时跳过）',
     claim_timeout_s: '起跳环节限时（秒，默认 30）',

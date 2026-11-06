@@ -414,7 +414,7 @@ export function createJubenshaDefinition(library: ScriptLibrary, assets?: AssetS
       const seats = this.playerSeats();
       const secs = this.options.vote_timeout_s;
       this.announce(
-        `🗳️ 投票：${this.pack.vote.question}（${secs} 秒内群里发「投3」或「弃票」，也可私聊裁判；票数结束后统一公布）\n可投：${seats.map((s) => this.roleLabel(s)).join('、')}`,
+        `🗳️ 投票：${this.pack.vote.question}（${secs} 秒内群里发「${this.exampleCmd('投3', seats)}」或「弃票」，也可私聊裁判；票数结束后统一公布）\n可投：${seats.map((s) => this.roleLabel(s)).join('、')}`,
       );
       this.openPhase({
         key: 'vote',
