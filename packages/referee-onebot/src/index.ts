@@ -501,6 +501,12 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
   /** 发放密钥用的引擎会话：单独的管理员密钥，或发放账号自己的 */
   const issuerEngine = keyIssuer && opts.issuerKey ? new Engine(opts.url, opts.issuerKey, log) : null;
   const keyEngine = () => issuerEngine ?? voiceOf(keyIssuer)?.engine ?? main.engine;
+  /**
+   * 管理员「中止」用的引擎会话：配了管理员密钥（--issuer-key-file）就用它，
+   * 这样 bot 自己开的房、程序自动主持的局（主账号既不是房主也不是裁判）也能中止。
+   * 没配时退回主账号，只能中止它当房主或裁判的局。
+   */
+  const adminEngine = issuerEngine ?? (opts.issuerKey ? new Engine(opts.url, opts.issuerKey, log) : null);
   /** 现在该用哪个账号说话：本局裁判是我的账号就用它，否则主账号 */
   const speaker = () => st.active ?? main;
   /** 账号的 OneBot 掉线时退回主账号发（宁可换个嗓子也别把消息吞掉） */
@@ -860,7 +866,7 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
           await refreshGame();
           if (!st.game) return void (await say('本群没有进行中的对局。'));
           const wasLobby = st.game.status === 'lobby';
-          const r = await main.engine.call('abort_game', { game_id: st.game.id, reason: `${nick} 中止` });
+          const r = await (adminEngine ?? main.engine).call('abort_game', { game_id: st.game.id, reason: `${nick} 中止` });
           if (wasLobby) await say('已取消报名中的对局。');
           else if (r.group_message) await say(String(r.group_message));
           await refreshGame();
@@ -1302,6 +1308,6 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
     opts.signal?.removeEventListener('abort', stop);
     for (const v of voices) v.onebot.close();
     await sendChain;
-    await Promise.all([...voices.map((v) => v.engine.drop()), issuerEngine?.drop()]);
+    await Promise.all([...voices.map((v) => v.engine.drop()), adminEngine?.drop()]);
   }
 }

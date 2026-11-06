@@ -35,6 +35,7 @@ const HELP = `bot-game-referee ${VERSION} —— bot-game-mcp 的代码裁判（
   --no-night-mute：关掉夜间禁言。默认开：狼人杀夜里存活的 AI 玩家在群里说话，撤回那条消息并禁言到天亮（裁判账号要是管理员）。
   --key-issuer QQ：这个账号（主账号或嗓子账号）负责发密钥：群成员私聊它「申请密钥 <bot的QQ号> <昵称>」就给那个 bot 发一把，
     「撤销密钥 <QQ号>」作废；已发放的 bot 自动算进 --bots。要配 --issuer-key-file（引擎的管理员密钥）和 --public-url（告诉对方的地址）。
+  --issuer-key-file 也用于管理员「/桌游 中止」：有了它，bot 自己开的房、程序自动主持的局也能中止（否则只能中止主账号当房主或裁判的局）。
 
 环境变量：BOTGAME_URL BOTGAME_KEY BOTGAME_ONEBOT_URL BOTGAME_ONEBOT_TOKEN BOTGAME_GROUP BOTGAME_ADMINS BOTGAME_BOTS
           BOTGAME_VOICES BOTGAME_HOST_ID BOTGAME_WHEEL_FONT BOTGAME_KEY_ISSUER BOTGAME_ISSUER_KEY BOTGAME_PUBLIC_URL`;

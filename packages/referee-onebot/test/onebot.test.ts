@@ -654,6 +654,7 @@ describe('OneBot referee against the real engine', () => {
       voices: [{ key: KEYS.ai, onebotUrl: qqA.url, onebotToken: 'ta' }],
       hostId: 'main-plays-host',
       mainPlays: true,
+      issuerKey: KEYS.admin, // 管理员中止用（没配 --key-issuer 也生效）
       defaultOptions: { turn_timeout_s: 60 },
       stepWaitSeconds: 1,
       sendGapMs: 0,
@@ -757,7 +758,28 @@ describe('OneBot referee against the real engine', () => {
       expect(g3.status).toBe('running');
       expect(g3.players).toBe(2); // 克蕾雅、主人、妮娅 三人里抽一个当裁判
       expect(lines.some((l) => l.includes('处理消息失败') || l.includes('引擎拒绝'))).toBe(false);
-      await callOn(brainMain, 'abort_game', { game_id: gid3 }).catch(() => callOn(brainA, 'abort_game', { game_id: gid3 }));
+      await callOn(brainA, 'abort_game', { game_id: gid3 });
+      await until((t) => t.includes('已中止'), 10_000);
+
+      // —— 4. 复现 NB-292D：bot 开房、主账号报名「都行」后 bot 马上开局 → 两人都上场、程序自动主持，
+      //        主账号既不是房主也不是裁判；管理员「/桌游 中止」要能结束它（靠管理员密钥） ——
+      await new Promise((res) => setTimeout(res, 1500));
+      const c4 = await callOn(brainA, 'create_game', { game_type: 'number_bomb', group_id: GROUP_MP, join_as: 'player', auto_referee: true });
+      const gid4: string = c4.summary?.game_id ?? c4.game_id;
+      const joinedEnd = Date.now() + 10_000;
+      while (!lines.some((l) => l.includes(`加入 ${gid4}`)) && Date.now() < joinedEnd) await new Promise((res) => setTimeout(res, 100));
+      await callOn(brainA, 'start_game', { game_id: gid4 });
+      const g4 = (await callOn(brainMain, 'list_games', { group_id: GROUP_MP })).games.find((x: any) => x.game_id === gid4);
+      expect(g4.status).toBe('running');
+      expect(g4.referee_id ?? null).toBeNull(); // 程序自动主持
+      await expect(callOn(brainMain, 'abort_game', { game_id: gid4 })).rejects.toThrow(/房主|裁判|管理员/); // 主账号自己的密钥中止不了
+      const [m4, a4] = [qqM.calls.length, qqA.calls.length];
+      msgAll(OWNER, '主人', '/桌游 中止');
+      const sends4 = () => [...qqM.calls.slice(m4), ...qqA.calls.slice(a4)].filter(sendM).map(callText);
+      const end4 = Date.now() + 10_000;
+      while (!sends4().some((t) => t.includes('已中止')) && Date.now() < end4) await new Promise((res) => setTimeout(res, 100));
+      expect(sends4().some((t) => t.includes(`${gid4} 已中止`))).toBe(true);
+      expect(sends4().some((t) => t.includes('只有房主'))).toBe(false);
       expect(lines.some((l) => l.includes('主账号参赛'))).toBe(true);
     } finally {
       if (process.env.REF_DEBUG) console.log(['--- main-plays logs', ...lines, '--- calls', ...qqM.calls.map((c) => `${c.action} ${callText(c)}`)].join('\n'));
