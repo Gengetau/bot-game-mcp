@@ -508,7 +508,7 @@ export class WerewolfGame extends BaseGame<WerewolfState, WerewolfOptions> {
       else if (a !== 'skip') throw invalidAction('狼人夜间可执行：kill（袭击）、skip（空刀）、team_chat（密谈）。');
       data.wolfVotes[String(seat)] = target;
       this.markDone(seat);
-      const text = target ? `刀 ${target}号` : '空刀';
+      const text = target ? `刀 ${this.label(target)}` : '空刀';
       this.tellMany(this.others(seat, this.wolves()), `🐺 ${this.label(seat)} 选择：${text}。`);
       return `已提交：${text}（阶段结束前可改刀）。`;
     }
@@ -518,7 +518,7 @@ export class WerewolfGame extends BaseGame<WerewolfState, WerewolfOptions> {
       else if (a !== 'skip') throw invalidAction('守卫夜间可执行：guard（守护）、skip（空守）。');
       data.guard[String(seat)] = target;
       this.markDone(seat);
-      return target ? `你今晚守护 ${target}号。` : '你选择了空守。';
+      return target ? `你今晚守护 ${this.label(target)}。` : '你选择了空守。';
     }
     if (role === 'seer') {
       if (a === 'skip') {
@@ -531,7 +531,7 @@ export class WerewolfGame extends BaseGame<WerewolfState, WerewolfOptions> {
       const list = (this.state.seerResults[String(seat)] ??= []);
       list.push({ night: this.rec.round, target, wolf });
       this.markDone(seat);
-      const msg = `🔮 查验结果：${target}号 是【${wolf ? '狼人' : '好人'}】。`;
+      const msg = `🔮 查验结果：${this.label(target)} 是【${wolf ? '狼人' : '好人'}】。`;
       this.tell(seat, msg, { kind: 'info' });
       return msg;
     }
@@ -594,7 +594,7 @@ export class WerewolfGame extends BaseGame<WerewolfState, WerewolfOptions> {
       if (!p.antidote && !p.poison) continue;
       const actions: ActionSpec[] = [];
       let info: string;
-      if (this.witchSeesVictim(p.antidote)) info = t.victim ? `今晚 ${t.victim}号 被狼人袭击。` : '今晚无人被狼人袭击（平安夜）。';
+      if (this.witchSeesVictim(p.antidote)) info = t.victim ? `今晚 ${this.label(t.victim)} 被狼人袭击。` : '今晚无人被狼人袭击（平安夜）。';
       else info = '你的解药已用完，无法得知今晚谁被袭击。';
       if (p.antidote && t.victim && this.selfSaveOk(w, t.victim)) {
         actions.push({ action: 'save', label: '使用解药', example: 'act({"action":"save"})', command: '救' });
@@ -629,14 +629,14 @@ export class WerewolfGame extends BaseGame<WerewolfState, WerewolfOptions> {
       p.antidote = false;
       choices[String(seat)] = { save: true };
       this.markDone(seat);
-      return `你使用了解药，救下 ${this.state.tonight.victim}号。`;
+      return `你使用了解药，救下 ${this.label(this.state.tonight.victim!)}。`;
     }
     if (input.action === 'poison') {
       const target = this.requireTarget(req, 'poison', input.target);
       p.poison = false;
       choices[String(seat)] = { poison: target };
       this.markDone(seat);
-      return `你对 ${target}号 使用了毒药。`;
+      return `你对 ${this.label(target)} 使用了毒药。`;
     }
     if (input.action === 'skip') {
       choices[String(seat)] = {};
@@ -1115,7 +1115,7 @@ export class WerewolfGame extends BaseGame<WerewolfState, WerewolfOptions> {
     if (input.action === 'pass_badge') this.phase!.data.to = this.requireTarget(req, 'pass_badge', input.target);
     else if (input.action !== 'skip') throw invalidAction('移交警徽可执行：pass_badge（移交）、skip（撕警徽）。');
     this.markDone(seat);
-    return input.action === 'pass_badge' ? `你把警徽交给了 ${this.phase!.data.to}号。` : '你撕掉了警徽。';
+    return input.action === 'pass_badge' ? `你把警徽交给了 ${this.label(this.phase!.data.to)}。` : '你撕掉了警徽。';
   }
 
   private afterBadge(): void {
@@ -1161,7 +1161,7 @@ export class WerewolfGame extends BaseGame<WerewolfState, WerewolfOptions> {
     if (input.action === 'shoot') ph.data.target = this.requireTarget(req, 'shoot', input.target);
     else if (input.action !== 'skip') throw invalidAction('猎人可执行：shoot、skip。');
     this.markDone(seat);
-    return input.action === 'shoot' ? `你选择开枪带走 ${ph.data.target}号。` : '你选择不开枪。';
+    return input.action === 'shoot' ? `你选择开枪带走 ${this.label(ph.data.target)}。` : '你选择不开枪。';
   }
 
   /** 返回 true 表示游戏已结束。 */
@@ -1218,7 +1218,7 @@ export class WerewolfGame extends BaseGame<WerewolfState, WerewolfOptions> {
     if (input.action === 'vote') {
       votes[String(seat)] = this.requireTarget(req, 'vote', input.target);
       this.markDone(seat);
-      return `你投了 ${votes[String(seat)]}号。`;
+      return `你投了 ${this.label(votes[String(seat)]!)}。`;
     }
     if (input.action === 'skip') {
       votes[String(seat)] = 0;

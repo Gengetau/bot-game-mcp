@@ -36,6 +36,8 @@ export const configSchema = z.object({
   maxActiveGames: z.number().int().min(0).default(0),
   /** 只有这些 QQ 号能当裁判（抽签池、候补、接管）；为空则不限制。名单外的 AI 报名「都行」按玩家处理 */
   refereeIds: z.array(z.string().min(1)).default([]),
+  /** 开房默认选项（所有游戏共用，不认识的键忽略；开房时传的选项覆盖它）。bot 直接 create_game 开的房也按这个来，如 {"night_timeout_s":150} */
+  defaultOptions: z.record(z.string(), z.unknown()).default({}),
   /** 剧本杀数据包目录（私有，放 *.json）；null 则剧本杀没有可用剧本。剧本绝不能放进公开仓库 */
   scriptsDir: z.string().nullable().default(null),
   /** 剧本杀线索图（本地）：<assetsDir>/<剧本id>/<文件名>。和 drive 二选一，drive 优先 */
