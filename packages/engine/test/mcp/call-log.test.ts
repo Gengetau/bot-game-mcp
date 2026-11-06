@@ -20,11 +20,12 @@ describe('tool call log', () => {
     await server.connect(b);
     await client.connect(a);
 
-    await client.callTool({ name: 'whoami', arguments: {} });
+    await client.callTool({ name: 'whoami', arguments: {} }); // 高频保活，成功不记
+    await client.callTool({ name: 'get_rules', arguments: { game_type: 'werewolf' } });
     await client.callTool({ name: 'join_game', arguments: { game_id: 'WW-NONE', join_as: 'player' } });
     await client.callTool({ name: 'referee_step', arguments: { game_id: 'WW-NONE' } });
 
-    expect(lines[0]).toMatch(/^\[call\] 小葫芦\(4015457484\) whoami ok \d+ms$/);
+    expect(lines[0]).toMatch(/^\[call\] 小葫芦\(4015457484\) get_rules ok \d+ms$/);
     expect(lines[1]).toMatch(/^\[call\] 小葫芦\(4015457484\) join_game ✗ [A-Z_]+ \d+ms$/);
     expect(lines[2]).toMatch(/referee_step ✗/); // 高频的 referee_step 只在失败时记
     expect(lines.join('\n')).not.toMatch(/WW-NONE|bgk_/);
