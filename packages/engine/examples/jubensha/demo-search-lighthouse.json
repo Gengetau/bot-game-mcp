@@ -1,0 +1,55 @@
+{
+  "id": "demo-search",
+  "title": "灯塔之夜",
+  "players": 4,
+  "summary": "示例剧本（原创，仅用于测试和演示搜证与问卷格式）：海岛灯塔的守塔人在暴风雨夜坠楼。",
+  "intro": "十月的一个暴风雨夜，海岛上的旧灯塔里，守塔人老韩从旋梯顶端坠落身亡。渡船停航，岛上只有四个人。",
+  "rules_note": "本剧本有两轮搜证，最后用问卷结算。",
+  "roles": [
+    { "key": "mei", "name": "气象员阿梅", "public": "岛上气象站的观测员。", "script": "你是阿梅。十点你在气象站记录风速，十点半去灯塔送过一次资料。你和老韩为了气象站搬迁吵过架。", "confession": "是我。我在旋梯上和他争执，推了他一把。我没想到他会掉下去。" },
+    { "key": "kai", "name": "渔夫阿凯", "public": "靠打鱼为生，常年住在岛上。", "script": "你是阿凯。整晚你都在码头加固渔船，九点后没离开过码头。" },
+    { "key": "lan", "name": "画家小岚", "public": "来岛上写生的画家。", "script": "你是小岚。十点到十一点你在民宿房间里画画，从窗口能看到灯塔的灯光。" },
+    { "key": "bo", "name": "医生老薄", "public": "岛上唯一的医生。", "script": "你是老薄。十一点你被叫去灯塔，确认老韩已经没救了。" }
+  ],
+  "acts": [
+    {
+      "title": "第一幕·风暴",
+      "public": "大家聚在灯塔底层，雨水顺着门缝往里渗。",
+      "private": { "mei": "你记得自己离开灯塔时，鞋底沾了旋梯上的红漆。", "kai": "你注意到码头的小艇被动过。", "lan": "十点四十左右，你看到灯塔顶的灯闪了一下。", "bo": "老韩的手腕上有抓痕。" },
+      "search": { "round": 1, "max_points": 2, "minutes": 3 }
+    },
+    {
+      "title": "第二幕·灯熄之后",
+      "public": "风小了一些。有人在旋梯上发现了新的痕迹。",
+      "private": { "mei": "有人好像看到你去过灯塔，你要小心。" },
+      "search": { "round": 2, "minutes": 3 }
+    }
+  ],
+  "culprits": ["mei"],
+  "truth": "阿梅十点半去灯塔送资料，和老韩在旋梯顶端争执搬迁的事，推搡中老韩失足坠落。阿梅慌乱中离开，鞋底沾上了刚刷的红漆。",
+  "endings": { "solved": "风暴过去，渡船重新开航。", "unsolved": "渡船开走了，灯塔从此再没亮过。" },
+  "search": { "points": 3, "carry_over": true, "exclusive": true, "self_search": false },
+  "locations": [
+    { "key": "stairs", "name": "旋梯" },
+    { "key": "lamp", "name": "灯室" },
+    { "key": "dock", "name": "码头" }
+  ],
+  "clues": [
+    { "id": "stairs_paint", "at": "stairs", "round": 1, "title": "旋梯·红漆", "text": "旋梯第十二级刚刷过红漆，上面有半个鞋印。", "deep": ["stairs_paint2"] },
+    { "id": "stairs_paint2", "deep_only": true, "title": "旋梯·鞋印细看", "text": "鞋印是女式雨靴，尺码 37。" },
+    { "id": "lamp_log", "at": "lamp", "round": 1, "title": "灯室·值班日志", "text": "日志最后一行：十点半，阿梅来送资料。" },
+    { "id": "dock_boat", "at": "dock", "round": 1, "title": "码头·小艇", "text": "小艇的缆绳被重新系过，但艇里是干的。" },
+    { "id": "mei_boots", "at": "mei", "round": 2, "title": "阿梅·雨靴", "text": "阿梅的雨靴鞋底有红色的漆印。" },
+    { "id": "kai_net", "at": "kai", "round": 2, "title": "阿凯·渔网", "text": "渔网上缠着新的海草，说明阿凯确实一直在码头。" },
+    { "id": "lamp_glass", "at": "lamp", "round": 2, "title": "灯室·碎玻璃", "text": "灯罩有一道裂纹，像是被人撞了一下。" },
+    { "id": "lamp_hint", "at": "lamp", "round": 2, "level": "easy", "title": "灯室·提示", "text": "提示：想想谁在十点半到过灯塔。" },
+    { "id": "bo_bag", "at": "bo", "round": 2, "level": "hard", "title": "老薄·药箱", "text": "药箱里少了一卷绷带。" },
+    { "id": "notice", "at": "dock", "round": 2, "public": true, "title": "码头·告示", "text": "公告：气象站下月起搬迁至本岛北侧，灯塔停用。" }
+  ],
+  "questionnaire": [
+    { "id": "who", "question": "是谁让老韩坠楼的？", "options": "roles", "answer": ["mei"], "points": 10, "culprit": true },
+    { "id": "how", "question": "老韩是怎么坠楼的？", "options": [{ "key": "a", "text": "争执中失足" }, { "key": "b", "text": "被下了药" }, { "key": "c", "text": "意外滑倒" }], "answer": ["a"], "points": 5 },
+    { "id": "boat", "question": "（只问阿凯）小艇是谁动的？", "options": [{ "key": "a", "text": "风浪" }, { "key": "b", "text": "有人" }], "answer": ["a"], "points": 2, "for": ["kai"] }
+  ],
+  "host_notes": "搜证示例本。主持要点：第二轮提醒大家搜人。"
+}

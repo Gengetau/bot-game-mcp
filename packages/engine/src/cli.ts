@@ -17,7 +17,7 @@ import { startBridge } from './server/bridge.js';
 import { startHttpServer } from './server/http.js';
 import { createAssets, createRuntime } from './server/runtime.js';
 import { startStdioServer } from './server/stdio.js';
-import { directoryLibrary, packAssets, parsePack } from './games/jubensha/index.js';
+import { directoryLibrary, packAssets, packWarnings, parsePack } from './games/jubensha/index.js';
 import { localAssets } from './core/assets.js';
 import { simulate } from './sim/simulate.js';
 import { VERSION } from './version.js';
@@ -172,8 +172,11 @@ async function main(argv: string[]): Promise<void> {
           const chars = JSON.stringify(p).length;
           console.log(
             `✅ ${f}：《${p.title}》id=${p.id}，${p.players} 人，${p.acts.length} 幕，凶手 ${p.culprits.join('、')}，约 ${chars} 字符` +
-              (p.images.length ? `，${p.images.length} 张图` : ''),
+              (p.images.length ? `，${p.images.length} 张图` : '') +
+              (p.clues.length ? `，${p.clues.length} 张线索卡（${p.locations.length} 个地点，每人 ${p.search.points} 点）` : '') +
+              (p.questionnaire.length ? `，问卷 ${p.questionnaire.length} 题` : ''),
           );
+          for (const w of packWarnings(p)) console.log(`⚠️ ${f}：${w}`);
           if (store && p.images.length) {
             const missing: string[] = [];
             for (const a of packAssets(p)) if (!(await store.exists(a))) missing.push(a);

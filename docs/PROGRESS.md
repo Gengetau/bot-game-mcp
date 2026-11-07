@@ -1,5 +1,17 @@
 # 开发进度与测试记录
 
+## 2026-11-07：剧本杀搜证 + 问卷结算（PR #24）
+
+按 `docs/JUBENSHA-SEARCH-DESIGN.md` 实现，主人对 5 个问题选了「按建议来」：卡独占、没用完的点数留到下一轮、不能搜自己、群里播报谁搜了哪里（不播卡面）、问卷破案定阵营胜负并另评 MVP。
+
+- 数据包新字段（全部可省略，045 这类剧本流程不变）：`search`、`locations`、`clues`、`acts[].search`、`questionnaire`。校验：`at`/`deep`/`images` 引用、深入链成环、轮次没有幕开放、`deep_only` 卡没有父卡、问卷答案不在选项里、多道 culprit 题、`carry_over:false` 缺 `max_points`。`check-script` 显示线索数和问卷题数，卡背标签含凶手角色名时给 ⚠️。
+- 流程：有 `search` 的幕在阅读后加「搜证」秘密环节（所有人同时私下行动，随机抽卡走 `this.rng`）；`deep` 深入、`skip` 结束；任何时候 `share` 公开自己的卡；DM `give` 发放已开放的卡（不花点数）。`public: true` 的卡搜到即公开。
+- 问卷代替投票：`answer_q`，text 为「题号:选项」，一次一题、截止前可改；真人私聊「1 3号」「2 b」（群里不收）。真凶题对凶手本人不计分；凶手以外的作答者过半数答对即破案。没有真凶题时 MVP 获胜。
+- 新开房选项：`search_timeout_s`（300）、`quiz_timeout_s`（300）、`clue_level`（normal/easy，对应卡上的 `level: hard/easy`）、`reveal_unfound`（默认开，结束时公布没被搜到的卡）。
+- 原创演示本 `examples/jubensha/demo-search-lighthouse.json`（4 人，两轮搜证，3 道问卷题）。
+
+测试：`npm run typecheck` 通过；`npm test` 21 个文件 274 个测试全过（新增 `jubensha-search.test.ts` 15 个：格式校验、独占/深入/点数、不能搜自己、公开卡、DM 发放、难度、真人指令、问卷计分和胜负、未公开卡面不进群和公开视图、随机对局 + 状态 JSON 往返）；`npm run build && npm run e2e` 通过；`simulate` 跑演示本到结束。
+
 ## 2026-11-07：部署 #23；剧本杀扩展设计稿
 
 - 部署 #23（39f28cd）：服务器上 build、typecheck、`npm test`（20 个文件 259 个测试）通过，确认没有进行中或报名中的对局后，重启引擎和裁判。配置 `defaultOptions.host` 改为 6 个候选：克蕾雅、妮娅、艾莉希娅、岚汐、星璃、格萝可。
