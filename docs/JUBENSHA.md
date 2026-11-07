@@ -94,6 +94,44 @@ bot-game-mcp simulate jubensha --players 6 --humans 1 --seed 1 --scripts /私有
 - `faq` 写玩家最常问的客观事实，例如时间、地点、物品归属。答案不能透露凶手。
 - `host_notes` 写给 DM：每幕的重点、常见卡点、哪些问题要含糊回答。
 
+### 搜证和问卷（可选字段）
+
+适用于「搜证轮次型」剧本（如 371）。不写这些字段的剧本（如 045）流程完全不变。完整示例：`packages/engine/examples/jubensha/demo-search-lighthouse.json`。
+
+```jsonc
+{
+  "search": { "points": 12, "carry_over": true, "exclusive": true, "self_search": false },
+  "locations": [{ "key": "room401", "name": "401 房间" }],
+  "clues": [
+    {
+      "id": "c401_knife",       // 字母、数字、_、-
+      "at": "room401",          // 地点 key 或角色 key（搜这个人能搜到）
+      "round": 1,               // 第几轮搜证起能搜到
+      "cost": 1,                // 行动点，默认 1
+      "title": "401·水果刀",    // 卡背标签：公开，不能剧透
+      "text": "卡面文字",        // 只发给拿到的人
+      "images": ["clue_401_03"],
+      "deep": ["c401_knife_2"], // 拿到后可以深入的后续卡
+      "deep_only": false,       // true = 只能深入拿到（可以不写 at 和 round）
+      "level": "all",           // easy = 提示卡，hard = 难度卡（开房选项 clue_level）
+      "public": false           // true = 搜到后自动在群里公开
+    }
+  ],
+  "acts": [{ "title": "第一幕", "search": { "round": 1, "max_points": 3, "minutes": 5 } }],
+  "questionnaire": [
+    { "id": "who", "question": "谁是真凶？", "options": "roles", "answer": ["ruoji"], "points": 10, "culprit": true },
+    { "id": "how", "question": "手法？", "options": [{ "key": "a", "text": "……" }, { "key": "b", "text": "……" }], "answer": ["b"], "points": 5, "for": [] }
+  ]
+}
+```
+
+- `search.points` 是每人整局的行动点；`carry_over: false` 时每轮没用完的作废，此时每个搜证幕都要写 `max_points`。
+- `exclusive`（默认 true）：一张卡被搜走后别人就搜不到了。`self_search`（默认 false）：能否搜自己角色身上的卡。
+- `acts[].search.round` 可以写数组同时开放多轮；之前轮次没被搜走的卡在之后的轮次里仍然能搜到。
+- 问卷 `answer` 可以写多个正确选项，答中任意一个就算对；至多一道题标 `culprit`；`for` 限定只有某些角色作答。
+
+`check-script` 额外检查：`at` 存在、`deep`/`images` 引用存在、深入链不成环、每个 `round` 都有幕开放、`deep_only` 的卡有父卡、问卷答案在选项里。卡背标签含凶手角色名时会给出 ⚠️ 提醒。
+
 ## 三、图片素材库
 
 图片不进数据包，放在素材库里，二选一：
@@ -127,16 +165,27 @@ bot-game-mcp simulate jubensha --players 6 --humans 1 --seed 1 --scripts /私有
 3. **每一幕**：
    1. 播报公开内容，私发本幕的私密线索。
    2. **阅读**：每人发「读完」（`read_timeout_s`）。
-   3. **自由讨论**：谁想说就说，限时 `discuss_minutes` 分钟，每人每幕最多 `discuss_max_msgs` 条。
+   3. **搜证**（本幕写了 `search` 时）：秘密环节，所有人同时私下行动，限时 `minutes` 分钟或 `search_timeout_s`。
+      - 搜一个地点或另一位玩家（「搜 401房间」「搜 3号」），从那里还剩的卡里随机抽一张，花卡上的点数；
+      - 拿到的卡可以「深入 线索名」拿后续卡；
+      - 卡面只私发给本人，群里只播报「3号 搜了 401 房间」；
+      - 用完本轮点数或发「搜完了」就结束，所有人结束或时间到就进入讨论。
+   4. **自由讨论**：谁想说就说，限时 `discuss_minutes` 分钟，每人每幕最多 `discuss_max_msgs` 条。
       - AI 玩家不能连说两条，要等别人接话。
       - 发「过」表示本幕不再发言。
       - 所有人都「过」了、用完条数，或者时间到，就进入下一幕。
 4. **投票**（`vote_timeout_s`）：不能投自己，可以弃票。得票最多且唯一的人是凶手就算破案。
+   剧本写了 `questionnaire` 时改为**问卷**（`quiz_timeout_s`）：每人私聊裁判逐题作答（「1 3号」「2 b」，AI 用 `answer_q`，text 写「题号:选项」），截止前可以改。结束后公布每题答案、每人得分和 MVP。有 `culprit` 题时，凶手以外的作答者过半数答对即破案；这道题对凶手本人不计分。
 5. **坦白**：凶手此时才收到认罪书，按它在群里坦白（`confess_timeout_s`）。超时则由程序代念认罪书。
 6. **结局**：
    - 播报结局念白和真相；
    - 公布全部角色；
-   - 破案时侦破方胜，否则凶手胜。
+   - 有搜证时，公布没被搜到的线索（`reveal_unfound`）；
+   - 破案时侦破方胜，否则凶手胜；问卷没有 `culprit` 题时，得分最高的人（MVP）胜。
+
+**公开线索**：持卡人任何时候都可以把自己的卡亮到群里（「公开 线索名」，AI 用 `share`）。
+
+**DM 发放**：DM 可以把一张已开放、还没被拿走的卡交给某位玩家，不花点数（「给3 线索名」，AI 用 `give`）。群里只播报「DM 交给 3号 一张线索」。
 
 **提问**：玩家随时可以私下问 DM，每幕最多 `ask_limit` 次。
 
@@ -157,6 +206,10 @@ bot-game-mcp simulate jubensha --players 6 --humans 1 --seed 1 --scripts /私有
 | `vote_timeout_s` | 120 | 投票时限 |
 | `confess_timeout_s` | 180 | 坦白时限 |
 | `ask_limit` | 3 | 每人每幕最多提问次数 |
+| `search_timeout_s` | 300 | 搜证时限（剧本里的 `acts[].search.minutes` 优先） |
+| `quiz_timeout_s` | 300 | 问卷作答时限 |
+| `clue_level` | `normal` | `normal` 发难度卡、不发提示卡；`easy` 发提示卡、不发难度卡 |
+| `reveal_unfound` | true | 结束时公布没被搜到的线索 |
 
 ## 六、DM 怎么用
 
