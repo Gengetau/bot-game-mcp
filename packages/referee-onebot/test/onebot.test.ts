@@ -317,6 +317,16 @@ describe('OneBot referee against the real engine', () => {
     expect(after.filter((c) => c.action === 'delete_msg')).toHaveLength(2);
     expect(after.filter((c) => c.action === 'set_group_ban')).toHaveLength(1);
     expect(after.filter((c) => groupSend(c) && callText(c).includes('没有参加本局'))).toHaveLength(1);
+    // 第一次撤回失败：隔一会儿重试，直到撤掉
+    mark = qq.calls.length;
+    let failed = 0;
+    qq.failWhen = (c) => c.action === 'delete_msg' && failed++ === 0;
+    groupMsg(AI_ID, '克蕾雅', text('再说一句'));
+    const retryId = msgSeq;
+    const isRetry = (c: { action: string; params: Record<string, unknown> }) => c.action === 'delete_msg' && c.params.message_id === retryId;
+    await qq.waitForCall((c) => isRetry(c) && qq.calls.slice(mark).filter(isRetry).length >= 2, 10_000, mark);
+    qq.failWhen = null;
+    expect(qq.calls.slice(mark).filter(isRetry)).toHaveLength(2);
     // 没参加的真人观众也一样
     mark = qq.calls.length;
     groupMsg(OTHER, '路人', text('我猜 30'));
