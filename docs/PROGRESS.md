@@ -1,5 +1,12 @@
 # 开发进度与测试记录
 
+## 2026-11-07：部署 #24；裁判不再写死 DM
+
+- **部署 #24（e047cab）**：15:57 合并。服务器上 `git pull` 到 e047cab，15:58 build（`dist/games/jubensha/pack.js` 的时间），typecheck 通过，`npm test` 21 个文件 274 个测试全过。确认没有进行中或报名中的对局后，16:00:29 重启引擎（PID 521680），health 正常。用新版 `check-script` 校验线上 045.json，能正常加载（它不用搜证）。
+- **裁判不再写死 DM**：裁判启动参数 `--options` 里原来带着 `"host":"3127771953"`，会盖掉引擎 `defaultOptions.host` 的 6 个候选。主人同意后删掉了这一项，16:07:34 重启裁判（PID 531167）。
+  - 原来的 `bot-game-live/referee.args` 是只读的 NUL 分隔文件，没法用 apply_patch 安全修改，所以另建了一行一个参数的 `bot-game-live/referee.argv`，逐项比对过，只差 `host`。旧文件还留着，**不要再用它启动**。
+  - 现在的裁判启动命令：`nohup setsid xargs -d '\n' -a bot-game-live/referee.argv sh -c 'exec "$@"' _ >> bot-game-live/logs/referee.log 2>&1 < /dev/null &`
+
 ## 2026-11-07：剧本杀搜证 + 问卷结算（PR #24）
 
 按 `docs/JUBENSHA-SEARCH-DESIGN.md` 实现，主人对 5 个问题选了「按建议来」：卡独占、没用完的点数留到下一轮、不能搜自己、群里播报谁搜了哪里（不播卡面）、问卷破案定阵营胜负并另评 MVP。
