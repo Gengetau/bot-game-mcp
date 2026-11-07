@@ -995,6 +995,10 @@ export class GameManager {
               : '可调用 join_game 加入本局。',
       };
     }
+    // 在大厅里就中止的局从没开过局：没有座位，游戏状态是空的，不能交给游戏生成视图
+    if (rec.startedAt === null) {
+      return { game: header, players: [], game_over: true, ...(rec.status === 'aborted' ? { aborted: rec.abortReason ?? true } : {}) };
+    }
     const inst = this.inst(rec);
     const seat = this.agentSeatOf(rec, actor.id);
     const isRef = this.isReferee(rec, actor);

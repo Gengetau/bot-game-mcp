@@ -438,6 +438,8 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
   /** 旁观 bot 禁言：本局参与者、已禁言的（QQ 号 → 禁言时间，禁言一小时后再说话会再禁）、已提醒过的 */
   const spect = { ids: new Set<string>(), muted: new Map<string, number>(), warned: new Set<string>() };
   const SPECT_BAN_S = 3600;
+  const RECALL_TRIES = 3;
+  const RECALL_RETRY_MS = 800;
   const hostId = (opts.hostId ?? hostname()).trim().slice(0, 100) || 'referee';
   const follower = opts.follower ?? false;
   const selfInPool = follower ? false : (opts.selfInPool ?? true);
@@ -1155,18 +1157,25 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
     inbound = inbound.then(job, job).catch((e) => log(`[referee] 处理消息失败：${errMsg(e)}`));
   }
 
+  /** 撤回一条群消息；QQ 偶尔第一次撤回失败（消息刚到还没落库），隔一会儿再试，最多 3 次。 */
+  async function recall(v: Voice, messageId: unknown, what: string): Promise<boolean> {
+    if (messageId === undefined || messageId === null) return false;
+    for (let i = 0; i < RECALL_TRIES; i++) {
+      if (i > 0) await new Promise((res) => setTimeout(res, RECALL_RETRY_MS * i));
+      try {
+        await v.onebot.call('delete_msg', { message_id: messageId });
+        return true;
+      } catch (e) {
+        log(`[referee] 撤回${what}失败（第 ${i + 1} 次）：${errMsg(e)}`);
+      }
+    }
+    return false;
+  }
+
   /** 夜里说话的存活 AI 玩家：撤回 + 禁言到天亮（禁不了就提醒一次）。 */
   async function punishQuiet(v: Voice, uid: string, nick: string, messageId: unknown): Promise<void> {
     if (!quiet.ids.has(uid)) return;
-    let recalled = false;
-    if (messageId !== undefined && messageId !== null) {
-      try {
-        await v.onebot.call('delete_msg', { message_id: messageId });
-        recalled = true;
-      } catch (e) {
-        log(`[referee] 撤回 ${uid} 的夜间消息失败：${errMsg(e)}`);
-      }
-    }
+    const recalled = await recall(v, messageId, `${uid} 的夜间消息`);
     if (quiet.muted.has(uid)) return;
     let banned = false;
     try {
@@ -1195,15 +1204,7 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
   /** 没参加本局的人在群里插话：撤回 + 禁言到对局结束（禁不了就提醒一次）。 */
   async function punishSpectator(v: Voice, uid: string, nick: string, messageId: unknown): Promise<void> {
     if (spect.ids.size === 0 || spect.ids.has(uid)) return;
-    let recalled = false;
-    if (messageId !== undefined && messageId !== null) {
-      try {
-        await v.onebot.call('delete_msg', { message_id: messageId });
-        recalled = true;
-      } catch (e) {
-        log(`[referee] 撤回旁观者 ${uid} 的消息失败：${errMsg(e)}`);
-      }
-    }
+    const recalled = await recall(v, messageId, `旁观者 ${uid} 的消息`);
     const since = spect.muted.get(uid);
     if (since !== undefined && Date.now() - since < (SPECT_BAN_S - 60) * 1000) return;
     let banned = false;

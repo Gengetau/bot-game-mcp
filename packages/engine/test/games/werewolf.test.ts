@@ -165,6 +165,21 @@ describe('night', () => {
     expect(g2.alive(target)).toBe(false);
   });
 
+  it('hunter who lets the timer run out is announced as timed out, not as choosing not to shoot', () => {
+    for (const choose of [false, true]) {
+      const g = make({ werewolf: 2, hunter: 1, witch: 1, villager: 2 }, { witch_self_save: 'never' });
+      const h = g.seatsOf('hunter')[0]!;
+      g.drive({ night: (s) => (g.roleOf(s) === 'werewolf' ? { action: 'kill', target: h } : { action: 'skip' }) }, () => g.key() === 'hunter');
+      if (choose) g.act(h, { action: 'skip' });
+      else {
+        g.clock.advance(g.rec.phase!.timeoutMs + 1000);
+        g.manager.tick();
+      }
+      const said = g.rec.log.filter((e) => e.text.startsWith('🔫') && e.text.includes('开枪。')).map((e) => e.text);
+      expect(said).toEqual([choose ? `🔫 ${h}号 ${g.rec.players.find((p) => p.seat === h)!.name} 选择不开枪。` : expect.stringContaining('超时未开枪')]);
+    }
+  });
+
   it('command examples only name seats that can be picked', () => {
     // 先把 3 号放逐，再让狼刀猎人：猎人提示里的「开枪N」不能举例举到已出局的 3 号
     let g = make({ werewolf: 2, hunter: 1, witch: 1, villager: 2 }, { witch_self_save: 'never' });

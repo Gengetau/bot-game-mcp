@@ -1179,6 +1179,7 @@ export class WerewolfGame extends BaseGame<WerewolfState, WerewolfOptions> {
     const ph = this.phase!;
     if (input.action === 'shoot') ph.data.target = this.requireTarget(req, 'shoot', input.target);
     else if (input.action !== 'skip') throw invalidAction('开枪阶段可执行：shoot、skip。');
+    if (input.action === 'skip') ph.data.skipped = true;
     this.markDone(seat);
     return input.action === 'shoot' ? `你选择开枪带走 ${this.label(ph.data.target)}。` : '你选择不开枪。';
   }
@@ -1189,7 +1190,7 @@ export class WerewolfGame extends BaseGame<WerewolfState, WerewolfOptions> {
     const hunter = ph.data.seat as Seat;
     const target = ph.data.target as Seat | undefined;
     if (!target || !this.isAlive(target)) {
-      this.announce(`🔫 ${this.label(hunter)} 选择不开枪。`);
+      this.announce(ph.data.skipped ? `🔫 ${this.label(hunter)} 选择不开枪。` : `🔫 ${this.label(hunter)} 超时未开枪。`);
       return false;
     }
     this.markDead(target, 'shot', `第${this.rec.round}天被${ROLE_NAME[this.roleOf(hunter)]}带走`);

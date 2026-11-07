@@ -1,5 +1,21 @@
 # 开发进度与测试记录
 
+## 2026-11-07（晚）：打开对局复盘记忆；狼人杀复盘后的三处修补
+
+- **打开对局复盘写记忆**（主人「开」，20:47）：
+  - 在引擎这边用 `issue_key` 发了一把复盘专用的 key，身份 `gamerecap`（名字「复盘」），不占 QQ 号。
+  - key 存在 `bot-game-live/keys/game-recap.key`。文件是 644，但 `keys/` 目录是 700，容器用户 uid 1001 就是 ubuntu。
+  - `mcp/shared-services/compose.yaml` 加了 `GAME_RECAP: "1"`，并把 key 只读挂到 `/run/game-recap/key`。compose 里的服务名是 `services`，容器名是 `shared-services`。
+  - 确认没有进行中的对局后重建容器。第一轮就把 48 小时内结束的 15 局写进了参与室友各自的记忆，外加一条公共记忆。
+  - WW-UMAJ、WW-NXSM 是在大厅里就中止的局，`get_my_view` 报错，见下面第 3 条。修好之前，这两局每分钟重试一次，超过 48 小时后自动跳过。
+- **清理服务器文件**：经主人同意删掉了旧的 `bot-game-live/referee.args` 和临时文件 `bot-game-live/JB-E2UE.txt`。裁判只用 `referee.argv` 启动。
+- **代码修补**（复盘下午几局狼人杀发现的）：
+  1. 猎人/狼王开枪阶段超时没选，群里原来也播「选择不开枪」，现在播「超时未开枪」。
+  2. 裁判撤回夜间发言和旁观插话时，QQ 偶尔第一次撤回失败，现在最多试 3 次，间隔递增（0.8 秒、1.6 秒）。
+  3. 在大厅里就中止的局从没开过局，`getView` 原来会把空 state 交给游戏生成视图，狼人杀、谁是卧底都会崩。现在直接返回对局头信息加 `game_over`/`aborted`。
+
+测试：`npm run typecheck` 通过；`npm test` 21 个文件 276 个测试全过，新增 2 个：所有游戏大厅中止后都能取视图、猎人超时与主动不开枪播报不同；裁判禁言测试里加了「第一次撤回失败会重试」。`npm run build && npm run e2e` 通过。
+
 ## 2026-11-07：部署 #24；裁判不再写死 DM
 
 - **部署 #24（e047cab）**：15:57 合并。服务器上 `git pull` 到 e047cab，15:58 build（`dist/games/jubensha/pack.js` 的时间），typecheck 通过，`npm test` 21 个文件 274 个测试全过。确认没有进行中或报名中的对局后，16:00:29 重启引擎（PID 521680），health 正常。用新版 `check-script` 校验线上 045.json，能正常加载（它不用搜证）。

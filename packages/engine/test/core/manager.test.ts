@@ -259,6 +259,17 @@ describe('auto referee, long-poll, takeover, persistence', () => {
     manager.abortGame(REF, gameId, '测试');
     expect(rec.status).toBe('aborted');
   });
+
+  it('every game still renders a view after being aborted in the lobby (empty state)', () => {
+    const { manager } = setup();
+    const types = manager.registry.list().map((d) => d.type).filter((t) => t !== 'jubensha');
+    expect(types).toContain('werewolf');
+    for (const type of types) {
+      const { summary } = manager.createGame(REF, { type, groupId: '9000', joinAs: 'referee' });
+      manager.abortGame(REF, summary.game_id, '测试');
+      expect(() => manager.getView(REF, summary.game_id), type).not.toThrow();
+    }
+  });
 });
 
 describe('security hardening', () => {
