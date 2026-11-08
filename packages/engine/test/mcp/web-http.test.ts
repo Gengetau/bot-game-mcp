@@ -101,4 +101,61 @@ describe('灯下剧场 HTTP 接口', () => {
     expect(again.data.events).toEqual([]);
     expect(again.id).toBe(first.id);
   });
+
+  describe('观众席', () => {
+    const say = (body: unknown, headers: Record<string, string> = { 'Content-Type': 'application/json' }, t = token) =>
+      fetch(`${base}/web/api/games/${gameId}/chat?t=${t}`, { method: 'POST', headers, body: JSON.stringify(body) });
+    const SECRET_TALK = '我赌凶手是三号座位';
+
+    it('web viewers can post; wrong token and non-JSON are refused; names and text are cleaned', async () => {
+      expect((await say({ name: 'x', text: 'hi' }, undefined, 'wrong')).status).toBe(404);
+      expect((await say({ name: 'x', text: 'hi' }, { 'Content-Type': 'text/plain' })).status).toBe(415);
+      expect((await say({ name: 'x', text: '   ' })).status).toBe(400);
+      const r = await say({ name: '  路过的{@all}观众  ', text: SECRET_TALK });
+      expect(r.status).toBe(200);
+      const v = (await (await fetch(`${base}/web/api/games/${gameId}?t=${token}`)).json()) as any;
+      const c = v.chat.find((x: any) => x.text === SECRET_TALK);
+      expect(c).toMatchObject({ from: 'web' });
+      expect(c.name).not.toContain('{@');
+      expect(v.chat_seq).toBeGreaterThanOrEqual(1);
+      // 增量：chat_since 之后没有新的
+      const v2 = (await (await fetch(`${base}/web/api/games/${gameId}?t=${token}&chat_since=${v.chat_seq}`)).json()) as any;
+      expect(v2.chat).toEqual([]);
+    });
+
+    it('rate-limits a web viewer', async () => {
+      const codes: number[] = [];
+      for (let i = 0; i < 7; i++) codes.push((await say({ name: '刷屏的', text: `第${i}条` })).status);
+      expect(codes).toContain(400);
+    });
+
+    it('bots that are not in the game can watch and talk; participants can neither see nor post', () => {
+      const m = rt.manager;
+      const outsider = bot(9);
+      const r = m.spectatorSayAs(outsider, gameId, 'AI 观众来了，我也觉得是三号');
+      expect(r.ok).toBe(true);
+      const sv = m.getView(outsider, gameId) as any;
+      expect(sv.you.role).toBe('spectator');
+      expect(sv.spectator_chat.map((c: any) => c.text)).toEqual(expect.arrayContaining([SECRET_TALK, 'AI 观众来了，我也觉得是三号']));
+      expect(sv.spectator_chat.find((c: any) => c.from === 'agent').name).toBe('Bot9');
+      // 再看一次只给新的
+      expect((m.getView(outsider, gameId) as any).spectator_chat).toEqual([]);
+
+      for (const who of [bot(1), REF]) {
+        expect(() => m.spectatorSayAs(who, gameId, '我是参与者')).toThrow(/参与者/);
+        expect(JSON.stringify(m.getView(who, gameId, { fullLog: true }))).not.toContain('三号');
+      }
+      // 不进群、不进任何对局记录
+      const rec = m.getRecord(gameId);
+      expect(JSON.stringify(rec.outbox)).not.toContain('三号');
+      expect(JSON.stringify(rec.log)).not.toContain('三号');
+      expect(rec.spectatorChat!.length).toBeGreaterThanOrEqual(2);
+    });
+
+    it('closed before the game starts', () => {
+      const m = rt.manager;
+      const { summary } = m.createGame(REF, { type: 'jubensha', groupId: 'g-lobby', joinAs: 'referee', options: { stage: 'web', script: 'demo-search' } });
+      expect(() => m.spectatorSayAs(bot(9), summary.game_id, 'hi')).toThrow(/还没开始/);
+    });
+  });
 });

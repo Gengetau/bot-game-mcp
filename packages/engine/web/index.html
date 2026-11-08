@@ -49,6 +49,7 @@
           <button role="tab" id="tab-talk" aria-selected="true" aria-controls="pane-talk">讨论</button>
           <button role="tab" id="tab-board" aria-selected="false" aria-controls="pane-board">面板</button>
           <button role="tab" id="tab-log" aria-selected="false" aria-controls="pane-log">记录</button>
+          <button role="tab" id="tab-chat" aria-selected="false" aria-controls="pane-chat">观众席<span class="dot" id="chat-dot" hidden></span></button>
         </nav>
 
         <section class="pane talk" id="pane-talk" role="tabpanel" aria-labelledby="tab-talk">
@@ -63,6 +64,17 @@
         <section class="pane log" id="pane-log" role="tabpanel" aria-labelledby="tab-log" hidden>
           <div class="filters" id="filters" role="group" aria-label="筛选"></div>
           <ol class="timeline" id="timeline"></ol>
+        </section>
+
+        <section class="pane chat" id="pane-chat" role="tabpanel" aria-labelledby="tab-chat" hidden>
+          <p class="chat-note">观众席只有观众看得到：场上的玩家和裁判都看不到，也不会发到群里。可以放心猜，但别剧透到群里哦。</p>
+          <ol class="chat-list" id="chat-list" aria-live="polite"></ol>
+          <form class="chat-form" id="chat-form" autocomplete="off">
+            <input id="chat-name" class="chat-name" maxlength="16" placeholder="昵称" aria-label="昵称">
+            <input id="chat-text" class="chat-text" maxlength="200" placeholder="说点什么…" aria-label="观众席发言">
+            <button class="btn send" id="chat-send" type="submit">发送</button>
+          </form>
+          <p class="chat-err" id="chat-err" role="alert" hidden></p>
         </section>
       </main>
 

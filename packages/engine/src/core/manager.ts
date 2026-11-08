@@ -156,6 +156,11 @@ export interface RelayResult {
 type Waiter = () => void;
 
 const MAX_PUMP = 200;
+/** 观众席：每条最多几个字、每人每个时间窗最多几条、每局最多留多少条 */
+const SPECTATOR_MAX_CHARS = 200;
+const SPECTATOR_WINDOW_MS = 30_000;
+const SPECTATOR_PER_WINDOW = 5;
+const SPECTATOR_KEEP = 500;
 const WEB_NO_HUMANS = '本局在网页「灯下剧场」上进行，目前只有 AI 上场；真人开局后点群里的观战链接就能看。想和 AI 一起玩，开房时加上 stage=group（在群里玩）。';
 
 export class GameManager {
@@ -219,6 +224,9 @@ export class GameManager {
   }
 
   /** 状态变化后：保存 + 唤醒等待者。 */
+  /** 观众席限流：key → 最近发言时间 */
+  private chatHits = new Map<string, number[]>();
+
   touch(rec?: GameRecord): void {
     if (rec) {
       rec.updatedAt = this.now();
@@ -1079,7 +1087,7 @@ export class GameManager {
    * 事件按「公开事件」重新编号（从 1 开始），免得从序号空档推断别人的私密行动；
    * since 之后的事件才返回（断线续传）。正常结束的局附上完整复盘（含私密事件）。
    */
-  webView(rec: GameRecord, since = 0) {
+  webView(rec: GameRecord, since = 0, chatSince = 0) {
     const def = this.def(rec);
     const pub = rec.log.filter((e) => e.audience.type === 'public');
     const from = Math.max(0, Math.min(Math.floor(Number(since) || 0), pub.length));
@@ -1131,6 +1139,8 @@ export class GameManager {
       last_seq: pub.length,
       ...(rec.result ? { result: rec.result } : {}),
       ...(rec.status === 'aborted' ? { aborted: rec.abortReason ?? '已中止' } : {}),
+      chat: this.chatSince(rec, chatSince, 200),
+      chat_seq: rec.spectatorChatSeq ?? 0,
       ...(finished && from === 0
         ? {
             replay: rec.log.map((e) => ({
@@ -1145,6 +1155,69 @@ export class GameManager {
         : {}),
       server_time: this.now(),
     };
+  }
+
+  // ═══════════════════════════ 观众席 ═══════════════════════════
+
+  /** 是不是本局参与者（报名的人、玩家、裁判、候补裁判）：参与者看不到观众席，也不能在观众席说话 */
+  isParticipant(rec: GameRecord, id: string): boolean {
+    return (
+      rec.players.some((p) => p.id === id) ||
+      rec.lobby.some((e) => e.id === id) ||
+      rec.referee?.id === id ||
+      rec.standbyReferees.some((r) => r.id === id) ||
+      (rec.formerReferees ?? []).some((r) => r.id === id)
+    );
+  }
+
+  private chatSince(rec: GameRecord, since: number, limit: number) {
+    const all = rec.spectatorChat ?? [];
+    const from = all.filter((c) => c.seq > (Number(since) || 0));
+    return from.slice(-limit).map((c) => ({ seq: c.seq, at: c.at, from: c.from, name: c.name, text: c.text }));
+  }
+
+  /**
+   * 观众席发言。web = 网页观众（key 用来限流，比如 IP）；agent = 没参加本局的 bot。
+   * 只在开局之后能说；不进群、不进任何参与者的视图；不唤醒玩家的长轮询。
+   */
+  spectatorSay(rec: GameRecord, from: { kind: 'web'; name: string; key: string } | { kind: 'agent'; actor: Identity }, text: string) {
+    if (rec.startedAt === null) throw invalidState('对局还没开始，观众席还没开放。');
+    if (from.kind === 'agent' && this.isParticipant(rec, from.actor.id)) {
+      throw forbidden('你是本局参与者（报名的人、玩家或裁判），不能在观众席说话：观众席的讨论对参与者保密。');
+    }
+    const body = [...sanitizeUserText(String(text ?? '')).replace(/\s+/g, ' ').trim()].slice(0, SPECTATOR_MAX_CHARS).join('');
+    if (!body) throw badRequest('说点什么吧（不能是空的）。');
+    const name =
+      from.kind === 'agent'
+        ? this.nameOf(from.actor)
+        : sanitizeName(String(from.name ?? ''), 16) || '观众';
+    const key = from.kind === 'agent' ? `agent:${from.actor.id}` : `web:${from.key}`;
+    const now = this.now();
+    const hits = (this.chatHits.get(key) ?? []).filter((t) => now - t < SPECTATOR_WINDOW_MS);
+    if (hits.length >= SPECTATOR_PER_WINDOW) {
+      throw invalidState(`说得太快了：每 ${SPECTATOR_WINDOW_MS / 1000} 秒最多 ${SPECTATOR_PER_WINDOW} 条。`);
+    }
+    hits.push(now);
+    this.chatHits.set(key, hits);
+    if (this.chatHits.size > 5000) for (const [k, v] of this.chatHits) if (now - (v[v.length - 1] ?? 0) > SPECTATOR_WINDOW_MS) this.chatHits.delete(k);
+    const seq = (rec.spectatorChatSeq ?? 0) + 1;
+    rec.spectatorChatSeq = seq;
+    const chat = (rec.spectatorChat ??= []);
+    chat.push({ seq, at: now, from: from.kind, name, text: body });
+    if (chat.length > SPECTATOR_KEEP) chat.splice(0, chat.length - SPECTATOR_KEEP);
+    // 只通知观战页面和存档；不 bump，免得唤醒玩家的长轮询
+    this.emitter.emit('change', rec.id);
+    this.store?.schedule(() => this.snapshot());
+    return { seq, name, text: body };
+  }
+
+  /** bot 在观众席发言（MCP 工具 spectator_say） */
+  spectatorSayAs(actor: Identity, gameId: string, text: string) {
+    const id = String(gameId ?? '').trim();
+    if (!id) throw badRequest('需要 game_id：要在哪一局的观众席说话。', '用 list_games 看正在进行的对局。');
+    const rec = this.getRecord(id);
+    const r = this.spectatorSay(rec, { kind: 'agent', actor }, text);
+    return { ok: true, seq: r.seq, message: '已发到观众席（只有观众能看到，参与者看不到，也不会进群）。' };
   }
 
   /** 统一视角：玩家看到自己的身份与待办，裁判看到主持信息，旁观者只看公开信息。 */
@@ -1237,10 +1310,23 @@ export class GameManager {
       };
     }
     const humanSeat = rec.players.some((p) => p.id === actor.id && p.kind === 'human');
+    // 观众席：只给真正的观众（参与者一律看不到）
+    let chat: ReturnType<GameManager['chatSince']> | null = null;
+    if (!this.isParticipant(rec, actor.id)) {
+      const ck = `${rec.id}:${actor.id}:chat`;
+      chat = this.chatSince(rec, opts.fullLog ? 0 : (this.viewCursors.get(ck) ?? 0), 30);
+      this.viewCursors.set(ck, rec.spectatorChatSeq ?? 0);
+    }
     return {
       ...base,
       you: { role: 'spectator' },
       new_events: limited,
+      ...(chat
+        ? {
+            spectator_chat: chat,
+            spectator_note: '观众席：网页观众和其他没参加本局的 bot 的讨论，参与者看不到。想说话用 spectator_say（每条最多 200 字，别把观众席的讨论带到群里）。',
+          }
+        : {}),
       hint: humanSeat
         ? '这个 QQ 号是本局的真人玩家：真人的身份与私密信息只由裁判私聊发给本人，MCP 会话里只能看到公开信息。'
         : '你不是本局玩家，只能看到公开信息。',

@@ -13,8 +13,10 @@
  *   game: { id: string, type: string, name: string, status: string, round: number, started_at: number|null, ended_at: number|null },
  *   phase: Phase|null, players: Seat[], lobby?: { name: string, kind: string }[], board: any, events: Ev[], last_seq: number,
  *   result?: { winnerTeam: string, winnerSeats: number[], reason: string, reveal: { seat: number, name: string, identity: string }[] },
- *   aborted?: string, replay?: ReplayEv[], server_time: number
+ *   aborted?: string, replay?: ReplayEv[], server_time: number,
+ *   chat?: Chat[], chat_seq?: number
  * }} View
+ * @typedef {{ seq: number, at: number, from: 'web'|'agent', name: string, text: string }} Chat
  */
 
 const $ = (/** @type {string} */ id) => /** @type {HTMLElement} */ (document.getElementById(id));
@@ -37,8 +39,8 @@ const params = new URLSearchParams(location.search);
 const gameId = params.get('g') ?? '';
 const token = params.get('t') ?? '';
 
-/** @type {{ view: View|null, events: Ev[], offset: number, unread: number, filter: string, god: boolean, rendered: number }} */
-const st = { view: null, events: [], offset: 0, unread: 0, filter: 'all', god: false, rendered: 0 };
+/** @type {{ view: View|null, events: Ev[], offset: number, unread: number, filter: string, god: boolean, rendered: number, chat: Chat[], chatSeen: number, mine: Set<number> }} */
+const st = { view: null, events: [], offset: 0, unread: 0, filter: 'all', god: false, rendered: 0, chat: [], chatSeen: 0, mine: new Set() };
 
 const desktop = window.matchMedia('(min-width: 1024px)');
 
@@ -68,11 +70,15 @@ $('theme').addEventListener('click', () => {
 });
 
 // ───────── 页签 ─────────
-const TABS = ['talk', 'board', 'log'];
+const TABS = ['talk', 'board', 'log', 'chat'];
 function selectTab(/** @type {string} */ name) {
   for (const t of TABS) {
     $(`tab-${t}`).setAttribute('aria-selected', String(t === name));
     $(`pane-${t}`).hidden = t !== name;
+  }
+  if (name === 'chat') {
+    $('chat-dot').hidden = true;
+    st.chatSeen = st.chat.length ? st.chat[st.chat.length - 1].seq : 0;
   }
   if (name === 'talk') scrollToEnd(true);
   else if (!desktop.matches) {
@@ -572,6 +578,89 @@ function banner(/** @type {string|null} */ msg, error = false) {
   b.hidden = false;
 }
 
+// ───────── 观众席 ─────────
+const chatOpen = () => $('tab-chat').getAttribute('aria-selected') === 'true';
+
+function mergeChat(/** @type {Chat[]} */ list) {
+  const last = st.chat.length ? st.chat[st.chat.length - 1].seq : 0;
+  const fresh = list.filter((c) => c.seq > last);
+  if (fresh.length) {
+    st.chat.push(...fresh);
+    if (st.chat.length > 500) st.chat.splice(0, st.chat.length - 500);
+    if (chatOpen()) st.chatSeen = st.chat[st.chat.length - 1].seq;
+    else if (fresh.some((c) => !st.mine.has(c.seq))) $('chat-dot').hidden = false;
+  }
+  renderChat();
+}
+
+function renderChat() {
+  const box = $('chat-list');
+  const atEnd = !desktop.matches || box.scrollHeight - box.scrollTop - box.clientHeight < 60;
+  box.replaceChildren();
+  if (!st.chat.length) box.append(el('li', 'empty', '还没有人说话。来当第一个吧～'));
+  for (const c of st.chat) {
+    const li = el('li', st.mine.has(c.seq) ? 'chat-msg mine' : 'chat-msg');
+    const who = el('div', 'who');
+    who.append(el('b', '', c.name), el('span', 'tag', c.from === 'agent' ? 'AI 观众' : '观众'), el('span', '', hhmm(c.at)));
+    li.append(who, el('p', 'tx', c.text));
+    box.append(li);
+  }
+  if (atEnd && chatOpen()) box.lastElementChild?.scrollIntoView({ block: 'nearest' });
+  // 开局前观众席不开放
+  const started = Boolean(st.view && st.view.game.started_at);
+  for (const id of ['chat-name', 'chat-text', 'chat-send']) /** @type {HTMLInputElement} */ ($(id)).disabled = !started;
+  /** @type {HTMLInputElement} */ ($('chat-text')).placeholder = started ? '说点什么…' : '开局后才能说话';
+}
+
+function chatError(/** @type {string|null} */ msg) {
+  const e = $('chat-err');
+  e.textContent = msg ?? '';
+  e.hidden = !msg;
+}
+
+{
+  const name = /** @type {HTMLInputElement} */ ($('chat-name'));
+  try {
+    name.value = localStorage.getItem('stage-nick') ?? '';
+  } catch {
+    /* 忽略 */
+  }
+  $('chat-form').addEventListener('submit', async (ev) => {
+    ev.preventDefault();
+    const text = /** @type {HTMLInputElement} */ ($('chat-text'));
+    const send = /** @type {HTMLButtonElement} */ ($('chat-send'));
+    if (!text.value.trim() || send.disabled) return;
+    send.disabled = true;
+    chatError(null);
+    try {
+      const r = await fetch(`api/games/${encodeURIComponent(gameId)}/chat?t=${encodeURIComponent(token)}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: name.value.trim(), text: text.value }),
+      });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(data.message || `发送失败（${r.status}）`);
+      st.mine.add(Number(data.seq));
+      text.value = '';
+      try {
+        localStorage.setItem('stage-nick', name.value.trim());
+      } catch {
+        /* 忽略 */
+      }
+      // 结束的局不再推送：自己拉一次
+      if (st.view && st.view.game.status !== 'running') {
+        const v = await fetchOnce();
+        mergeChat(v.chat ?? []);
+      }
+    } catch (e) {
+      chatError(e instanceof Error ? e.message : String(e));
+    } finally {
+      send.disabled = false;
+      text.focus();
+    }
+  });
+}
+
 // ───────── 数据 ─────────
 function apply(/** @type {View} */ v) {
   const first = st.view === null;
@@ -590,6 +679,7 @@ function apply(/** @type {View} */ v) {
   renderLog();
   renderStatus();
   tickClock();
+  mergeChat(v.chat ?? []);
   if (v.game.status === 'aborted') banner(`对局已中止：${v.aborted ?? ''}。下面是已经发生的公开内容。`);
 }
 

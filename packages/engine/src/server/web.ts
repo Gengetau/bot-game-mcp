@@ -3,11 +3,13 @@
  *  - GET /web/                         观战页面（静态文件，全部来自仓库，不从 CDN 加载）
  *  - GET /web/api/games/:id?t=令牌      观战视图（只含公开信息；正常结束的局附完整复盘）
  *  - GET /web/api/games/:id/stream?t=   SSE 实时推送（按公开事件序号续传）
+ *  - POST /web/api/games/:id/chat?t=    观众席发言 {name, text}（参与者看不到，不进群）
  *
- * 只读：网页上没有任何能影响对局的接口。令牌不对一律 404，不让人借此探测对局 ID。
+ * 网页上没有任何能影响对局的接口；唯一能写的是观众席，它和对局完全隔开。令牌不对一律 404，不让人借此探测对局 ID。
  */
 import { readFileSync } from 'node:fs';
-import type { Express, Request, Response } from 'express';
+import express, { type Express, type Request, type Response } from 'express';
+import { GameError } from '../core/errors.js';
 import type { GameManager } from '../core/manager.js';
 
 const WEB_DIR = new URL('../../web/', import.meta.url);
@@ -120,7 +122,34 @@ export function mountWeb(app: Express, manager: GameManager, log: (msg: string) 
     if (!rec) return notFound(res);
     secure(res);
     res.setHeader('Cache-Control', 'no-store');
-    res.json(manager.webView(rec, Number(req.query.since ?? 0)));
+    res.json(manager.webView(rec, Number(req.query.since ?? 0), Number(req.query.chat_since ?? 0)));
+  });
+
+  // 观众席发言：必须是 JSON（别的网站没法不经预检就跨站提交 JSON），按 IP 限流
+  app.post('/web/api/games/:id/chat', express.json({ limit: '4kb' }), (req, res) => {
+    const ip = ipOf(req);
+    if (!allow(ip)) {
+      res.status(429).json({ error: 'rate_limited', message: '请求太频繁，请稍后再试。' });
+      return;
+    }
+    const rec = manager.webRecord(String(req.params.id), String(req.query.t ?? ''));
+    if (!rec) return notFound(res);
+    secure(res);
+    res.setHeader('Cache-Control', 'no-store');
+    if (!req.is('application/json')) {
+      res.status(415).json({ error: 'bad_request', message: '请从观战页面发言。' });
+      return;
+    }
+    try {
+      const r = manager.spectatorSay(rec, { kind: 'web', name: String(req.body?.name ?? ''), key: ip }, String(req.body?.text ?? ''));
+      res.json({ ok: true, seq: r.seq, name: r.name });
+    } catch (e) {
+      if (e instanceof GameError) res.status(400).json({ error: e.code, message: e.message });
+      else {
+        log(`[web] 观众席出错：${e instanceof Error ? e.message : String(e)}`);
+        res.status(500).json({ error: 'internal', message: '服务器出错了。' });
+      }
+    }
   });
 
   app.get('/web/api/games/:id/stream', (req, res) => {
@@ -145,11 +174,14 @@ export function mountWeb(app: Express, manager: GameManager, log: (msg: string) 
     });
     const resume = Number(req.header('last-event-id') ?? req.query.since ?? 0);
     let sent = Number.isFinite(resume) && resume > 0 ? Math.floor(resume) : 0;
+    // 观众席另有序号：每条连接从头给（最多 200 条），页面按 seq 去重
+    let chatSent = 0;
     let timer: NodeJS.Timeout | null = null;
     const push = () => {
       timer = null;
-      const view = manager.webView(rec, sent);
+      const view = manager.webView(rec, sent, chatSent);
       sent = view.last_seq;
+      chatSent = view.chat_seq;
       res.write(`id: ${view.last_seq}\nevent: view\ndata: ${JSON.stringify(view)}\n\n`);
     };
     // 对局一有变化就推（合并 200 毫秒内的多次变化）
