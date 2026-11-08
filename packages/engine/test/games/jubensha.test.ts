@@ -177,7 +177,7 @@ describe('jubensha: start checks', () => {
 describe('jubensha: flow with a DM', () => {
   const withHost = (seed: string | number = 1) => game({ bots: 5, options: { host: '105' }, seed });
 
-  it('DM takes no role, sees everything; players see only their own script', () => {
+  it('DM takes no role, sees the truth; players see only their own script', () => {
     const g = withHost();
     expect(g.rec.state.host).toBe(5);
     expect(Object.keys(g.rec.state.cast).sort()).toEqual(['1', '2', '3', '4']);
@@ -195,6 +195,42 @@ describe('jubensha: flow with a DM', () => {
     expect(JSON.stringify(g.view(lin))).toContain('母亲住院急需用钱');
     // 认罪书在坦白阶段之前不给
     expect(g.view(lin).you.confession).toBeUndefined();
+  });
+
+  it('DM view stays compact; scripts and act secrets come from lookup, only to the DM', () => {
+    const g = withHost();
+    const lin = g.seatOfRole('lin');
+    const dm = g.view(5);
+    const dump = JSON.stringify(dm.you);
+    // 角色剧本不再整本塞进视角（JB-ATT6：DM 视角超过 7 万字，bot 读不了）
+    expect(dump).not.toContain('母亲住院急需用钱');
+    expect(dm.you.cast.find((c: any) => c.seat === lin)).toEqual({ seat: lin, name: expect.any(String), role: expect.any(String) });
+    expect(dm.you.dm_actions.join('\n')).toContain('lookup');
+    const logLen = g.rec.log.length;
+    const outLen = g.rec.outbox.length;
+    const r = g.act(5, { action: 'lookup', text: `${lin}号` }) as any;
+    expect(r.message).toContain('母亲住院急需用钱');
+    expect(r.message).toContain('（凶手）');
+    expect((g.act(5, { action: 'lookup', text: 'act:1' }) as any).message).toContain('第 1 幕');
+    expect(() => g.act(5, { action: 'lookup', text: 'nope' })).toThrow(/lookup 的 text/);
+    expect(() => g.act(5, { action: 'lookup', text: 'act:9' })).toThrow(/没有第 9 幕/);
+    // 查资料不进任何日志、不进群（剧本开局时私发给扮演者本人，那条本来就在）
+    expect(g.rec.log.length).toBe(logLen);
+    expect(g.rec.outbox.length).toBe(outLen);
+    // 玩家不能 lookup
+    expect(() => g.act(lin === 1 ? 2 : 1, { action: 'lookup', text: String(lin) })).toThrow();
+  });
+
+  it('DM lookup pages long text', () => {
+    const big = { ...DEMO, roles: DEMO.roles.map((r: any, i: number) => (i === 0 ? { ...r, script: '长'.repeat(14000) } : r)) };
+    const { manager } = setup(1, undefined, { scripts: memoryLibrary([big]) });
+    const { gameId, rec } = startGame(manager, 'jubensha', { players: [1, 2, 3, 4, 5].map((n) => bot(n)), autoReferee: true, options: { host: '105', random_seats: false, stage: 'group' } });
+    const seat = Number(Object.entries((rec as Rec).state.cast).find(([, k]) => k === DEMO.roles[0].key)![0]);
+    const p1 = (manager.act(bot(5), gameId, { action: 'lookup', text: String(seat) }) as any).message as string;
+    expect(p1).toMatch(/第 1\/3 页/);
+    expect(p1.length).toBeLessThan(6300);
+    const p3 = (manager.act(bot(5), gameId, { action: 'lookup', text: String(seat), number: 3 }) as any).message as string;
+    expect(p3).toMatch(/第 3\/3 页/);
   });
 
   it('runs intro → acts → vote → confession → truth, and solves the case', () => {
