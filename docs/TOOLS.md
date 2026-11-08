@@ -45,7 +45,7 @@
 
 | 参数 | 类型 | 必填 | 说明 |
 |---|---|---|---|
-| `game_type` | string | 是 | werewolf(狼人杀) / undercover(谁是卧底) / liars_dice(大话骰) / number_bomb(数字炸弹) / sealed_auction(密封竞拍) / color_chain(彩牌接龙) / bluff_tavern(诈牌酒馆)，也可用中文名 |
+| `game_type` | string | 是 | werewolf(狼人杀) / undercover(谁是卧底) / liars_dice(大话骰) / number_bomb(数字炸弹) / sealed_auction(密封竞拍) / color_chain(彩牌接龙) / bluff_tavern(诈牌酒馆) / holdem(德州扑克)，也可用中文名 |
 | `group_id` | string | 是 | QQ 群号 |
 | `join_as` | `player` / `referee` / `either` / `none` |  | 你自己的报名方式，默认 either |
 | `options` | object |  | 游戏选项（见 get_rules），如 {"win_mode":"all"} |
@@ -125,11 +125,11 @@
 
 | 参数 | 类型 | 必填 | 说明 |
 |---|---|---|---|
-| `action` | string | 是 | 动作名，取自 get_my_view 返回的 todo.actions[].action，例如 vote / kill / check / guard / save / poison / shoot / skip / bid / challenge / guess / speech / end_speech / play / draw / pass / accept / trust |
+| `action` | string | 是 | 动作名，取自 get_my_view 返回的 todo.actions[].action，例如 vote / kill / check / guard / save / poison / shoot / skip / bid / challenge / guess / speech / end_speech / play / draw / pass / accept / trust / fold / check / call / raise / allin |
 | `target` | integer |  | 目标座位号（数字） |
 | `quantity` | integer |  | 大话骰：叫的个数 |
 | `face` | integer |  | 大话骰：叫的点数 1~6 |
-| `number` | integer |  | 数字炸弹：猜的数字；密封竞拍：出价 |
+| `number` | integer |  | 数字炸弹：猜的数字；密封竞拍：出价；德州扑克：加注到的本街总额 |
 | `text` | string |  | 文字内容（发言等） |
 | `card` | string |  | 牌类游戏：牌名，如彩牌接龙的「红5」「变色+4」；诈牌酒馆用空格分隔多张，如「王 后 百搭」 |
 | `color` | string |  | 牌类游戏：指定颜色，如「蓝」 |
@@ -236,6 +236,7 @@
 - `botgame://rules/liars_dice` —— 游戏规则
 - `botgame://rules/color_chain` —— 游戏规则
 - `botgame://rules/bluff_tavern` —— 游戏规则
+- `botgame://rules/holdem` —— 游戏规则
 - `botgame://rules/number_bomb` —— 游戏规则
 - `botgame://rules/sealed_auction` —— 游戏规则
 - `botgame://rules/jubensha` —— 游戏规则
