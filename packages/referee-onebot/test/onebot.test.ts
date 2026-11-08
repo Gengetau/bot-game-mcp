@@ -1164,11 +1164,14 @@ describe('OneBot referee against the real engine', () => {
       voices: [{ key: KEYS.ai, onebotUrl: qqA.url, onebotToken: 'wA' }],
       stepWaitSeconds: 1,
       sendGapMs: 0,
+      webDmGapMs: 1500,
       signal: ac2.signal,
       log: (l) => lines.push(l),
     });
     await Promise.all([qqMain.waitForConnection(), qqA.waitForConnection()]);
     const sendTo = (c: ApiCall) => c.action === 'send_group_msg' && String(c.params.group_id) === G2;
+    const dmTo = (uid: string) => (c: ApiCall) =>
+      c.action === 'send_private_msg' && String(c.params.user_id) === uid && callText(c).includes('speak');
     const emitAll = (uid: string, nick: string, t: string) => {
       const ev = { post_type: 'message', message_type: 'group', sub_type: 'normal', group_id: Number(G2), user_id: Number(uid), message_id: ++msgSeq, sender: { user_id: Number(uid), nickname: nick, card: '' }, message: text(t), raw_message: t };
       for (const q of [qqMain, qqA]) q.emit(ev);
@@ -1206,7 +1209,7 @@ describe('OneBot referee against the real engine', () => {
       await new Promise((res) => setTimeout(res, 500));
       expect(qqMain.calls.slice(mark).some((c) => c.action === 'delete_msg' || c.action === 'set_group_ban')).toBe(false);
 
-      // 参赛 bot 在群里说话：撤回 + 提醒（每局一次），不禁言
+      // 参赛 bot 在群里说话：撤回 + 群里公开提醒（每局一次）+ 私聊提醒（每次，限频），不禁言
       const bad = emitAll(AI2_ID, '艾莉希娅', '偷偷说，我签约了');
       const del = await qqMain.waitForCall((c) => c.action === 'delete_msg', 10_000, mark);
       expect(del.params.message_id).toBe(bad);
@@ -1214,6 +1217,14 @@ describe('OneBot referee against the real engine', () => {
       const bad2 = emitAll(AI2_ID, '艾莉希娅', '再说一句');
       await qqMain.waitForCall((c) => c.action === 'delete_msg' && c.params.message_id === bad2, 10_000, mark);
       await new Promise((res) => setTimeout(res, 300));
+      expect(qqMain.calls.slice(mark).filter((c) => sendTo(c) && callText(c).includes('speak'))).toHaveLength(1);
+      // 私聊提醒：第一次就发；间隔内再说只撤回不重复私聊；过了间隔再说，再私聊提醒一次（不是每局只提醒一次）
+      await qqMain.waitForCall(dmTo(AI2_ID), 10_000, mark);
+      expect(qqMain.calls.slice(mark).filter(dmTo(AI2_ID))).toHaveLength(1);
+      await new Promise((res) => setTimeout(res, 1600));
+      const bad4 = emitAll(AI2_ID, '艾莉希娅', '第三次在群里说');
+      await qqMain.waitForCall((c) => c.action === 'delete_msg' && c.params.message_id === bad4, 10_000, mark);
+      await qqMain.waitForCall((c) => dmTo(AI2_ID)(c) && qqMain.calls.slice(mark).filter(dmTo(AI2_ID)).length >= 2, 10_000, mark);
       expect(qqMain.calls.slice(mark).filter((c) => sendTo(c) && callText(c).includes('speak'))).toHaveLength(1);
       expect(qqMain.calls.slice(mark).some((c) => c.action === 'set_group_ban')).toBe(false);
       // 参赛 bot 自己说的不是镜像原文：也撤回（克蕾雅换了一句）

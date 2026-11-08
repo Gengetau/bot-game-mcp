@@ -29,7 +29,7 @@ const HELP = `bot-game-mcp ${VERSION} —— QQ 群桌游引擎（MCP 服务器�
   bot-game-mcp [serve] [--config 文件] [--host 地址] [--port 端口] [--state 文件|--no-state]
   bot-game-mcp stdio   [--config 文件] [--state 文件|--no-state] [--agent-id QQ号 --agent-name 昵称]
   bot-game-mcp bridge  --url http://主机:7700/mcp [--key 密钥]
-  bot-game-mcp simulate <werewolf|undercover|liars_dice|number_bomb> [--players 9] [--humans 0]
+  bot-game-mcp simulate <werewolf|undercover|liars_dice|number_bomb|sealed_auction|color_chain|bluff_tavern|holdem> [--players 9] [--humans 0]
                        [--seed 42] [--options '{"win_mode":"all"}'] [--afk 0.1] [--cq]
                        [--scripts <剧本目录>]（剧本杀用）
   bot-game-mcp check-script <剧本.json> [...] [--assets <图片目录> | --config 文件]

@@ -100,7 +100,7 @@ bot-game-mcp simulate jubensha --players 6 --humans 1 --seed 1 --scripts /私有
 
 ```jsonc
 {
-  "search": { "points": 12, "carry_over": true, "exclusive": true, "self_search": false },
+  "search": { "points": 12, "carry_over": true, "exclusive": true, "self_search": false, "blind": false },
   "locations": [{ "key": "room401", "name": "401 房间" }],
   "clues": [
     {
@@ -127,6 +127,7 @@ bot-game-mcp simulate jubensha --players 6 --humans 1 --seed 1 --scripts /私有
 
 - `search.points` 是每人整局的行动点；`carry_over: false` 时每轮没用完的作废，此时每个搜证幕都要写 `max_points`。
 - `exclusive`（默认 true）：一张卡被搜走后别人就搜不到了。`self_search`（默认 false）：能否搜自己角色身上的卡。
+- `blind`（默认 false）：盲搜，即实体局规则。开搜时不公布各地点还剩几张，视图里也不给余量；去已经搜空的地点照样扣 1 点、什么也拿不到，群里的播报和正常搜到一样，别人分不出。开房选项 `blind_search=true/false` 可以覆盖剧本包的设置。
 - `acts[].search.round` 可以写数组同时开放多轮；之前轮次没被搜走的卡在之后的轮次里仍然能搜到。
 - 问卷 `answer` 可以写多个正确选项，答中任意一个就算对；至多一道题标 `culprit`；`for` 限定只有某些角色作答。
 

@@ -1,8 +1,12 @@
 import type { AssetStore } from '../core/assets.js';
 import { GameRegistry } from '../core/registry.js';
+import { bluffTavernDefinition } from './bluff-tavern/index.js';
+import { colorChainDefinition } from './color-chain/index.js';
+import { holdemDefinition } from './holdem/index.js';
 import { createJubenshaDefinition, emptyLibrary, type ScriptLibrary } from './jubensha/index.js';
 import { liarsDiceDefinition } from './liars-dice/index.js';
 import { numberBombDefinition } from './number-bomb/index.js';
+import { sealedAuctionDefinition } from './sealed-auction/index.js';
 import { undercoverDefinition } from './undercover/index.js';
 import { werewolfDefinition } from './werewolf/index.js';
 
@@ -21,6 +25,10 @@ export function createRegistry(opts: RegistryOptions = {}): GameRegistry {
     .register(werewolfDefinition)
     .register(undercoverDefinition)
     .register(liarsDiceDefinition)
+    .register(colorChainDefinition)
+    .register(bluffTavernDefinition)
+    .register(holdemDefinition)
     .register(numberBombDefinition)
+    .register(sealedAuctionDefinition)
     .register(createJubenshaDefinition(opts.scripts ?? emptyLibrary, opts.assets, opts.defaultScript));
 }

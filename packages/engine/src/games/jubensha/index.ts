@@ -42,6 +42,8 @@ const optionsSchema = z.object({
   clue_level: z.enum(['easy', 'normal']).default('normal'),
   /** 结束时公布没被搜到的线索 */
   reveal_unfound: z.boolean().default(true),
+  /** 盲搜：不填按剧本包的 search.blind；true = 不公布地点余量，搜空的地点照样扣 1 点 */
+  blind_search: z.boolean().optional(),
   /** 舞台：group = 在群里玩；web = 在网页「灯下剧场」上玩（只有 AI 上场，群里只收镜像） */
   stage: z.enum(['group', 'web']).default('web'),
 });
@@ -550,6 +552,11 @@ export function createJubenshaDefinition(
       return c.round === undefined || this.sx.opened.includes(c.round);
     }
 
+    /** 本局是否盲搜（选项优先，其次剧本包） */
+    private get blind(): boolean {
+      return this.options.blind_search ?? this.pack.search.blind;
+    }
+
     private placeName(at: string): string {
       return this.pack.locations.find((l) => l.key === at)?.name ?? this.pack.roles.find((r) => r.key === at)?.name ?? at;
     }
@@ -653,11 +660,13 @@ export function createJubenshaDefinition(
       const ms = cfg.minutes ? cfg.minutes * 60_000 : this.options.search_timeout_s * 1000;
       const seats = this.playerSeats();
       const placeText = this.places(null)
-        .map((p) => `${p.name}（${this.remaining(p.key, null).length} 张）`)
+        .map((p) => (this.blind ? p.name : `${p.name}（${this.remaining(p.key, null).length} 张）`))
         .join('、');
       this.announce(
         `🔎 ${act.title}·搜证（限时 ${formatDuration(ms)}${cfg.max_points ? `，本轮每人最多 ${cfg.max_points} 点` : ''}）：` +
-          `私聊裁判「搜 地点」或「搜 3号」，拿到的卡可以「深入 线索名」，搜完发「搜完了」。群里只播报谁搜了哪里，卡面只私发给你。\n可搜：${placeText || '无'}`,
+          `私聊裁判「搜 地点」或「搜 3号」，拿到的卡可以「深入 线索名」，搜完发「搜完了」。群里只播报谁搜了哪里，卡面只私发给你。` +
+          (this.blind ? '本局盲搜：不公布各处还剩几张，搜到已经空了的地方也会花掉 1 点。' : '') +
+          `\n可搜：${placeText || '无'}`,
         { kind: 'search_start' },
       );
       this.openPhase({
@@ -686,6 +695,22 @@ export function createJubenshaDefinition(
         }
       }
       this.announce(`⏹️ ${this.pack.acts[ph.data.i as number]!.title} 搜证结束。`);
+    }
+
+    /** 盲搜白搜一次：扣 1 点，群里播报和正常搜证一模一样（别人分不出），结果只告诉本人 */
+    private searchNothing(seat: Seat, at: string, allow: number): string {
+      if (allow < 1) throw invalidAction(`点数不够：搜一次至少要 1 点，你本轮还有 ${allow} 点。`);
+      const k = String(seat);
+      this.sx.left[k] = Math.max(0, (this.sx.left[k] ?? 0) - 1);
+      const spent = this.phase!.data.spent as Record<string, number>;
+      spent[k] = (spent[k] ?? 0) + 1;
+      const place = this.placeName(at);
+      this.sx.log.push({ act: this.state.act, seat, place, how: 'search' });
+      this.announce(`🔎 ${this.label(seat)} 搜了 ${place}。`, { kind: 'search_log' });
+      this.tell(seat, `🔍 你搜了 ${place}，什么也没找到（花掉 1 点）。`, { kind: 'search_empty' });
+      const left = this.allowance(seat);
+      if (left <= 0) this.markDone(seat);
+      return `你搜了 ${place}，什么也没找到（花掉 1 点）。${left <= 0 ? '本轮点数已用完。' : `本轮还能用 ${left} 点。`}`;
     }
 
     /** 把卡交给 seat：私发卡面，群里只播报去向 */
@@ -734,6 +759,7 @@ export function createJubenshaDefinition(
       if (input.action === 'search') {
         const at = this.resolvePlace(seat, input);
         const pool = this.remaining(at, seat);
+        if (!pool.length && this.blind) return this.searchNothing(seat, at, allow);
         if (!pool.length) throw invalidAction(`${this.placeName(at)} 现在没有你能搜到的线索了。`);
         const afford = pool.filter((c) => c.cost <= allow);
         if (!afford.length) throw invalidAction(`点数不够：${this.placeName(at)} 的线索至少要 ${Math.min(...pool.map((c) => c.cost))} 点，你本轮还有 ${allow} 点。`);
@@ -1253,6 +1279,7 @@ export function createJubenshaDefinition(
         points_left: sx.left[String(seat)] ?? 0,
         ...(searching ? { this_round: this.allowance(seat) } : {}),
         places: this.places(seat).map((p) => {
+          if (this.blind) return { key: p.key, name: p.name };
           const left = this.remaining(p.key, seat);
           return { key: p.key, name: p.name, left: left.length, cards: left.map((c) => c.title) };
         }),
@@ -1308,7 +1335,11 @@ export function createJubenshaDefinition(
         ...(s.search
           ? {
               search: {
-                places: this.places(null).map((p) => ({ key: p.key, name: p.name, left: this.remaining(p.key, null).length })),
+                places: this.places(null).map((p) => ({
+                  key: p.key,
+                  name: p.name,
+                  ...(this.blind ? {} : { left: this.remaining(p.key, null).length }),
+                })),
                 log: s.search.log.map((x) => ({ seat: x.seat, place: x.place, how: x.how })),
                 shared: s.search.shared.map((x) => {
                   const c = this.clueById(x.id)!;
