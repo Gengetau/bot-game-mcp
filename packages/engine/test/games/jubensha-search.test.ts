@@ -200,7 +200,8 @@ describe('jubensha search: searching', () => {
     g.drive({}, () => g.key() === 'search');
     const dm = g.view(5).you;
     expect(dm.search.clues.map((c: any) => c.id)).toContain('stairs_paint');
-    expect(dm.search.clues.find((c: any) => c.id === 'stairs_paint').text).toContain('半个鞋印');
+    expect(dm.search.clues.find((c: any) => c.id === 'stairs_paint').text).toBeUndefined();
+    expect((g.act(5, { action: 'lookup', text: 'clue:stairs_paint' }) as any).message).toContain('半个鞋印');
     expect(() => g.act(5, { action: 'give', target: 1, text: 'mei_boots' })).toThrow(/没有「mei_boots」|可选/); // 第二轮还没开放
     g.act(5, { action: 'give', target: 1, text: 'dock_boat' });
     expect(g.view(1).you.search.points_left).toBe(3);

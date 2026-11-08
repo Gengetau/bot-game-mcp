@@ -351,7 +351,7 @@ export function createJubenshaDefinition(
       if (host) {
         this.tell(
           host,
-          `🎬 你是本局 DM。完整剧本、真相和主持手册在 get_my_view 的 you 里（只有你能看到）。` +
+          `🎬 你是本局 DM。真相、主持手册和角色表在 get_my_view 的 you 里（只有你能看到）；各角色剧本、各幕私密内容、线索全文用 act lookup 按需查。` +
             `你可以在群里串场、私下回答提问（answer）、提前进入下一环节（next）、延长讨论（extend）；不能透露真相，也不能替玩家推理。`,
           { kind: 'dm_brief', category: 'role' },
         );
@@ -1118,9 +1118,60 @@ export function createJubenshaDefinition(
           this.announce(`🎭 DM 将「${ph.title}」延长 ${mins} 分钟。`);
           return `已延长 ${mins} 分钟。`;
         }
+        case 'lookup':
+          return this.dmLookup(String(input.text ?? input.target ?? ''), Number(input.number ?? 1));
         default:
-          throw invalidAction('DM 可执行：speech（发言）、answer（私下回答）、give（发线索，target+text）、next（进入下一环节）、extend（延长，number=分钟）。');
+          throw invalidAction('DM 可执行：speech（发言）、answer（私下回答）、give（发线索，target+text）、next（进入下一环节）、extend（延长，number=分钟）、lookup（查资料，text=座位号/act:N/clue:id/questionnaire/images）。');
       }
+    }
+
+    /** DM 按需查资料：只回给 DM 本人（act 的返回值），不进任何日志 */
+    private dmLookup(what: string, page: number): string {
+      const s = this.state;
+      const q = what.trim().replace(/号$/, '');
+      let title: string;
+      let body: string;
+      const seat = Number(q);
+      if (/^\d+$/.test(q) && this.playerSeats().includes(seat)) {
+        const r = this.roleOf(seat)!;
+        title = `${seat}号 ${this.player(seat).name} 扮演【${r.name}】${this.isCulprit(seat) ? '（凶手）' : ''}`;
+        const acts = s.pack.acts
+          .slice(0, s.unlocked)
+          .map((a, i) => (a.private[r.key] ? `\n\n【第 ${i + 1} 幕·${a.title}·私密】\n${a.private[r.key]}` : ''))
+          .join('');
+        body = `【公开介绍】${r.public}\n\n【角色剧本】\n${r.script}${acts}${r.confession ? `\n\n【认罪书】\n${r.confession}` : ''}`;
+      } else if (/^act[:：]?\d+$/i.test(q)) {
+        const i = Number(q.replace(/\D/g, '')) - 1;
+        const a = s.pack.acts[i];
+        if (!a) throw invalidAction(`没有第 ${i + 1} 幕（共 ${s.pack.acts.length} 幕）。`);
+        title = `第 ${i + 1} 幕「${a.title}」${i < s.unlocked ? '' : '（还没解锁）'}`;
+        const priv = this.playerSeats()
+          .map((x) => {
+            const r = this.roleOf(x)!;
+            return a.private[r.key] ? `\n\n【${x}号 ${r.name}·私密】\n${a.private[r.key]}` : '';
+          })
+          .join('');
+        body = `【公开】\n${a.public || '（无）'}${priv}`;
+      } else if (/^clue[:：]/i.test(q)) {
+        const id = q.replace(/^clue[:：]/i, '').trim();
+        const c = s.pack.clues.find((x) => x.id === id || x.title === id);
+        if (!c) throw invalidAction(`没有线索 ${id}。`);
+        title = `线索【${c.title}】(${c.id})${c.at ? ` @${this.placeName(c.at)}` : ''}`;
+        body = c.text;
+      } else if (/^questionnaire$/i.test(q) || q === '问卷') {
+        title = '问卷';
+        body = s.pack.questionnaire.map((x, i) => `${i + 1}. ${x.question}\n   答案：${JSON.stringify(x.answer)}　选项：${JSON.stringify(x.options)}`).join('\n') || '（这个剧本没有问卷）';
+      } else if (/^images$/i.test(q) || q === '图片') {
+        title = '图片说明';
+        body = s.pack.images.map((x) => `${x.id}：${x.caption}`).join('\n') || '（这个剧本没有图片）';
+      } else {
+        throw invalidAction(`lookup 的 text 可以是：座位号（如 "3"）、"act:1"、"clue:线索id"、"questionnaire"、"images"。玩家座位：${this.playerSeats().join('、')}。`);
+      }
+      const PAGE = 6000;
+      const pages = Math.max(1, Math.ceil(body.length / PAGE));
+      const p = Math.min(pages, Math.max(1, Math.trunc(page) || 1));
+      const chunk = body.slice((p - 1) * PAGE, p * PAGE);
+      return `📖 ${title}${pages > 1 ? `（第 ${p}/${pages} 页${p < pages ? `，下一页加 "number":${p + 1}` : ''}）` : ''}\n${chunk}`;
     }
 
     protected override timeoutDefault(seat: Seat, _req: PendingRequest): void {
@@ -1136,33 +1187,26 @@ export function createJubenshaDefinition(
       const ended = this.rec.status === 'ended';
       if (seat === s.host) {
         const ph = this.phase;
+        // 只给精简版：整本剧本塞进视角会有好几万字，bot 读不了（2026-11-08 JB-ATT6：DM 视角超过 7 万字）。
+        // 角色剧本、各幕私密内容、问卷、图片说明、线索全文用 lookup 按需查。
         return {
           role: 'DM',
-          note: '你是 DM：不扮演角色，不能透露真相、不能替玩家推理。可以串场、私下回答提问、掌握节奏。',
+          note: '你是 DM：不扮演角色，不能透露真相、不能替玩家推理。可以串场、私下回答提问、掌握节奏。回答前需要细节就用 lookup 查（只有你看得到）。',
           dm_actions: [
             'speak({"text":"…"}) 在群里说话',
             'act({"action":"answer","target":3,"text":"…"}) 私下回答 3 号的提问',
             'act({"action":"next"}) 提前结束当前的自我介绍/阅读/讨论环节',
             'act({"action":"extend","number":2}) 把当前阅读/搜证/讨论环节延长 2 分钟（每环节最多 2 次）',
             ...(s.search ? ['act({"action":"give","target":3,"text":"线索id"}) 把一张已开放的线索交给 3 号（不花点数）'] : []),
+            `act({"action":"lookup","text":"3"}) 查 3 号的角色剧本（含已解锁各幕的私密内容）；text 也可以是 "act:1"（第 1 幕全部内容）${s.search ? '、"clue:线索id"（线索全文）' : ''}${s.pack.questionnaire.length ? '、"questionnaire"（问卷和答案）' : ''}${s.pack.images.length ? '、"images"（图片说明）' : ''}；内容长时加 "number":2 看第 2 页`,
           ],
           open_questions: s.qa.filter((x) => x.a === undefined).map((x) => ({ from: x.from, role: this.roleOf(x.from)?.name, question: x.q })),
           current: ph ? { key: ph.key, title: ph.title, seconds_left: ph.deadline === null ? null : Math.max(0, Math.round((ph.deadline - this.now()) / 1000)) } : null,
           host_notes: s.pack.host_notes,
           truth: s.pack.truth,
           culprits: this.playerSeats().filter((x) => this.isCulprit(x)).map((x) => ({ seat: x, role: this.roleOf(x)!.name })),
-          cast: this.playerSeats().map((x) => {
-            const r = this.roleOf(x)!;
-            return { seat: x, name: this.player(x).name, role: r.name, script: r.script, confession: r.confession || undefined };
-          }),
-          acts: s.pack.acts.map((a, i) => ({
-            title: a.title,
-            unlocked: i < s.unlocked,
-            public: a.public,
-            private: a.private,
-            ...(a.public_images.length || Object.keys(a.private_images).length ? { public_images: a.public_images, private_images: a.private_images } : {}),
-          })),
-          ...(s.pack.images.length ? { images: s.pack.images.map((x) => ({ id: x.id, caption: x.caption })) } : {}),
+          cast: this.playerSeats().map((x) => ({ seat: x, name: this.player(x).name, role: this.roleOf(x)!.name })),
+          acts: s.pack.acts.map((a, i) => ({ act: i + 1, title: a.title, unlocked: i < s.unlocked })),
           faq: s.pack.faq,
           ...(s.search
             ? {
@@ -1173,16 +1217,13 @@ export function createJubenshaDefinition(
                     id: c.id,
                     title: c.title,
                     at: c.at ? this.placeName(c.at) : undefined,
-                    round: c.round,
-                    cost: c.cost,
-                    text: c.text,
                     holders: s.search!.holders[c.id] ?? [],
-                    shared: s.search!.shared.some((x) => x.id === c.id),
+                    ...(s.search!.shared.some((x) => x.id === c.id) ? { shared: true } : {}),
                   })),
                 },
               }
             : {}),
-          ...(s.pack.questionnaire.length ? { questionnaire: s.pack.questionnaire, quiz_answers: ph?.key === 'quiz' ? ph.data.answers : s.quiz?.answers } : {}),
+          ...(s.pack.questionnaire.length ? { questionnaire: `${s.pack.questionnaire.length} 道题，用 lookup "questionnaire" 查看`, ...(ph?.key === 'quiz' ? { quiz_answers: ph.data.answers } : {}) } : {}),
         };
       }
       const r = this.roleOf(seat);
