@@ -3,6 +3,7 @@ import { GameRegistry } from '../core/registry.js';
 import { createJubenshaDefinition, emptyLibrary, type ScriptLibrary } from './jubensha/index.js';
 import { liarsDiceDefinition } from './liars-dice/index.js';
 import { numberBombDefinition } from './number-bomb/index.js';
+import { sealedAuctionDefinition } from './sealed-auction/index.js';
 import { undercoverDefinition } from './undercover/index.js';
 import { werewolfDefinition } from './werewolf/index.js';
 
@@ -22,5 +23,6 @@ export function createRegistry(opts: RegistryOptions = {}): GameRegistry {
     .register(undercoverDefinition)
     .register(liarsDiceDefinition)
     .register(numberBombDefinition)
+    .register(sealedAuctionDefinition)
     .register(createJubenshaDefinition(opts.scripts ?? emptyLibrary, opts.assets, opts.defaultScript));
 }

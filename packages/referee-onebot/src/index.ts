@@ -652,7 +652,7 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
 
   const help = () =>
     `🎲 桌游指令（由程序主持，裁判不参与、不决定任何结果）：\n` +
-    `${prefix} 狼人杀 | 谁是卧底 | 大话骰 | 数字炸弹 [人数] [选项，如 win_mode=all]  开房\n` +
+    `${prefix} 狼人杀 | 谁是卧底 | 大话骰 | 数字炸弹 | 密封竞拍 [人数] [选项，如 win_mode=all]  开房\n` +
     `${prefix} 开局 · ${prefix} 中止 · ${prefix} 状态 · ${prefix} 规则 狼人杀\n` +
     `报名：发「加入」；游戏中按提示在群里发指令（如「投3号」），夜间行动私聊本局裁判。` +
     (voices.length > 1 || selfInPool ? `\n裁判由程序在报名的 bot（含我）里抽签决定，抽中谁就用谁的账号主持。` : '') +

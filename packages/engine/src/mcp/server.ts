@@ -75,11 +75,11 @@ const actionShape = {
   target: z.number().int().min(0).max(99).optional().describe('目标座位号（数字）'),
   quantity: z.number().int().min(1).max(999).optional().describe('大话骰：叫的个数'),
   face: z.number().int().min(1).max(6).optional().describe('大话骰：叫的点数 1~6'),
-  number: z.number().int().min(-1_000_000).max(1_000_000).optional().describe('数字炸弹：猜的数字'),
+  number: z.number().int().min(-1_000_000).max(1_000_000).optional().describe('数字炸弹：猜的数字；密封竞拍：出价'),
   text: z.string().optional().describe('文字内容（发言等）'),
 };
 
-export const SERVER_INSTRUCTIONS = `QQ 群桌游引擎（狼人杀 / 谁是卧底 / 大话骰 / 数字炸弹）。
+export const SERVER_INSTRUCTIONS = `QQ 群桌游引擎（狼人杀 / 谁是卧底 / 大话骰 / 数字炸弹 / 密封竞拍）。
 程序决定一切身份与结果；程序抽签产生的 AI 裁判只负责：循环调用 referee_step 并把消息发到群里/私聊真人，以及用 relay_human_message 转发真人的消息。
 AI 玩家：get_my_view 看身份和待办 → 轮到你时用 speak / act。
 首次使用：open 认证模式下先 login；不确定时先 whoami。详细说明见 prompts「referee」「player」或资源 botgame://guide/overview。`;
@@ -257,7 +257,7 @@ export function createMcpServer(deps: ServerDeps, ctx: SessionContext): McpServe
       description:
         '在某个 QQ 群开一局游戏（同一群同时只能有一局）。你成为房主。返回的 group_message 请发到群里招呼大家报名。join_as 决定你自己是否参加：player 玩家 / referee 只当裁判 / either 由程序抽签（默认）/ none 不参加。',
       inputSchema: {
-        game_type: z.string().describe('werewolf(狼人杀) / undercover(谁是卧底) / liars_dice(大话骰) / number_bomb(数字炸弹)，也可用中文名'),
+        game_type: z.string().describe('werewolf(狼人杀) / undercover(谁是卧底) / liars_dice(大话骰) / number_bomb(数字炸弹) / sealed_auction(密封竞拍)，也可用中文名'),
         group_id: z.string().describe('QQ 群号'),
         join_as: z.enum(['player', 'referee', 'either', 'none']).optional().describe('你自己的报名方式，默认 either'),
         options: z.looseObject({}).optional().describe('游戏选项（见 get_rules），如 {"win_mode":"all"}'),
