@@ -969,6 +969,12 @@ export class GameManager {
     const num = toInt(raw.number);
     if (num !== undefined) out.number = num;
     if (typeof raw.text === 'string') out.text = sanitizeUserText(raw.text);
+    if (typeof raw.card === 'string') out.card = sanitizeUserText(raw.card).slice(0, 40);
+    if (typeof raw.color === 'string') out.color = sanitizeUserText(raw.color).slice(0, 20);
+    if (raw.call !== undefined && raw.call !== null) {
+      if (typeof raw.call !== 'boolean') throw badRequest('call 必须是 true 或 false。');
+      out.call = raw.call;
+    }
     return out;
   }
 
@@ -1754,6 +1760,9 @@ export class GameManager {
     if (input.quantity !== undefined) parts.push(`${input.quantity}个`);
     if (input.face !== undefined) parts.push(`${input.face}点`);
     if (input.number !== undefined) parts.push(`数字 ${input.number}`);
+    if (input.card) parts.push(`牌 ${input.card}`);
+    if (input.color) parts.push(`颜色 ${input.color}`);
+    if (input.call) parts.push('宣告');
     if (input.text) parts.push(`「${input.text.slice(0, 40)}」`);
     return parts.join(' ');
   }

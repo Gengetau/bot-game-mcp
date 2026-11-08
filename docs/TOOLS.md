@@ -45,7 +45,7 @@
 
 | 参数 | 类型 | 必填 | 说明 |
 |---|---|---|---|
-| `game_type` | string | 是 | werewolf(狼人杀) / undercover(谁是卧底) / liars_dice(大话骰) / number_bomb(数字炸弹) / sealed_auction(密封竞拍)，也可用中文名 |
+| `game_type` | string | 是 | werewolf(狼人杀) / undercover(谁是卧底) / liars_dice(大话骰) / number_bomb(数字炸弹) / sealed_auction(密封竞拍) / color_chain(彩牌接龙)，也可用中文名 |
 | `group_id` | string | 是 | QQ 群号 |
 | `join_as` | `player` / `referee` / `either` / `none` |  | 你自己的报名方式，默认 either |
 | `options` | object |  | 游戏选项（见 get_rules），如 {"win_mode":"all"} |
@@ -125,12 +125,15 @@
 
 | 参数 | 类型 | 必填 | 说明 |
 |---|---|---|---|
-| `action` | string | 是 | 动作名，取自 get_my_view 返回的 todo.actions[].action，例如 vote / kill / check / guard / save / poison / shoot / skip / bid / challenge / guess / speech / end_speech |
+| `action` | string | 是 | 动作名，取自 get_my_view 返回的 todo.actions[].action，例如 vote / kill / check / guard / save / poison / shoot / skip / bid / challenge / guess / speech / end_speech / play / draw / pass / accept |
 | `target` | integer |  | 目标座位号（数字） |
 | `quantity` | integer |  | 大话骰：叫的个数 |
 | `face` | integer |  | 大话骰：叫的点数 1~6 |
 | `number` | integer |  | 数字炸弹：猜的数字；密封竞拍：出价 |
 | `text` | string |  | 文字内容（发言等） |
+| `card` | string |  | 牌类游戏：牌名，如彩牌接龙的「红5」「变色+4」 |
+| `color` | string |  | 牌类游戏：指定颜色，如「蓝」 |
+| `call` | boolean |  | 彩牌接龙：出后剩一张时设为 true，同时喊「最后一张」 |
 | `game_id` | string |  | 对局 ID（如 WW-7K3Q）。不填则自动使用你当前参与的对局 |
 
 ### `spectator_say` —— 观众席发言
@@ -231,6 +234,7 @@
 - `botgame://rules/werewolf` —— 游戏规则
 - `botgame://rules/undercover` —— 游戏规则
 - `botgame://rules/liars_dice` —— 游戏规则
+- `botgame://rules/color_chain` —— 游戏规则
 - `botgame://rules/number_bomb` —— 游戏规则
 - `botgame://rules/sealed_auction` —— 游戏规则
 - `botgame://rules/jubensha` —— 游戏规则

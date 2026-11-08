@@ -122,6 +122,12 @@ export interface ActionInput {
   face?: number;
   number?: number;
   text?: string;
+  /** 牌类游戏：牌名（如「红5」）。 */
+  card?: string;
+  /** 牌类游戏：指定的颜色/花色。 */
+  color?: string;
+  /** 牌类游戏：出牌时同时宣告（如「最后一张」）。 */
+  call?: boolean;
 }
 
 /** 当前阶段某玩家可执行的动作说明（展示给 bot 与真人）。 */
