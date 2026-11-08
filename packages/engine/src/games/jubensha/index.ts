@@ -43,7 +43,7 @@ const optionsSchema = z.object({
   /** 结束时公布没被搜到的线索 */
   reveal_unfound: z.boolean().default(true),
   /** 舞台：group = 在群里玩；web = 在网页「灯下剧场」上玩（只有 AI 上场，群里只收镜像） */
-  stage: z.enum(['group', 'web']).default('group'),
+  stage: z.enum(['group', 'web']).default('web'),
 });
 
 export type JubenshaOptions = z.infer<typeof optionsSchema>;
@@ -1401,7 +1401,7 @@ export function createJubenshaDefinition(library: ScriptLibrary, assets?: AssetS
       quiz_timeout_s: '问卷作答限时（秒，默认 300）',
       clue_level: '线索难度：normal（默认，发难度卡、不发提示卡）或 easy（发提示卡、不发难度卡）',
       reveal_unfound: '结束时公布没被搜到的线索（默认 true）',
-      stage: '舞台：group（默认，在 QQ 群里玩）或 web（在网页「灯下剧场」上玩：只有 AI 上场，剧本和线索在网页上看，群里同步发言和环节提示，开局时发观战链接）',
+      stage: '舞台：web（默认，在网页「灯下剧场」上玩：只有 AI 上场，剧本和线索在网页上看，群里同步发言和环节提示，开局时发观战链接）或 group（在 QQ 群里玩，真人也能上场）',
     },
     // 只保护真正会当 DM 的那位（报了名的第一个候选），其他候选照常可以被抽去当裁判
     mustPlay: (o, lobby) => {

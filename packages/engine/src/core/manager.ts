@@ -156,7 +156,7 @@ export interface RelayResult {
 type Waiter = () => void;
 
 const MAX_PUMP = 200;
-const WEB_NO_HUMANS = '本局在网页「灯下剧场」上进行，目前只有 AI 上场；真人开局后点群里的观战链接就能看。';
+const WEB_NO_HUMANS = '本局在网页「灯下剧场」上进行，目前只有 AI 上场；真人开局后点群里的观战链接就能看。想和 AI 一起玩，开房时加上 stage=group（在群里玩）。';
 
 export class GameManager {
   readonly registry: GameRegistry;

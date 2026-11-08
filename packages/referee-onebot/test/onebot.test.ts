@@ -283,7 +283,7 @@ describe('OneBot referee against the real engine', () => {
   it('jubensha: sends clue images to the group and by private chat as OneBot image segments', async () => {
     const humans = ['61001', '61002', '61003', '61004'];
     let mark = qq.calls.length;
-    groupMsg(OWNER, '主人', text('/桌游 剧本杀'));
+    groupMsg(OWNER, '主人', text('/桌游 剧本杀 stage=group'));
     await qq.waitForCall((c) => groupSend(c) && callText(c).includes('报名'), 10_000, mark);
     for (const [i, uid] of humans.entries()) groupMsg(uid, `玩家${i + 1}`, text('加入'));
     await qq.waitForCall((c) => groupSend(c) && callText(c).includes('玩家4'), 10_000, mark);

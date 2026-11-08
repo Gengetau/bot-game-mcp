@@ -33,7 +33,7 @@ function game(opts: { bots?: number; humans?: number; options?: Record<string, u
     players,
     humans,
     ...(useRef ? { referee: REF } : { autoReferee: true }),
-    options: { random_seats: false, ...opts.options },
+    options: { random_seats: false, stage: 'group', ...opts.options },
   });
   const r = rec as Rec;
   const act = (seat: Seat, input: ActionInput) => manager.act(identityOf(r, seat), gameId, input);
@@ -389,7 +389,7 @@ describe('jubensha: image clues', () => {
       players: Array.from({ length: nb }, (_, i) => bot(i + 1)),
       humans: Array.from({ length: opts.humans ?? 0 }, (_, i) => human(i + 1)),
       referee: REF,
-      options: { random_seats: false, cast: opts.cast ?? {} },
+      options: { random_seats: false, stage: 'group', cast: opts.cast ?? {} },
     });
     return { manager, clock, gameId, rec: rec as Rec, prepared };
   }

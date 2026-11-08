@@ -21,7 +21,7 @@ function game(opts: { pack?: unknown; options?: Record<string, unknown>; seed?: 
     players,
     humans,
     ...(humans.length ? { referee: REF } : { autoReferee: true }),
-    options: { random_seats: false, ...(opts.host ? { host: '105' } : {}), ...opts.options },
+    options: { random_seats: false, stage: 'group', ...(opts.host ? { host: '105' } : {}), ...opts.options },
   });
   const r = rec as Rec;
   const act = (seat: Seat, input: ActionInput) => manager.act(identityOf(r, seat), gameId, input);
@@ -372,7 +372,7 @@ describe('jubensha search: secrecy and random play', () => {
       const { gameId, rec } = startGame(manager, 'jubensha', {
         players: withHost ? players : players.slice(0, 4),
         autoReferee: true,
-        options: withHost ? { host: '105' } : {},
+        options: { stage: 'group', ...(withHost ? { host: '105' } : {}) },
       });
       await playToEnd(manager, gameId, { clock, onStep: (r) => void JSON.parse(JSON.stringify(r.state)) });
       expect(rec.status).toBe('ended');
