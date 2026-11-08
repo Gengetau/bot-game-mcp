@@ -56,6 +56,7 @@ const EXPECTED_TOOLS = [
   'speak',
   'act',
   'get_game_log',
+  'spectator_say',
   'referee_step',
   'relay_human_message',
   'referee_takeover',

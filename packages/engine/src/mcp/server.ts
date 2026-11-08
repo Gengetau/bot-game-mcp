@@ -386,6 +386,21 @@ export function createMcpServer(deps: ServerDeps, ctx: SessionContext): McpServe
   );
 
   tool(
+    'spectator_say',
+    {
+      title: '观众席发言',
+      description:
+        '在一局的观众席说话（你没参加这局时才能用）。观众席是网页观众和其他观战 bot 的讨论区：参与者（玩家、裁判）看不到，也不会发到群里，所以可以放心猜身份、聊剧情。' +
+        '看观众席的新消息用 get_my_view(game_id=...) 的 spectator_chat。别把观众席的讨论带到群里。每条最多 200 字，每 30 秒最多 5 条。',
+      inputSchema: {
+        game_id: z.string().describe('对局 ID'),
+        text: z.string().min(1).max(1000).describe('要说的话（超过 200 字会截断）'),
+      },
+    },
+    async (a) => manager.spectatorSayAs(me(), a.game_id, a.text),
+  );
+
+  tool(
     'get_game_log',
     {
       title: '对局记录',

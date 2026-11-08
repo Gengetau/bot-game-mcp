@@ -469,3 +469,64 @@ describe('jubensha: image clues', () => {
     expect(toOneBot([{ type: 'image', asset: 'demo/map.png', caption: 'c' }])).toEqual([{ type: 'text', data: { text: '[图片]' } }]);
   });
 });
+
+describe('剧本杀报名人数按剧本走', () => {
+  const HOST = 'referee-proc';
+  /** 4 人本、DM 候选是 Bot1；Bot1~Bot5 都登记进裁判抽签池（像线上自家 bot 那样既报名玩家又可被抽去当裁判） */
+  function lobby(options: Record<string, unknown> = {}) {
+    const { manager, clock } = setup(3, undefined, { scripts: lib() });
+    const { summary } = manager.createGame(bot(1), { type: 'jubensha', groupId: 'g', joinAs: 'player', options: { stage: 'web', host: '101', ...options } });
+    const id = summary.game_id;
+    manager.offerReferee(bot(1), id, HOST);
+    return { manager, clock, id };
+  }
+
+  it('caps sign-ups at script players + DM + one for the referee', () => {
+    const { manager, id } = lobby();
+    for (let n = 2; n <= 6; n++) {
+      clock_join(manager, id, n);
+    }
+    const s = manager.listGames()[0]!;
+    // 4 人本 + DM + 要从玩家里抽的裁判 = 6
+    expect(s.max_players).toBe(6);
+    expect(s.min_players).toBe(5);
+    expect((s as any).seats).toEqual({ min: 4, max: 5 });
+    expect(() => manager.joinGame(bot(7), id, { as: 'player' })).toThrow(/人数已满/);
+    expect(() => manager.joinGame(bot(8), id, { as: 'either' })).toThrow(/人数已满/);
+    // 只当裁判的报名不占名额
+    manager.joinGame(bot(9), id, { as: 'referee' });
+  });
+
+  it('a lobby that already overflowed seats the earliest joiners, DM first, and names the rest', () => {
+    const { manager, id } = lobby();
+    for (let n = 2; n <= 6; n++) clock_join(manager, id, n);
+    const rec = manager.getRecord(id);
+    // 模拟上线前已经报多了的房间（JB-2E6Q：6 人本报了 10 人）
+    for (let n = 7; n <= 10; n++) rec.lobby.push({ id: `10${n}`, name: `Bot${n}`, kind: 'agent', pref: 'player', selfPost: true, joinedAt: 1000 + n });
+    const r = manager.startGame(bot(1), id);
+    expect(r.referee).not.toBeNull();
+    expect(r.referee!.id).not.toBe('101');
+    expect(rec.players).toHaveLength(5);
+    expect(rec.players.map((p) => p.id)).toContain('101');
+    const st = rec.state as JubenshaState;
+    expect(st.host).toBeGreaterThan(0);
+    const text = rec.log.map((e) => e.text).join('\n');
+    expect(text).toMatch(/这局没上场/);
+    expect(text).toContain('Bot10');
+  });
+
+  it('without a DM candidate the referee is not drawn from players when that would leave too few', () => {
+    const { manager, id } = lobby({ host: '' });
+    for (let n = 2; n <= 4; n++) clock_join(manager, id, n);
+    // 4 人报名、4 人本：抽走一位玩家就不够了，只能报错，不能悄悄开成 3 人
+    expect(() => manager.startGame(bot(1), id)).toThrow(/需要 4 人上场，另要一位报名者当裁判，当前报名 4 人/);
+    clock_join(manager, id, 5);
+    manager.startGame(bot(1), id);
+    expect(manager.getRecord(id).players).toHaveLength(4);
+  });
+
+  function clock_join(manager: ReturnType<typeof setup>['manager'], id: string, n: number) {
+    manager.joinGame(bot(n), id, { as: 'player' });
+    if (n <= 5) manager.offerReferee(bot(n), id, HOST);
+  }
+});

@@ -252,3 +252,24 @@ h1 { font: 700 26px/1.25 var(--serif); margin: 0; letter-spacing: .04em; overflo
   .mini-clock { display: none; }
   .status { position: static; margin: 12px 24px 16px; border-radius: 12px; }
 }
+
+/* ───────── 观众席 ───────── */
+.tabs .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--danger); margin-left: 4px; vertical-align: super; }
+.chat { display: flex; flex-direction: column; gap: 8px; padding-top: 10px; }
+.chat-note { margin: 0; font-size: 12px; color: var(--ink-3); }
+.chat-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; min-height: 120px; }
+.chat-list .empty { color: var(--ink-3); font-size: 14px; padding: 16px 0; text-align: center; }
+.chat-msg { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 8px 12px; }
+.chat-msg.mine { border-color: var(--accent); }
+.chat-msg .who { display: flex; gap: 6px; align-items: baseline; font-size: 12px; color: var(--ink-3); }
+.chat-msg .who b { color: var(--ink); font-size: 13px; }
+.chat-msg .tag { font-size: 11px; padding: 0 6px; border-radius: 999px; background: var(--accent-soft); color: var(--accent-ink); }
+.chat-msg .tx { margin: 2px 0 0; overflow-wrap: anywhere; white-space: pre-wrap; }
+.chat-form { display: flex; gap: 6px; position: sticky; bottom: 0; background: var(--paper); padding: 8px 0 calc(8px + env(safe-area-inset-bottom)); }
+.chat-form input { font: inherit; font-size: 16px; min-width: 0; border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; background: var(--card); color: var(--ink); }
+.chat-form input:focus { outline: 2px solid var(--accent); outline-offset: 0; }
+.chat-name { flex: 0 0 6.5em; }
+.chat-text { flex: 1; }
+.chat-form .send { flex: none; width: auto; margin: 0; padding: 8px 14px; background: var(--accent); border-color: var(--accent); color: #fff; font-size: 15px; }
+.chat-form .send:disabled { opacity: .5; cursor: default; }
+.chat-err { margin: 0; color: var(--danger); font-size: 13px; }

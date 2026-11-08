@@ -391,6 +391,8 @@ interface CurrentGame {
   players: number;
   min: number;
   max: number;
+  /** 人数按选项定死的游戏（剧本杀）：去掉裁判后至少要几人上场（min/max 已经算上了要从玩家里抽的裁判） */
+  seatMin?: number;
   /** 开房时指定的目标人数：凑满就开 */
   target?: number;
   /** 进行中：裁判账号与代行它的进程 */
@@ -671,6 +673,7 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
       players: Number(g.players ?? 0),
       min: Number(g.min_players ?? 0),
       max: Number(g.max_players ?? 0),
+      ...(g.seats ? { seatMin: Number(g.seats.min) } : {}),
       target: fresh ? undefined : st.game?.target,
       refereeId: g.referee_id ? String(g.referee_id) : null,
       hostedBy: g.referee_hosted_by ? String(g.referee_hosted_by) : null,
@@ -770,7 +773,7 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
       if (id === main.id) return false;
       const pref = g.lobbyPref.get(id);
       if (pref === 'referee' || pref === 'either') return true;
-      return g.hosted.has(id) && g.players - 1 >= g.min;
+      return g.hosted.has(id) && g.players - 1 >= (g.seatMin ?? g.min);
     });
     const mainSitsOut = !otherCandidate;
     return { effective: g.players - (mainSitsOut && g.mainIsPlayer ? 1 : 0), mainSitsOut };
@@ -921,6 +924,7 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
             players: Number(sum.players ?? 0),
             min: Number(sum.min_players ?? 0),
             max: Number(sum.max_players ?? 0),
+            ...(sum.seats ? { seatMin: Number(sum.seats.min) } : {}),
             target: target ? Number(target) : undefined,
             refereeId: null,
             hostedBy: null,

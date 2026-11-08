@@ -156,6 +156,11 @@ export interface RelayResult {
 type Waiter = () => void;
 
 const MAX_PUMP = 200;
+/** 观众席：每条最多几个字、每人每个时间窗最多几条、每局最多留多少条 */
+const SPECTATOR_MAX_CHARS = 200;
+const SPECTATOR_WINDOW_MS = 30_000;
+const SPECTATOR_PER_WINDOW = 5;
+const SPECTATOR_KEEP = 500;
 const WEB_NO_HUMANS = '本局在网页「灯下剧场」上进行，目前只有 AI 上场；真人开局后点群里的观战链接就能看。想和 AI 一起玩，开房时加上 stage=group（在群里玩）。';
 
 export class GameManager {
@@ -219,6 +224,9 @@ export class GameManager {
   }
 
   /** 状态变化后：保存 + 唤醒等待者。 */
+  /** 观众席限流：key → 最近发言时间 */
+  private chatHits = new Map<string, number[]>();
+
   touch(rec?: GameRecord): void {
     if (rec) {
       rec.updatedAt = this.now();
@@ -287,8 +295,7 @@ export class GameManager {
       referee_hosted_by: rec.referee?.hostedBy ?? null,
       referee_idle_s: rec.referee && rec.status === 'running' ? Math.max(0, Math.round((this.now() - rec.referee.lastSeenAt) / 1000)) : null,
       players: rec.status === 'lobby' ? rec.lobby.filter((e) => e.pref !== 'referee').length : rec.players.length,
-      min_players: def.minPlayers,
-      max_players: def.maxPlayers,
+      ...this.limitsView(rec),
       ...(rec.status === 'lobby'
         ? { lobby: rec.lobby.map((e) => ({ name: e.name, id: e.id, kind: e.kind, join_as: e.pref, hosted: Boolean(e.hostedBy) })) }
         : {}),
@@ -470,7 +477,7 @@ export class GameManager {
     return {
       summary: this.summary(rec),
       group_message:
-        `🎮【${def.name}】房间 ${id} 已开启（${def.minPlayers}~${def.maxPlayers} 人）！\n` +
+        `🎮【${def.name}】房间 ${id} 已开启（${this.limitsText(rec)}）！\n` +
         `真人想玩请在群里发送「加入」，AI 玩家调用 join_game 加入。\n` +
         `${rec.autoReferee ? '本局由程序自动主持。' : '本局需要一位 AI 裁判（由程序从报名裁判的 AI 中抽签产生），裁判只负责推进流程和私聊发身份。'}\n` +
         (rec.stage === 'web' ? `🎭 本局在网页「灯下剧场」上进行（只有 AI 上场，真人开局后点链接观战）。\n` : '') +
@@ -498,8 +505,11 @@ export class GameManager {
     const existing = rec.lobby.find((e) => e.id === actor.id);
     if (existing && existing.kind === 'human') throw badRequest('该 QQ 号已作为真人玩家报名。');
     const playerCount = rec.lobby.filter((e) => e.pref !== 'referee' && e.id !== actor.id).length;
-    if (!existing && pref === 'player' && playerCount >= def.maxPlayers) {
-      throw invalidState(`人数已满（最多 ${def.maxPlayers} 人）。`, '可以 join_as="referee" 报名当裁判。');
+    const cap = this.lobbyLimits(rec).max;
+    // 「玩家或裁判」的报名以前不占名额（可能被抽去当裁判）；人数定死的游戏已经给裁判多留了位置，也要算上
+    const counts = pref === 'player' || (pref === 'either' && Boolean(def.playerRange?.(rec.options as never)));
+    if (!existing && counts && playerCount >= cap) {
+      throw invalidState(`人数已满（${this.limitsText(rec)}）。`, '可以 join_as="referee" 报名当裁判。');
     }
     if (existing) {
       existing.pref = pref;
@@ -515,6 +525,37 @@ export class GameManager {
       message: `已${existing ? '更新报名' : '加入'}：${prefText}。`,
       group_message: `✅ ${this.nameOf(actor)} 报名了【${def.name}】（${prefText}），当前 ${this.lobbyCountText(rec)}。`,
     };
+  }
+
+  /** 上场人数范围（不含裁判）：游戏按选项定的（如剧本人数），否则 minPlayers~maxPlayers */
+  private seatRange(rec: GameRecord): { min: number; max: number } {
+    const def = this.def(rec);
+    const r = def.playerRange?.(rec.options as never);
+    return r ? { min: Math.max(def.minPlayers, r.min), max: Math.min(def.maxPlayers, r.max) } : { min: def.minPlayers, max: def.maxPlayers };
+  }
+
+  /**
+   * 报名人数范围（不含只当裁判的人）。人数定死的游戏，裁判要从报名玩家里抽时（没有只当裁判的候选、也不是程序主持）多留一个位置。
+   */
+  private lobbyLimits(rec: GameRecord): { min: number; max: number; slack: number } {
+    const r = this.seatRange(rec);
+    if (!this.def(rec).playerRange?.(rec.options as never)) return { ...r, slack: 0 };
+    const pureReferee = rec.lobby.some((e) => e.kind === 'agent' && e.pref === 'referee' && this.canReferee(e.id));
+    const slack = rec.autoReferee || pureReferee ? 0 : 1;
+    return { min: r.min + slack, max: r.max + slack, slack };
+  }
+
+  private limitsView(rec: GameRecord) {
+    const l = this.lobbyLimits(rec);
+    const r = this.seatRange(rec);
+    return { min_players: l.min, max_players: l.max, ...(l.slack || r.min !== this.def(rec).minPlayers || r.max !== this.def(rec).maxPlayers ? { seats: r } : {}) };
+  }
+
+  private limitsText(rec: GameRecord): string {
+    const r = this.seatRange(rec);
+    const l = this.lobbyLimits(rec);
+    const seats = r.min === r.max ? `${r.min} 人` : `${r.min}~${r.max} 人`;
+    return l.slack ? `上场 ${seats}，另要一位报名者当裁判，最多报名 ${l.max} 人` : seats;
   }
 
   private lobbyCountText(rec: GameRecord): string {
@@ -573,8 +614,8 @@ export class GameManager {
       existing.name = name;
       return { summary: this.summary(rec), message: `${name} 已在名单中。`, group_message: null };
     }
-    if (rec.lobby.filter((e) => e.pref !== 'referee').length >= def.maxPlayers) {
-      throw invalidState(`人数已满（最多 ${def.maxPlayers} 人）。`);
+    if (rec.lobby.filter((e) => e.pref !== 'referee').length >= this.lobbyLimits(rec).max) {
+      throw invalidState(`人数已满（${this.limitsText(rec)}）。`);
     }
     rec.lobby.push({ id: userId, name, kind: 'human', pref: 'player', selfPost: false, joinedAt: this.now() });
     this.touch(rec);
@@ -645,7 +686,8 @@ export class GameManager {
     const either = agents.filter((e) => e.pref === 'either');
     // 代行登记过的账号组成抽签池：非玩家的候选随时可抽；玩家报名的候选只有在抽走一人后人数仍够时才可抽
     const playerCount = rec.lobby.filter((e) => e.pref !== 'referee' || mustPlay(e)).length;
-    const pool = agents.filter((e) => e.hostedBy && (e.pref === 'referee' || playerCount - 1 >= def.minPlayers));
+    const range = this.seatRange(rec);
+    const pool = agents.filter((e) => e.hostedBy && (e.pref === 'referee' || playerCount - 1 >= range.min));
     let draw: RefereeDraw | null = null;
     if (!rec.autoReferee) {
       if (pool.length > 0) {
@@ -658,6 +700,13 @@ export class GameManager {
       } else if (either.length > 0) {
         referee = pick(this.rng, either);
       } else {
+        const lim = this.lobbyLimits(rec);
+        if (lim.slack && playerCount < lim.min) {
+          throw invalidState(
+            `${def.name}需要 ${lim.min - lim.slack} 人上场，另要一位报名者当裁判，当前报名 ${playerCount} 人。`,
+            '请再拉人报名（或让一个 AI 以 join_as="referee" 只报名当裁判）。',
+          );
+        }
         throw invalidState(
           '没有可担任裁判的 AI。',
           '至少需要一个 AI 以 join_as="referee" 或 "either" 报名（裁判不参与游戏，只负责推进和私聊发身份）；或创建对局时设置 auto_referee=true。',
@@ -668,11 +717,20 @@ export class GameManager {
     }
 
     // —— 2. 确定玩家并检查人数 ——
-    const entries = rec.lobby.filter((e) => e !== referee && (e.pref !== 'referee' || mustPlay(e)));
+    let entries = rec.lobby.filter((e) => e !== referee && (e.pref !== 'referee' || mustPlay(e)));
+    // 人数按选项定死的游戏（剧本杀）：报名多了按报名先后入座（必须上场的人优先），多出的人这局不上场
+    let benched: LobbyEntry[] = [];
+    if (def.playerRange?.(rec.options as never) && entries.length > range.max) {
+      const k = Math.min(range.max, def.seatsFor?.(rec.options as never, entries) ?? range.max);
+      const order = [...entries].sort((a, b) => Number(mustPlay(b)) - Number(mustPlay(a)) || a.joinedAt - b.joinedAt);
+      const keep = new Set(order.slice(0, k));
+      benched = entries.filter((e) => !keep.has(e));
+      entries = entries.filter((e) => keep.has(e));
+    }
     const n = entries.length;
-    if (n < def.minPlayers || n > def.maxPlayers) {
+    if (n < range.min || n > range.max) {
       throw invalidState(
-        `${def.name}需要 ${def.minPlayers}~${def.maxPlayers} 名玩家，当前 ${n} 名（不含裁判${referee ? ` ${referee.name}` : ''}）。`,
+        `${def.name}需要 ${range.min === range.max ? range.min : `${range.min}~${range.max}`} 名玩家，当前 ${n} 名（不含裁判${referee ? ` ${referee.name}` : ''}）。`,
         n < def.minPlayers ? '请继续拉人报名（真人发送「加入」，AI 调用 join_game）。' : '请让部分人退出报名。',
       );
     }
@@ -718,6 +776,7 @@ export class GameManager {
       `🎲【${def.name}】对局 ${rec.id} 开始！\n` +
         drawText +
         `座位表（程序随机分配）：\n${seatsText}\n` +
+        (benched.length ? `报名人数超过本局上限，按报名先后入座；${benched.map((e) => e.name).join('、')} 这局没上场。\n` : '') +
         `身份已由程序随机分配${rec.players.some((p) => p.kind === 'human') ? '，真人玩家请查收裁判私聊' : ''}。`,
     );
     inst.start();
@@ -1028,7 +1087,7 @@ export class GameManager {
    * 事件按「公开事件」重新编号（从 1 开始），免得从序号空档推断别人的私密行动；
    * since 之后的事件才返回（断线续传）。正常结束的局附上完整复盘（含私密事件）。
    */
-  webView(rec: GameRecord, since = 0) {
+  webView(rec: GameRecord, since = 0, chatSince = 0) {
     const def = this.def(rec);
     const pub = rec.log.filter((e) => e.audience.type === 'public');
     const from = Math.max(0, Math.min(Math.floor(Number(since) || 0), pub.length));
@@ -1080,6 +1139,8 @@ export class GameManager {
       last_seq: pub.length,
       ...(rec.result ? { result: rec.result } : {}),
       ...(rec.status === 'aborted' ? { aborted: rec.abortReason ?? '已中止' } : {}),
+      chat: this.chatSince(rec, chatSince, 200),
+      chat_seq: rec.spectatorChatSeq ?? 0,
       ...(finished && from === 0
         ? {
             replay: rec.log.map((e) => ({
@@ -1094,6 +1155,69 @@ export class GameManager {
         : {}),
       server_time: this.now(),
     };
+  }
+
+  // ═══════════════════════════ 观众席 ═══════════════════════════
+
+  /** 是不是本局参与者（报名的人、玩家、裁判、候补裁判）：参与者看不到观众席，也不能在观众席说话 */
+  isParticipant(rec: GameRecord, id: string): boolean {
+    return (
+      rec.players.some((p) => p.id === id) ||
+      rec.lobby.some((e) => e.id === id) ||
+      rec.referee?.id === id ||
+      rec.standbyReferees.some((r) => r.id === id) ||
+      (rec.formerReferees ?? []).some((r) => r.id === id)
+    );
+  }
+
+  private chatSince(rec: GameRecord, since: number, limit: number) {
+    const all = rec.spectatorChat ?? [];
+    const from = all.filter((c) => c.seq > (Number(since) || 0));
+    return from.slice(-limit).map((c) => ({ seq: c.seq, at: c.at, from: c.from, name: c.name, text: c.text }));
+  }
+
+  /**
+   * 观众席发言。web = 网页观众（key 用来限流，比如 IP）；agent = 没参加本局的 bot。
+   * 只在开局之后能说；不进群、不进任何参与者的视图；不唤醒玩家的长轮询。
+   */
+  spectatorSay(rec: GameRecord, from: { kind: 'web'; name: string; key: string } | { kind: 'agent'; actor: Identity }, text: string) {
+    if (rec.startedAt === null) throw invalidState('对局还没开始，观众席还没开放。');
+    if (from.kind === 'agent' && this.isParticipant(rec, from.actor.id)) {
+      throw forbidden('你是本局参与者（报名的人、玩家或裁判），不能在观众席说话：观众席的讨论对参与者保密。');
+    }
+    const body = [...sanitizeUserText(String(text ?? '')).replace(/\s+/g, ' ').trim()].slice(0, SPECTATOR_MAX_CHARS).join('');
+    if (!body) throw badRequest('说点什么吧（不能是空的）。');
+    const name =
+      from.kind === 'agent'
+        ? this.nameOf(from.actor)
+        : sanitizeName(String(from.name ?? ''), 16) || '观众';
+    const key = from.kind === 'agent' ? `agent:${from.actor.id}` : `web:${from.key}`;
+    const now = this.now();
+    const hits = (this.chatHits.get(key) ?? []).filter((t) => now - t < SPECTATOR_WINDOW_MS);
+    if (hits.length >= SPECTATOR_PER_WINDOW) {
+      throw invalidState(`说得太快了：每 ${SPECTATOR_WINDOW_MS / 1000} 秒最多 ${SPECTATOR_PER_WINDOW} 条。`);
+    }
+    hits.push(now);
+    this.chatHits.set(key, hits);
+    if (this.chatHits.size > 5000) for (const [k, v] of this.chatHits) if (now - (v[v.length - 1] ?? 0) > SPECTATOR_WINDOW_MS) this.chatHits.delete(k);
+    const seq = (rec.spectatorChatSeq ?? 0) + 1;
+    rec.spectatorChatSeq = seq;
+    const chat = (rec.spectatorChat ??= []);
+    chat.push({ seq, at: now, from: from.kind, name, text: body });
+    if (chat.length > SPECTATOR_KEEP) chat.splice(0, chat.length - SPECTATOR_KEEP);
+    // 只通知观战页面和存档；不 bump，免得唤醒玩家的长轮询
+    this.emitter.emit('change', rec.id);
+    this.store?.schedule(() => this.snapshot());
+    return { seq, name, text: body };
+  }
+
+  /** bot 在观众席发言（MCP 工具 spectator_say） */
+  spectatorSayAs(actor: Identity, gameId: string, text: string) {
+    const id = String(gameId ?? '').trim();
+    if (!id) throw badRequest('需要 game_id：要在哪一局的观众席说话。', '用 list_games 看正在进行的对局。');
+    const rec = this.getRecord(id);
+    const r = this.spectatorSay(rec, { kind: 'agent', actor }, text);
+    return { ok: true, seq: r.seq, message: '已发到观众席（只有观众能看到，参与者看不到，也不会进群）。' };
   }
 
   /** 统一视角：玩家看到自己的身份与待办，裁判看到主持信息，旁观者只看公开信息。 */
@@ -1114,8 +1238,7 @@ export class GameManager {
         game: header,
         lobby: rec.lobby.map((e) => ({ name: e.name, qq: e.id, kind: e.kind, join_as: e.pref })),
         you: me ? { joined: true, join_as: me.pref, host: rec.hostId === actor.id } : { joined: false },
-        min_players: def.minPlayers,
-        max_players: def.maxPlayers,
+        ...this.limitsView(rec),
         hint:
           rec.hostId === actor.id
             ? '你是房主：人齐后调用 start_game 开局（程序会抽签选出 AI 裁判、随机座位与身份）。'
@@ -1187,10 +1310,23 @@ export class GameManager {
       };
     }
     const humanSeat = rec.players.some((p) => p.id === actor.id && p.kind === 'human');
+    // 观众席：只给真正的观众（参与者一律看不到）
+    let chat: ReturnType<GameManager['chatSince']> | null = null;
+    if (!this.isParticipant(rec, actor.id)) {
+      const ck = `${rec.id}:${actor.id}:chat`;
+      chat = this.chatSince(rec, opts.fullLog ? 0 : (this.viewCursors.get(ck) ?? 0), 30);
+      this.viewCursors.set(ck, rec.spectatorChatSeq ?? 0);
+    }
     return {
       ...base,
       you: { role: 'spectator' },
       new_events: limited,
+      ...(chat
+        ? {
+            spectator_chat: chat,
+            spectator_note: '观众席：网页观众和其他没参加本局的 bot 的讨论，参与者看不到。想说话用 spectator_say（每条最多 200 字，别把观众席的讨论带到群里）。',
+          }
+        : {}),
       hint: humanSeat
         ? '这个 QQ 号是本局的真人玩家：真人的身份与私密信息只由裁判私聊发给本人，MCP 会话里只能看到公开信息。'
         : '你不是本局玩家，只能看到公开信息。',

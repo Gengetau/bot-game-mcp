@@ -193,6 +193,15 @@ export interface GameResult {
   reveal: { seat: Seat; name: string; identity: string }[];
 }
 
+export interface SpectatorChatEntry {
+  seq: number;
+  at: number;
+  /** web = 网页观众（自填昵称，不核实）；agent = 接入引擎的 bot（昵称来自它的身份） */
+  from: 'web' | 'agent';
+  name: string;
+  text: string;
+}
+
 export interface GameRecord<S = any, O = any> {
   id: string;
   type: string;
@@ -234,6 +243,9 @@ export interface GameRecord<S = any, O = any> {
   stage?: Stage;
   /** 网页观战令牌（stage=web 时生成；只能看公开视图，结束后看复盘）。 */
   watchToken?: string;
+  /** 观众席：网页观众和没参加本局的 bot 的闲聊。参与者（玩家、裁判、候补裁判）看不到，也不进群。旧存档没有。 */
+  spectatorChat?: SpectatorChatEntry[];
+  spectatorChatSeq?: number;
 }
 
 export type Stage = 'group' | 'web';
