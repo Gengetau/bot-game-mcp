@@ -231,7 +231,7 @@ sequenceDiagram
 | `allowedHosts` | — | Host 头白名单（只比主机名，不比端口），防范 DNS rebinding。监听本机时默认只放行 `localhost`/`127.0.0.1`，所以**经隧道或反向代理对外暴露时必须把对外域名加进来**（连同 `127.0.0.1`），否则外部请求得到 403 `Invalid Host` |
 | `legacySse` | `true` | 是否开启旧版 HTTP+SSE 传输（`/sse` + `/messages`） |
 | `publicApi` | `true` | 是否开启只读观战接口 `/api/games`、`/api/games/:id`。对局结束前只返回公开记录；经隧道对外开放时建议关掉 |
-| `web` | `true` | 网页舞台「灯下剧场」`/web/`：开房选 `stage=web` 的局（目前只有剧本杀）在网页上进行，按每局的观战令牌只读访问，见 [docs/WEB-STAGE-DESIGN.md](docs/WEB-STAGE-DESIGN.md) |
+| `web` | `true` | 网页舞台「灯下剧场」`/web/`：`stage=web` 的局在网页上进行（目前只有剧本杀，且剧本杀默认就是网页舞台；要真人上场就开房时写 `stage=group`），按每局的观战令牌只读访问，见 [docs/WEB-STAGE-DESIGN.md](docs/WEB-STAGE-DESIGN.md) |
 | `webUrl` | `null` | 网页的公网地址，如 `https://example.com/web/`。开局时拼成观战链接发到群里；不填就没有链接 |
 | `auth.agents[].keyIssuer` | — | 设为 `true` 的账号能用 `issue_key` / `revoke_key` / `list_keys` 管理运行时发放的密钥，但没有其他管理员权限（不能中止别人的对局，不能 `force`）。适合让某个 bot 的模型自己给新 bot 发密钥 |
 | `auth.issuedKeysFile` | `./data/botgame-keys.json` | 管理员在运行时用 `issue_key` 发放的密钥存在这里（0600），重启仍有效；`null` 关闭运行时发放 |

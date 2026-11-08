@@ -104,10 +104,20 @@ describe('网页舞台：开房和开局', () => {
     expect(rec.outbox.every((d) => d.target.type === 'group' && d.noGate)).toBe(true);
   });
 
+  it('jubensha opens on the web stage by default; stage=group keeps it in the group and lets humans join', () => {
+    const s = setup(1, undefined, { scripts: memoryLibrary([PACK]) });
+    const a = s.manager.createGame(REF, { type: 'jubensha', groupId: 'g1', joinAs: 'referee' });
+    expect(s.manager.getRecord(a.summary.game_id).stage).toBe('web');
+    expect(() => s.manager.addHuman(REF, a.summary.game_id, { userId: '50001', name: '真人' })).toThrow(/stage=group/);
+    const b = s.manager.createGame(REF, { type: 'jubensha', groupId: 'g2', joinAs: 'referee', options: { stage: 'group' } });
+    expect(s.manager.getRecord(b.summary.game_id).stage ?? 'group').toBe('group');
+    expect(() => s.manager.addHuman(REF, b.summary.game_id, { userId: '50001', name: '真人' })).not.toThrow();
+  });
+
   it('keeps the group stage exactly as before (gating, no mirror flags)', () => {
     const { manager, rec } = (() => {
       const s = setup(1, undefined, { scripts: memoryLibrary([PACK]) });
-      return { manager: s.manager, rec: startGame(s.manager, 'jubensha', { players: [1, 2, 3, 4].map((n) => bot(n)), referee: REF }).rec };
+      return { manager: s.manager, rec: startGame(s.manager, 'jubensha', { players: [1, 2, 3, 4].map((n) => bot(n)), referee: REF, options: { stage: 'group' } }).rec };
     })();
     void manager;
     expect(rec.stage).toBeUndefined();
