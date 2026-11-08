@@ -47,6 +47,18 @@ function callErrorCode(res: CallToolResult): string {
   return text.match(/\(code: ([A-Z_]+)\)/)?.[1] ?? 'INTERNAL';
 }
 
+/** 日志里的错误原因：第一行，去掉 ❌ 和 (code: …)，最多 80 字 */
+function callErrorBrief(res: CallToolResult): string {
+  const first = res.content?.[0];
+  const text = first && first.type === 'text' ? first.text : '';
+  const brief = (text.split(/\r?\n/, 1)[0] ?? '')
+    .replace(/^(?:\s|❌)+/u, '')
+    .replace(/\s*\(code: [^)]+\)\s*$/u, '')
+    .trim();
+  const chars = Array.from(brief);
+  return chars.length > 80 ? `${chars.slice(0, 80).join('')}…` : brief;
+}
+
 const gameIdOpt = z.string().optional().describe('对局 ID（如 WW-7K3Q）。不填则自动使用你当前参与的对局');
 const waitSeconds = z
   .number()
@@ -118,7 +130,7 @@ export function createMcpServer(deps: ServerDeps, ctx: SessionContext): McpServe
         }
         if (deps.log && (res.isError || !QUIET_TOOLS.has(name))) {
           const who = ctx.identity ? `${ctx.identity.name}(${ctx.identity.id})` : '(未登录)';
-          const code = res.isError ? ` ✗ ${callErrorCode(res)}` : ' ok';
+          const code = res.isError ? ` ✗ ${callErrorCode(res)}：${callErrorBrief(res)}` : ' ok';
           deps.log(`[call] ${who} ${name}${code} ${Date.now() - t0}ms`);
         }
         return res;
