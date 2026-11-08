@@ -110,6 +110,17 @@ async function main(argv: string[]): Promise<void> {
   const voicesFile = str('voices') ?? process.env.BOTGAME_VOICES;
   const voices = voicesFile ? loadVoices(voicesFile) : [];
   const ac = new AbortController();
+  // 兜底：正常收尾超过 10 秒就强制退出，部署时不用 kill -9
+  ac.signal.addEventListener(
+    'abort',
+    () => {
+      setTimeout(() => {
+        console.error('[referee] 10 秒内没能正常退出，强制退出');
+        process.exit(1);
+      }, 10_000).unref();
+    },
+    { once: true },
+  );
   process.on('SIGINT', () => ac.abort());
   process.on('SIGTERM', () => ac.abort());
   await runReferee({

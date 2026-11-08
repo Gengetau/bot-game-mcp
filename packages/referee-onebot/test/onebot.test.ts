@@ -472,6 +472,60 @@ describe('OneBot referee against the real engine', () => {
     }
   }, 60_000);
 
+  it('stops within a few seconds even while a long referee_step is waiting', async () => {
+    const qq2 = new FakeOneBot('tok3');
+    await qq2.start();
+    const ac2 = new AbortController();
+    let finished = false;
+    const done = runReferee({
+      url: http.url,
+      key: KEYS.ref,
+      onebotUrl: qq2.url,
+      onebotToken: 'tok3',
+      groupId: GROUP,
+      admins: [OWNER],
+      bots: [AI_ID],
+      stepWaitSeconds: 30, // 长轮询：不中断的话停下要等 30 多秒
+      sendGapMs: 0,
+      autoStartSeconds: 2,
+      selfInPool: false,
+      signal: ac2.signal,
+      log: (l) => logs.push(l),
+    }).finally(() => {
+      finished = true;
+    });
+    await qq2.waitForConnection();
+    const send2 = (c: ApiCall) => c.action === 'send_group_msg' && String(c.params.group_id) === GROUP;
+    const msg2 = (uid: string, nick: string, t: string) =>
+      qq2.emit({ post_type: 'message', message_type: 'group', sub_type: 'normal', group_id: Number(GROUP), user_id: Number(uid), message_id: ++msgSeq, sender: { user_id: Number(uid), nickname: nick, card: '' }, message: text(t), raw_message: t });
+    let gameId = '';
+    try {
+      const mark = qq2.calls.length;
+      msg2(OWNER, '主人', '/桌游 数字炸弹 2');
+      await qq2.waitForCall((c) => send2(c) && callText(c).includes('报名'), 10_000, mark);
+      msg2(OWNER, '主人', '加入');
+      msg2('777', '路人甲', '加入');
+      const started = await qq2.waitForCall((c) => send2(c) && callText(c).includes('数字炸弹开始'), 15_000, mark);
+      expect(callText(started)).toBeTruthy();
+      gameId = rt.manager.listGames({ groupId: GROUP }).find((g) => g.status === 'running')?.game_id ?? '';
+      expect(gameId).not.toBe('');
+      await new Promise((res) => setTimeout(res, 500)); // 让它进入下一次长轮询
+      const t0 = Date.now();
+      ac2.abort();
+      await Promise.race([done, new Promise((res) => setTimeout(res, 8000))]);
+      expect(finished).toBe(true);
+      expect(Date.now() - t0).toBeLessThan(5000);
+    } finally {
+      if (!finished) await Promise.race([done, new Promise((res) => setTimeout(res, 40_000))]);
+      // 收尾：别把进行中的对局留给下一个测试
+      if (gameId) {
+        const rec = rt.manager.getRecord(gameId);
+        if (rec.status === 'running') rt.manager.abortGame({ id: REF_ID, name: '妮娅' }, gameId, '测试结束');
+      }
+      await qq2.close();
+    }
+  }, 90_000);
+
   it('draws the referee among registered voices, posts a wheel, speaks with the drawn account and keeps its own model idle', async () => {
     const qqMain = new FakeOneBot('t0');
     const qqA = new FakeOneBot('tA');

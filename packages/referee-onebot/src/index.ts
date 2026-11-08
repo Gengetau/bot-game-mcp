@@ -179,6 +179,8 @@ export function parseOptionTokens(tokens: string[]): Record<string, unknown> {
 class Engine {
   private client: Client | null = null;
   private connecting: Promise<Client> | null = null;
+  /** 在途调用；退出时一起中断（长轮询 referee_step 不中断的话，SIGTERM 后要等一分钟） */
+  private readonly aborts = new Set<AbortController>();
 
   constructor(
     private readonly url: string,
@@ -211,6 +213,21 @@ class Engine {
 
   /** 调用工具；传输层问题抛 TransportError（可重试），引擎拒绝抛 ToolError。 */
   async call(name: string, args: Record<string, unknown> = {}, timeoutMs = 60_000): Promise<any> {
+    const ac = new AbortController();
+    this.aborts.add(ac);
+    try {
+      return await this.callWith(ac, name, args, timeoutMs);
+    } finally {
+      this.aborts.delete(ac);
+    }
+  }
+
+  /** 中断所有在途调用（抛 TransportError） */
+  abortAll(): void {
+    for (const ac of this.aborts) ac.abort();
+  }
+
+  private async callWith(ac: AbortController, name: string, args: Record<string, unknown>, timeoutMs: number): Promise<any> {
     let client: Client;
     try {
       client = await this.ensure();
@@ -219,8 +236,10 @@ class Engine {
     }
     let res: any;
     try {
-      res = await client.callTool({ name, arguments: args }, undefined, { timeout: timeoutMs });
+      ac.signal.throwIfAborted();
+      res = await client.callTool({ name, arguments: args }, undefined, { timeout: timeoutMs, signal: ac.signal });
     } catch (e) {
+      if (ac.signal.aborted) throw new TransportError(`${name}：已中断`);
       if (e instanceof McpError && e.code !== ErrorCode.ConnectionClosed && e.code !== ErrorCode.RequestTimeout) {
         throw new ToolError(`${name}：${errMsg(e)}`);
       }
@@ -1390,7 +1409,11 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
   const stop = () => {
     stopped = true;
     wake?.();
-    for (const v of voices) v.onebot.close();
+    for (const v of voices) {
+      v.engine.abortAll();
+      v.onebot.close();
+    }
+    adminEngine?.abortAll();
   };
   opts.signal?.addEventListener('abort', stop, { once: true });
 
