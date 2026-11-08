@@ -8,6 +8,8 @@ import { createRuntime, type Runtime } from '../../src/server/runtime.js';
 import { REF, bot } from '../helpers.js';
 
 const ADMIN_KEY = `bgk_${'a'.repeat(32)}`;
+/** 测试里只看字段，不做类型 */
+const json = (r: Response): Promise<any> => r.json();
 const W = { 'Content-Type': 'application/json', 'X-Admin-Request': '1' };
 
 describe('管理页', () => {
@@ -80,7 +82,7 @@ describe('管理页', () => {
     m.startGame(REF, summary.game_id);
     rt.auth.issueKey({ id: 'x', name: 'x', admin: true }, { id: '10001', name: '测试bot', owner: '2362232313' });
 
-    const o = await (await fetch(`${base}/api/overview`)).json();
+    const o = await json(await fetch(`${base}/api/overview`));
     expect(o.scripts.map((s: any) => s.id).sort()).toEqual(['demo', 'demo-search']);
     expect(o.default_needed).toBe(true);
     expect(o.default_script).toBeNull();
@@ -106,7 +108,7 @@ describe('管理页', () => {
     expect((await post('/api/default-script', { id: 'nope' })).status).toBe(400);
     const r = await post('/api/default-script', { id: 'demo' }, { ...W, Origin: base });
     expect(r.status).toBe(200);
-    const o = await r.json();
+    const o = await json(r);
     expect(o.default_script).toBe('demo');
     expect(o.scripts.find((s: any) => s.id === 'demo').is_default).toBe(true);
     const file = join(dir, 'botgame-settings.json');
@@ -124,7 +126,7 @@ describe('管理页', () => {
     expect((m.getRecord(summary.game_id).state as any).pack.id).toBe('demo');
 
     // 取消默认后，多个剧本又必须写 script
-    const off = await (await post('/api/default-script', { id: null })).json();
+    const off = await json(await post('/api/default-script', { id: null }));
     expect(off.default_script).toBeNull();
     const { summary: s3 } = m.createGame(REF, { type: 'jubensha', groupId: 'g3', joinAs: 'referee', options: { stage: 'web' } });
     for (let n = 1; n <= need; n++) m.joinGame(bot(40 + n), s3.game_id, { as: 'player' });
@@ -132,7 +134,7 @@ describe('管理页', () => {
   });
 
   it('aborts a game and revokes a key', async () => {
-    const o = await (await fetch(`${base}/api/overview`)).json();
+    const o = await json(await fetch(`${base}/api/overview`));
     const id = o.games.active.find((g: any) => g.status === 'running').id;
     const r = await post(`/api/games/${id}/abort`, {});
     expect(r.status).toBe(200);
@@ -141,7 +143,7 @@ describe('管理页', () => {
 
     const k = await post('/api/keys/10001/revoke', {});
     expect(k.status).toBe(200);
-    expect((await k.json()).keys).toEqual([]);
+    expect((await json(k)).keys).toEqual([]);
     expect((await post('/api/keys/10001/revoke', {})).status).toBe(400);
   });
 });
