@@ -140,6 +140,8 @@ export interface RefereeStepResult {
   /** web = 网页舞台：群消息都是镜像（mirror=true，不门控） */
   stage?: 'group' | 'web';
   quiet_ids?: string[];
+  /** 公开阶段正在等的 AI 玩家 QQ 号（秘密阶段为空）。代码裁判据此提醒「在群里说了话却没调用工具」的 bot。 */
+  turn_ids?: string[];
   /** 进行中的对局里的所有玩家（含出局的）和裁判的 QQ 号。代码裁判据此管住没参加本局、却在群里插话的 bot。 */
   participant_ids?: string[];
 }
@@ -1323,6 +1325,16 @@ export class GameManager {
    * 消息按 seq 顺序交付；since_seq 可用于重发（例如上一批没发出去）。
    */
   /** 秘密阶段里不该在群里说话的存活 AI 玩家。 */
+  private turnIds(rec: GameRecord): string[] {
+    const ph = rec.phase;
+    if (rec.status !== 'running' || !ph || ph.secret || ph.openedAt === null) return [];
+    return Object.values(ph.pending)
+      .filter((r) => !r.done)
+      .map((r) => rec.players.find((p) => p.seat === r.seat)!)
+      .filter((p) => p && p.kind !== 'human')
+      .map((p) => p.id);
+  }
+
   private quietIds(rec: GameRecord): string[] {
     if (rec.status !== 'running' || !rec.phase?.secret) return [];
     return rec.players.filter((p) => p.alive && p.kind !== 'human').map((p) => p.id);
@@ -1412,6 +1424,7 @@ export class GameManager {
       finished,
       stage: rec.stage ?? 'group',
       quiet_ids: this.quietIds(rec),
+      turn_ids: this.turnIds(rec),
       participant_ids: rec.status === 'running' ? [...rec.players.map((p) => p.id), ...(rec.referee ? [rec.referee.id] : [])] : [],
     };
   }

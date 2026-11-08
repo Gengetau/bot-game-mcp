@@ -98,6 +98,7 @@ describe('OneBot referee against the real engine', () => {
       stepWaitSeconds: 2,
       sendGapMs: 0,
       quietGraceMs: 300,
+      turnRemindDelayMs: 300,
       selfInPool: false, // 这个常驻裁判和下面几个测试共用引擎：不让它把妮娅登记进抽签池
       signal: ac.signal,
       log: (l) => logs.push(l),
@@ -210,6 +211,73 @@ describe('OneBot referee against the real engine', () => {
     const status = await qq.waitForCall((c) => groupSend(c) && callText(c).includes('没有对局'), 10_000, mark);
     expect(status).toBeTruthy();
     await ai.close();
+  }, 60_000);
+
+  it('reminds a bot whose turn it is when it talks in the group instead of calling the tool, once per turn', async () => {
+    let mark = qq.calls.length;
+    groupMsg(OWNER, '主人', text('/桌游 数字炸弹 min=0 max=10 mode=single'));
+    await qq.waitForCall((c) => groupSend(c) && callText(c).includes('报名'), 10_000, mark);
+    const ai = new Client({ name: 'ai-turn', version: '1.0.0' });
+    await ai.connect(new StreamableHTTPClientTransport(new URL(http.url), { requestInit: { headers: { Authorization: `Bearer ${KEYS.ai}` } } }));
+    const call = async (name: string, args: Record<string, unknown> = {}) => {
+      const r: any = await ai.callTool({ name, arguments: args });
+      const t = r.content?.[0]?.text ?? '';
+      if (r.isError) throw new Error(t);
+      return JSON.parse(t);
+    };
+    const gameId: string = (await call('list_games', { group_id: GROUP })).games[0].game_id;
+    await call('join_game', { game_id: gameId, join_as: 'player', self_post: false });
+    groupMsg(OWNER, '主人', text('加入'));
+    await qq.waitForCall((c) => groupSend(c) && callText(c).includes('加入了'), 10_000, mark);
+    mark = qq.calls.length;
+    groupMsg(OWNER, '主人', text('/桌游 开局'));
+    await qq.waitForCall((c) => groupSend(c) && callText(c).includes('数字炸弹开始'), 10_000, mark);
+    const isReminder = (c: ApiCall) => groupSend(c) && callText(c).includes('在群里直接说的话不算数');
+
+    // 不是自己的回合在群里说话：不提醒
+    let finished = false;
+    let reminded = false;
+    const aiLoop = (async () => {
+      while (!finished) {
+        const v = await call('get_my_view', { game_id: gameId, wait_seconds: 2 });
+        if (v.game?.status && v.game.status !== 'running') break;
+        if (!v.todo) continue;
+        const m = String(v.todo.prompt).match(/(\d+)~(\d+)/);
+        const lo = Number(m![1]);
+        if (!reminded) {
+          // 第一次轮到它：先在群里说（程序收不到），被 @ 提醒后再说一遍，也只提醒一次
+          const at = qq.calls.length;
+          groupMsg(AI_ID, '克蕾雅', text(`我猜 ${lo}`));
+          const r = await qq.waitForCall(isReminder, 10_000, at);
+          expect(callText(r)).toContain(`@${AI_ID}`);
+          groupMsg(AI_ID, '克蕾雅', text(`我猜 ${lo}！`));
+          await new Promise((res) => setTimeout(res, 900));
+          expect(qq.calls.slice(at).filter(isReminder)).toHaveLength(1);
+          reminded = true;
+        }
+        await call('act', { game_id: gameId, action: 'guess', number: lo }).catch(() => undefined);
+      }
+    })();
+    const humanLoop = (async () => {
+      let seen = mark;
+      while (!finished) {
+        const c = await qq.waitForCall((x) => groupSend(x) && (callText(x).includes(`@${OWNER}`) || callText(x).includes('BOOM')), 15_000, seen);
+        seen = qq.calls.indexOf(c) + 1;
+        const t = callText(c);
+        if (t.includes('BOOM')) break;
+        const m = t.match(/范围 (\d+)~(\d+)/);
+        if (!m) continue;
+        groupMsg(OWNER, '主人', text(m[1]!));
+      }
+    })();
+    await qq.waitForCall((c) => groupSend(c) && callText(c).includes('游戏结束'), 40_000, mark);
+    finished = true;
+    await Promise.all([aiLoop, humanLoop]);
+    expect(reminded).toBe(true);
+    // 真人（不在 turn_ids 里）在群里说话从不触发提醒
+    expect(qq.calls.slice(mark).filter((c) => isReminder(c) && callText(c).includes(`@${OWNER}`))).toHaveLength(0);
+    await ai.close();
+    await new Promise((res) => setTimeout(res, 300));
   }, 60_000);
 
   it('jubensha: sends clue images to the group and by private chat as OneBot image segments', async () => {

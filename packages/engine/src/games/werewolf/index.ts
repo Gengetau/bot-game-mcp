@@ -192,6 +192,8 @@ export interface WerewolfState {
   orderDir?: 1 | -1 | null;
   /** 每晚发生了什么（结束后在群里复盘）。 */
   nightLog?: NightRecord[];
+  /** 每个座位自己夜里做过什么（只进本人的私密视图，帮 AI 记住自己用过的药、守过的人）。旧存档没有这个字段。 */
+  acts?: Record<string, string[]>;
 }
 
 const SPEECH_KEYS = new Set(['speech', 'speech2', 'last_words', 'pk_speech', 'sheriff_speech']);
@@ -310,6 +312,7 @@ export class WerewolfGame extends BaseGame<WerewolfState, WerewolfOptions> {
       sheriffElected: false,
       claims: [],
       nightLog: [],
+      acts: {},
     } satisfies WerewolfState);
     this.rec.round = 1;
 
@@ -578,11 +581,14 @@ export class WerewolfGame extends BaseGame<WerewolfState, WerewolfOptions> {
       const tied = [...counts.entries()].filter(([, c]) => c === top).map(([s]) => s).sort((a, b) => a - b);
       victim = tied.length === 1 ? tied[0]! : pick(this.rng, tied);
     }
+    const n = this.rec.round;
+    for (const w of this.wolves()) this.noteAct(w, victim > 0 ? `第${n}夜：狼队刀 ${victim}号` : `第${n}夜：狼队空刀`);
     const guarded: Seat[] = [];
     for (const g of this.seatsOfRole('guard')) {
       const t = data.guard[String(g)] ?? 0;
       this.state.lastGuard[String(g)] = t;
       if (t > 0) guarded.push(t);
+      if (ph.pending[String(g)]) this.noteAct(g, t > 0 ? `第${n}夜：守 ${t}号` : `第${n}夜：空守`);
     }
     this.state.tonight = { victim, guarded, saved: false, poisons: [] };
     this.push({ t: 'witch' }, { t: 'dawn' });
@@ -671,6 +677,16 @@ export class WerewolfGame extends BaseGame<WerewolfState, WerewolfOptions> {
       if (c.save) t.saved = true;
       if (c.poison) t.poisons.push(c.poison);
     }
+    const n = this.rec.round;
+    for (const w of Object.keys(this.phase!.pending)) {
+      const c = choices[w];
+      this.noteAct(Number(w), c?.save ? `第${n}夜：用解药救 ${t.victim}号` : c?.poison ? `第${n}夜：毒 ${c.poison}号` : `第${n}夜：没用药`);
+    }
+  }
+
+  /** 记一笔「我夜里做了什么」 */
+  private noteAct(seat: Seat, text: string): void {
+    ((this.state.acts ??= {})[String(seat)] ??= []).push(text);
   }
 
   // ───────────────────────── 天亮与死亡 ─────────────────────────
@@ -1440,6 +1456,8 @@ export class WerewolfGame extends BaseGame<WerewolfState, WerewolfOptions> {
       view.can_explode_now = this.canExplode(seat);
       view.explode = '白天发言阶段（含警长竞选报名/发言、起跳）可以 act({"action":"explode"}) 自爆：立即出局、没有遗言，当天直接结束进入黑夜；警长竞选时自爆则警徽流失。';
     }
+    const acts = this.state.acts?.[String(seat)];
+    if (acts?.length) view.my_night_actions = acts;
     view.can_vote = this.canVote(seat);
     return view;
   }

@@ -118,6 +118,28 @@ describe('night', () => {
     },
   });
 
+  it('each night actor sees only their own night history in the private view', () => {
+    const g = make({ werewolf: 2, villager: 3, seer: 1, witch: 1, guard: 1 }, {}, 5);
+    const [v1, v2] = g.seatsOf('villager') as [number, number];
+    const wolf = g.seatsOf('werewolf')[0]!;
+    const witch = g.seatsOf('witch')[0]!;
+    const guard = g.seatsOf('guard')[0]!;
+    const view = (s: number) => (g.manager.getView(identityOf(g.rec, s), g.gameId) as any).you;
+    // 第1夜：刀 v1，守 v2，女巫救
+    g.drive(
+      { ...nightOver(g, v1, v2), witch: (): ActionInput => ({ action: 'save' }) },
+      notNight(g),
+    );
+    // 第2夜：刀 v2，空守，女巫毒 v1
+    g.drive({}, () => g.key() === 'night');
+    g.drive({ ...nightOver(g, v2), witch: (): ActionInput => ({ action: 'poison', target: v1 }) }, notNight(g));
+    expect(view(witch).my_night_actions).toEqual([`第1夜：用解药救 ${v1}号`, `第2夜：毒 ${v1}号`]);
+    expect(view(guard).my_night_actions).toEqual([`第1夜：守 ${v2}号`, '第2夜：空守']);
+    expect(view(wolf).my_night_actions).toEqual([`第1夜：狼队刀 ${v1}号`, `第2夜：狼队刀 ${v2}号`]);
+    expect(view(v2).my_night_actions).toBeUndefined();
+    expect(JSON.stringify(g.manager.getView(identityOf(g.rec, v2), g.gameId))).not.toContain('解药救');
+  });
+
   it('guard alone / witch alone save; guard + witch together fail (同守同救)', () => {
     const results: boolean[] = [];
     for (const [guard, save] of [[true, false], [false, true], [true, true], [false, false]] as const) {
