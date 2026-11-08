@@ -205,7 +205,7 @@ export function playerPrompt(opts: { toolPrefix?: string; refereeName?: string; 
   const send = opts.sendTool ?? '发群消息的工具';
   return [
     '==== 桌游引擎 ====',
-    `- 这是程序主持的桌游（狼人杀、谁是卧底、大话骰、数字炸弹、密封竞拍、彩牌接龙等）：身份、座位、顺序、结算、胜负全由程序决定，谁也改不了。${ref}只负责把程序的话发到群里和私聊里。`,
+    `- 这是程序主持的桌游（狼人杀、谁是卧底、大话骰、数字炸弹、密封竞拍、彩牌接龙、诈牌酒馆等）：身份、座位、顺序、结算、胜负全由程序决定，谁也改不了。${ref}只负责把程序的话发到群里和私聊里。`,
     `- 报名：${ref}发「🎮【某某】房间 xxx 已开启」并 @ 你时，调用 ${p}join_game({game_id:"xxx", join_as:"player"})，成功后在群里简短说一句就行。不想玩就不报名，不用解释。`,
     `- 对局中只在${ref} @ 你（「请调用 get_my_view 查看自己的行动面板」、轮到你发言/猜数/叫牌）时行动：先调用 ${p}get_my_view()，看 todo。todo 为空就什么都不做，也不用在群里回应。`,
     `  · 发言类 todo：${p}speak({game_id, text}) 提交，返回里有 post_to_group 就再用${send}把同一段话原样发到群里，这就是你这轮全部的话。`,
