@@ -64,6 +64,8 @@ export interface RefereeOptions {
   lobbyTimeoutSeconds?: number;
   /** 两条 QQ 消息之间的最小间隔（毫秒），默认 300 */
   sendGapMs?: number;
+  /** 网页舞台：同一个参赛 bot 在群里说话后，两次私聊提醒之间的最短间隔（毫秒，默认 60000） */
+  webDmGapMs?: number;
   /** 自己发群的 bot 发言后，最多等多久（毫秒）让它的话出现在群里，再发下一条（默认 60000，0 = 不等） */
   postWaitMs?: number;
   /** 轮到的 bot 在群里说话后，等多久还没交工具调用就 @ 它提醒（毫秒，默认 8000） */
@@ -462,10 +464,17 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
   const spect = { ids: new Set<string>(), muted: new Map<string, number>(), warned: new Set<string>() };
   const SPECT_BAN_S = 3600;
   /**
-   * 网页舞台：参赛的 bot（不含裁判）、这局已提醒过的、本进程用 bot 本人的号发出的镜像发言
+   * 网页舞台：参赛的 bot（不含裁判）、这局已在群里提醒过的、上次私聊提醒的时间、本进程用 bot 本人的号发出的镜像发言
    * （别的连接会收到这条群消息，不能当成 bot 在群里说话给撤回了）
    */
-  const web = { ids: new Set<string>(), warned: new Set<string>(), sent: [] as { uid: string; text: string; at: number }[] };
+  const web = {
+    ids: new Set<string>(),
+    warned: new Set<string>(),
+    dmAt: new Map<string, number>(),
+    sent: [] as { uid: string; text: string; at: number }[],
+  };
+  /** 网页舞台私聊提醒的最短间隔：每次在群里说话都私聊提醒，但同一个 bot 一分钟内最多一次 */
+  const WEB_DM_GAP_MS = opts.webDmGapMs ?? 60_000;
   const MIRROR_ECHO_MS = 180_000;
   /**
    * 轮到谁：公开阶段正在等的 AI 玩家、阶段标识、这个阶段已提醒过的。
@@ -1295,11 +1304,24 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
     });
   }
 
-  /** 网页舞台上参赛 bot 在群里说话：撤回，每局提醒一次（不禁言：镜像发言要用它的号发） */
+  /**
+   * 网页舞台上参赛 bot 在群里说话：撤回；每次都私聊提醒（同一个 bot 一分钟最多一次），
+   * 群里只在第一次公开提醒（不禁言：镜像发言要用它的号发）
+   */
   async function punishWebTalk(v: Voice, uid: string, nick: string, messageId: unknown): Promise<void> {
     if (!web.ids.has(uid)) return;
     const recalled = await recall(v, messageId, `参赛 bot ${uid} 的群消息`);
     log(`[referee] 网页舞台：参赛的 ${nick}(${uid}) 在群里说话，${recalled ? '已撤回' : '未撤回'}`);
+    const now = Date.now();
+    if (now - (web.dmAt.get(uid) ?? -Infinity) >= WEB_DM_GAP_MS) {
+      web.dmAt.set(uid, now);
+      void sendPrivateAs(
+        v,
+        uid,
+        `⚠️ 本局在网页「灯下剧场」上进行：发言请用 speak 工具，不要在 QQ 群里说话${recalled ? '（刚才那条已撤回）' : ''}。` +
+          '群里说的话别的玩家能看到，可能泄露你的私密信息。',
+      );
+    }
     if (web.warned.has(uid)) return;
     web.warned.add(uid);
     await sendGroupAs(v, [
@@ -1312,7 +1334,10 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
     const ids = r.stage === 'web' && !r.finished && Array.isArray(r.participant_ids) ? r.participant_ids.map(String) : [];
     const ref = st.game?.refereeId;
     web.ids = new Set(ids.filter((id: string) => id !== ref));
-    if (web.ids.size === 0) web.warned.clear();
+    if (web.ids.size === 0) {
+      web.warned.clear();
+      web.dmAt.clear();
+    }
   }
 
   /** 没参加本局的人在群里插话：撤回 + 禁言到对局结束（禁不了就提醒一次）。 */

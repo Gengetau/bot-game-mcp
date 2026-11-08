@@ -165,6 +165,49 @@ describe('jubensha search: searching', () => {
     expect(g.rec.phase!.pending[String(kai)]!.done).toBe(true);
   });
 
+  it('blind search: no counts anywhere; an emptied place costs 1 point and the group cannot tell', () => {
+    const g = game({ options: { blind_search: true } });
+    g.drive({}, () => g.key() === 'search');
+    const start = groupTexts(g.rec).find((t) => t.includes('可搜：'))!;
+    expect(start).toContain('本局盲搜');
+    expect(start).not.toMatch(/（\d+ 张）/u);
+    const lan = g.seatOf('lan');
+    const kai = g.seatOf('kai');
+    for (const s of [lan, kai]) for (const p of g.view(s).you.search.places) expect(p).toEqual({ key: p.key, name: p.name });
+    for (const p of g.pub().search.places) expect(p.left).toBeUndefined();
+    // 兰搜走旋梯唯一一张；阿凯再去旋梯：不报错、扣 1 点、什么也没有
+    g.act(lan, { action: 'search', text: '旋梯' });
+    const before = g.view(kai).you.search.points_left;
+    const groupBefore = groupTexts(g.rec).length;
+    const r = g.act(kai, { action: 'search', text: '旋梯' }) as any;
+    expect(r.message).toContain('什么也没找到');
+    expect(g.view(kai).you.search.points_left).toBe(before - 1);
+    expect(g.view(kai).you.search.my_cards).toEqual([]);
+    // 群里看到的和正常搜到一样
+    const newGroup = groupTexts(g.rec).slice(groupBefore);
+    expect(newGroup.some((t) => t.includes(`搜了 旋梯`))).toBe(true);
+    for (const t of newGroup) expect(t).not.toContain('什么也没找到');
+    expect(g.rec.log.some((e) => e.audience.type === 'seats' && e.audience.seats.join() === String(kai) && e.text.includes('什么也没找到'))).toBe(true);
+    expect(g.pub().search.log.filter((x: any) => x.place === '旋梯').map((x: any) => x.how)).toEqual(['search', 'search']);
+    // 本轮 max_points=2：再白搜一次就用完、自动结束
+    g.act(kai, { action: 'search', text: '旋梯' });
+    expect(g.rec.phase!.pending[String(kai)]!.done).toBe(true);
+  });
+
+  it('blind search follows the pack unless the option overrides it', () => {
+    const pack = clone();
+    pack.search.blind = true;
+    const on = game({ pack });
+    on.drive({}, () => on.key() === 'search');
+    expect(groupTexts(on.rec).find((t) => t.includes('可搜：'))).toContain('本局盲搜');
+    const off = game({ pack, options: { blind_search: false } });
+    off.drive({}, () => off.key() === 'search');
+    expect(groupTexts(off.rec).find((t) => t.includes('可搜：'))).toMatch(/（\d+ 张）/u);
+    const kai = off.seatOf('kai');
+    off.act(off.seatOf('lan'), { action: 'search', text: '旋梯' });
+    expect(() => off.act(kai, { action: 'search', text: '旋梯' })).toThrow(/没有你能搜到的线索/);
+  });
+
   it('public clues are announced automatically', () => {
     const g = game();
     g.drive({}, () => g.key() === 'search' && g.rec.state.act === 1);

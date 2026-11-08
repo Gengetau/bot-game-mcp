@@ -175,8 +175,13 @@ const packObject = z
         exclusive: z.boolean().default(true),
         /** 能否搜属于自己角色的线索 */
         self_search: z.boolean().default(false),
+        /**
+         * 盲搜（实体局规则）：不公布各地点还剩几张卡；去已经搜空的地点照样花 1 点、什么也拿不到。
+         * 群里的播报和正常搜到时完全一样，别人分不出是不是白搜。
+         */
+        blind: z.boolean().default(false),
       })
-      .default({ points: 0, carry_over: true, exclusive: true, self_search: false }),
+      .default({ points: 0, carry_over: true, exclusive: true, self_search: false, blind: false }),
     /** 搜证地点（角色本身也可以被搜，不用登记在这里） */
     locations: z.array(z.object({ key, name: text(30).min(1) })).max(50).default([]),
     /** 线索卡 */
