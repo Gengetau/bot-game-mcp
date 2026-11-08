@@ -695,9 +695,13 @@ export class GameManager {
       message: rec.referee
         ? `游戏已开始。裁判是 ${rec.referee.name}(${rec.referee.id})${rec.referee.hostedBy ? `，由 ${rec.referee.hostedBy} 代行` : ''}：裁判请循环调用 referee_step 拉取消息并按顺序发送（群消息发群里，私聊发给对应真人）。`
         : '游戏已开始（程序自动主持）。玩家请调用 get_my_view 查看自己的身份与待办。',
-      group_message: rec.referee
-        ? `🎲 ${def.name}开局！裁判 ${rec.referee.name} 请开始主持（调用 referee_step）。`
-        : `🎲 ${def.name}开局！`,
+      // 代行时不点名、不提 referee_step：这句话由别的账号发到群里，被抽中账号的模型看到「裁判 X 请开始主持」
+      // 会以为要自己主持（2026-11-08 WW-YHVC：克蕾雅调 referee_step 被挡，在群里说流程推不动，局被中止）
+      group_message: !rec.referee
+        ? `🎲 ${def.name}开局！`
+        : rec.referee.hostedBy
+          ? `🎲 ${def.name}开局！本局由程序代为主持，被抽中的裁判账号这局休息，什么都不用做。`
+          : `🎲 ${def.name}开局！裁判 ${rec.referee.name} 请开始主持（调用 referee_step）。`,
     };
   }
 

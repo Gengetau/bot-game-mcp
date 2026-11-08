@@ -28,6 +28,9 @@ describe('代行裁判：referee_offer 与开局抽签', () => {
       expect(r.referee_draw).toBeTruthy();
       expect(r.referee_draw!.candidates.map((c) => c.id).sort()).toEqual(['101', '102', '999']);
       expect(r.referee!.hosted_by).toBe(HOST);
+      // 群里的开局提示不能点名让被抽中的账号去调 referee_step（它的模型会以为要自己主持）
+      expect(r.group_message).not.toMatch(/referee_step/);
+      expect(r.group_message).not.toContain(r.referee!.name);
       const rec = manager.getRecord(id);
       picks.add(rec.referee!.id);
       expect(rec.referee!.hostedBy).toBe(HOST);
@@ -67,6 +70,7 @@ describe('代行裁判：referee_offer 与开局抽签', () => {
     expect(r.referee_draw).toBeNull();
     expect(r.referee!.id).toBe('999');
     expect(r.referee!.hosted_by).toBeNull();
+    expect(r.group_message).toMatch(/referee_step/);
     expect(() => manager.offerReferee(bot(2), id, HOST)).toThrow(GameError);
   });
 
