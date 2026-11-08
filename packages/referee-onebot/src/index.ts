@@ -987,7 +987,8 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
   /** 引擎里已发放的密钥对应的 QQ 号并进 bots（开房时会 @ 它们，它们的群消息也不转交） */
   async function syncIssuedBots(): Promise<void> {
     const r = await keyCall('list_keys');
-    const ids = (r.keys ?? []).map((k: Json) => String(k.id)).filter((id: string) => !myIds().has(id));
+    // 只收 QQ 号：引擎里也有不对应 QQ 账号的密钥（如对局复盘用的 gamerecap），@ 它们 OneBot 会拒发
+    const ids = (r.keys ?? []).map((k: Json) => String(k.id)).filter((id: string) => /^\d+$/.test(id) && !myIds().has(id));
     for (const id of ids) bots.add(id);
     log(`[keys] 已发放密钥的 bot：${ids.length ? ids.join('、') : '无'}`);
   }

@@ -855,6 +855,17 @@ describe('OneBot referee against the real engine', () => {
     await Promise.all([qqM.start(), qqX.start()]);
     const acK = new AbortController();
     const lines: string[] = [];
+    // 引擎里也有不对应 QQ 号的密钥（对局复盘用的 gamerecap）：同步时不能当成 bot 去 @
+    const adminCall = async (name: string, args: Record<string, unknown>) => {
+      const c = new Client({ name: 't', version: '1' });
+      await c.connect(new StreamableHTTPClientTransport(new URL(http.url), { requestInit: { headers: { Authorization: `Bearer ${KEYS.admin}` } } }));
+      try {
+        await c.callTool({ name, arguments: args });
+      } finally {
+        await c.close();
+      }
+    };
+    await adminCall('issue_key', { qq_id: 'gamerecap', name: '复盘' });
     const done = runReferee({
       url: http.url,
       key: KEYS.ref,
@@ -900,6 +911,7 @@ describe('OneBot referee against the real engine', () => {
       for (let i = 0; i < 50 && !lines.some((l) => l.includes('密钥由 艾莉希娅')); i++) await new Promise((res) => setTimeout(res, 100));
       expect(lines.some((l) => l.includes('密钥由 艾莉希娅'))).toBe(true);
       expect(lines.some((l) => l.includes('[keys] 已发放密钥的 bot：无'))).toBe(true);
+      await adminCall('revoke_key', { qq_id: 'gamerecap' });
       qqX.failActions.delete('get_group_member_info');
 
       // 群成员申请：收到密钥，密钥立刻可用，身份是申请时写的昵称
