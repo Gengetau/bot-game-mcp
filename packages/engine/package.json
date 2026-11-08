@@ -12,6 +12,7 @@
   "files": [
     "dist",
     "web",
+    "admin",
     "README.md",
     "examples"
   ],
@@ -21,7 +22,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "dev": "tsx src/cli.ts",
-    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p web/tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p web/tsconfig.json && tsc -p admin/tsconfig.json",
     "test": "vitest run",
     "simulate": "tsx src/cli.ts simulate",
     "docs": "tsx scripts/gen-docs.ts",

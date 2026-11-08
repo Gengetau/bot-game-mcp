@@ -59,6 +59,19 @@ export const configSchema = z.object({
   assetCacheDir: z.string().default('./data/asset-cache'),
   /** 存档文件；为空则仅内存 */
   stateFile: z.string().nullable().default('./data/botgame-state.json'),
+  /** 管理页改的设置（默认剧本等）存在这里；不填就放在存档旁边（botgame-settings.json），没有存档时只放内存 */
+  settingsFile: z.string().nullable().optional(),
+  /**
+   * 管理页（主人用，不设密码）：只该监听内网地址，比如 Tailscale 的 100.x 地址。port 为 null 时不开。
+   * 只认 Host 头是这个地址（或 allowedHosts 里的名字）的请求，防止 DNS 重绑定；写操作要带自定义请求头，防止跨站提交。
+   */
+  admin: z
+    .object({
+      host: z.string().default('127.0.0.1'),
+      port: z.number().int().min(0).max(65535).nullable().default(null),
+      allowedHosts: z.array(z.string()).default([]),
+    })
+    .default({ host: '127.0.0.1', port: null, allowedHosts: [] }),
   auth: z
     .object({
       /** keys：必须携带配置好的密钥；open：任何人可用 login 工具认领 QQ 号（适合可信小群/本地测试） */
