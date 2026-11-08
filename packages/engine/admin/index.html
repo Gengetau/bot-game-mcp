@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="referrer" content="no-referrer">
+  <meta name="robots" content="noindex, nofollow">
+  <meta name="color-scheme" content="light dark">
+  <title>桌游管理</title>
+  <link rel="stylesheet" href="admin.css">
+  <script type="module" src="admin.js"></script>
+</head>
+<body>
+  <div class="app">
+    <header class="top">
+      <h1>桌游管理</h1>
+      <p class="meta" id="meta">正在连接…</p>
+    </header>
+
+    <nav class="tabs" role="tablist">
+      <button role="tab" id="tab-scripts" aria-selected="true" aria-controls="pane-scripts">剧本库</button>
+      <button role="tab" id="tab-games" aria-selected="false" aria-controls="pane-games">对局</button>
+      <button role="tab" id="tab-keys" aria-selected="false" aria-controls="pane-keys">密钥</button>
+    </nav>
+
+    <div class="toast" id="toast" role="status" hidden></div>
+
+    <main>
+      <section class="pane" id="pane-scripts" role="tabpanel" aria-labelledby="tab-scripts">
+        <p class="hint" id="scripts-hint"></p>
+        <div class="cards" id="scripts"></div>
+        <div id="script-errors"></div>
+      </section>
+
+      <section class="pane" id="pane-games" role="tabpanel" aria-labelledby="tab-games" hidden>
+        <h2>进行中</h2>
+        <div class="list" id="games-active"></div>
+        <h2>最近结束</h2>
+        <div class="list" id="games-recent"></div>
+      </section>
+
+      <section class="pane" id="pane-keys" role="tabpanel" aria-labelledby="tab-keys" hidden>
+        <p class="hint">运行时发给 bot 的引擎密钥（写在配置文件里的不在这里）。作废后，那个 bot 要重新申请才能玩。</p>
+        <div class="list" id="keys"></div>
+      </section>
+    </main>
+  </div>
+  <noscript><p class="noscript">管理页需要启用 JavaScript。</p></noscript>
+</body>
+</html>

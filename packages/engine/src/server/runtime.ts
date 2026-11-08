@@ -2,14 +2,16 @@
  * 运行时装配：配置 → GameManager（含存档、计时器）→ Authenticator。
  */
 import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import type { BotGameConfig } from '../config.js';
 import { resolveAuth } from '../config.js';
 import { GameManager } from '../core/manager.js';
 import { CryptoRng, SeededRng } from '../core/rng.js';
 import { FileStateStore } from '../core/store.js';
+import { Settings } from '../core/settings.js';
 import { createRegistry } from '../games/index.js';
 import { driveAssets, localAssets, type AssetStore, type ServiceAccount } from '../core/assets.js';
-import { directoryLibrary } from '../games/jubensha/index.js';
+import { directoryLibrary, type ScriptLibrary } from '../games/jubensha/index.js';
 import { Authenticator } from '../mcp/auth.js';
 import { VERSION } from '../version.js';
 import { stderrLog } from './log.js';
@@ -18,7 +20,12 @@ export interface Runtime {
   config: BotGameConfig;
   manager: GameManager;
   auth: Authenticator;
+  /** 管理页改的设置 */
+  settings: Settings;
+  /** 剧本杀的剧本库（没配 scriptsDir 时为空） */
+  scripts?: ScriptLibrary;
   version: string;
+  startedAt: number;
   /** 停止计时器并写盘 */
   close(): void;
 }
@@ -32,8 +39,15 @@ export function createRuntime(config: BotGameConfig, log: (msg: string) => void 
     for (const [file, err] of Object.entries(scripts.errors())) log(`⚠️  剧本 ${file} 加载失败：${err}`);
   }
   const assets = createAssets(config, log);
+  const settingsFile =
+    config.settingsFile !== undefined ? config.settingsFile : config.stateFile ? join(dirname(config.stateFile), 'botgame-settings.json') : null;
+  const settings = new Settings(settingsFile, log);
   const manager = new GameManager({
-    registry: createRegistry({ ...(scripts ? { scripts } : {}), ...(assets ? { assets } : {}) }),
+    registry: createRegistry({
+      ...(scripts ? { scripts } : {}),
+      ...(assets ? { assets } : {}),
+      defaultScript: () => settings.jubenshaDefaultScript,
+    }),
     ...(assets ? { assets } : {}),
     rng: config.seed ? new SeededRng(config.seed) : new CryptoRng(),
     store,
@@ -71,7 +85,10 @@ export function createRuntime(config: BotGameConfig, log: (msg: string) => void 
     config,
     manager,
     auth,
+    settings,
+    ...(scripts ? { scripts } : {}),
     version: VERSION,
+    startedAt: Date.now(),
     close() {
       clearInterval(timer);
       if (sweeper) clearInterval(sweeper);

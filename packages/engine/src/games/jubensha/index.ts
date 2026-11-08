@@ -187,13 +187,20 @@ const TIPS = `- 你扮演剧本里的角色：用角色的口吻说话，按自�
  * @param library 剧本库
  * @param assets  图片素材库（可选）：开局时预取本局要用的图。没有它时图片仍会作为「[图片] + 文字说明」发出。
  */
-export function createJubenshaDefinition(library: ScriptLibrary, assets?: AssetStore): GameDefinition<JubenshaOptions> {
+export function createJubenshaDefinition(
+  library: ScriptLibrary,
+  assets?: AssetStore,
+  defaultScript?: () => string | undefined,
+): GameDefinition<JubenshaOptions> {
   const resolvePack = (o: JubenshaOptions): ScriptPack | string => {
     const list = library.list();
     if (!o.script) {
       if (list.length === 1) return library.get(list[0]!.id)!;
       if (list.length === 0) return '剧本库里还没有剧本（需要在引擎配置 scriptsDir 指向的私有目录里放入数据包）。';
-      return `请用选项 script 指定剧本：${list.map((p) => `${p.id}（${p.title}，${p.players} 人）`).join('、')}`;
+      const def = defaultScript?.();
+      const pack = def ? library.get(def) : null;
+      if (pack) return pack;
+      return `请用选项 script 指定剧本（或由管理员在管理页设默认剧本）：${list.map((p) => `${p.id}（${p.title}，${p.players} 人）`).join('、')}`;
     }
     return library.get(o.script) ?? `找不到剧本 ${o.script}。可用剧本：${list.map((p) => `${p.id}（${p.title}）`).join('、') || '无'}`;
   };
@@ -1387,7 +1394,7 @@ export function createJubenshaDefinition(library: ScriptLibrary, assets?: AssetS
     optionsSchema,
     optionsHelp: {
       ...commonOptionsHelp,
-      script: '剧本编号（剧本库里只有一个剧本时可以不填）',
+      script: '剧本编号（剧本库里只有一个剧本、或管理员设了默认剧本时可以不填）',
       host: 'DM 的 QQ 号或昵称；可以用逗号分隔写多个候选，按顺序取第一个报了名的当 DM，其余候选照常当玩家。DM 不扮演角色、负责主持答疑（报名人数要比剧本人数多 1）；不填、没人报名或人数不是剧本人数 +1 时由程序主持',
       cast: '指定选角 {"QQ号":"角色key"}；没指定的随机分配',
       intro_timeout_s: '自我介绍每人限时（秒，默认 120）',

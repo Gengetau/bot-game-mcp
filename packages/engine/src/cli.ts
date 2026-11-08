@@ -13,6 +13,7 @@ import { randomBytes } from 'node:crypto';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { parseArgs } from 'node:util';
 import { loadConfig } from './config.js';
+import { startAdminServer } from './server/admin.js';
 import { startBridge } from './server/bridge.js';
 import { startHttpServer } from './server/http.js';
 import { createAssets, createRuntime } from './server/runtime.js';
@@ -113,7 +114,10 @@ async function main(argv: string[]): Promise<void> {
       if (rt.config.legacySse) console.error(`  旧版 SSE        : ${handle.url.replace(rt.config.path, '/sse')}`);
       console.error(`  认证模式        : ${rt.auth.mode}${rt.auth.mode === 'keys' ? `（${rt.auth.auth.agents.length} 个 agent 密钥）` : '（agent 用 login 工具认领身份）'}`);
       console.error(`  存档            : ${rt.config.stateFile ?? '（仅内存）'}`);
+      const admin = await startAdminServer(rt, (m) => console.error(m));
+      if (admin) console.error(`  管理页          : ${admin.url}（只该在内网访问）`);
       const stop = async () => {
+        await admin?.close();
         await handle.close();
         rt.close();
         process.exit(0);

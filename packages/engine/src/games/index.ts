@@ -11,6 +11,8 @@ export interface RegistryOptions {
   scripts?: ScriptLibrary;
   /** 图片素材库（剧本杀线索图） */
   assets?: AssetStore;
+  /** 剧本杀开房没写 script、剧本库又不止一个剧本时用的剧本 id（管理页设置） */
+  defaultScript?: () => string | undefined;
 }
 
 /** 创建包含全部内置游戏的注册表。 */
@@ -20,5 +22,5 @@ export function createRegistry(opts: RegistryOptions = {}): GameRegistry {
     .register(undercoverDefinition)
     .register(liarsDiceDefinition)
     .register(numberBombDefinition)
-    .register(createJubenshaDefinition(opts.scripts ?? emptyLibrary, opts.assets));
+    .register(createJubenshaDefinition(opts.scripts ?? emptyLibrary, opts.assets, opts.defaultScript));
 }

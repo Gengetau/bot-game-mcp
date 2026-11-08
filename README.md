@@ -237,6 +237,10 @@ sequenceDiagram
 | `auth.issuedKeysFile` | `./data/botgame-keys.json` | 管理员在运行时用 `issue_key` 发放的密钥存在这里（0600），重启仍有效；`null` 关闭运行时发放 |
 | `stateFile` | `./data/botgame-state.json` | 存档文件，重启后对局会继续。设为 `null` 则只存在内存里 |
 | `scriptsDir` | `null` | 剧本杀数据包目录（*.json），新放进去的剧本不用重启。必须是私有目录，不要放在任何 bot 能读到的路径下，见 [docs/JUBENSHA.md](docs/JUBENSHA.md) |
+| `admin.port` | `null` | 管理页端口（主人用：选默认剧本、中止对局、作废密钥、看观战链接）。`null` 不开。**不设密码，只靠网络隔离**，所以 `admin.host` 必须是内网地址（如 Tailscale 的 100.x），不要经 Funnel/反向代理暴露 |
+| `admin.host` | `127.0.0.1` | 管理页监听地址。只认 Host 头是这个地址（或 `admin.allowedHosts` 里的名字）的请求；写操作还要带 `X-Admin-Request: 1` 且同源，防外部网页跨站提交 |
+| `admin.allowedHosts` | `[]` | 管理页额外放行的 Host 头（带端口，如 `myhost.tailnet.ts.net:18791`） |
+| `settingsFile` | 存档同目录的 `botgame-settings.json` | 管理页改的设置（目前是剧本杀默认剧本）存在这里（0600）。`null` 只放内存 |
 | `drive` | `null` | 剧本杀线索图放在 Google 云盘：`{"folderId": "...", "credentialsFile": "服务账号密钥.json"}`。开局下载本局要用的图，结束后删除 |
 | `assetsDir` | `null` | 剧本杀线索图放在本地目录（`<目录>/<剧本id>/<文件名>`），没配云盘时使用 |
 | `assetCacheDir` | `./data/asset-cache` | 云盘图片的临时缓存目录 |
