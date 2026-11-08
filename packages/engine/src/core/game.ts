@@ -14,7 +14,7 @@
  */
 import { GameError, invalidAction, invalidState } from './errors.js';
 import type { Rng } from './rng.js';
-import { cleanSpeech, formatDuration } from './text.js';
+import { cleanSpeech, formatDuration, mirrorLine } from './text.js';
 import {
   PUBLIC,
   type ActionInput,
@@ -70,6 +70,11 @@ export interface AnnounceOptions {
   data?: Record<string, unknown>;
   delayMs?: number;
   category?: DeliveryCategory;
+  /**
+   * 网页舞台时往群里镜像什么：不写 = 第一行（带图的公告不镜像）；字符串 = 这段文字；false = 不镜像。
+   * 群舞台忽略这个选项。
+   */
+  mirror?: string | false;
 }
 
 export interface TellOptions {
@@ -251,14 +256,33 @@ export abstract class BaseGame<S = any, O = any> {
     return entry;
   }
 
-  /** 生成一条待裁判发送的消息。 */
+  /** 本局在网页上进行：群里只收镜像（不门控），游戏内容都在网页上。 */
+  get webStage(): boolean {
+    return this.rec.stage === 'web';
+  }
+
+  /**
+   * 生成一条待裁判发送的消息。
+   * 网页舞台上，发往群里的消息必须是镜像（mirror=true，不门控）；其余群消息直接丢弃，返回 null。
+   */
   protected pushDelivery(
     target: DeliveryTarget,
     text: string,
     category: DeliveryCategory,
     delayMs = 0,
     image?: ImageRef,
-  ): Delivery {
+    extra: { mirror?: boolean; keepAt?: boolean; voice?: { qq: string; text: string } } = {},
+  ): Delivery | null {
+    if (this.webStage && target.type === 'group') {
+      if (!extra.mirror) return null;
+      image = undefined;
+      // 群里 @ 参赛 bot 会把它叫醒、在群里接话：镜像里的 @ 换成纯文字的名字（只有「请查看行动面板」的提醒保留 @）
+      if (!extra.keepAt) {
+        text = this.toSegments(text)
+          .map((x) => (x.type === 'at' ? x.name : x.type === 'text' ? x.text : ''))
+          .join('');
+      }
+    }
     const now = this.now();
     const segments: MessageSegment[] = [...(image ? [{ type: 'image' as const, asset: image.asset, caption: image.caption }] : []), ...this.toSegments(text)];
     const notBefore = Math.max(now + delayMs, this.rec.notBeforeFloor);
@@ -273,6 +297,8 @@ export abstract class BaseGame<S = any, O = any> {
       mentions: segments.flatMap((s) => (s.type === 'at' ? [{ id: s.id, name: s.name }] : [])),
       category,
       ...(this.rec.awaitPost && target.type === 'group' ? { waitForPost: this.rec.awaitPost } : {}),
+      ...(this.webStage && target.type === 'group' ? { noGate: true } : {}),
+      ...(extra.voice ? { voice: extra.voice } : {}),
     };
     if (target.type === 'group') this.rec.awaitPost = null;
     this.rec.outbox.push(delivery);
@@ -282,7 +308,22 @@ export abstract class BaseGame<S = any, O = any> {
   /** 公告：写公开日志 + 让裁判发到群里。文本中可用 this.at(seat) 产生 @。 */
   protected announce(text: string, opts: AnnounceOptions = {}): void {
     this.addLog(opts.kind ?? 'announce', text, PUBLIC, opts.data ? { data: opts.data } : {});
-    this.pushDelivery({ type: 'group', groupId: this.rec.groupId }, text, opts.category ?? 'announce', opts.delayMs ?? 0, opts.image);
+    const group = { type: 'group' as const, groupId: this.rec.groupId };
+    if (!this.webStage) {
+      this.pushDelivery(group, text, opts.category ?? 'announce', opts.delayMs ?? 0, opts.image);
+      return;
+    }
+    // 先把 @ 换成名字再截第一行，免得截断落在 @ 标记中间
+    const flat = this.toSegments(text)
+      .map((x) => (x.type === 'at' ? x.name : x.type === 'text' ? x.text : ''))
+      .join('');
+    const mirror = opts.mirror === undefined ? (opts.image ? null : mirrorLine(flat)) : opts.mirror || null;
+    if (mirror) this.pushDelivery(group, mirror, opts.category ?? 'announce', 0, undefined, { mirror: true });
+  }
+
+  /** 只往群里发一条镜像（不写日志）：网页舞台的观战链接等。群舞台上等同于普通群消息。 */
+  mirrorToGroup(text: string): void {
+    this.pushDelivery({ type: 'group', groupId: this.rec.groupId }, text, 'announce', 0, undefined, { mirror: true });
   }
 
   /** 私密信息：仅该座位可见；若是真人则由裁判私聊发送。 */
@@ -328,7 +369,17 @@ export abstract class BaseGame<S = any, O = any> {
       seat,
       data: { text: clean },
     });
-    if (p.kind === 'agent') {
+    if (p.kind === 'agent' && this.webStage) {
+      // 网页舞台：发言原样镜像到群里；裁判能用 bot 本人的号说话就用本人的号（不带前缀）
+      this.pushDelivery(
+        { type: 'group', groupId: this.rec.groupId },
+        `【${p.seat}号 ${p.name}${title ? `·${title}` : ''}】${clean}`,
+        'speech',
+        0,
+        undefined,
+        { mirror: true, voice: { qq: p.id, text: clean } },
+      );
+    } else if (p.kind === 'agent') {
       if (p.selfPost) {
         this.speechGap();
         this.rec.awaitPost = { qq: p.id, since: this.now() };
@@ -404,6 +455,9 @@ export abstract class BaseGame<S = any, O = any> {
       { type: 'group', groupId: this.rec.groupId },
       `${targets.map((s) => this.at(s)).join(' ')} 【${spec.title}】请调用 get_my_view 查看自己的行动面板：有待办就在 ${formatDuration(spec.timeoutMs)} 内完成，没有就不用回应。`,
       'prompt',
+      0,
+      undefined,
+      { mirror: true, keepAt: true },
     );
   }
 
@@ -432,6 +486,9 @@ export abstract class BaseGame<S = any, O = any> {
       { type: 'group', groupId: this.rec.groupId },
       `⏰ ${seats.map((s) => this.at(s)).join(' ')} 【${ph.title}】还剩 ${left}，请尽快行动（真人按提示发指令，AI 调用 get_my_view 查看待办），超时按放弃处理。`,
       'prompt',
+      0,
+      undefined,
+      { mirror: true, keepAt: true },
     );
     return true;
   }

@@ -106,6 +106,12 @@ export interface Delivery {
    * （bot 发群可能比引擎记录晚几十秒），等不到也最多等到 since + 60 秒。
    */
   waitForPost?: { qq: string; since: number };
+  /**
+   * 网页舞台的群镜像：尽力而为的旁路，不门控阶段（裁判发慢了不拖住游戏）。
+   */
+  noGate?: boolean;
+  /** 镜像的 bot 发言：裁判能用这个 QQ 号说话时用它本人的号发 text（不带前缀），否则发 segments。 */
+  voice?: { qq: string; text: string };
 }
 
 /** 玩家提交的动作（bot 通过 act/speak 工具，真人通过裁判转发后由程序解析）。 */
@@ -224,7 +230,13 @@ export interface GameRecord<S = any, O = any> {
   result: GameResult | null;
   abortReason?: string;
   state: S;
+  /** 舞台：group = 在 QQ 群里玩（默认，旧存档没有这个字段）；web = 在网页上玩，群里只收镜像。 */
+  stage?: Stage;
+  /** 网页观战令牌（stage=web 时生成；只能看公开视图，结束后看复盘）。 */
+  watchToken?: string;
 }
+
+export type Stage = 'group' | 'web';
 
 /** 动作的来源信息。 */
 export interface ActionMeta {

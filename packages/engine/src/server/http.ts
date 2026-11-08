@@ -4,6 +4,7 @@
  *  - GET /sse + POST /messages 旧版 HTTP+SSE 传输（兼容老客户端）
  *  - GET /health               健康检查
  *  - GET /api/games[/:id]      只读公开观战接口（只含公开信息）
+ *  - GET /web/...               网页舞台「灯下剧场」（见 web.ts；按每局的观战令牌访问，只读）
  *
  * 认证：Authorization: Bearer <key>（或 X-API-Key 头 / ?key= 查询参数）。
  */
@@ -19,6 +20,7 @@ import { extractKey, type SessionContext } from '../mcp/auth.js';
 import { createMcpServer } from '../mcp/server.js';
 import type { Runtime } from './runtime.js';
 import { stderrLog } from './log.js';
+import { mountWeb } from './web.js';
 
 interface Session {
   transport: StreamableHTTPServerTransport | SSEServerTransport;
@@ -203,6 +205,8 @@ export async function startHttpServer(rt: Runtime, log: (msg: string) => void = 
     });
   }
 
+  const closeWeb = config.web ? mountWeb(app, manager, log) : () => undefined;
+
   // 空闲会话清理
   const idleMs = config.sessionIdleMinutes * 60_000;
   const sweeper = setInterval(() => {
@@ -230,6 +234,7 @@ export async function startHttpServer(rt: Runtime, log: (msg: string) => void = 
     sessions: () => sessions.size,
     async close() {
       clearInterval(sweeper);
+      closeWeb();
       for (const s of sessions.values()) await s.transport.close().catch(() => undefined);
       sessions.clear();
       await new Promise<void>((resolve) => server.close(() => resolve()));

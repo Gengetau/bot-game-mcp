@@ -57,5 +57,21 @@ export function renderDelivery(d: Delivery, format: DeliveryFormat) {
     ...(format === 'text' && d.mentions.length ? { mentions: d.mentions.map((m) => ({ qq: m.id, name: m.name })) } : {}),
     // 发这条之前先等这个 bot 的发言出现在群里（最多等到 since 之后 60 秒）
     ...(d.waitForPost ? { wait_for_post: { qq: d.waitForPost.qq, since: d.waitForPost.since } } : {}),
+    // 网页舞台的群镜像：尽力而为，发不出去也不影响游戏
+    ...(d.noGate ? { mirror: true } : {}),
+    // 镜像的 bot 发言：能用这个 QQ 号说话就用它本人的号发 voice.message（不带前缀），否则照常发 message
+    ...(d.voice
+      ? {
+          voice: {
+            qq: d.voice.qq,
+            message:
+              format === 'onebot'
+                ? [{ type: 'text', data: { text: d.voice.text } }]
+                : format === 'cq'
+                  ? escapeCqText(d.voice.text)
+                  : d.voice.text.replace(/\[CQ:/gi, '［CQ:'),
+          },
+        }
+      : {}),
   };
 }

@@ -11,6 +11,7 @@
   "types": "dist/index.d.ts",
   "files": [
     "dist",
+    "web",
     "README.md",
     "examples"
   ],
@@ -20,7 +21,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "dev": "tsx src/cli.ts",
-    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p web/tsconfig.json",
     "test": "vitest run",
     "simulate": "tsx src/cli.ts simulate",
     "docs": "tsx scripts/gen-docs.ts",

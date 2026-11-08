@@ -236,3 +236,16 @@ export function formatDuration(ms: number): string {
   const r = s % 60;
   return r === 0 ? `${m}分钟` : `${m}分${r}秒`;
 }
+
+/** 网页舞台往群里镜像公告时只取第一行（太长截断），后面还有内容就注明「详见网页」。 */
+export function mirrorLine(text: string, max = 80): string {
+  const t = String(text ?? '').trim();
+  const nl = t.indexOf('\n');
+  let line = (nl < 0 ? t : t.slice(0, nl)).trim();
+  let more = nl >= 0 && t.slice(nl + 1).trim().length > 0;
+  if ([...line].length > max) {
+    line = [...line].slice(0, max).join('').trimEnd() + '…';
+    more = true;
+  }
+  return more ? `${line}（详见网页）` : line;
+}

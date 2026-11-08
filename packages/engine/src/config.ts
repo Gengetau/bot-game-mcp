@@ -30,6 +30,10 @@ export const configSchema = z.object({
   legacySse: z.boolean().default(true),
   /** 只读的公开观战接口 /api/games */
   publicApi: z.boolean().default(true),
+  /** 网页舞台「灯下剧场」（/web/）：只读的观战页面和接口，按每局的观战令牌访问 */
+  web: z.boolean().default(true),
+  /** 网页的公网地址（如 https://example.com/web/），开局时拼成观战链接发到群里；不填就没有链接 */
+  webUrl: z.string().url().nullable().default(null),
   /** 只允许在这些群号开房；为空则不限制（对外开放时建议配置） */
   allowedGroups: z.array(z.string().min(1)).default([]),
   /** 整个服务器同时最多几局（报名中 + 进行中）；0 为不限制。想「一次只开一场」就设 1 */

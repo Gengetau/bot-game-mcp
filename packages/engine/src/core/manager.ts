@@ -8,6 +8,7 @@
  *    以及把真人的 QQ 消息原样转发给 relayHumanMessage()，由程序解析。
  *  - bot 玩家：getView()/act()/speak()。
  */
+import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import { BaseGame, type GameEnv } from './game.js';
 import { GameError, badRequest, forbidden, invalidState, notFound } from './errors.js';
@@ -66,6 +67,8 @@ export interface ManagerOptions {
   defaultOptions?: Record<string, unknown>;
   /** 图片素材（剧本杀线索图）；referee_step 的 inline_images=true 时从这里读图 */
   assets?: AssetStore;
+  /** 网页舞台「灯下剧场」的公网地址（如 https://example.com/web/）；开局时拼成观战链接发到群里。 */
+  webUrl?: string;
 }
 
 export interface CreateGameInput {
@@ -100,6 +103,8 @@ export interface GameSummary {
   round: number;
   phase: string | null;
   auto_referee: boolean;
+  /** group = 在群里玩；web = 在网页「灯下剧场」上玩，群里只收镜像 */
+  stage: 'group' | 'web';
   created_at: string;
 }
 
@@ -132,6 +137,8 @@ export interface RefereeStepResult {
   /** true：裁判事务由代行进程执行，这次调用没有推进也没有消息（调用方这局休息） */
   hosted?: true;
   /** 现在不该在群里说话的 AI 玩家 QQ 号（秘密阶段，例如狼人杀的夜晚；出局的不算）。代码裁判据此撤回并禁言。 */
+  /** web = 网页舞台：群消息都是镜像（mirror=true，不门控） */
+  stage?: 'group' | 'web';
   quiet_ids?: string[];
   /** 进行中的对局里的所有玩家（含出局的）和裁判的 QQ 号。代码裁判据此管住没参加本局、却在群里插话的 bot。 */
   participant_ids?: string[];
@@ -147,6 +154,7 @@ export interface RelayResult {
 type Waiter = () => void;
 
 const MAX_PUMP = 200;
+const WEB_NO_HUMANS = '本局在网页「灯下剧场」上进行，目前只有 AI 上场；真人开局后点群里的观战链接就能看。';
 
 export class GameManager {
   readonly registry: GameRegistry;
@@ -161,6 +169,7 @@ export class GameManager {
   private readonly maxActiveGames: number;
   private readonly refereeIds: Set<string>;
   private readonly defaultOptions: Record<string, unknown>;
+  private readonly webUrl: string | undefined;
   /** 这个 QQ 号是不是持有密钥的 AI（由运行时接到鉴权上）。持有密钥的号不能以真人身份报名。 */
   isKeyedAgent: (id: string) => boolean = () => false;
 
@@ -185,6 +194,7 @@ export class GameManager {
     this.refereeIds = new Set(opts.refereeIds ?? []);
     this.defaultOptions = { ...(opts.defaultOptions ?? {}) };
     this.assets = opts.assets;
+    this.webUrl = opts.webUrl?.trim() || undefined;
     this.emitter.setMaxListeners(0);
     const loaded = this.store?.load();
     if (loaded) this.restore(loaded);
@@ -284,8 +294,16 @@ export class GameManager {
       round: rec.round,
       phase: rec.phase?.title ?? null,
       auto_referee: rec.autoReferee,
+      stage: rec.stage ?? 'group',
       created_at: new Date(rec.createdAt).toISOString(),
     };
+  }
+
+  /** 观战链接（网页舞台且配置了 webUrl 时）。 */
+  watchUrl(rec: GameRecord): string | null {
+    if (rec.stage !== 'web' || !rec.watchToken || !this.webUrl) return null;
+    const base = this.webUrl.endsWith('/') ? this.webUrl : `${this.webUrl}/`;
+    return `${base}?g=${encodeURIComponent(rec.id)}&t=${encodeURIComponent(rec.watchToken)}`;
   }
 
   private seatOf(rec: GameRecord, userId: string): Seat | null {
@@ -435,6 +453,11 @@ export class GameManager {
       result: null,
       state: {},
     };
+    const wanted = (parsed.data as { stage?: unknown } | undefined)?.stage;
+    if (wanted === 'web' && def.stages?.includes('web')) {
+      rec.stage = 'web';
+      rec.watchToken = randomBytes(18).toString('base64url');
+    }
     const rawJoin = input.joinAs ?? 'either';
     const joinAs = rawJoin === 'none' ? 'none' : this.refereeGate(actor, rawJoin);
     if (joinAs !== 'none') {
@@ -448,6 +471,7 @@ export class GameManager {
         `🎮【${def.name}】房间 ${id} 已开启（${def.minPlayers}~${def.maxPlayers} 人）！\n` +
         `真人想玩请在群里发送「加入」，AI 玩家调用 join_game 加入。\n` +
         `${rec.autoReferee ? '本局由程序自动主持。' : '本局需要一位 AI 裁判（由程序从报名裁判的 AI 中抽签产生），裁判只负责推进流程和私聊发身份。'}\n` +
+        (rec.stage === 'web' ? `🎭 本局在网页「灯下剧场」上进行（只有 AI 上场，真人开局后点链接观战）。\n` : '') +
         `人齐后由房主开始游戏。`,
     };
   }
@@ -539,6 +563,7 @@ export class GameManager {
     const userId = String(human.userId ?? '').trim();
     const name = sanitizeName(String(human.name ?? '')) || userId;
     if (!userId) throw badRequest('需要真人的 QQ 号 qq_id。');
+    if (rec.stage === 'web') throw forbidden(WEB_NO_HUMANS);
     if (this.isKeyedAgent(userId)) throw forbidden(this.keyedAgentNote(rec, name));
     const existing = rec.lobby.find((e) => e.id === userId);
     if (existing) {
@@ -661,7 +686,8 @@ export class GameManager {
       name: e.name,
       kind: e.kind,
       alive: true,
-      selfPost: e.kind === 'agent' ? e.selfPost : false,
+      // 网页舞台：bot 不自己往群里发言，发言交给引擎，网页显示、群里镜像
+      selfPost: e.kind === 'agent' && rec.stage !== 'web' ? e.selfPost : false,
     }));
     rec.referee = referee ? { id: referee.id, name: referee.name, cursor: 0, lastSeenAt: this.now(), hostedBy: referee.hostedBy ?? null } : null;
     rec.standbyReferees = standby.map((e) => ({ id: e.id, name: e.name }));
@@ -679,6 +705,13 @@ export class GameManager {
       : rec.referee
         ? `本局裁判：${rec.referee.name}（AI，由程序抽签产生，只负责推进流程，不参与游戏、不决定任何结果）\n`
         : '本局由程序自动主持。\n';
+    if (rec.stage === 'web') {
+      const link = this.watchUrl(rec);
+      inst.mirrorToGroup(
+        `🎭 本局在「灯下剧场」网页上进行${link ? `，点开观战：\n${link}` : '（服务器没有配置网页地址，暂时没有观战链接）'}\n` +
+          `群里会同步每条发言和环节提示，剧本和线索请在网页上看。参赛的 AI 请不要在群里说话，发言用 speak。`,
+      );
+    }
     inst.systemAnnounce(
       `🎲【${def.name}】对局 ${rec.id} 开始！\n` +
         drawText +
@@ -697,6 +730,7 @@ export class GameManager {
         : '游戏已开始（程序自动主持）。玩家请调用 get_my_view 查看自己的身份与待办。',
       // 代行时不点名、不提 referee_step：这句话由别的账号发到群里，被抽中账号的模型看到「裁判 X 请开始主持」
       // 会以为要自己主持（2026-11-08 WW-YHVC：克蕾雅调 referee_step 被挡，在群里说流程推不动，局被中止）
+      ...(rec.stage === 'web' ? { stage: 'web' as const, watch_url: this.watchUrl(rec) } : {}),
       group_message: !rec.referee
         ? `🎲 ${def.name}开局！`
         : rec.referee.hostedBy
@@ -732,7 +766,10 @@ export class GameManager {
 
   private gateOpen(rec: GameRecord, ph: PhaseState): boolean {
     if (rec.autoReferee) return true;
-    return (rec.referee?.cursor ?? 0) >= ph.gateSeq;
+    const cursor = rec.referee?.cursor ?? 0;
+    if (cursor >= ph.gateSeq) return true;
+    // 网页舞台的群镜像不门控：只等还没交付的门控消息
+    return !rec.outbox.some((d) => d.seq > cursor && d.seq <= ph.gateSeq && !d.noGate);
   }
 
   /**
@@ -971,6 +1008,92 @@ export class GameManager {
     };
   }
 
+  // ═══════════════════════════ 网页舞台（灯下剧场） ═══════════════════════════
+
+  /**
+   * 按观战令牌取对局；令牌不对、不是网页舞台的局一律当作不存在（不让人借此探测对局 ID）。
+   */
+  webRecord(gameId: string, token: string): GameRecord | null {
+    const rec = this.games.get(String(gameId ?? ''));
+    if (!rec || rec.stage !== 'web' || !rec.watchToken) return null;
+    const a = Buffer.from(String(token ?? ''));
+    const b = Buffer.from(rec.watchToken);
+    return a.length === b.length && timingSafeEqual(a, b) ? rec : null;
+  }
+
+  /**
+   * 网页观战视图：只含公开信息，和 get_my_view 的旁观者视角同一口径。
+   * 事件按「公开事件」重新编号（从 1 开始），免得从序号空档推断别人的私密行动；
+   * since 之后的事件才返回（断线续传）。正常结束的局附上完整复盘（含私密事件）。
+   */
+  webView(rec: GameRecord, since = 0) {
+    const def = this.def(rec);
+    const pub = rec.log.filter((e) => e.audience.type === 'public');
+    const from = Math.max(0, Math.min(Math.floor(Number(since) || 0), pub.length));
+    const ev = (e: LogEntry, i: number) => ({
+      seq: i,
+      at: e.at,
+      round: e.round,
+      kind: e.kind,
+      text: e.text,
+      ...(e.seat !== undefined ? { seat: e.seat } : {}),
+      ...(typeof e.data?.text === 'string' ? { speech: e.data.text } : {}),
+    });
+    const started = rec.startedAt !== null;
+    const inst = started ? this.inst(rec) : null;
+    const ph = rec.status === 'running' ? rec.phase : null;
+    const open = Boolean(ph && ph.openedAt !== null);
+    const pending = ph ? Object.values(ph.pending) : [];
+    // 秘密阶段不给「谁还没行动」：那本身就是秘密
+    const showTodo = open && !ph!.secret;
+    const waiting = showTodo ? pending.filter((r) => !r.done).map((r) => r.seat) : [];
+    const finished = rec.status === 'ended';
+    return {
+      game: {
+        id: rec.id,
+        type: rec.type,
+        name: def.name,
+        status: rec.status,
+        round: rec.round,
+        started_at: rec.startedAt,
+        ended_at: rec.endedAt,
+      },
+      phase: ph
+        ? {
+            key: ph.key,
+            title: ph.title,
+            opened: open,
+            deadline: open ? ph.deadline : null,
+            timeout_ms: ph.timeoutMs,
+            secret: ph.secret,
+            total: showTodo ? pending.length : null,
+            waiting,
+            done: showTodo ? pending.filter((r) => r.done).map((r) => r.seat) : [],
+          }
+        : null,
+      players: rec.status === 'lobby' ? [] : rec.players.map((p) => ({ seat: p.seat, name: p.name, kind: p.kind, alive: p.alive })),
+      lobby: rec.status === 'lobby' ? rec.lobby.filter((e) => e.pref !== 'referee').map((e) => ({ name: e.name, kind: e.kind })) : undefined,
+      board: inst && started ? inst.publicView() : null,
+      events: pub.slice(from).map((e, i) => ev(e, from + i + 1)),
+      last_seq: pub.length,
+      ...(rec.result ? { result: rec.result } : {}),
+      ...(rec.status === 'aborted' ? { aborted: rec.abortReason ?? '已中止' } : {}),
+      ...(finished && from === 0
+        ? {
+            replay: rec.log.map((e) => ({
+              at: e.at,
+              round: e.round,
+              kind: e.kind,
+              text: e.text,
+              ...(e.seat !== undefined ? { seat: e.seat } : {}),
+              audience: e.audience.type === 'seats' ? { seats: e.audience.seats } : e.audience.type,
+            })),
+          }
+        : {}),
+      server_time: this.now(),
+    };
+  }
+
   /** 统一视角：玩家看到自己的身份与待办，裁判看到主持信息，旁观者只看公开信息。 */
   getView(actor: Identity, gameId?: string, opts: { fullLog?: boolean } = {}) {
     const rec = this.resolveGame(actor, gameId, 'any');
@@ -1076,13 +1199,14 @@ export class GameManager {
     if (rec.status === 'ended') return '游戏已结束，可查看 result。get_game_log 可查看完整复盘（含所有私密信息）。';
     if (rec.status === 'aborted') return '对局已中止。';
     if (!me.alive && !todo) return '你已出局，可以继续观战（不要在群里透露你知道的信息）。';
+    const web = rec.stage === 'web' ? '本局在网页舞台进行：发言只用 speak，不要在 QQ 群里说话（群里说话会被撤回）。' : '';
     if (todo) {
       const first = todo.actions[0];
       const how = todo.kind === 'speech' ? '调用 speak({"text":"……"}) 发言' : `调用 act(...) 行动，例如 ${first?.example ?? ''}`;
-      return `轮到你了：${todo.prompt}（剩余约 ${todo.seconds_left ?? '?'} 秒）。请${how}。`;
+      return `轮到你了：${todo.prompt}（剩余约 ${todo.seconds_left ?? '?'} 秒）。请${how}。${web}`;
     }
-    if (upcoming) return '马上轮到你（等待裁判发布消息后开放），请稍候再查看。';
-    return '现在不是你的回合。可调用 get_my_view(wait_seconds=30) 等待轮到你。';
+    if (upcoming) return `马上轮到你（等待裁判发布消息后开放），请稍候再查看。${web}`;
+    return `现在不是你的回合。可调用 get_my_view(wait_seconds=30) 等待轮到你。${web}`;
   }
 
   private refereeWaiting(rec: GameRecord): string[] {
@@ -1286,6 +1410,7 @@ export class GameManager {
       waiting_for: this.refereeWaiting(rec),
       next_call_hint: hint,
       finished,
+      stage: rec.stage ?? 'group',
       quiet_ids: this.quietIds(rec),
       participant_ids: rec.status === 'running' ? [...rec.players.map((p) => p.id), ...(rec.referee ? [rec.referee.id] : [])] : [],
     };
@@ -1344,6 +1469,7 @@ export class GameManager {
         if (this.isKeyedAgent(userId)) {
           return { recognized: true, accepted: false, message: this.keyedAgentNote(rec, sanitizeName(msg.nickname ?? '') || userId) };
         }
+        if (rec.stage === 'web') return { recognized: true, accepted: false, message: WEB_NO_HUMANS };
         const r = this.addHuman(actor, rec.id, { userId, name: msg.nickname ?? userId });
         return { recognized: true, accepted: true, message: r.group_message ?? r.message };
       }
