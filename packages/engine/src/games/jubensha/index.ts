@@ -1391,7 +1391,16 @@ export function createJubenshaDefinition(
     rules: RULES,
     playerTips: TIPS,
     stages: ['group', 'web'],
-    optionsSchema,
+    optionsSchema: optionsSchema.transform((o) => {
+      const pack = resolvePack(o);
+      // 开房时锁定默认/唯一剧本，避免默认切换后大厅人数与实际开局不同。
+      return typeof pack === 'string' ? o : { ...o, script: pack.id };
+    }),
+    playerLimits(o, lobby) {
+      const pack = resolvePack(o);
+      if (typeof pack === 'string') return { min: 2, max: 13 };
+      return { min: pack.players, max: pack.players + (pickHost(o.host, lobby) ? 1 : 0) };
+    },
     optionsHelp: {
       ...commonOptionsHelp,
       script: '剧本编号（剧本库里只有一个剧本、或管理员设了默认剧本时可以不填）',

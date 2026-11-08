@@ -106,7 +106,7 @@ describe('jubensha: start checks', () => {
     const a = setup(1, undefined, { scripts: lib() });
     expect(() =>
       startGame(a.manager, 'jubensha', { players: [1, 2, 3, 4, 5].map((n) => bot(n)), autoReferee: true, options: { host: '777' } }),
-    ).toThrow(/另加 DM/);
+    ).toThrow(/人数已满/); // 未报名的 DM 不占额外席位，现于报名时提前拒绝
     const b = setup(1, undefined, { scripts: lib() });
     expect(() =>
       startGame(b.manager, 'jubensha', { players: [1, 2, 3, 4].map((n) => bot(n)), autoReferee: true, options: { cast: { '101': 'ghost' } } }),

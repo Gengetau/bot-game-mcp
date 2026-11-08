@@ -16,6 +16,8 @@ export interface GameDefinition<O = any> {
   idPrefix: string;
   minPlayers: number;
   maxPlayers: number;
+  /** 具体对局的人数（例如所选剧本及已报名 DM）；未提供时沿用游戏类型的范围。 */
+  playerLimits?(options: O, lobby: readonly { id: string; name: string }[]): { min: number; max: number };
   /** 一句话简介 */
   summary: string;
   /** 完整规则（Markdown） */
