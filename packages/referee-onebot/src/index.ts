@@ -66,6 +66,8 @@ export interface RefereeOptions {
   sendGapMs?: number;
   /** 自己发群的 bot 发言后，最多等多久（毫秒）让它的话出现在群里，再发下一条（默认 60000，0 = 不等） */
   postWaitMs?: number;
+  /** 轮到的 bot 在群里说话后，等多久还没交工具调用就 @ 它提醒（毫秒，默认 8000） */
+  turnRemindDelayMs?: number;
   /**
    * 夜间禁言（默认开）：秘密阶段（狼人杀的夜晚）里，存活的 AI 玩家在群里说话就撤回那条消息并禁言到天亮。
    * 需要裁判账号是群管理员；QQ 不允许管理员禁言另一位管理员，禁言失败时只撤回并提醒。出局的人不管。
@@ -438,6 +440,18 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
   /** 旁观 bot 禁言：本局参与者、已禁言的（QQ 号 → 禁言时间，禁言一小时后再说话会再禁）、已提醒过的 */
   const spect = { ids: new Set<string>(), muted: new Map<string, number>(), warned: new Set<string>() };
   const SPECT_BAN_S = 3600;
+  /**
+   * 网页舞台：参赛的 bot（不含裁判）、这局已提醒过的、本进程用 bot 本人的号发出的镜像发言
+   * （别的连接会收到这条群消息，不能当成 bot 在群里说话给撤回了）
+   */
+  const web = { ids: new Set<string>(), warned: new Set<string>(), sent: [] as { uid: string; text: string; at: number }[] };
+  const MIRROR_ECHO_MS = 180_000;
+  /**
+   * 轮到谁：公开阶段正在等的 AI 玩家、阶段标识、这个阶段已提醒过的。
+   * 轮到的 bot 在群里说了话却没调用工具（程序收不到，会被判超时）→ 过一会儿还没交就 @ 它提醒一次。
+   */
+  const turn = { ids: new Set<string>(), key: '', reminded: new Set<string>() };
+  const TURN_REMIND_DELAY_MS = opts.turnRemindDelayMs ?? 8_000;
   const RECALL_TRIES = 3;
   const RECALL_RETRY_MS = 800;
   const hostId = (opts.hostId ?? hostname()).trim().slice(0, 100) || 'referee';
@@ -1098,7 +1112,21 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
     const uid = String(ev.user_id ?? '');
     if (!uid) return;
     const nick = String(ev.sender?.card || ev.sender?.nickname || uid).trim() || uid;
-    if (ev.message_type === 'group' && String(ev.group_id) === opts.groupId) lastGroupPost.set(uid, Date.now());
+    if (ev.message_type === 'group' && String(ev.group_id) === opts.groupId) {
+      lastGroupPost.set(uid, Date.now());
+      if (st.active && turn.ids.has(uid) && !web.ids.has(uid)) maybeRemindTurn(st.active, uid, nick, ev.message ?? ev.raw_message ?? '');
+    }
+    if (ev.message_type === 'group' && String(ev.group_id) === opts.groupId && st.active && web.ids.has(uid) && !admins.has(uid)) {
+      // 网页舞台：参赛 bot 在群里说话（可能把私密信息说给别的参赛 bot 听）→ 撤回 + 提醒。指令和镜像发言不算
+      const plain = cqToPlain(segmentsToCq(ev.message ?? ev.raw_message ?? ''));
+      if (!plain.startsWith(prefix) && !isMirrorEcho(uid, plain)) {
+        if (dedupe(`${ev.group_id}:${ev.message_id ?? `${uid}:${Date.now()}`}`)) return;
+        const via = st.active;
+        const job = () => punishWebTalk(via, uid, nick, ev.message_id);
+        inbound = inbound.then(job, job).catch((e) => log(`[referee] 网页舞台撤回失败：${errMsg(e)}`));
+        return;
+      }
+    }
     if (
       nightMute &&
       ev.message_type === 'group' &&
@@ -1202,6 +1230,68 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
     ]);
   }
 
+  /** 轮到的 bot 在群里说话：等一会儿（它可能是先调用工具、再自己发群），还没交就 @ 它提醒一次 */
+  function maybeRemindTurn(v: Voice, uid: string, nick: string, message: unknown): void {
+    const plain = cqToPlain(segmentsToCq(message));
+    if (plain.startsWith(prefix) || isMirrorEcho(uid, plain)) return;
+    const key = turn.key;
+    if (turn.reminded.has(uid)) return;
+    setTimeout(() => {
+      if (stopped || st.active !== v || turn.key !== key || !turn.ids.has(uid) || turn.reminded.has(uid)) return;
+      turn.reminded.add(uid);
+      log(`[referee] ${nick}(${uid}) 轮到它时在群里说话，但没调用工具：已提醒`);
+      sendGroupAs(v, [
+        { type: 'at', data: { qq: uid } },
+        { type: 'text', data: { text: ' ⏰ 轮到你了，但程序没收到：在群里直接说的话不算数。发言请调用 speak 工具（投票、行动用 act），否则到时会按超时处理。' } },
+      ]).catch((e) => log(`[referee] 提醒失败：${errMsg(e)}`));
+    }, TURN_REMIND_DELAY_MS).unref?.();
+  }
+
+  /** 按引擎给的 turn_ids 更新「轮到谁」；换了阶段就清空提醒记录 */
+  function updateTurn(r: Json): void {
+    const ph = r.phase as Json | null | undefined;
+    const key = ph ? `${ph.key}|${ph.round}|${ph.title}` : '';
+    if (key !== turn.key) {
+      turn.key = key;
+      turn.reminded.clear();
+    }
+    turn.ids = new Set(r.finished || !Array.isArray(r.turn_ids) ? [] : r.turn_ids.map(String));
+  }
+
+  /** 这条群消息是不是本进程刚用 bot 本人的号发出的镜像发言 */
+  function isMirrorEcho(uid: string, plain: string): boolean {
+    const now = Date.now();
+    web.sent = web.sent.filter((x) => now - x.at < MIRROR_ECHO_MS);
+    const norm = (t: string) => t.replace(/\s+/g, '');
+    const got = norm(plain);
+    return web.sent.some((x) => {
+      if (x.uid !== uid) return false;
+      const want = norm(x.text);
+      // QQ 偶尔改动长消息的空白、截断表情：前 30 个字对上就算
+      return got === want || (want.length >= 30 && got.startsWith(want.slice(0, 30)));
+    });
+  }
+
+  /** 网页舞台上参赛 bot 在群里说话：撤回，每局提醒一次（不禁言：镜像发言要用它的号发） */
+  async function punishWebTalk(v: Voice, uid: string, nick: string, messageId: unknown): Promise<void> {
+    if (!web.ids.has(uid)) return;
+    const recalled = await recall(v, messageId, `参赛 bot ${uid} 的群消息`);
+    log(`[referee] 网页舞台：参赛的 ${nick}(${uid}) 在群里说话，${recalled ? '已撤回' : '未撤回'}`);
+    if (web.warned.has(uid)) return;
+    web.warned.add(uid);
+    await sendGroupAs(v, [
+      { type: 'text', data: { text: `⚠️ ${sanitizeNick(nick)}：对局在网页上进行，发言请用 speak，不要在群里说话${recalled ? '（消息已撤回）' : ''}。` } },
+    ]);
+  }
+
+  /** 按引擎给的 stage / participant_ids 更新网页舞台的参赛名单（不含裁判）。 */
+  function updateWeb(r: Json): void {
+    const ids = r.stage === 'web' && !r.finished && Array.isArray(r.participant_ids) ? r.participant_ids.map(String) : [];
+    const ref = st.game?.refereeId;
+    web.ids = new Set(ids.filter((id: string) => id !== ref));
+    if (web.ids.size === 0) web.warned.clear();
+  }
+
   /** 没参加本局的人在群里插话：撤回 + 禁言到对局结束（禁不了就提醒一次）。 */
   async function punishSpectator(v: Voice, uid: string, nick: string, messageId: unknown): Promise<void> {
     if (spect.ids.size === 0 || spect.ids.has(uid)) return;
@@ -1268,6 +1358,16 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
   }
 
   async function deliver(v: Voice, d: Json): Promise<void> {
+    // 网页舞台的镜像发言：能用 bot 本人的号说话，就用本人的号发原文（群里看起来就是她在说）
+    if (d.to === 'group' && d.voice?.qq) {
+      const own = voiceOf(String(d.voice.qq));
+      if (own && own.onebot.connected) {
+        const text = Array.isArray(d.voice.message) ? d.voice.message.map((x: Json) => (x?.type === 'text' ? String(x.data?.text ?? '') : '')).join('') : String(d.voice.message ?? '');
+        web.sent.push({ uid: own.id, text, at: Date.now() });
+        await sendGroupAs(own, d.voice.message);
+        return;
+      }
+    }
     // 自己发群的 bot 刚发言：等它的话真的出现在群里再发下一条（最多等到它发言后 60 秒）
     const wf = d.wait_for_post as { qq?: string; since?: number } | undefined;
     if (wf?.qq && typeof wf.since === 'number') {
@@ -1356,7 +1456,10 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
           }
         }
         if (nightMute) await updateQuiet(active, r.finished ? [] : r.quiet_ids);
-        if (spectatorMute) await updateSpectators(active, r.finished ? [] : r.participant_ids);
+        // 网页舞台：游戏不在群里进行，旁观者随便聊；改管参赛 bot 别在群里说话
+        updateWeb(r);
+        updateTurn(r);
+        if (spectatorMute) await updateSpectators(active, r.finished || r.stage === 'web' ? [] : r.participant_ids);
         for (const d of r.deliveries ?? []) {
           if (typeof d.seq === 'number' && d.seq <= st.lastSeq) continue;
           if (typeof d.seq === 'number') st.lastSeq = d.seq;

@@ -42,6 +42,8 @@ const optionsSchema = z.object({
   clue_level: z.enum(['easy', 'normal']).default('normal'),
   /** 结束时公布没被搜到的线索 */
   reveal_unfound: z.boolean().default(true),
+  /** 舞台：group = 在群里玩；web = 在网页「灯下剧场」上玩（只有 AI 上场，群里只收镜像） */
+  stage: z.enum(['group', 'web']).default('group'),
 });
 
 export type JubenshaOptions = z.infer<typeof optionsSchema>;
@@ -227,7 +229,8 @@ export function createJubenshaDefinition(library: ScriptLibrary, assets?: AssetS
     }
 
     private announceLong(text: string, kind = 'announce'): void {
-      for (const part of chunkText(text)) this.announce(part, { kind });
+      // 长文本（剧本规则、幕文本、真相）只在网页上看，不往群里镜像
+      for (const part of chunkText(text)) this.announce(part, { kind, mirror: false });
     }
 
     private tellLong(seat: Seat, text: string, kind: string): void {
@@ -1044,7 +1047,10 @@ export function createJubenshaDefinition(library: ScriptLibrary, assets?: AssetS
       if (host) {
         this.tell(host, `❓ ${this.roleLabel(seat)} 私下问你：${q}\n（用 act({"action":"answer","target":${seat},"text":"…"}) 私下回答）`, { kind: 'question' });
         // 只叫醒 DM，不说是谁问的
-        this.pushDelivery({ type: 'group', groupId: this.rec.groupId }, `${this.at(host)} 有玩家私下向 DM 提问，请调用 get_my_view 查看。`, 'prompt');
+        this.pushDelivery({ type: 'group', groupId: this.rec.groupId }, `${this.at(host)} 有玩家私下向 DM 提问，请调用 get_my_view 查看。`, 'prompt', 0, undefined, {
+          mirror: true,
+          keepAt: true,
+        });
         return '已转交 DM，回答会私下发给你。';
       }
       const norm = normalizeText(q).toLowerCase();
@@ -1377,6 +1383,7 @@ export function createJubenshaDefinition(library: ScriptLibrary, assets?: AssetS
     summary: '按私有剧本数据包进行的剧本杀：程序选角、分幕发剧本、计时、计票、公布真相；可请一位玩家担任 DM 串场答疑。',
     rules: RULES,
     playerTips: TIPS,
+    stages: ['group', 'web'],
     optionsSchema,
     optionsHelp: {
       ...commonOptionsHelp,
@@ -1394,6 +1401,7 @@ export function createJubenshaDefinition(library: ScriptLibrary, assets?: AssetS
       quiz_timeout_s: '问卷作答限时（秒，默认 300）',
       clue_level: '线索难度：normal（默认，发难度卡、不发提示卡）或 easy（发提示卡、不发难度卡）',
       reveal_unfound: '结束时公布没被搜到的线索（默认 true）',
+      stage: '舞台：group（默认，在 QQ 群里玩）或 web（在网页「灯下剧场」上玩：只有 AI 上场，剧本和线索在网页上看，群里同步发言和环节提示，开局时发观战链接）',
     },
     // 只保护真正会当 DM 的那位（报了名的第一个候选），其他候选照常可以被抽去当裁判
     mustPlay: (o, lobby) => {

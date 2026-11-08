@@ -407,7 +407,7 @@ export function createMcpServer(deps: ServerDeps, ctx: SessionContext): McpServe
     {
       title: '裁判：推进并取消息',
       description:
-        '【仅裁判】推进游戏并取回需要发送的消息：程序处理超时与结算，返回按顺序排列的 deliveries（to=group 发群里，to=private 私聊对应真人）。发完立刻再调用，建议 wait_seconds=25；finished=true 时结束。',
+        '【仅裁判】推进游戏并取回需要发送的消息：程序处理超时与结算，返回按顺序排列的 deliveries（to=group 发群里，to=private 私聊对应真人）。发完立刻再调用，建议 wait_seconds=25；finished=true 时结束。stage=web 的局在网页上进行：群消息都是镜像（mirror=true），带 voice 的是 bot 的发言，能用 voice.qq 这个号说话就用它发 voice.message，否则照常发 message。',
       inputSchema: {
         game_id: gameIdOpt,
         wait_seconds: waitSeconds,

@@ -1,6 +1,6 @@
 import type { z } from 'zod';
 import type { BaseGame, GameEnv } from './game.js';
-import type { GameRecord } from './types.js';
+import type { GameRecord, Stage } from './types.js';
 
 /**
  * 游戏类型定义。每个游戏模块导出一个 GameDefinition 并在 src/games/index.ts 注册。
@@ -22,6 +22,10 @@ export interface GameDefinition<O = any> {
   rules: string;
   /** 给 bot 玩家的策略提示（Markdown，可选） */
   playerTips?: string;
+  /**
+   * 支持的舞台（默认只有 group）。支持 web 的游戏要在选项里提供 stage 字段，开房时选。
+   */
+  stages?: readonly Stage[];
   /** 选项 schema（zod object，所有字段都应有默认值） */
   optionsSchema: z.ZodType<O>;
   /** 选项说明：字段名 → 中文说明 */

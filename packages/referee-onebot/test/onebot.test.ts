@@ -98,6 +98,7 @@ describe('OneBot referee against the real engine', () => {
       stepWaitSeconds: 2,
       sendGapMs: 0,
       quietGraceMs: 300,
+      turnRemindDelayMs: 300,
       selfInPool: false, // 这个常驻裁判和下面几个测试共用引擎：不让它把妮娅登记进抽签池
       signal: ac.signal,
       log: (l) => logs.push(l),
@@ -210,6 +211,73 @@ describe('OneBot referee against the real engine', () => {
     const status = await qq.waitForCall((c) => groupSend(c) && callText(c).includes('没有对局'), 10_000, mark);
     expect(status).toBeTruthy();
     await ai.close();
+  }, 60_000);
+
+  it('reminds a bot whose turn it is when it talks in the group instead of calling the tool, once per turn', async () => {
+    let mark = qq.calls.length;
+    groupMsg(OWNER, '主人', text('/桌游 数字炸弹 min=0 max=10 mode=single'));
+    await qq.waitForCall((c) => groupSend(c) && callText(c).includes('报名'), 10_000, mark);
+    const ai = new Client({ name: 'ai-turn', version: '1.0.0' });
+    await ai.connect(new StreamableHTTPClientTransport(new URL(http.url), { requestInit: { headers: { Authorization: `Bearer ${KEYS.ai}` } } }));
+    const call = async (name: string, args: Record<string, unknown> = {}) => {
+      const r: any = await ai.callTool({ name, arguments: args });
+      const t = r.content?.[0]?.text ?? '';
+      if (r.isError) throw new Error(t);
+      return JSON.parse(t);
+    };
+    const gameId: string = (await call('list_games', { group_id: GROUP })).games[0].game_id;
+    await call('join_game', { game_id: gameId, join_as: 'player', self_post: false });
+    groupMsg(OWNER, '主人', text('加入'));
+    await qq.waitForCall((c) => groupSend(c) && callText(c).includes('加入了'), 10_000, mark);
+    mark = qq.calls.length;
+    groupMsg(OWNER, '主人', text('/桌游 开局'));
+    await qq.waitForCall((c) => groupSend(c) && callText(c).includes('数字炸弹开始'), 10_000, mark);
+    const isReminder = (c: ApiCall) => groupSend(c) && callText(c).includes('在群里直接说的话不算数');
+
+    // 不是自己的回合在群里说话：不提醒
+    let finished = false;
+    let reminded = false;
+    const aiLoop = (async () => {
+      while (!finished) {
+        const v = await call('get_my_view', { game_id: gameId, wait_seconds: 2 });
+        if (v.game?.status && v.game.status !== 'running') break;
+        if (!v.todo) continue;
+        const m = String(v.todo.prompt).match(/(\d+)~(\d+)/);
+        const lo = Number(m![1]);
+        if (!reminded) {
+          // 第一次轮到它：先在群里说（程序收不到），被 @ 提醒后再说一遍，也只提醒一次
+          const at = qq.calls.length;
+          groupMsg(AI_ID, '克蕾雅', text(`我猜 ${lo}`));
+          const r = await qq.waitForCall(isReminder, 10_000, at);
+          expect(callText(r)).toContain(`@${AI_ID}`);
+          groupMsg(AI_ID, '克蕾雅', text(`我猜 ${lo}！`));
+          await new Promise((res) => setTimeout(res, 900));
+          expect(qq.calls.slice(at).filter(isReminder)).toHaveLength(1);
+          reminded = true;
+        }
+        await call('act', { game_id: gameId, action: 'guess', number: lo }).catch(() => undefined);
+      }
+    })();
+    const humanLoop = (async () => {
+      let seen = mark;
+      while (!finished) {
+        const c = await qq.waitForCall((x) => groupSend(x) && (callText(x).includes(`@${OWNER}`) || callText(x).includes('BOOM')), 15_000, seen);
+        seen = qq.calls.indexOf(c) + 1;
+        const t = callText(c);
+        if (t.includes('BOOM')) break;
+        const m = t.match(/范围 (\d+)~(\d+)/);
+        if (!m) continue;
+        groupMsg(OWNER, '主人', text(m[1]!));
+      }
+    })();
+    await qq.waitForCall((c) => groupSend(c) && callText(c).includes('游戏结束'), 40_000, mark);
+    finished = true;
+    await Promise.all([aiLoop, humanLoop]);
+    expect(reminded).toBe(true);
+    // 真人（不在 turn_ids 里）在群里说话从不触发提醒
+    expect(qq.calls.slice(mark).filter((c) => isReminder(c) && callText(c).includes(`@${OWNER}`))).toHaveLength(0);
+    await ai.close();
+    await new Promise((res) => setTimeout(res, 300));
   }, 60_000);
 
   it('jubensha: sends clue images to the group and by private chat as OneBot image segments', async () => {
@@ -1011,6 +1079,99 @@ describe('OneBot referee against the real engine', () => {
       acK.abort();
       await Promise.race([done, new Promise((res) => setTimeout(res, 5000))]);
       await Promise.all([qqM.close(), qqX.close()]);
+    }
+  }, 60_000);
+
+  it('web stage: mirrors speeches (a voice speaks with its own account), recalls playing bots who talk in the group, leaves spectators alone', async () => {
+    const G2 = '1127334886'; // 单独的群：和共用的常驻裁判互不干扰
+    const m = rt.manager;
+    const ids = { ai: { id: AI_ID, name: '克蕾雅' }, ai2: { id: AI2_ID, name: '艾莉希娅' }, p3: { id: '7003', name: '林夕' }, p4: { id: '7004', name: '苏菲' } };
+    // 先在引擎里开好一局网页舞台（裁判 = 妮娅本人，没有代行登记）：裁判进程起来后直接接手主持
+    const { summary } = m.createGame({ id: REF_ID, name: '妮娅' }, { type: 'jubensha', groupId: G2, joinAs: 'referee', options: { stage: 'web' } });
+    const gameId = summary.game_id;
+    for (const p of Object.values(ids)) m.joinGame(p, gameId, { as: 'player', selfPost: true });
+    m.startGame({ id: REF_ID, name: '妮娅' }, gameId);
+    const rec = m.getRecord(gameId);
+    expect(rec.stage).toBe('web');
+
+    const qqMain = new FakeOneBot('w0');
+    const qqA = new FakeOneBot('wA');
+    await Promise.all([qqMain.start(), qqA.start()]);
+    const ac2 = new AbortController();
+    const lines: string[] = [];
+    const done = runReferee({
+      url: http.url,
+      key: KEYS.ref,
+      onebotUrl: qqMain.url,
+      onebotToken: 'w0',
+      groupId: G2,
+      admins: [OWNER],
+      bots: [AI_ID, AI2_ID],
+      voices: [{ key: KEYS.ai, onebotUrl: qqA.url, onebotToken: 'wA' }],
+      stepWaitSeconds: 1,
+      sendGapMs: 0,
+      signal: ac2.signal,
+      log: (l) => lines.push(l),
+    });
+    await Promise.all([qqMain.waitForConnection(), qqA.waitForConnection()]);
+    const sendTo = (c: ApiCall) => c.action === 'send_group_msg' && String(c.params.group_id) === G2;
+    const emitAll = (uid: string, nick: string, t: string) => {
+      const ev = { post_type: 'message', message_type: 'group', sub_type: 'normal', group_id: Number(G2), user_id: Number(uid), message_id: ++msgSeq, sender: { user_id: Number(uid), nickname: nick, card: '' }, message: text(t), raw_message: t };
+      for (const q of [qqMain, qqA]) q.emit(ev);
+      return ev.message_id;
+    };
+    try {
+      // 开场：观战说明由主持的账号发，群里只有镜像
+      await qqMain.waitForCall((c) => sendTo(c) && callText(c).includes('灯下剧场'), 15_000);
+      // 自我介绍：轮到谁谁说；克蕾雅是本进程的嗓子 → 用她自己的号发原文，别人 → 主持账号加前缀
+      const said: { who: keyof typeof ids; text: string }[] = [];
+      for (let i = 0; i < 4 && rec.phase?.key === 'intro'; i++) {
+        const seat = Object.values(rec.phase.pending).find((r) => !r.done)!.seat;
+        const p = rec.players.find((x) => x.seat === seat)!;
+        const who = (Object.keys(ids) as (keyof typeof ids)[]).find((k) => ids[k].id === p.id)!;
+        const t = `我是${p.name}，第${i + 1}个发言。`;
+        m.speak(ids[who], gameId, t);
+        said.push({ who, text: t });
+      }
+      for (const s of said) {
+        if (s.who === 'ai') {
+          const c = await qqA.waitForCall((x) => sendTo(x) && callText(x) === s.text, 10_000);
+          expect(c).toBeTruthy();
+        } else {
+          const c = await qqMain.waitForCall((x) => sendTo(x) && callText(x).includes(s.text), 10_000);
+          expect(callText(c)).toMatch(/^【\d+号 /);
+        }
+      }
+      expect(qqMain.calls.some((c) => sendTo(c) && callText(c) === said.find((s) => s.who === 'ai')!.text)).toBe(false);
+
+      // 克蕾雅那条镜像发言回到群里（别的连接收到）：不算违规
+      const mark = qqMain.calls.length;
+      emitAll(AI_ID, '克蕾雅', said.find((s) => s.who === 'ai')!.text);
+      // 旁观者随便聊：不撤回、不禁言
+      emitAll(OTHER, '路人', '这局好看');
+      await new Promise((res) => setTimeout(res, 500));
+      expect(qqMain.calls.slice(mark).some((c) => c.action === 'delete_msg' || c.action === 'set_group_ban')).toBe(false);
+
+      // 参赛 bot 在群里说话：撤回 + 提醒（每局一次），不禁言
+      const bad = emitAll(AI2_ID, '艾莉希娅', '偷偷说，我签约了');
+      const del = await qqMain.waitForCall((c) => c.action === 'delete_msg', 10_000, mark);
+      expect(del.params.message_id).toBe(bad);
+      await qqMain.waitForCall((c) => sendTo(c) && callText(c).includes('speak'), 10_000, mark);
+      const bad2 = emitAll(AI2_ID, '艾莉希娅', '再说一句');
+      await qqMain.waitForCall((c) => c.action === 'delete_msg' && c.params.message_id === bad2, 10_000, mark);
+      await new Promise((res) => setTimeout(res, 300));
+      expect(qqMain.calls.slice(mark).filter((c) => sendTo(c) && callText(c).includes('speak'))).toHaveLength(1);
+      expect(qqMain.calls.slice(mark).some((c) => c.action === 'set_group_ban')).toBe(false);
+      // 参赛 bot 自己说的不是镜像原文：也撤回（克蕾雅换了一句）
+      const bad3 = emitAll(AI_ID, '克蕾雅', '我觉得凶手是 2 号');
+      await qqMain.waitForCall((c) => c.action === 'delete_msg' && c.params.message_id === bad3, 10_000, mark);
+    } finally {
+      if (process.env.REF_DEBUG) console.log(['--- lines', ...lines, '--- main', ...qqMain.calls.map((c) => `${c.action} ${callText(c)}`), '--- A', ...qqA.calls.map((c) => `${c.action} ${callText(c)}`)].join('\n'));
+      if (rec.status === 'running') m.abortGame({ id: REF_ID, name: '妮娅' }, gameId, '测试结束');
+      await new Promise((res) => setTimeout(res, 1500));
+      ac2.abort();
+      await Promise.race([done, new Promise((res) => setTimeout(res, 5000))]);
+      await Promise.all([qqMain.close(), qqA.close()]);
     }
   }, 60_000);
 

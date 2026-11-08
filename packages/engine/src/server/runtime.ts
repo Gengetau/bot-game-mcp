@@ -44,6 +44,7 @@ export function createRuntime(config: BotGameConfig, log: (msg: string) => void 
     maxActiveGames: config.maxActiveGames,
     refereeIds: config.refereeIds,
     defaultOptions: config.defaultOptions,
+    ...(config.webUrl ? { webUrl: config.webUrl } : {}),
   });
   const auth = new Authenticator(resolveAuth(config), manager, log);
   manager.isKeyedAgent = (id) => auth.hasKeyFor(id);
