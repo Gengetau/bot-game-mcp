@@ -20,7 +20,8 @@
     "test:watch": "vitest",
     "docs": "npm run docs -w bot-game-mcp",
     "simulate": "npm run simulate -w bot-game-mcp --",
-    "e2e": "tsx scripts/e2e.ts"
+    "e2e": "tsx scripts/e2e.ts",
+    "load": "tsx scripts/load.ts"
   },
   "devDependencies": {
     "@modelcontextprotocol/sdk": "^1.32.2",
