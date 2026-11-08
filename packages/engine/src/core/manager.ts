@@ -275,6 +275,7 @@ export class GameManager {
 
   summary(rec: GameRecord): GameSummary {
     const def = this.def(rec);
+    const limits = this.playerLimits(rec);
     return {
       game_id: rec.id,
       type: rec.type,
@@ -287,8 +288,8 @@ export class GameManager {
       referee_hosted_by: rec.referee?.hostedBy ?? null,
       referee_idle_s: rec.referee && rec.status === 'running' ? Math.max(0, Math.round((this.now() - rec.referee.lastSeenAt) / 1000)) : null,
       players: rec.status === 'lobby' ? rec.lobby.filter((e) => e.pref !== 'referee').length : rec.players.length,
-      min_players: def.minPlayers,
-      max_players: def.maxPlayers,
+      min_players: limits.min,
+      max_players: limits.max,
       ...(rec.status === 'lobby'
         ? { lobby: rec.lobby.map((e) => ({ name: e.name, id: e.id, kind: e.kind, join_as: e.pref, hosted: Boolean(e.hostedBy) })) }
         : {}),
@@ -299,6 +300,33 @@ export class GameManager {
       stage: rec.stage ?? 'group',
       created_at: new Date(rec.createdAt).toISOString(),
     };
+  }
+
+  private playerLimits(rec: GameRecord, lobby: readonly LobbyEntry[] = rec.lobby) {
+    const def = this.def(rec);
+    return def.playerLimits?.(rec.options, lobby) ?? { min: def.minPlayers, max: def.maxPlayers };
+  }
+
+  /** 按拟提交的名单校验，不先修改存档。裁判不占角色/DM 席位。 */
+  private assertLobbyCapacity(rec: GameRecord, lobby: readonly LobbyEntry[]): void {
+    const def = this.def(rec);
+    if (!def.playerLimits) return;
+    const limits = this.playerLimits(rec, lobby);
+    const must = new Set(def.mustPlay?.(rec.options, lobby) ?? []);
+    const mustPlay = (e: LobbyEntry) => must.has(e.id) || must.has(e.name);
+    let count = lobby.filter((e) => e.pref !== 'referee' || mustPlay(e)).length;
+    if (!rec.autoReferee) {
+      const agents = lobby.filter((e) => e.kind === 'agent' && this.canReferee(e.id) && !mustPlay(e));
+      const pool = agents.filter((e) => e.hostedBy && (e.pref === 'referee' || count - 1 >= limits.min));
+      // 与开局的抽签优先级一致：代行池、专任裁判、either。
+      const canRemove = pool.length
+        ? pool.some((e) => e.pref !== 'referee')
+        : !agents.some((e) => e.pref === 'referee') && agents.some((e) => e.pref === 'either');
+      if (canRemove) count--;
+    }
+    if (count > limits.max) {
+      throw invalidState(`人数已满（本局最多 ${limits.max} 名玩家，裁判另计）。`, '可报名专任裁判，或等玩家退出后再加入；额外 DM 须由指定候选报名。');
+    }
   }
 
   /** 观战链接（网页舞台且配置了 webUrl 时）。 */
@@ -465,12 +493,14 @@ export class GameManager {
     if (joinAs !== 'none') {
       rec.lobby.push({ id: actor.id, name: this.nameOf(actor), kind: 'agent', pref: joinAs, selfPost: input.selfPost ?? true, joinedAt: now });
     }
+    this.assertLobbyCapacity(rec, rec.lobby);
+    const limits = this.playerLimits(rec);
     this.games.set(id, rec);
     this.touch(rec);
     return {
       summary: this.summary(rec),
       group_message:
-        `🎮【${def.name}】房间 ${id} 已开启（${def.minPlayers}~${def.maxPlayers} 人）！\n` +
+        `🎮【${def.name}】房间 ${id} 已开启（${limits.min === limits.max ? limits.min : `${limits.min}~${limits.max}`} 名玩家，裁判另计）！\n` +
         `真人想玩请在群里发送「加入」，AI 玩家调用 join_game 加入。\n` +
         `${rec.autoReferee ? '本局由程序自动主持。' : '本局需要一位 AI 裁判（由程序从报名裁判的 AI 中抽签产生），裁判只负责推进流程和私聊发身份。'}\n` +
         (rec.stage === 'web' ? `🎭 本局在网页「灯下剧场」上进行（只有 AI 上场，真人开局后点链接观战）。\n` : '') +
@@ -498,9 +528,11 @@ export class GameManager {
     const existing = rec.lobby.find((e) => e.id === actor.id);
     if (existing && existing.kind === 'human') throw badRequest('该 QQ 号已作为真人玩家报名。');
     const playerCount = rec.lobby.filter((e) => e.pref !== 'referee' && e.id !== actor.id).length;
-    if (!existing && pref === 'player' && playerCount >= def.maxPlayers) {
+    if (!def.playerLimits && !existing && pref === 'player' && playerCount >= def.maxPlayers) {
       throw invalidState(`人数已满（最多 ${def.maxPlayers} 人）。`, '可以 join_as="referee" 报名当裁判。');
     }
+    const candidate: LobbyEntry = { ...existing, id: actor.id, name: this.nameOf(actor), kind: 'agent', pref, selfPost: opts.selfPost ?? existing?.selfPost ?? true, joinedAt: existing?.joinedAt ?? this.now() };
+    this.assertLobbyCapacity(rec, [...rec.lobby.filter((e) => e.id !== actor.id), candidate]);
     if (existing) {
       existing.pref = pref;
       existing.name = this.nameOf(actor);
@@ -521,7 +553,9 @@ export class GameManager {
     const players = rec.lobby.filter((e) => e.pref === 'player').length;
     const either = rec.lobby.filter((e) => e.pref === 'either').length;
     const refs = rec.lobby.filter((e) => e.pref === 'referee').length;
-    return `玩家 ${players} 人${either ? ` + 待定 ${either} 人` : ''}${refs ? `，裁判候选 ${refs} 人` : ''}`;
+    const limits = this.playerLimits(rec);
+    return `玩家 ${players} 人${either ? ` + 待定 ${either} 人` : ''}${refs ? `，裁判候选 ${refs} 人` : ''}` +
+      (this.def(rec).playerLimits ? `（本局 ${limits.min === limits.max ? limits.min : `${limits.min}~${limits.max}`} 名玩家，裁判另计）` : '');
   }
 
   /**
@@ -545,6 +579,7 @@ export class GameManager {
     }
     if (!entry) {
       entry = { id: actor.id, name: this.nameOf(actor), kind: 'agent', pref: 'referee', selfPost: true, joinedAt: this.now() };
+      this.assertLobbyCapacity(rec, [...rec.lobby, { ...entry, hostedBy: host }]);
       rec.lobby.push(entry);
     }
     entry.hostedBy = host;
@@ -573,9 +608,10 @@ export class GameManager {
       existing.name = name;
       return { summary: this.summary(rec), message: `${name} 已在名单中。`, group_message: null };
     }
-    if (rec.lobby.filter((e) => e.pref !== 'referee').length >= def.maxPlayers) {
+    if (!def.playerLimits && rec.lobby.filter((e) => e.pref !== 'referee').length >= def.maxPlayers) {
       throw invalidState(`人数已满（最多 ${def.maxPlayers} 人）。`);
     }
+    this.assertLobbyCapacity(rec, [...rec.lobby, { id: userId, name, kind: 'human', pref: 'player', selfPost: false, joinedAt: this.now() }]);
     rec.lobby.push({ id: userId, name, kind: 'human', pref: 'player', selfPost: false, joinedAt: this.now() });
     this.touch(rec);
     return {
@@ -626,6 +662,7 @@ export class GameManager {
     const rec = this.getRecord(gameId);
     const def = this.def(rec);
     if (rec.status !== 'lobby') throw invalidState(`对局 ${rec.id} 不在报名阶段。`);
+    const limits = this.playerLimits(rec);
     const hostPresent = rec.lobby.some((e) => e.id === rec.hostId);
     const isLobbyAgent = rec.lobby.some((e) => e.id === actor.id && e.kind === 'agent');
     // 服务器指定的裁判账号（refereeIds）报了名也能开局：bot 自己开的房由代码裁判自动开局
@@ -645,7 +682,8 @@ export class GameManager {
     const either = agents.filter((e) => e.pref === 'either');
     // 代行登记过的账号组成抽签池：非玩家的候选随时可抽；玩家报名的候选只有在抽走一人后人数仍够时才可抽
     const playerCount = rec.lobby.filter((e) => e.pref !== 'referee' || mustPlay(e)).length;
-    const pool = agents.filter((e) => e.hostedBy && (e.pref === 'referee' || playerCount - 1 >= def.minPlayers));
+    const pool = agents.filter((e) => e.hostedBy && (e.pref === 'referee' || playerCount - 1 >= limits.min) &&
+      (!def.playerLimits || playerCount - (e.pref === 'referee' ? 0 : 1) <= limits.max));
     let draw: RefereeDraw | null = null;
     if (!rec.autoReferee) {
       if (pool.length > 0) {
@@ -670,10 +708,10 @@ export class GameManager {
     // —— 2. 确定玩家并检查人数 ——
     const entries = rec.lobby.filter((e) => e !== referee && (e.pref !== 'referee' || mustPlay(e)));
     const n = entries.length;
-    if (n < def.minPlayers || n > def.maxPlayers) {
+    if (n < limits.min || n > limits.max) {
       throw invalidState(
-        `${def.name}需要 ${def.minPlayers}~${def.maxPlayers} 名玩家，当前 ${n} 名（不含裁判${referee ? ` ${referee.name}` : ''}）。`,
-        n < def.minPlayers ? '请继续拉人报名（真人发送「加入」，AI 调用 join_game）。' : '请让部分人退出报名。',
+        `${def.name}需要 ${limits.min === limits.max ? limits.min : `${limits.min}~${limits.max}`} 名玩家，当前 ${n} 名（不含裁判${referee ? ` ${referee.name}` : ''}）。`,
+        n < limits.min ? '请继续拉人报名（真人发送「加入」，AI 调用 join_game）。' : '请让部分人退出报名。',
       );
     }
     const extra = def.checkStart?.(n, rec.options, entries.map((e) => ({ id: e.id, name: e.name, kind: e.kind })));
@@ -1110,12 +1148,13 @@ export class GameManager {
     };
     if (rec.status === 'lobby') {
       const me = rec.lobby.find((e) => e.id === actor.id);
+      const limits = this.playerLimits(rec);
       return {
         game: header,
         lobby: rec.lobby.map((e) => ({ name: e.name, qq: e.id, kind: e.kind, join_as: e.pref })),
         you: me ? { joined: true, join_as: me.pref, host: rec.hostId === actor.id } : { joined: false },
-        min_players: def.minPlayers,
-        max_players: def.maxPlayers,
+        min_players: limits.min,
+        max_players: limits.max,
         hint:
           rec.hostId === actor.id
             ? '你是房主：人齐后调用 start_game 开局（程序会抽签选出 AI 裁判、随机座位与身份）。'
