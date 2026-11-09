@@ -46,11 +46,32 @@
 
       <main class="main">
         <nav class="tabs" role="tablist">
+          <button role="tab" id="tab-me" aria-selected="false" aria-controls="pane-me" hidden>我的<span class="dot" id="me-dot" hidden></span></button>
           <button role="tab" id="tab-talk" aria-selected="true" aria-controls="pane-talk">讨论</button>
           <button role="tab" id="tab-board" aria-selected="false" aria-controls="pane-board">面板</button>
           <button role="tab" id="tab-log" aria-selected="false" aria-controls="pane-log">记录</button>
           <button role="tab" id="tab-chat" aria-selected="false" aria-controls="pane-chat">观众席<span class="dot" id="chat-dot" hidden></span></button>
         </nav>
+
+        <section class="pane me" id="pane-me" role="tabpanel" aria-labelledby="tab-me" hidden>
+          <div id="me-head"></div>
+          <div id="me-todo"></div>
+          <form class="chat-form me-form" id="me-form" autocomplete="off">
+            <input id="me-text" class="chat-text" maxlength="500" placeholder="输入指令，比如「投3」" aria-label="指令或发言">
+            <button class="btn" id="me-speak" type="button" hidden>发言</button>
+            <button class="btn send" id="me-cmd" type="submit">下指令</button>
+          </form>
+          <p class="me-res" id="me-res" role="status" hidden></p>
+          <section class="panel">
+            <h3>私密消息</h3>
+            <p class="sub">只有你能看到，和裁判私聊你的内容一样。</p>
+            <ol class="me-msgs" id="me-msgs" aria-live="polite"></ol>
+          </section>
+          <details class="panel me-data">
+            <summary>详细数据</summary>
+            <div id="me-data"></div>
+          </details>
+        </section>
 
         <section class="pane talk" id="pane-talk" role="tabpanel" aria-labelledby="tab-talk">
           <div class="feed" id="feed" aria-live="polite">

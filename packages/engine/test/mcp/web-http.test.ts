@@ -158,4 +158,78 @@ describe('灯下剧场 HTTP 接口', () => {
       expect(() => m.spectatorSayAs(bot(9), summary.game_id, 'hi')).toThrow(/还没开始/);
     });
   });
+
+  describe('真人座位', () => {
+    /** 读 SSE，直到拿到一条 view 事件（座位推送不带 id） */
+    async function seatView(url: string): Promise<any> {
+      const ctrl = new AbortController();
+      const res = await fetch(url, { signal: ctrl.signal });
+      expect(res.status).toBe(200);
+      const reader = res.body!.getReader();
+      let buf = '';
+      try {
+        for (;;) {
+          const { value, done } = await reader.read();
+          if (done) throw new Error('stream ended');
+          buf += new TextDecoder().decode(value);
+          const m = /event: view\ndata: (.*)\n\n/.exec(buf);
+          if (m) return JSON.parse(m[1]!);
+        }
+      } finally {
+        ctrl.abort();
+      }
+    }
+
+    let groups = 0;
+    async function auctionWithHuman() {
+      const m = rt.manager;
+      const { summary } = m.createGame(REF, { type: 'sealed_auction', groupId: `g-seat-${++groups}`, joinAs: 'referee', options: { random_seats: false } });
+      for (const n of [1, 2]) m.joinGame(bot(n), summary.game_id, { as: 'player' });
+      m.addHuman(REF, summary.game_id, { userId: '20001', name: '小明' });
+      m.startGame(REF, summary.game_id);
+      await m.refereeStep(REF, summary.game_id);
+      const rec = m.getRecord(summary.game_id);
+      const seat = rec.players.find((p) => p.kind === 'human')!.seat;
+      return { id: summary.game_id, rec, seat, tok: rec.seatTokens![String(seat)]! };
+    }
+
+    it('shows the seat view, takes commands as JSON only, and 404s on wrong tokens', async () => {
+      const { id, rec, seat, tok } = await auctionWithHuman();
+      const v = (await (await fetch(`${base}/web/api/games/${id}/seat?s=${tok}`)).json()) as any;
+      expect(v.me).toMatchObject({ seat, name: '小明' });
+      expect(v.me.todo.channel).toBe('private');
+      expect(v.mine.some((x: any) => x.text.includes(tok))).toBe(true);
+      expect(v.chat).toBeUndefined();
+
+      expect((await fetch(`${base}/web/api/games/${id}/seat?s=${'x'.repeat(24)}`)).status).toBe(404);
+      // 观战接口不认座位令牌（群舞台的局也没有观战令牌）
+      expect((await fetch(`${base}/web/api/games/${id}?t=${tok}`)).status).toBe(404);
+
+      const form = await fetch(`${base}/web/api/games/${id}/seat/act?s=${tok}`, { method: 'POST', body: 'text=出价3' });
+      expect(form.status).toBe(415);
+      const post = (body: unknown) =>
+        fetch(`${base}/web/api/games/${id}/seat/act?s=${tok}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+      const empty = await post({ text: ' ' });
+      expect(empty.status).toBe(400);
+      const ok = await (await post({ text: '出价 2', mode: 'command' })).json();
+      expect(ok).toMatchObject({ ok: true, accepted: true });
+      expect(rec.phase!.pending[String(seat)]?.done ?? true).toBe(true);
+
+      const sv = await seatView(`${base}/web/api/games/${id}/seat/stream?s=${tok}`);
+      expect(sv.me.seat).toBe(seat);
+      expect((await fetch(`${base}/web/api/games/${id}/seat/stream?s=nope`)).status).toBe(404);
+    });
+
+    it('stops working the moment the game is over', async () => {
+      const { id, tok } = await auctionWithHuman();
+      rt.manager.abortGame(REF, id, '测试');
+      expect((await fetch(`${base}/web/api/games/${id}/seat?s=${tok}`)).status).toBe(404);
+      const r = await fetch(`${base}/web/api/games/${id}/seat/act?s=${tok}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: '出价 1' }),
+      });
+      expect(r.status).toBe(404);
+    });
+  });
 });

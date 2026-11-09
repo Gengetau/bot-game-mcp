@@ -71,6 +71,7 @@ describe('OneBot referee against the real engine', () => {
       scriptsDir,
       assetsDir,
       refereeIds: [REF_ID, AI_ID, AI2_ID],
+      webUrl: 'https://stage.example.com/web/',
       auth: {
         mode: 'keys',
         adminKeys: [KEYS.admin],
@@ -1139,11 +1140,14 @@ describe('OneBot referee against the real engine', () => {
   it('web stage: mirrors speeches (a voice speaks with its own account), recalls playing bots who talk in the group, leaves spectators alone', async () => {
     const G2 = '1127334886'; // 单独的群：和共用的常驻裁判互不干扰
     const m = rt.manager;
-    const ids = { ai: { id: AI_ID, name: '克蕾雅' }, ai2: { id: AI2_ID, name: '艾莉希娅' }, p3: { id: '7003', name: '林夕' }, p4: { id: '7004', name: '苏菲' } };
+    const ids = { ai: { id: AI_ID, name: '克蕾雅' }, ai2: { id: AI2_ID, name: '艾莉希娅' }, p3: { id: '7003', name: '林夕' } };
     // 先在引擎里开好一局网页舞台（裁判 = 妮娅本人，没有代行登记）：裁判进程起来后直接接手主持
     const { summary } = m.createGame({ id: REF_ID, name: '妮娅' }, { type: 'jubensha', groupId: G2, joinAs: 'referee', options: { stage: 'web' } });
     const gameId = summary.game_id;
     for (const p of Object.values(ids)) m.joinGame(p, gameId, { as: 'player', selfPost: true });
+    // 一个真人：开局时私聊收到座位链接，在网页上发言
+    const HUMAN = '7005';
+    m.addHuman({ id: REF_ID, name: '妮娅' }, gameId, { userId: HUMAN, name: '小明' });
     m.startGame({ id: REF_ID, name: '妮娅' }, gameId);
     const rec = m.getRecord(gameId);
     expect(rec.stage).toBe('web');
@@ -1182,9 +1186,19 @@ describe('OneBot referee against the real engine', () => {
       await qqMain.waitForCall((c) => sendTo(c) && callText(c).includes('灯下剧场'), 15_000);
       // 自我介绍：轮到谁谁说；克蕾雅是本进程的嗓子 → 用她自己的号发原文，别人 → 主持账号加前缀
       const said: { who: keyof typeof ids; text: string }[] = [];
+      // 真人私聊收到自己的座位链接
+      const link = await qqMain.waitForCall((c) => c.action === 'send_private_msg' && String(c.params.user_id) === HUMAN && callText(c).includes('&s='), 15_000);
+      expect(callText(link)).toContain(`https://stage.example.com/web/?g=${gameId}&s=${rec.seatTokens!['' + rec.players.find((p) => p.id === HUMAN)!.seat]}`);
       for (let i = 0; i < 4 && rec.phase?.key === 'intro'; i++) {
         const seat = Object.values(rec.phase.pending).find((r) => !r.done)!.seat;
         const p = rec.players.find((x) => x.seat === seat)!;
+        if (p.id === HUMAN) {
+          // 真人在座位网页上发言（再说「过」结束），由主持账号带前缀镜像
+          expect(m.webSeatAct(rec, seat, { text: '我是小明，网页上说话。', mode: 'speech' }).accepted).toBe(true);
+          m.relayHumanMessage({ id: REF_ID, name: '妮娅' }, gameId, { userId: HUMAN, text: '', channel: 'private', action: { action: 'end_speech' } });
+          await qqMain.waitForCall((x) => sendTo(x) && callText(x).includes('我是小明，网页上说话。'), 10_000);
+          continue;
+        }
         const who = (Object.keys(ids) as (keyof typeof ids)[]).find((k) => ids[k].id === p.id)!;
         const t = `我是${p.name}，第${i + 1}个发言。`;
         m.speak(ids[who], gameId, t);
@@ -1230,6 +1244,12 @@ describe('OneBot referee against the real engine', () => {
       // 参赛 bot 自己说的不是镜像原文：也撤回（克蕾雅换了一句）
       const bad3 = emitAll(AI_ID, '克蕾雅', '我觉得凶手是 2 号');
       await qqMain.waitForCall((c) => c.action === 'delete_msg' && c.params.message_id === bad3, 10_000, mark);
+      // 真人在群里说话：也撤回，提醒他去自己的座位网页发言（不是 speak 工具）
+      const hb = emitAll(HUMAN, '小明', '我在群里说一句');
+      await qqMain.waitForCall((c) => c.action === 'delete_msg' && c.params.message_id === hb, 10_000, mark);
+      const hdm = await qqMain.waitForCall((c) => c.action === 'send_private_msg' && String(c.params.user_id) === HUMAN && callText(c).includes('座位网页'), 10_000, mark);
+      expect(callText(hdm)).not.toContain('speak');
+      expect(rec.log.some((e) => e.text.includes('我在群里说一句'))).toBe(false);
     } finally {
       if (process.env.REF_DEBUG) console.log(['--- lines', ...lines, '--- main', ...qqMain.calls.map((c) => `${c.action} ${callText(c)}`), '--- A', ...qqA.calls.map((c) => `${c.action} ${callText(c)}`)].join('\n'));
       if (rec.status === 'running') m.abortGame({ id: REF_ID, name: '妮娅' }, gameId, '测试结束');

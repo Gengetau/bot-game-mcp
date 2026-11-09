@@ -1,7 +1,9 @@
 // @ts-check
 /**
- * 灯下剧场：观战页面（只读）。
- * 数据来自 /web/api/games/:id/stream（SSE），只含公开信息；所有文字一律当纯文本渲染，不拼 HTML。
+ * 灯下剧场：观战页面（t=观战令牌，只读）和真人座位页面（s=座位令牌）。
+ * 观战数据来自 /web/api/games/:id/stream（SSE），只含公开信息；
+ * 座位页面来自 /web/api/games/:id/seat/stream，多一个「我的」页签：本座位的私密信息、待办和下指令的输入框。
+ * 所有文字一律当纯文本渲染，不拼 HTML。
  */
 
 /**
@@ -14,8 +16,11 @@
  *   phase: Phase|null, players: Seat[], lobby?: { name: string, kind: string }[], board: any, events: Ev[], last_seq: number,
  *   result?: { winnerTeam: string, winnerSeats: number[], reason: string, reveal: { seat: number, name: string, identity: string }[] },
  *   aborted?: string, replay?: ReplayEv[], server_time: number,
- *   chat?: Chat[], chat_seq?: number
+ *   chat?: Chat[], chat_seq?: number, me?: Me, mine?: Mine[], mine_seq?: number
  * }} View
+ * @typedef {{ seat: number, name: string, alive: boolean, private: any, can_speak: boolean,
+ *   todo: null | { prompt: string, kind: string, seconds_left: number|null, channel: string, actions: { action: string, label: string, command?: string, targets?: number[] }[] } }} Me
+ * @typedef {{ seq: number, at: number, round: number, kind: string, text: string }} Mine
  * @typedef {{ seq: number, at: number, from: 'web'|'agent', name: string, text: string }} Chat
  */
 
@@ -38,9 +43,16 @@ function el(tag, cls, text) {
 const params = new URLSearchParams(location.search);
 const gameId = params.get('g') ?? '';
 const token = params.get('t') ?? '';
+const seatToken = params.get('s') ?? '';
+/** 真人座位页面：s=座位令牌（开局时裁判私聊发给本人，对局结束作废） */
+const seatMode = Boolean(seatToken) && !token;
+const query = seatMode ? `s=${encodeURIComponent(seatToken)}` : `t=${encodeURIComponent(token)}`;
+const apiBase = `api/games/${encodeURIComponent(gameId)}${seatMode ? '/seat' : ''}`;
 
 /** @type {{ view: View|null, events: Ev[], offset: number, unread: number, filter: string, god: boolean, rendered: number, chat: Chat[], chatSeen: number, mine: Set<number> }} */
 const st = { view: null, events: [], offset: 0, unread: 0, filter: 'all', god: false, rendered: 0, chat: [], chatSeen: 0, mine: new Set() };
+/** 座位页面：发给我的私密消息（按序号去重） @type {Mine[]} */
+const myMsgs = [];
 
 const desktop = window.matchMedia('(min-width: 1024px)');
 
@@ -70,12 +82,14 @@ $('theme').addEventListener('click', () => {
 });
 
 // ───────── 页签 ─────────
-const TABS = ['talk', 'board', 'log', 'chat'];
+// 座位页面没有观众席（参与者看不到观众席），多一个「我的」
+const TABS = seatMode ? ['me', 'talk', 'board', 'log'] : ['talk', 'board', 'log', 'chat'];
 function selectTab(/** @type {string} */ name) {
   for (const t of TABS) {
     $(`tab-${t}`).setAttribute('aria-selected', String(t === name));
     $(`pane-${t}`).hidden = t !== name;
   }
+  if (name === 'me') $('me-dot').hidden = true;
   if (name === 'chat') {
     $('chat-dot').hidden = true;
     st.chatSeen = st.chat.length ? st.chat[st.chat.length - 1].seq : 0;
@@ -88,6 +102,10 @@ function selectTab(/** @type {string} */ name) {
   }
 }
 for (const t of TABS) $(`tab-${t}`).addEventListener('click', () => selectTab(t));
+if (seatMode) {
+  $('tab-me').hidden = false;
+  $('tab-chat').hidden = true;
+}
 desktop.addEventListener('change', () => {
   if (desktop.matches && $('tab-board').getAttribute('aria-selected') === 'true') selectTab('talk');
   renderBoard();
@@ -661,6 +679,128 @@ function chatError(/** @type {string|null} */ msg) {
   });
 }
 
+// ───────── 我的（真人座位） ─────────
+/** 把任意 JSON 画成键值列表（游戏的私密视图各不相同，这里不认具体游戏） */
+function tree(/** @type {any} */ x, depth = 0) {
+  if (x === null || x === undefined) return el('span', 'muted', '—');
+  if (typeof x !== 'object') return el('span', '', String(x));
+  if (depth > 4) return el('span', 'muted', '…');
+  if (Array.isArray(x)) {
+    if (x.every((y) => y === null || typeof y !== 'object')) return el('span', '', x.length ? x.map(String).join('、') : '（空）');
+    const ul = el('ul', 'tree');
+    for (const y of x) {
+      const li = el('li');
+      li.append(tree(y, depth + 1));
+      ul.append(li);
+    }
+    return ul;
+  }
+  const dl = el('dl', 'kv');
+  for (const [k, v] of Object.entries(x)) {
+    const dd = el('dd');
+    dd.append(tree(v, depth + 1));
+    dl.append(el('dt', '', k), dd);
+  }
+  return dl;
+}
+
+function renderMe(/** @type {View} */ v) {
+  const me = v.me;
+  if (!me) return;
+  const head = panel(`你是 ${me.seat}号 ${me.name}`, me.alive ? '' : '你已出局，可以继续看，但别在群里透露你知道的信息。');
+  head.classList.add('me-head');
+  $('me-head').replaceChildren(head);
+
+  const todo = $('me-todo');
+  const input = /** @type {HTMLInputElement} */ ($('me-text'));
+  if (me.todo) {
+    const p = panel('轮到你了', me.todo.seconds_left !== null ? `大约还剩 ${me.todo.seconds_left} 秒` : '');
+    p.classList.add('me-todo');
+    p.append(el('p', 'prompt', me.todo.prompt));
+    if (me.can_speak && me.todo.actions.some((a) => a.action === 'speech')) {
+      p.append(el('p', 'sub', '发言：在下面的输入框里写好，点「发言」。可以分几条说，说完下指令「过」。'));
+    }
+    const cmds = me.todo.actions.filter((a) => a.command);
+    if (cmds.length) {
+      const row = el('div', 'chips');
+      for (const a of cmds) {
+        const b = el('button', 'chip', `${a.label}：${a.command}`);
+        b.type = 'button';
+        b.addEventListener('click', () => {
+          input.value = a.command ?? '';
+          input.focus();
+        });
+        row.append(b);
+      }
+      p.append(row, el('p', 'sub', '点一下把示例填进输入框，改成你要的再提交。'));
+    }
+    todo.replaceChildren(p);
+  } else {
+    todo.replaceChildren(el('p', 'empty', v.game.status === 'running' ? '现在没有轮到你。轮到你时这里会提示。' : '对局已结束。'));
+  }
+  const running = v.game.status === 'running';
+  $('me-speak').hidden = !me.can_speak;
+  input.placeholder = me.can_speak ? '发言内容，或者指令（比如「过」）' : '输入指令，比如「投3」';
+  for (const id of ['me-text', 'me-cmd', 'me-speak']) /** @type {HTMLInputElement} */ ($(id)).disabled = !running;
+
+  const last = myMsgs.length ? /** @type {Mine} */ (myMsgs[myMsgs.length - 1]).seq : 0;
+  const fresh = (v.mine ?? []).filter((m) => m.seq > last);
+  if (fresh.length) {
+    myMsgs.push(...fresh);
+    if ($('tab-me').getAttribute('aria-selected') !== 'true') $('me-dot').hidden = false;
+  }
+  const box = $('me-msgs');
+  box.replaceChildren();
+  if (!myMsgs.length) box.append(el('li', 'empty', '还没有私密消息。'));
+  for (const m of [...myMsgs].reverse()) {
+    const li = el('li', 'me-msg');
+    li.append(el('span', 'at', hhmm(m.at)), el('p', 'tx', m.text));
+    box.append(li);
+  }
+  $('me-data').replaceChildren(tree(me.private));
+}
+
+function meResult(/** @type {string|null} */ msg, ok = true) {
+  const r = $('me-res');
+  r.textContent = msg ?? '';
+  r.hidden = !msg;
+  r.classList.toggle('error', !ok);
+}
+
+async function submitMe(/** @type {'command'|'speech'} */ mode) {
+  const input = /** @type {HTMLInputElement} */ ($('me-text'));
+  const text = input.value.trim();
+  if (!text) return;
+  const btns = [/** @type {HTMLButtonElement} */ ($('me-cmd')), /** @type {HTMLButtonElement} */ ($('me-speak'))];
+  for (const b of btns) b.disabled = true;
+  meResult(null);
+  try {
+    const r = await fetch(`${apiBase}/act?${query}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text, mode }),
+    });
+    const data = await r.json().catch(() => ({}));
+    if (r.status === 404) throw new Error('链接已作废（对局可能已经结束）。');
+    if (!r.ok) throw new Error(data.message || `提交失败（${r.status}）`);
+    meResult(data.accepted ? `✅ ${data.message || '已接受。'}` : `⚠️ ${data.message || '没有生效。'}`, Boolean(data.accepted));
+    if (data.accepted) input.value = '';
+  } catch (e) {
+    meResult(e instanceof Error ? e.message : String(e), false);
+  } finally {
+    for (const b of btns) b.disabled = false;
+    input.focus();
+  }
+}
+
+if (seatMode) {
+  $('me-form').addEventListener('submit', (ev) => {
+    ev.preventDefault();
+    void submitMe('command');
+  });
+  $('me-speak').addEventListener('click', () => void submitMe('speech'));
+}
+
 // ───────── 数据 ─────────
 function apply(/** @type {View} */ v) {
   const first = st.view === null;
@@ -680,23 +820,27 @@ function apply(/** @type {View} */ v) {
   renderStatus();
   tickClock();
   mergeChat(v.chat ?? []);
+  if (seatMode) renderMe(v);
   if (v.game.status === 'aborted') banner(`对局已中止：${v.aborted ?? ''}。下面是已经发生的公开内容。`);
 }
 
 async function fetchOnce() {
-  const r = await fetch(`api/games/${encodeURIComponent(gameId)}?t=${encodeURIComponent(token)}`, { cache: 'no-store' });
+  const r = await fetch(`${apiBase}?${query}`, { cache: 'no-store' });
   if (r.status === 404) throw new Error('notfound');
   if (!r.ok) throw new Error(`http ${r.status}`);
   return /** @type {Promise<View>} */ (r.json());
 }
 
 function connect() {
-  const url = `api/games/${encodeURIComponent(gameId)}/stream?t=${encodeURIComponent(token)}`;
+  const url = `${apiBase}/stream?${query}`;
   const es = new EventSource(url);
   es.addEventListener('view', (ev) => {
     banner(null);
     apply(JSON.parse(/** @type {MessageEvent} */ (ev).data));
-    if (st.view && (st.view.game.status === 'ended' || st.view.game.status === 'aborted')) es.close();
+    if (st.view && (st.view.game.status === 'ended' || st.view.game.status === 'aborted')) {
+      es.close();
+      if (seatMode) banner('对局已结束，你的座位链接已作废。');
+    }
   });
   es.addEventListener('error', async () => {
     if (es.readyState === EventSource.CONNECTING) {
@@ -710,7 +854,10 @@ function connect() {
       apply(v);
       if (v.game.status === 'running' || v.game.status === 'lobby') setTimeout(connect, 5000);
     } catch (e) {
-      if (e instanceof Error && e.message === 'notfound') fatal('链接无效或对局不存在。请回到群里，点最新的观战链接。');
+      if (e instanceof Error && e.message === 'notfound') {
+        if (seatMode && st.view) banner('对局已结束，你的座位链接已作废。');
+        else fatal(seatMode ? '链接无效或已作废（座位链接在对局结束后自动作废）。' : '链接无效或对局不存在。请回到群里，点最新的观战链接。');
+      }
       else {
         banner('连不上服务器，5 秒后重试…', true);
         setTimeout(connect, 5000);
@@ -729,5 +876,8 @@ function fatal(/** @type {string} */ msg) {
   banner(msg, true);
 }
 
-if (!gameId || !token) fatal('链接不完整：请从群里的观战链接进入。');
-else connect();
+if (!gameId || (!token && !seatToken)) fatal('链接不完整：请从群里的观战链接（或裁判私聊你的座位链接）进入。');
+else {
+  if (seatMode) selectTab('me');
+  connect();
+}

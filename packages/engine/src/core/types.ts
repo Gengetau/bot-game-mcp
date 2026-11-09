@@ -249,6 +249,8 @@ export interface GameRecord<S = any, O = any> {
   stage?: Stage;
   /** 网页观战令牌（stage=web 时生成；只能看公开视图，结束后看复盘）。 */
   watchToken?: string;
+  /** 真人座位的网页链接令牌（座位号 → 令牌）。开局时给每个真人生成、私聊发给本人；对局结束或中止即删除（链接作废）。 */
+  seatTokens?: Record<string, string>;
   /** 观众席：网页观众和没参加本局的 bot 的闲聊。参与者（玩家、裁判、候补裁判）看不到，也不进群。旧存档没有。 */
   spectatorChat?: SpectatorChatEntry[];
   spectatorChatSeq?: number;

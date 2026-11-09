@@ -2,7 +2,9 @@
  * 网页舞台演示：起一个本地引擎，开一局网页舞台的剧本杀（示例剧本），用随机动作推进到指定步数，
  * 打印观战链接，然后保持运行（看页面、截图用）。
  *
- *   npx tsx scripts/web-demo.ts [--steps 40] [--port 7788] [--end]
+ *   npx tsx scripts/web-demo.ts [--steps 40] [--port 7788] [--end] [--human]
+ *
+ * --human：4 号座位换成真人「小明」，再打印他的座位链接（推进到轮到他时停下，方便看「我的」页签）。
  */
 import { join } from 'node:path';
 import { parseArgs } from 'node:util';
@@ -10,7 +12,7 @@ import { configSchema } from '../src/config.js';
 import { startHttpServer } from '../src/server/http.js';
 import { createRuntime } from '../src/server/runtime.js';
 
-const { values } = parseArgs({ options: { steps: { type: 'string', default: '40' }, port: { type: 'string', default: '7788' }, end: { type: 'boolean', default: false } } });
+const { values } = parseArgs({ options: { steps: { type: 'string', default: '40' }, port: { type: 'string', default: '7788' }, end: { type: 'boolean', default: false }, human: { type: 'boolean', default: false } } });
 const port = Number(values.port);
 const rt = createRuntime(
   configSchema.parse({
@@ -29,7 +31,10 @@ const REF = { id: '999', name: '裁判' };
 const names = ['林夕', '艾莉希娅', '克蕾雅', '苏菲'];
 const { summary } = m.createGame(REF, { type: 'jubensha', groupId: 'demo', joinAs: 'referee', options: { stage: 'web', script: 'demo-search', random_seats: false } });
 const id = summary.game_id;
-names.forEach((n, i) => m.joinGame({ id: `10${i + 1}`, name: n }, id, { as: 'player' }));
+names.forEach((n, i) => {
+  if (values.human && i === names.length - 1) m.addHuman(REF, id, { userId: '20001', name: '小明' });
+  else m.joinGame({ id: `10${i + 1}`, name: n }, id, { as: 'player' });
+});
 const started = m.startGame(REF, id);
 const rec = m.getRecord(id);
 const LINES = [
@@ -50,6 +55,10 @@ for (let i = 0; i < steps * 10 && rec.status === 'running'; i++) {
   if (!values.end && i >= steps) break;
   for (const seat of seats.slice(0, 1)) {
     const p = rec.players.find((x) => x.seat === seat)!;
+    if (p.kind === 'human') {
+      if (!values.end) i = steps * 10;
+      continue;
+    }
     const input = m.randomActionFor(id, seat);
     if (!input) continue;
     if (input.action === 'speech' && line < LINES.length) input.text = LINES[line++]!;
@@ -61,5 +70,6 @@ for (let i = 0; i < steps * 10 && rec.status === 'running'; i++) {
   }
 }
 console.log(started.watch_url ?? '(no url)');
+for (const p of rec.players.filter((x) => x.kind === 'human')) console.log(`seat ${p.seat} ${p.name}: ${m.seatUrl(rec, p.seat) ?? '(no seat url)'}`);
 console.log(`status=${rec.status} phase=${rec.phase?.title ?? '-'}`);
 process.on('SIGTERM', () => void http.close().then(() => process.exit(0)));

@@ -21,7 +21,7 @@ npm run simulate -- werewolf --players 9 --humans 2 --seed 1   # 离线跑一局
 - 视图不能泄露别人的秘密：
   - `publicView` 里不能有秘密；
   - 不要把 `rec.state` 整个返回；
-  - 真人座位的私密信息只通过 `tell` 发出（变成裁判私聊），MCP 视图只认 AI 座位。
+  - 真人座位的私密信息只通过 `tell` 发出（变成裁判私聊）；另外只在该真人自己的座位网页（座位令牌，开局私聊发出、结束作废）上显示。MCP 视图只认 AI 座位。
 - 玩家提供的文字和昵称，必须先经过 `sanitizeUserText`/`sanitizeName` 才能拼进消息。
 - 需要保密的阶段设置 `secret: true`，必要时加 `minDurationMs`。阶段出现与否、标题、时长都不能随秘密状态变化（参考狼人杀的女巫阶段）。
 
