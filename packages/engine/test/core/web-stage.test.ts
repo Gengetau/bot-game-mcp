@@ -43,8 +43,11 @@ describe('网页舞台：开房和开局', () => {
     expect(nb.summary.stage).toBe('group');
   });
 
-  it('refuses human seats on the web stage (P1 has none)', () => {
-    const { manager, gameId, rec } = webGame();
+  it('refuses human seats on the web stage when there is no web address to send seat links to', () => {
+    const manager = new GameManager({ registry: createRegistry({ scripts: memoryLibrary([PACK]) }), rng: new SeededRng(1) });
+    const { summary } = manager.createGame(REF, { type: 'jubensha', groupId: 'g', joinAs: 'referee', options: { stage: 'web' } });
+    const gameId = summary.game_id;
+    const rec = manager.getRecord(gameId);
     expect(() => manager.addHuman(REF, gameId, human(1))).toThrow(GameError);
     const r = manager.relayHumanMessage(REF, gameId, { userId: '201', nickname: '路人', text: '加入', channel: 'group' });
     expect(r).toMatchObject({ recognized: true, accepted: false });

@@ -4,8 +4,12 @@
  *  - GET /web/api/games/:id?t=令牌      观战视图（只含公开信息；正常结束的局附完整复盘）
  *  - GET /web/api/games/:id/stream?t=   SSE 实时推送（按公开事件序号续传）
  *  - POST /web/api/games/:id/chat?t=    观众席发言 {name, text}（参与者看不到，不进群）
+ *  真人座位（s=座位令牌，开局时私聊发给本人，对局结束即作废）：
+ *  - GET  /web/api/games/:id/seat?s=          本座位视图（公开部分 + 自己的私密信息、待办、私密消息；没有观众席）
+ *  - GET  /web/api/games/:id/seat/stream?s=   SSE 实时推送
+ *  - POST /web/api/games/:id/seat/act?s=      {text, mode: command|speech}：和私聊裁判（或群里发言）走同一套解析
  *
- * 网页上没有任何能影响对局的接口；唯一能写的是观众席，它和对局完全隔开。令牌不对一律 404，不让人借此探测对局 ID。
+ * 观战令牌只能看；座位令牌只能以这个真人座位的身份下指令，和他私聊裁判的效果完全一样。令牌不对一律 404，不让人借此探测对局 ID。
  */
 import { readFileSync } from 'node:fs';
 import express, { type Express, type Request, type Response } from 'express';
@@ -209,6 +213,112 @@ export function mountWeb(app: Express, manager: GameManager, log: (msg: string) 
     };
     set.add(close);
     streams.set(rec.id, set);
+    perIp.set(ip, (perIp.get(ip) ?? 0) + 1);
+    res.write(`retry: 3000\n\n`);
+    push();
+    req.on('close', close);
+  });
+
+  // ───────── 真人座位 ─────────
+  app.get('/web/api/games/:id/seat', (req, res) => {
+    if (!allow(ipOf(req))) {
+      res.status(429).json({ error: 'rate_limited', message: '请求太频繁，请稍后再试。' });
+      return;
+    }
+    const hit = manager.webSeat(String(req.params.id), String(req.query.s ?? ''));
+    if (!hit) return notFound(res);
+    secure(res);
+    res.setHeader('Cache-Control', 'no-store');
+    res.json(manager.webSeatView(hit.rec, hit.seat, Number(req.query.since ?? 0), Number(req.query.mine_since ?? 0)));
+  });
+
+  // 必须是 JSON（别的网站没法不经预检就跨站提交 JSON），按 IP 限流
+  app.post('/web/api/games/:id/seat/act', express.json({ limit: '8kb' }), (req, res) => {
+    if (!allow(ipOf(req))) {
+      res.status(429).json({ error: 'rate_limited', message: '请求太频繁，请稍后再试。' });
+      return;
+    }
+    const hit = manager.webSeat(String(req.params.id), String(req.query.s ?? ''));
+    if (!hit) return notFound(res);
+    secure(res);
+    res.setHeader('Cache-Control', 'no-store');
+    if (!req.is('application/json')) {
+      res.status(415).json({ error: 'bad_request', message: '请从座位页面提交。' });
+      return;
+    }
+    const mode = req.body?.mode === 'speech' ? 'speech' : 'command';
+    try {
+      const r = manager.webSeatAct(hit.rec, hit.seat, { text: String(req.body?.text ?? ''), mode });
+      res.json({ ok: true, accepted: r.accepted, recognized: r.recognized, message: r.message });
+    } catch (e) {
+      if (e instanceof GameError) res.status(400).json({ error: e.code, message: e.message });
+      else {
+        log(`[web] 座位指令出错：${e instanceof Error ? e.message : String(e)}`);
+        res.status(500).json({ error: 'internal', message: '服务器出错了。' });
+      }
+    }
+  });
+
+  app.get('/web/api/games/:id/seat/stream', (req, res) => {
+    const ip = ipOf(req);
+    if (!allow(ip)) {
+      res.status(429).json({ error: 'rate_limited', message: '请求太频繁，请稍后再试。' });
+      return;
+    }
+    const hit = manager.webSeat(String(req.params.id), String(req.query.s ?? ''));
+    if (!hit) return notFound(res);
+    const { rec, seat } = hit;
+    const key = `${rec.id}#seat`;
+    const set = streams.get(key) ?? new Set();
+    if (set.size >= maxPerGame || (perIp.get(ip) ?? 0) >= maxPerIp) {
+      res.status(429).json({ error: 'too_many_streams', message: '连接太多了，请关掉多余的页面。' });
+      return;
+    }
+    secure(res);
+    res.writeHead(200, {
+      'Content-Type': 'text/event-stream; charset=utf-8',
+      'Cache-Control': 'no-store',
+      Connection: 'keep-alive',
+      'X-Accel-Buffering': 'no',
+    });
+    // 每条连接从头给：私密消息和公开事件各有序号，页面按序号去重
+    let sent = 0;
+    let mineSent = 0;
+    let timer: NodeJS.Timeout | null = null;
+    let closed = false;
+    const push = () => {
+      timer = null;
+      if (closed) return;
+      const view = manager.webSeatView(rec, seat, sent, mineSent);
+      sent = view.last_seq;
+      mineSent = view.mine_seq;
+      res.write(`event: view\ndata: ${JSON.stringify(view)}\n\n`);
+      // 对局结束：最后推一次（带结局），然后关掉，链接随之作废
+      if (rec.status !== 'running') close();
+    };
+    const schedule = () => {
+      if (!timer) timer = setTimeout(push, 200);
+    };
+    const off = manager.onChange((id) => {
+      if (id === undefined || id === rec.id) schedule();
+    });
+    const beat = setInterval(() => res.write(`: ping\n\n`), heartbeatMs);
+    beat.unref();
+    const close = () => {
+      if (closed) return;
+      closed = true;
+      res.end();
+      off();
+      clearInterval(beat);
+      if (timer) clearTimeout(timer);
+      set.delete(close);
+      if (set.size === 0) streams.delete(key);
+      const n = (perIp.get(ip) ?? 1) - 1;
+      if (n <= 0) perIp.delete(ip);
+      else perIp.set(ip, n);
+    };
+    set.add(close);
+    streams.set(key, set);
     perIp.set(ip, (perIp.get(ip) ?? 0) + 1);
     res.write(`retry: 3000\n\n`);
     push();

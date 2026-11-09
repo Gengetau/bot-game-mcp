@@ -358,7 +358,7 @@ export abstract class BaseGame<S = any, O = any> {
 
   /**
    * 记录一段公开发言。
-   * - 真人：已经在群里说过了，只记日志。
+   * - 真人：群舞台上已经在群里说过了，只记日志；网页舞台上（座位网页发言）镜像到群里。
    * - bot 且 selfPost：bot 会自己发群，这里只记日志并插入间隔。
    * - bot 且非 selfPost：由裁判代发「【3号 名字】内容」。
    */
@@ -369,15 +369,16 @@ export abstract class BaseGame<S = any, O = any> {
       seat,
       data: { text: clean },
     });
-    if (p.kind === 'agent' && this.webStage) {
-      // 网页舞台：发言原样镜像到群里；裁判能用 bot 本人的号说话就用本人的号（不带前缀）
+    if (this.webStage) {
+      // 网页舞台：发言原样镜像到群里；bot 的发言裁判能用 bot 本人的号说就用本人的号（不带前缀）。
+      // 真人在座位网页上发言，由裁判带前缀镜像
       this.pushDelivery(
         { type: 'group', groupId: this.rec.groupId },
         `【${p.seat}号 ${p.name}${title ? `·${title}` : ''}】${clean}`,
         'speech',
         0,
         undefined,
-        { mirror: true, voice: { qq: p.id, text: clean } },
+        p.kind === 'agent' ? { mirror: true, voice: { qq: p.id, text: clean } } : { mirror: true },
       );
     } else if (p.kind === 'agent') {
       if (p.selfPost) {
@@ -575,6 +576,11 @@ export abstract class BaseGame<S = any, O = any> {
   /** 框架使用：给某座位发私密回执（真人会收到私聊）。 */
   systemTell(seat: Seat, text: string, category: DeliveryCategory = 'feedback'): void {
     this.tell(seat, text, { kind: 'feedback', category });
+  }
+
+  /** 真人座位网页链接：身份类私密消息（问「我身份呢」时会一起补发）。 */
+  seatLinkTell(seat: Seat, text: string): void {
+    this.tell(seat, text, { kind: 'seat_link', category: 'role' });
   }
 
   // ───────────────────────── 结束 ─────────────────────────

@@ -469,6 +469,8 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
    */
   const web = {
     ids: new Set<string>(),
+    /** 其中的真人：他们在自己的座位网页上发言（链接在裁判私聊里），提醒的说法不一样 */
+    humans: new Set<string>(),
     warned: new Set<string>(),
     dmAt: new Map<string, number>(),
     sent: [] as { uid: string; text: string; at: number }[],
@@ -1305,7 +1307,7 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
   }
 
   /**
-   * 网页舞台上参赛 bot 在群里说话：撤回；每次都私聊提醒（同一个 bot 一分钟最多一次），
+   * 网页舞台上参赛者（bot 和真人）在群里说话：撤回；每次都私聊提醒（同一个人一分钟最多一次），
    * 群里只在第一次公开提醒（不禁言：镜像发言要用它的号发）
    */
   async function punishWebTalk(v: Voice, uid: string, nick: string, messageId: unknown): Promise<void> {
@@ -1315,17 +1317,19 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
     const now = Date.now();
     if (now - (web.dmAt.get(uid) ?? -Infinity) >= WEB_DM_GAP_MS) {
       web.dmAt.set(uid, now);
+      const how = web.humans.has(uid) ? '发言请在你的座位网页上发（链接在我之前的私聊里，私聊我「身份」可以补发）' : '发言请用 speak 工具';
       void sendPrivateAs(
         v,
         uid,
-        `⚠️ 本局在网页「灯下剧场」上进行：发言请用 speak 工具，不要在 QQ 群里说话${recalled ? '（刚才那条已撤回）' : ''}。` +
+        `⚠️ 本局在网页「灯下剧场」上进行：${how}，不要在 QQ 群里说话${recalled ? '（刚才那条已撤回）' : ''}。` +
           '群里说的话别的玩家能看到，可能泄露你的私密信息。',
       );
     }
     if (web.warned.has(uid)) return;
     web.warned.add(uid);
+    const where = web.humans.has(uid) ? '发言请在你的座位网页上发' : '发言请用 speak';
     await sendGroupAs(v, [
-      { type: 'text', data: { text: `⚠️ ${sanitizeNick(nick)}：对局在网页上进行，发言请用 speak，不要在群里说话${recalled ? '（消息已撤回）' : ''}。` } },
+      { type: 'text', data: { text: `⚠️ ${sanitizeNick(nick)}：对局在网页上进行，${where}，不要在群里说话${recalled ? '（消息已撤回）' : ''}。` } },
     ]);
   }
 
@@ -1334,6 +1338,7 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
     const ids = r.stage === 'web' && !r.finished && Array.isArray(r.participant_ids) ? r.participant_ids.map(String) : [];
     const ref = st.game?.refereeId;
     web.ids = new Set(ids.filter((id: string) => id !== ref));
+    web.humans = new Set(Array.isArray(r.human_ids) ? r.human_ids.map(String).filter((id: string) => web.ids.has(id)) : []);
     if (web.ids.size === 0) {
       web.warned.clear();
       web.dmAt.clear();
