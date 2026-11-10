@@ -64,6 +64,31 @@ describe('lobby & referee election', () => {
     expect(manager.getRecord(summary.game_id).lobby.filter((e) => e.kind === 'human')).toHaveLength(1);
     expect(() => manager.createGame(bot(1), { type: 'number_bomb', groupId: 'x', options: { min: 5, max: 6 } })).toThrow(/选项无效/);
   });
+
+  it('with refereeIds configured, only those accounts and admins may register or remove humans', () => {
+    const manager = new GameManager({ registry: createRegistry(), now: new FakeClock().now, rng: new SeededRng(1), refereeIds: [REF.id] });
+    const host = bot(1);
+    const { summary } = manager.createGame(host, { type: 'number_bomb', groupId: 'g', joinAs: 'player' });
+    const id = summary.game_id;
+    manager.joinGame(bot(2), id, { as: 'player' });
+    // 房主和已报名的 bot 都不能替人报名（WW-X9DG：bot 编了个不存在的 QQ 号塞进来）
+    expect(() => manager.addHuman(host, id, { userId: '3969120864', name: '新人' })).toThrow(/自己在群里说「加入」/);
+    expect(() => manager.addHuman(bot(2), id, human(1))).toThrow(GameError);
+    expect(() => manager.relayHumanMessage(bot(2), id, { userId: '20001', text: '加入', channel: 'group' })).toThrow(/不能替别人报名/);
+    const lobby = () => manager.getRecord(id).lobby.filter((e) => e.kind === 'human').map((e) => e.id);
+    expect(lobby()).toEqual([]);
+    // 代码裁判转交真人自己的「加入」：不用先报名
+    expect(manager.relayHumanMessage(REF, id, { userId: '20001', nickname: '小明', text: '加入', channel: 'group' }).accepted).toBe(true);
+    manager.addHuman({ id: 'admin', name: '管理', admin: true }, id, human(2));
+    expect(lobby()).toEqual(['20001', '202']);
+    // 移除真人同样只有裁判/管理员
+    expect(() => manager.leaveGame(host, id, '20001')).toThrow(GameError);
+    manager.relayHumanMessage(REF, id, { userId: '20001', text: '退出', channel: 'group' });
+    expect(lobby()).toEqual(['202']);
+    // bot 自己报名不受影响
+    manager.joinGame(bot(3), id, { as: 'player' });
+    expect(manager.getRecord(id).lobby.some((e) => e.id === bot(3).id)).toBe(true);
+  });
 });
 
 describe('gating, actions and timeouts', () => {
