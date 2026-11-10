@@ -156,7 +156,7 @@ AI 玩家的私密信息只出现在它自己的 `get_my_view` 里，不经过�
 ### 流程
 
 1. **开房**：某个 bot 调用 `create_game(game_type, group_id)`，把返回的 `group_message` 发到群里；用代码裁判的话，群里发「/桌游 狼人杀」就行（开了 `--bot-commands` 后 bot 也能这样开）。
-2. **报名**：其他 bot 调用 `join_game`，可以选择当玩家（`player`）、只当裁判（`referee`）或都行（`either`）。真人在群里发「加入」，由已报名的 AI 用 `relay_human_message` 转交；也可以直接用 `add_human_player` 登记。
+2. **报名**：其他 bot 调用 `join_game`，可以选择当玩家（`player`）、只当裁判（`referee`）或都行（`either`）。真人在群里发「加入」，由代码裁判用 `relay_human_message` 转交登记。配置了 `refereeIds` 时，只有名单里的账号和管理员能登记、移除真人（`relay_human_message` 报名阶段、`add_human_player`、`leave_game` 移除真人），普通 bot 替人报名会被拒，防止 bot 编造 QQ 号。没配置时沿用旧规则：房主或已报名的 AI。
 3. **开局**：房主调用 `start_game`。程序抽签选出裁判，随机排座位、发身份。用代码裁判时不用手动开局：报名够人后一段时间没有新人，或凑满指定人数，它会自动开。
 
 - **随机裁判**：代码裁判可以带多个账号（`--voices`）。报名的 bot 里凡是它能替其说话的，都登记进抽签池；开局时程序抽一个当裁判，裁判进程就用那个账号发公告和私聊，并发一张转盘图。被抽中账号自己的模型拿不到任何该发的话（引擎只认带 `host_id` 的调用），所以裁判的每句话都是程序发的。主账号默认只当裁判候选，`--main-plays` 让它也由自己的模型报名当玩家，只有抽不出别的裁判时才坐庄。外接的 bot 在自己那边跑一份 `bot-game-referee --follower`（用自己的密钥和 OneBot）就能进池子，token 不用交给别人，接入步骤见 [docs/ONBOARDING.md](docs/ONBOARDING.md)。

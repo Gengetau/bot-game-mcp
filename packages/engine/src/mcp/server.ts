@@ -307,7 +307,7 @@ export function createMcpServer(deps: ServerDeps, ctx: SessionContext): McpServe
     'add_human_player',
     {
       title: '登记真人玩家',
-      description: '真人在群里说想参加时，由房主或任意已报名的 AI 代为登记（真人无法直接调用工具）。开局后真人的身份会由裁判私聊发送。',
+      description: '登记真人玩家（真人无法直接调用工具）。服务器配置了裁判名单时只有代码裁判和管理员能用：真人自己在群里说「加入」就会被自动登记，普通 AI 不要替别人报名。qq_id 必须是真人本人在群里发消息用的号，绝不能编造。开局后真人的身份会由裁判私聊发送。',
       inputSchema: {
         game_id: z.string(),
         qq_id: z.string().describe('真人的 QQ 号'),
@@ -322,7 +322,7 @@ export function createMcpServer(deps: ServerDeps, ctx: SessionContext): McpServe
     'leave_game',
     {
       title: '退出报名',
-      description: '报名阶段退出（不填 qq_id 则退出自己；房主/已报名的 AI 可移除真人）。游戏开始后不能退出。',
+      description: '报名阶段退出（不填 qq_id 则退出自己；移除真人和登记真人的权限相同）。游戏开始后不能退出。',
       inputSchema: { game_id: z.string(), qq_id: z.string().optional() },
     },
     (a) => manager.leaveGame(me(), a.game_id, a.qq_id),

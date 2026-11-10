@@ -38,7 +38,7 @@ export const configSchema = z.object({
   allowedGroups: z.array(z.string().min(1)).default([]),
   /** 整个服务器同时最多几局（报名中 + 进行中）；0 为不限制。想「一次只开一场」就设 1 */
   maxActiveGames: z.number().int().min(0).default(0),
-  /** 只有这些 QQ 号能当裁判（抽签池、候补、接管）；为空则不限制。名单外的 AI 报名「都行」按玩家处理 */
+  /** 只有这些 QQ 号能当裁判（抽签池、候补、接管）；为空则不限制。名单外的 AI 报名「都行」按玩家处理。配置后登记/移除真人也只有名单里的账号和管理员能做 */
   refereeIds: z.array(z.string().min(1)).default([]),
   /** 开房默认选项（所有游戏共用，不认识的键忽略；开房时传的选项覆盖它）。bot 直接 create_game 开的房也按这个来，如 {"night_timeout_s":150} */
   defaultOptions: z.record(z.string(), z.unknown()).default({}),

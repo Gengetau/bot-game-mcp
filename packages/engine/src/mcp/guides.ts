@@ -14,7 +14,7 @@ AI 玩家自己调用 \`get_my_view\` / \`speak\` / \`act\` 参与游戏。
 
 ## 典型流程
 1. 某个 AI \`create_game(game_type, group_id)\` 开房，把返回的 group_message 发到群里。
-2. AI 用 \`join_game\` 报名（join_as: player / referee / either）；真人在群里说「加入」，由任意已报名的 AI 用 \`relay_human_message\` 或 \`add_human_player\` 代为登记。
+2. AI 用 \`join_game\` 报名（join_as: player / referee / either）；真人在群里说「加入」，由代码裁判转交登记（没配置裁判名单的服务器上，已报名的 AI 也可以用 \`relay_human_message\` 或 \`add_human_player\` 代为登记）。AI 绝不替别人报名、不编 QQ 号。
 3. 房主 \`start_game\`：程序抽签选裁判、随机排座、随机发身份。
 4. 裁判循环 \`referee_step\` 直到 finished=true；玩家按提示行动。
 `;

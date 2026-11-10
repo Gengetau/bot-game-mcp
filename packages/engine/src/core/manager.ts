@@ -609,12 +609,16 @@ export class GameManager {
     };
   }
 
-  /** 登记真人玩家（真人不能直接调用工具，由大厅里的任意 AI 代为登记）。 */
+  /**
+   * 登记真人玩家（真人不能直接调用工具，由别人代为登记）。
+   * 服务器配置了 refereeIds 时，只有这些账号（代码裁判）和管理员能登记：QQ 号来自真人自己发的群消息，编不出来。
+   * 没配置时（本地测试、小群）沿用旧规则：房主或已报名的 AI。
+   */
   addHuman(actor: Identity, gameId: string, human: { userId: string; name: string }) {
     const rec = this.getRecord(gameId);
     const def = this.def(rec);
     if (rec.status !== 'lobby') throw invalidState('游戏已开始，无法再加入。');
-    this.assertLobbyHelper(rec, actor);
+    this.assertHumanRegistrar(rec, actor);
     const userId = String(human.userId ?? '').trim();
     const name = sanitizeName(String(human.name ?? '')) || userId;
     if (!userId) throw badRequest('需要真人的 QQ 号 qq_id。');
@@ -636,6 +640,16 @@ export class GameManager {
       message: `已登记真人玩家 ${name}(${userId})。`,
       group_message: `✅ ${name} 加入了【${def.name}】，当前 ${this.lobbyCountText(rec)}。开局后身份将由裁判私聊（或群临时会话）发送，请留意。`,
     };
+  }
+
+  /** 谁能登记/移除真人：配置了 refereeIds 时只有名单里的账号（代码裁判）和管理员，否则同 assertLobbyHelper */
+  private assertHumanRegistrar(rec: GameRecord, actor: Identity): void {
+    if (this.refereeIds.size === 0) return this.assertLobbyHelper(rec, actor);
+    if (actor.admin || this.refereeIds.has(actor.id)) return;
+    throw forbidden(
+      '真人报名只能由真人自己在群里说「加入」，代码裁判会自动登记。AI 不能替别人报名，也不要编 QQ 号。',
+      '你自己想玩就调用 join_game；看到真人想玩，提醒他在群里发「加入」即可。',
+    );
   }
 
   private assertLobbyHelper(rec: GameRecord, actor: Identity): void {
@@ -664,7 +678,7 @@ export class GameManager {
     if (!entry) throw notFound('该用户不在报名名单中。');
     if (target !== actor.id) {
       if (entry.kind === 'agent' && !actor.admin && rec.hostId !== actor.id) throw forbidden('只能移除自己（或由房主移除他人）。');
-      if (entry.kind === 'human') this.assertLobbyHelper(rec, actor);
+      if (entry.kind === 'human') this.assertHumanRegistrar(rec, actor);
     }
     rec.lobby = rec.lobby.filter((e) => e.id !== target);
     this.touch(rec);
@@ -1730,7 +1744,7 @@ export class GameManager {
     const addressed = this.stripAddressing(String(msg.text ?? ''), rec, actor);
 
     if (rec.status === 'lobby') {
-      this.assertLobbyHelper(rec, actor);
+      this.assertHumanRegistrar(rec, actor);
       const t = stripTrailing(normalizeText(addressed)).replace(/^[\/#！!]/u, '');
       if (/^(加入|报名|上车|参加|我要玩|我玩|join|\+1)/iu.test(t)) {
         if (this.isKeyedAgent(userId)) {
