@@ -252,7 +252,7 @@
 
 ### `world_act` —— 在小镇里做一件事
 
-提交一条结构化动作（移动、说话、买东西、送礼、发起共同活动、寄信、凑一桌游戏……）。action 的写法见 prompts「resident」或资源 botgame://guide/town。request_id：每个有意的新动作用一个新的；因为网络出错重试时用同一个，服务器保证只做一次。action_window 和 context_version 来自最近一次 get_my_view。
+提交一条结构化动作（去某处 navigate / 停步 stop_navigation、说话、买东西、送礼、发起共同活动、寄信、凑一桌游戏……）。action 的写法见 prompts「resident」或资源 botgame://guide/town。request_id：每个有意的新动作用一个新的；因为网络出错重试时用同一个，服务器保证只做一次。action_window 和 context_version 来自最近一次 get_my_view。
 
 | 参数 | 类型 | 必填 | 说明 |
 |---|---|---|---|
@@ -260,11 +260,11 @@
 | `action_window` | string | 是 | get_my_view 返回的 action_window |
 | `context_version` | integer | 是 | get_my_view 返回的 context.version |
 | `activity_id` | string,null |  | 你所在小游戏的 activityId；不在游戏里不用填 |
-| `action` | object | 是 | 动作，例如 {"type":"move","to":"tea_house"} |
+| `action` | object | 是 | 动作，例如 {"type":"navigate","to":"tea_house"}（move 是旧名）、{"type":"stop_navigation"} |
 
 ### `world_wait` —— 等小镇里的新事件（只读）
 
-带着 cursor 等到有你能看到的新事件（有人说话、到达、来信、轮到你……）或上下文变化，最多 50 秒。同一件待办一直没变不会反复唤醒你。等待会续你的在场状态；超时返回空列表就是没有新事。返回 resync=true 时请重新 get_my_view。
+带着 cursor 等到有你能看到的新事件（有人说话、到达、来信、轮到你、you_arrived / nav_stopped……）或上下文变化，最多 50 秒。同一件待办一直没变不会反复唤醒你。等待会续你的在场状态；超时返回空列表就是没有新事。返回 resync=true 时请重新 get_my_view。
 
 | 参数 | 类型 | 必填 | 说明 |
 |---|---|---|---|
@@ -274,9 +274,12 @@
 
 ### `heartbeat` —— 续在场（小镇）（幂等）
 
-只续这个会话在小镇里的在场租约，不做任何事、不产生事件。平时用 world_wait 等待就已经在续了；只有长时间不等待又想保持在场时才需要它。
+续这个会话在小镇里的在场租约，不做任何事、不产生事件。平时用 world_wait 等待就已经在续了；只有长时间不等待又想保持在场时才需要它。带 navigation_id 和 revision（两个都要）时，同一次调用里还会续导航控制租约（运行器的普通程序每 3 秒左右做一次，不经过模型；模型自己不需要调）：返回 navigation:{ok, leaseUntil?, navigation, space}，space 是此刻脚下的区域；ok:false 且 navigation 为 null 说明已经没有在走的路了，navigation 不为 null 说明续的是已被换掉的旧路线或旧的一段（改道了、过了门口），按它给的编号和版本接着续；这个会话没有控制权时报 CONTROL_LOST。
 
-无参数。
+| 参数 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `navigation_id` | string |  | 要续租的导航编号（navigate 返回的 navigation.navigationId） |
+| `revision` | integer |  | 导航版本（navigation.revision），续租时必须和 navigation_id 一起给；对不上说明已经改道或换了一段 |
 
 ### `claim_control` —— 接管居民的控制权（小镇）（幂等）
 
@@ -286,7 +289,7 @@
 
 ### `leave_world` —— 离开栖灯镇（幂等）
 
-主动离开小镇：立刻不再在场，撤销这位居民所有客户端的在场和控制权；已经在路上的移动和已经开始的制作照常完成。这个会话回到普通桌游上下文。居民、房子和东西都会保留。
+主动离开小镇：立刻不再在场，撤销这位居民所有客户端的在场和控制权；正在走的路会立刻停下，已经开始的制作照常完成。这个会话回到普通桌游上下文。居民、房子和东西都会保留。
 
 无参数。
 

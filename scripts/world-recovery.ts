@@ -18,6 +18,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parseArgs } from 'node:util';
 import { SeededRng, WorldError, createRegistry, createWorld, enterWorld, agentPrincipal, townHeartbeat, town, type WorldService } from '../packages/engine/src/index.js';
+import { actorOf, posOf, positionOfResident, renewNavigation, whereabouts } from '../packages/engine/src/world/space.js';
+import { isWalkable, zoneAt } from '../packages/engine/src/world/spatial/grid.js';
+import { arrivalAt, positionAt } from '../packages/engine/src/world/spatial/motion.js';
 
 const { values: args } = parseArgs({
   options: {
@@ -121,7 +124,7 @@ interface Planned {
   onExecuted?: () => void;
 }
 
-const PLACES = ['plaza', 'tea_house', 'bookshop', 'kitchen', 'garden', 'arcade', 'street_east', 'street_west'];
+const PLACES = ['plaza', 'tea_house', 'bookshop', 'kitchen', 'garden', 'arcade', 'residential', 'home'];
 const SHOPS = town.townContent.SHOPS;
 let reqSeq = 0;
 const newRequestId = (round: number) => `rec-${SEED}-${round}-${++reqSeq}`;
@@ -133,14 +136,14 @@ function planAction(round: number): Planned {
   const actor = forced ? who.find((x) => x.residentId === forced.to_id)! : pick(who);
   const r = w.mustResident(actor.residentId);
   const requestId = newRequestId(round);
-  const kind = forced ? pick(['accept', 'accept', 'accept', 'decline']) : pick(['speak', 'speak', 'move', 'move', 'buy', 'buy', 'offer', 'offer', 'accept', 'accept', 'decline', 'cancel', 'letter', 'use', 'profile', 'invite']);
-  const here = r.move ? null : r.location_id;
+  const kind = forced ? pick(['accept', 'accept', 'accept', 'decline']) : pick(['speak', 'speak', 'move', 'move', 'move', 'buy', 'buy', 'offer', 'offer', 'accept', 'accept', 'decline', 'cancel', 'letter', 'use', 'profile', 'invite']);
+  const here = r.location_id;
   const others = who.filter((o) => o !== actor);
   switch (kind) {
     case 'speak':
       return { actor, requestId, action: { type: 'speak', text: `第 ${round} 轮的一句话` } };
     case 'move':
-      return { actor, requestId, action: { type: 'move', to: pick(PLACES) } };
+      return { actor, requestId, action: { type: 'navigate', to: chance(0.2) ? pick(['tea_house:table1', 'garden:planter1', 'bookshop:shelf']) : pick(PLACES) } };
     case 'buy': {
       const shops = SHOPS.filter((s) => s.place === here);
       const shop = shops.length ? pick(shops) : pick(SHOPS);
@@ -198,6 +201,20 @@ function planAction(round: number): Planned {
       return { actor, requestId, action: { type: 'update_profile', bio: `简介 ${round}`, showMood: chance(0.5) } };
     default:
       return { actor, requestId, action: { type: 'invite', to: pick(others).residentId } };
+  }
+}
+
+let lastHeartbeat = clock.t;
+const navStats = { renewed: 0, walkersSeen: 0, navigated: 0 };
+function renewWalker(x: Who): void {
+  const nav = whereabouts(w, w.mustResident(x.residentId), clock.t).navigation;
+  if (!nav) return;
+  navStats.walkersSeen++;
+  try {
+    renewNavigation(w, { principalId: x.principalId, clientId: x.clientId }, { navigationId: nav.navigationId, revision: nav.revision });
+    navStats.renewed++;
+  } catch (e) {
+    if (!(e instanceof WorldError)) throw e;
   }
 }
 
@@ -293,8 +310,8 @@ function checkInvariants(round: number): void {
   check(round, delivered === mailEvents, () => `送达的信 ${delivered} 封，「有新信」事件 ${mailEvents} 条`);
   check(round, db.scalar('SELECT COUNT(*) FROM letters WHERE delivered_at IS NOT NULL AND delivered_at <> deliver_at') === 0, '有信件的送达时间不是应送达时间');
   check(round, db.scalar('SELECT COUNT(*) FROM letters WHERE delivered_at IS NULL AND deliver_at <= ?', clock.t) === 0, '有已经到时间却没送达的信');
-  // 移动：不会有人在途但已过到达时间
-  check(round, db.scalar("SELECT COUNT(*) FROM residents WHERE move_json IS NOT NULL AND CAST(json_extract(move_json, '$.arriveAt') AS INTEGER) <= ?", clock.t) === 0, '有人在途却已过到达时间');
+  // 空间
+  checkSpace(round);
 
   // 5. 回执与状态一致
   const badReceipts = db.all('SELECT request_id, response FROM request_receipts').filter((row) => {
@@ -345,6 +362,43 @@ function checkInvariants(round: number): void {
   check(round, w.status === 'running', () => `世界状态是 ${w.status}`);
 }
 
+/** 空间不变量：位置合法、标签等于脚下区域、导航与 nav_step 任务一一对应、没有旧模型残留。 */
+function checkSpace(round: number, label = '', ww: WorldService = w, ppl: Who[] = who): void {
+  const db = ww.db;
+  const tag = label ? `[${label}] ` : '';
+  check(round, db.scalar('SELECT COUNT(*) FROM world_actors') === ppl.length && db.scalar('SELECT COUNT(DISTINCT resident_id) FROM world_actors') === ppl.length, `${tag}world_actors 行数不是每位居民恰好一条`);
+  const pendingNav = new Set(db.all("SELECT dedupe_key FROM scheduled_jobs WHERE kind = 'nav_step' AND status = 'pending'").map((j) => String(j.dedupe_key)));
+  for (const x of ppl) {
+    const a = actorOf(ww, x.residentId);
+    check(round, Boolean(a), `${tag}${x.name} 没有 world_actors`);
+    if (!a) continue;
+    const scene = ww.map.scenes.get(a.scene_id)!;
+    const p = posOf(a, clock.t);
+    check(round, isWalkable(scene, a.x, a.z) && isWalkable(scene, p.x, p.z), () => `${tag}${x.name} 的位置不在可走格子上 (${p.x}, ${p.z})`);
+    const loc = ww.mustResident(x.residentId).location_id;
+    if (scene.instanced) check(round, loc === `home:${a.instance_id}` && Boolean(ww.resident(a.instance_id)), () => `${tag}${x.name} 在私宅实例 ${a.instance_id}，标签 ${loc}`);
+    else {
+      const zone = zoneAt(scene, p.x, p.z).id;
+      check(round, loc === zone, () => `${tag}${x.name} 脚下是 ${zone}，标签 ${loc}`);
+    }
+    check(round, pendingNav.has(`nav:${x.residentId}`) === Boolean(a.nav), () => `${tag}${x.name} ${a.nav ? '在走路却没有' : '没在走路却有'} 待办 nav_step`);
+    pendingNav.delete(`nav:${x.residentId}`);
+    if (a.nav) {
+      check(round, ww.mustResident(x.residentId).present_since !== null, `${tag}离线的 ${x.name} 还有导航`);
+      check(round, a.nav.leaseUntil > clock.t && arrivalAt({ points: a.nav.points, speed: a.nav.speed, startedAt: a.nav.startedAt }) > clock.t, `${tag}${x.name} 的导航已过租约却没结算`);
+      // 往后拨时钟不动：位置不越过租约截止处
+      const cap = positionOfResident(ww, x.residentId, a.nav.leaseUntil)!;
+      const later = positionOfResident(ww, x.residentId, a.nav.leaseUntil + 3_600_000)!;
+      check(round, Math.hypot(cap.x - later.x, cap.z - later.z) < 1e-6, `${tag}${x.name} 的位置越过了租约截止处`);
+    }
+  }
+  check(round, pendingNav.size === 0, () => `${tag}有 ${pendingNav.size} 条 nav_step 对不上居民`);
+  check(round, db.scalar("SELECT COUNT(*) FROM scheduled_jobs WHERE kind = 'move_arrive' AND status = 'pending'") === 0 && db.scalar('SELECT COUNT(*) FROM residents WHERE move_json IS NOT NULL') === 0, `${tag}有旧模型的 move_arrive / move_json 残留`);
+  // 公开事件流里没有坐标 / 折线
+  const pub = db.all('SELECT projection FROM public_events ORDER BY cursor DESC LIMIT 500').map((e) => String(e.projection)).join('\n');
+  check(round, !/"x":|"z":|"points"|navigationId/.test(pub), `${tag}公开事件流里有坐标 / 折线`);
+}
+
 // ───────────────────────── 主循环 ─────────────────────────
 
 const started = performance.now();
@@ -355,13 +409,18 @@ try {
     stats.rounds++;
     // 时间流逝：所有人保持心跳，调度器按期处理
     const step = 1 + rng.int(45);
-    for (let left = step; left > 0; left -= 20) {
-      clock.t += Math.min(20, left) * SEC;
-      for (const x of who) {
-        try {
-          townHeartbeat(w, { principalId: x.principalId, clientId: x.clientId }, w.mustResident(x.residentId).presence_epoch);
-        } catch {
-          enterWorld(w, { principalId: x.principalId, clientId: x.clientId }, { clientKind: 'mcp' });
+    for (let left = step * SEC; left > 0; left -= w.params.navRenewEveryMs) {
+      clock.t += Math.min(w.params.navRenewEveryMs, left);
+      // 在走路的人像客户端一样每个续租间隔续一次租约
+      for (const x of who) renewWalker(x);
+      if (clock.t - lastHeartbeat >= 20 * SEC || left <= w.params.navRenewEveryMs) {
+        lastHeartbeat = clock.t;
+        for (const x of who) {
+          try {
+            townHeartbeat(w, { principalId: x.principalId, clientId: x.clientId }, w.mustResident(x.residentId).presence_epoch);
+          } catch {
+            enterWorld(w, { principalId: x.principalId, clientId: x.clientId }, { clientKind: 'mcp' });
+          }
         }
       }
       w.tick();
@@ -462,6 +521,245 @@ try {
   }
 }
 
+// ───────────────────────── 导航故障场景 ─────────────────────────
+
+/**
+ * 走路期间的故障，每个场景一个独立的数据库：
+ *   A 进程在走到一半时被杀 → 重启后停在检查点之后、被杀之前的路线上，没有残留导航和 nav_step，位置合法
+ *   B nav_step 处理到一半失败（提交前 / 提交后）→ 重试后状态一致，区域事件不丢不重，不会多走
+ *   C 跨区域那一刻崩溃（提交后 / 提交前）→ 标签始终等于脚下的区域，事件至多一次
+ */
+function navFaultScenarios(): { name: string; checks: number }[] {
+  const done: { name: string; checks: number }[] = [];
+  let scenarioNo = 0;
+  const run = (name: string, fn: (ctx: ScenarioCtx) => void) => {
+    const before = stats.checks;
+    scenarioNo++;
+    const ctx = makeScenario(scenarioNo, name);
+    try {
+      fn(ctx);
+      ctx.snap(`${name}·收尾`);
+    } finally {
+      try {
+        ctx.w.close();
+      } catch {
+        /* 已关闭 */
+      }
+    }
+    done.push({ name, checks: stats.checks - before });
+  };
+
+  interface ScenarioCtx {
+    w: WorldService;
+    who: Who[];
+    name: string;
+    n: number;
+    cmd: (x: Who, action: { type: string; [k: string]: unknown }) => Record<string, any>;
+    advanceTo: (t: number) => void;
+    renewAll: () => void;
+    reopen: (crash: boolean, downMs: number) => void;
+    snap: (label: string) => void;
+    nav: (x: Who) => ReturnType<typeof actorOf>;
+    placeEvents: (x: Who) => string[];
+    privEvents: (x: Who, type: string) => Record<string, any>[];
+  }
+
+  function makeScenario(n: number, name: string): ScenarioCtx {
+    const path = join(dir, `nav-scn-${n}.db`);
+    let opens2 = 0;
+    const open = (): WorldService => {
+      const ww = createWorld({ dbPath: path, registry: createRegistry({}), now: () => clock.t, rng: new SeededRng(`navids:${SEED}:${n}:${++opens2}`), seed: `nav:${SEED}:${n}`, log: () => undefined, devLogin: true });
+      ww.startSync();
+      return ww;
+    };
+    const ctx = { w: open(), who: [] as Who[], name, n, placeBase: new Map<string, number>() } as ScenarioCtx & { placeBase: Map<string, number> };
+    for (let i = 0; i < 3; i++) {
+      const nm = ['甲', '乙', '丙'][i]!;
+      const p = agentPrincipal(ctx.w, { id: `7${n}0${i}`, name: nm });
+      const out = enterWorld(ctx.w, { principalId: p.principal_id, clientId: `mcp:nav-${n}-${i}` }, { clientKind: 'mcp', profile: { name: nm } });
+      ctx.who.push({ name: nm, principalId: p.principal_id, clientId: `mcp:nav-${n}-${i}`, residentId: out.enter.residentId });
+    }
+    let seq = 0;
+    let lastHb = clock.t;
+    const placeBase = (ctx as unknown as { placeBase: Map<string, number> }).placeBase;
+    ctx.cmd = (x, action) => {
+      const r = ctx.w.mustResident(x.residentId);
+      return ctx.w.command({ principalId: x.principalId, clientId: x.clientId }, { requestId: `navscn-${n}-${++seq}`, actionWindow: ctx.w.issueActionWindow(x.residentId), expected: { contextVersion: r.context_version, controlEpoch: r.control_epoch, activityId: r.activity_id }, action }) as Record<string, any>;
+    };
+    ctx.renewAll = () => {
+      for (const x of ctx.who) {
+        const nav = whereabouts(ctx.w, ctx.w.mustResident(x.residentId), clock.t).navigation;
+        if (!nav) continue;
+        try {
+          renewNavigation(ctx.w, { principalId: x.principalId, clientId: x.clientId }, { navigationId: nav.navigationId, revision: nav.revision });
+        } catch (e) {
+          if (!(e instanceof WorldError)) throw e;
+        }
+      }
+    };
+    ctx.advanceTo = (t) => {
+      while (clock.t < t) {
+        clock.t = Math.min(t, clock.t + ctx.w.params.navRenewEveryMs);
+        if (clock.t < t || true) ctx.renewAll();
+        if (clock.t - lastHb >= 15 * SEC) {
+          lastHb = clock.t;
+          for (const x of ctx.who) {
+            try {
+              townHeartbeat(ctx.w, { principalId: x.principalId, clientId: x.clientId }, ctx.w.mustResident(x.residentId).presence_epoch);
+            } catch {
+              enterWorld(ctx.w, { principalId: x.principalId, clientId: x.clientId }, { clientKind: 'mcp' });
+            }
+          }
+        }
+        ctx.w.tick();
+      }
+    };
+    ctx.reopen = (crash, downMs) => {
+      ctx.w.db.failpoint = null;
+      if (crash) ctx.w.db.db.close();
+      else ctx.w.close();
+      clock.t += downMs;
+      ctx.w = open();
+      for (const x of ctx.who) enterWorld(ctx.w, { principalId: x.principalId, clientId: x.clientId }, { clientKind: 'mcp' });
+      lastHb = clock.t;
+    };
+    ctx.snap = (label) => checkSpace(1000 + n, `${name}·${label}`, ctx.w, ctx.who);
+    ctx.nav = (x) => actorOf(ctx.w, x.residentId);
+    ctx.placeEvents = (x) =>
+      ctx.w.db
+        .all("SELECT projection FROM public_events WHERE type = 'place' ORDER BY cursor")
+        .map((e) => JSON.parse(String(e.projection)) as { resident: { id: string; at: string } })
+        .filter((e) => e.resident.id === x.residentId)
+        .map((e) => e.resident.at)
+        .slice(placeBase.get(x.residentId) ?? 0);
+    ctx.privEvents = (x, type) => ctx.w.db.all('SELECT projection FROM recipient_events WHERE resident_id = ? AND type = ? ORDER BY cursor', x.residentId, type).map((e) => JSON.parse(String(e.projection)) as Record<string, any>);
+    return ctx;
+  }
+
+  /** 让 乙 站在广场、丙 先走到花园，甲 从广场出发去花园。返回甲这一趟的跨区域列表。 */
+  const setup = (c: ScenarioCtx) => {
+    const [a, b, d] = c.who as [Who, Who, Who];
+    c.cmd(d, { type: 'navigate', to: 'garden' });
+    c.advanceTo(clock.t + 40 * SEC);
+    check(1000 + c.n, c.w.mustResident(d.residentId).location_id === 'garden' && !c.nav(d)?.nav, `${c.name}：丙没走到花园`);
+    const out = c.cmd(a, { type: 'navigate', to: 'garden' });
+    check(1000 + c.n, out.status === 'accepted', `${c.name}：甲的 navigate 没被接受`);
+    const nav = c.nav(a)!.nav!;
+    // 之前的公开位置事件（进镇时那一条）不算
+    (c as unknown as { placeBase: Map<string, number> }).placeBase.set(a.residentId, c.w.db.all("SELECT projection FROM public_events WHERE type = 'place'").filter((e) => JSON.parse(String(e.projection)).resident.id === a.residentId).length);
+    return { a, b, c: d, nav, zones: nav.crossings.map((x) => x.zone), start: nav.startedAt };
+  };
+
+  // A. 走到一半进程被杀
+  run('走到一半被杀', (c) => {
+    const { a, nav, start } = setup(c);
+    const total = nav.points.length > 1 ? Math.ceil((nav.points.reduce((s, p, i) => (i ? s + Math.hypot(p.x - nav.points[i - 1]!.x, p.z - nav.points[i - 1]!.z) : 0), 0) / nav.speed) * 1000) : 0;
+    c.advanceTo(start + Math.floor(total * 0.45));
+    const saved = c.nav(a)!.nav!;
+    const closedAt = clock.t + 2000; // 最后一次续租之后又走了 2 秒，没人续
+    clock.t = closedAt;
+    c.w.tick();
+    c.reopen(true, 30 * SEC);
+    const after = c.nav(a)!;
+    check(1000 + c.n, !after.nav, '被杀重启后甲还留着导航');
+    check(1000 + c.n, c.w.db.scalar("SELECT COUNT(*) FROM scheduled_jobs WHERE kind = 'nav_step' AND status = 'pending'") === 0, '被杀重启后还有待办 nav_step');
+    const motion = { points: saved.points, speed: saved.speed, startedAt: saved.startedAt, until: saved.leaseUntil };
+    let found = false;
+    for (let t = saved.checkpointAt - 50; t <= closedAt + 50 && !found; t += 25) {
+      const p = positionAt(motion, Math.min(t, saved.leaseUntil));
+      if (Math.hypot(p.x - after.x, p.z - after.z) < 0.08) found = true;
+    }
+    check(1000 + c.n, found, () => `被杀重启后甲的位置 (${after.x.toFixed(2)}, ${after.z.toFixed(2)}) 不在 [检查点, 被杀时刻] 的路线上`);
+    c.snap('重启后');
+    // 重启后还能再走
+    const again = c.cmd(a, { type: 'navigate', to: 'plaza' });
+    check(1000 + c.n, again.status === 'accepted' || again.status === 'completed', '重启后甲不能再次导航');
+    c.advanceTo(clock.t + 60 * SEC);
+    check(1000 + c.n, c.w.mustResident(a.residentId).location_id === 'plaza' && !c.nav(a)!.nav, '重启后再次导航没走到广场');
+  });
+
+  // B. nav_step 处理到一半失败
+  for (const point of ['before_commit', 'after_commit'] as const) {
+    run(`nav_step ${point} 失败`, (c) => {
+      const { a, b, c: d, nav, zones } = setup(c);
+      const cross = nav.crossings;
+      check(1000 + c.n, cross.length >= 2, `路线只跨 ${cross.length} 次区域，场景不成立`);
+      // 失败发生在第一次跨区域（before）/ 进入终点区域那一次（after）
+      const idx = point === 'before_commit' ? 0 : cross.length - 1;
+      const target = cross[idx]!;
+      c.advanceTo(target.at - 500);
+      const labelBefore = c.w.mustResident(a.residentId).location_id;
+      const posBefore = positionOfResident(c.w, a.residentId, target.at - 500)!;
+      void posBefore;
+      clock.t = target.at + 50;
+      let fired = false;
+      c.w.db.failpoint = (pt) => {
+        if (!fired && pt === point) {
+          fired = true;
+          throw new Error(`注入的崩溃：${pt}`);
+        }
+      };
+      c.w.tick();
+      c.w.db.failpoint = null;
+      check(1000 + c.n, fired, '注入点没有触发');
+      const job = c.w.db.get("SELECT status, attempts, due_at FROM scheduled_jobs WHERE dedupe_key = ?", `nav:${a.residentId}`);
+      const labelMid = c.w.mustResident(a.residentId).location_id;
+      if (point === 'before_commit') {
+        check(1000 + c.n, labelMid === labelBefore && c.placeEvents(a).length === idx, () => `提交前失败后状态变了：标签 ${labelBefore} → ${labelMid}，公开位置事件 ${c.placeEvents(a).length} 条`);
+        check(1000 + c.n, job?.status === 'pending' && job.attempts === 1, () => `提交前失败的任务应是 pending 且重试 1 次，实际 ${JSON.stringify(job)}`);
+      } else {
+        check(1000 + c.n, labelMid === target.zone && c.placeEvents(a).length === idx + 1, () => `提交后失败：区域变化应已生效一次（标签 ${labelMid}，公开位置事件 ${c.placeEvents(a).join(',')}）`);
+      }
+      // 位置只取决于时间：失败前后同一时刻的位置一样，重试不会多走
+      const posMid = positionOfResident(c.w, a.residentId, clock.t)!;
+      c.w.tick(); // 重试
+      const posRetry = positionOfResident(c.w, a.residentId, clock.t)!;
+      check(1000 + c.n, Math.hypot(posMid.x - posRetry.x, posMid.z - posRetry.z) < 1e-9, '重试之后同一时刻的位置变了');
+      const labelNow = c.w.mustResident(a.residentId).location_id;
+      check(1000 + c.n, labelNow === target.zone, () => `重试后标签应是 ${target.zone}，实际 ${labelNow}`);
+      check(1000 + c.n, c.placeEvents(a).length === idx + 1, () => `重试后公开位置事件应有 ${idx + 1} 条，实际 ${c.placeEvents(a).join(',')}`);
+      c.snap('重试后');
+      // 走完：公开位置事件正好是沿途各区域一次，离开 / 到达事件各一次
+      c.advanceTo(clock.t + 40 * SEC);
+      check(1000 + c.n, JSON.stringify(c.placeEvents(a)) === JSON.stringify(zones), () => `公开位置事件 ${c.placeEvents(a).join('>')}，沿途区域 ${zones.join('>')}`);
+      check(1000 + c.n, c.privEvents(b, 'left').filter((e) => e.resident?.id === a.residentId).length === 1, '广场上的乙应收到恰好一次“甲离开”');
+      check(1000 + c.n, c.privEvents(d, 'arrived').filter((e) => e.resident?.id === a.residentId).length === 1, '花园里的丙应收到恰好一次“甲到达”');
+      check(1000 + c.n, c.privEvents(a, 'you_arrived').length === 1, '甲应收到恰好一次 you_arrived');
+      check(1000 + c.n, c.w.db.scalar("SELECT COUNT(*) FROM world_events WHERE type = 'arrived'") === 2, '“到过某处”的事实应是 2 条（丙、甲各一次）');
+    });
+  }
+
+  // C. 跨区域那一刻崩溃
+  for (const point of ['after_commit', 'before_commit'] as const) {
+    run(`跨区域时崩溃（${point}）`, (c) => {
+      const { a, nav, zones } = setup(c);
+      const target = nav.crossings[0]!;
+      c.advanceTo(target.at - 500);
+      clock.t = target.at + 20;
+      c.w.db.failpoint = (pt) => {
+        if (pt === point) throw new Error(`注入的崩溃：${pt}`);
+      };
+      c.w.tick();
+      c.reopen(true, 20 * SEC);
+      const label = c.w.mustResident(a.residentId).location_id;
+      const row = c.nav(a)!;
+      check(1000 + c.n, !row.nav, '崩溃重启后还留着导航');
+      const scene = c.w.map.scenes.get(row.scene_id)!;
+      check(1000 + c.n, label === zoneAt(scene, row.x, row.z).id, () => `崩溃重启后标签 ${label} 与脚下区域 ${zoneAt(scene, row.x, row.z).id} 不一致`);
+      // 跨区域的事件带的是跨区域那一刻的时间；重启后重新进镇的那条“在这里”事件是另一回事，不算
+      const road = c.w.db
+        .all("SELECT projection FROM public_events WHERE type = 'place' AND occurred_at = ?", target.at)
+        .filter((e) => JSON.parse(String(e.projection)).resident.id === a.residentId).length;
+      check(1000 + c.n, point === 'after_commit' ? road === 1 : road <= 1, () => `跨区域事件 ${target.zone} 出现 ${road} 次（标签 ${label}）`);
+      void zones;
+      c.snap('崩溃重启后');
+    });
+  }
+  return done;
+}
+
+const navScenarioResults = navFaultScenarios();
+
 const secs = ((performance.now() - started) / 1000).toFixed(1);
 console.log('');
 console.log('── 栖灯镇故障注入结果 ──');
@@ -472,6 +770,8 @@ console.log(`注入崩溃：${stats.injected.before_commit + stats.injected.afte
 console.log(`数据库重开：${stats.reopens} 次（其中停机超过 2 分钟 ${stats.longOutages} 次）`);
 console.log(`重放（replayed）：${stats.replays} 次`);
 console.log(`不变量检查：${stats.checks} 次`);
+console.log(`导航：随机轮里 navigate ${executedByType.get('navigate') ?? 0} 次，走路期间续租 ${navStats.renewed} 次（见到在走的人次 ${navStats.walkersSeen}）`);
+console.log(`导航故障场景：${navScenarioResults.map((r) => `${r.name} ${r.checks} 项`).join('；')}`);
 console.log(`耗时：${secs} 秒`);
 if (violations.length) {
   console.log(`\n发现 ${violations.length} 处违例：`);

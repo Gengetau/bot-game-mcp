@@ -42,7 +42,7 @@ export function loadSqlite(): SqliteModule {
 export type Row = Record<string, any>;
 export type Param = SQLInputValue;
 
-export const SCHEMA_VERSION = 2;
+export const SCHEMA_VERSION = 3;
 
 const MIGRATIONS: readonly string[] = [
   // ───── v1 ─────
@@ -562,6 +562,42 @@ const MIGRATIONS: readonly string[] = [
   // 按 event_id 反查当事人（个人日报、换日钩子、清理）；已有的 v1 库也要补上
   `
   CREATE INDEX IF NOT EXISTS event_parties_event ON event_parties(event_id, resident_id);
+  `,
+  // ───── v3 ─────
+  // 连续空间（设计稿 v2.0）：权威位置是「场景 + 实例 + x + z」，存在 world_actors 里；
+  // residents.location_id 从此只是区域标签，由空间模块在跨区域时改写；move_json 不再使用。
+  // 居民的 world_actors 行由程序在启动恢复时按 location_id 补建（需要地图数据，不能用 SQL 写）。
+  `
+  CREATE TABLE world_actors (
+    actor_id TEXT PRIMARY KEY,
+    world_id TEXT NOT NULL REFERENCES worlds(world_id),
+    kind TEXT NOT NULL CHECK (kind IN ('resident','npc')),
+    resident_id TEXT UNIQUE REFERENCES residents(resident_id),
+    scene_id TEXT NOT NULL,
+    -- 公共场景是空串；私宅实例是房主的居民编号
+    instance_id TEXT NOT NULL DEFAULT '',
+    x REAL NOT NULL,
+    z REAL NOT NULL,
+    heading REAL NOT NULL DEFAULT 0,
+    -- 这个锚点是哪一刻的位置
+    anchor_at INTEGER NOT NULL,
+    pos_version INTEGER NOT NULL DEFAULT 0,
+    -- 每次导航开始、改道、停止都加一；定时任务对不上就作废
+    nav_revision INTEGER NOT NULL DEFAULT 0,
+    nav_json TEXT,
+    map_version TEXT NOT NULL,
+    CHECK ((kind = 'resident') = (resident_id IS NOT NULL))
+  ) STRICT;
+  CREATE INDEX world_actors_scene ON world_actors(world_id, scene_id, instance_id);
+
+  -- 旧版的两条住宅巷合并成一个公共住宅接入点
+  UPDATE residents SET location_id = 'residential' WHERE location_id IN ('street_east','street_west');
+  UPDATE offers SET space_id = 'residential' WHERE space_id IN ('street_east','street_west');
+  UPDATE interactions SET space_id = 'residential' WHERE space_id IN ('street_east','street_west');
+  UPDATE chat_messages SET space_id = 'residential' WHERE space_id IN ('street_east','street_west');
+  -- 旧的到达任务全部作废；在途的旧移动由程序按截止规则结清一次（space.ts 的 settleLegacyMoves）
+  UPDATE scheduled_jobs SET status = 'cancelled', processed_at = CAST(strftime('%s','now') AS INTEGER) * 1000
+    WHERE kind = 'move_arrive' AND status = 'pending';
   `,
 ];
 

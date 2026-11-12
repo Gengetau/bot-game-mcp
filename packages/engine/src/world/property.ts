@@ -6,7 +6,7 @@
  * - 发起赠送、交换、出借时先预留发起方的东西；对方接受时在同一事务里完成双向转移。任何一步不满足，整笔不发生。
  * - 报价内容不可修改（要改就撤销重发），所以「接受的是哪一份」没有歧义。
  */
-import { BOOKS, SHOPS, STARTER_KIT, bookDef, homeId, itemDef, objectTypeName, type ItemDef, type ShopDef } from './content.js';
+import { BOOKS, RESIDENTIAL_PLACE, SHOPS, STARTER_KIT, bookDef, homeId, itemDef, objectTypeName, type ItemDef, type ShopDef } from './content.js';
 import { type Row, parseJson } from './db.js';
 import { badRequest, notAvailable, precondition } from './errors.js';
 import { applyNeeds, takeToken } from './life.js';
@@ -595,9 +595,9 @@ export function installProperty(w: WorldService): void {
       how = 'library';
     } else {
       const owner = w.mustResident(it.owner_id);
-      if (space && w.interactive(owner) && w.spaceOf(owner) === space) how = 'in_person';
-      else if (space === owner.street_id) how = 'return_box';
-      else throw precondition(`要当面还给${owner.name}，或者放进${owner.name}家门口的归还箱（在${owner.street_id === 'street_east' ? '东灯巷' : '西灯巷'}）。`, 'not_here');
+      if (w.interactive(owner) && w.spaceOf(owner) === space) how = 'in_person';
+      else if (space === RESIDENTIAL_PLACE) how = 'return_box';
+      else throw precondition(`要当面还给${owner.name}，或者放进灯巷会馆门前${owner.name}家的归还箱。`, 'not_here');
     }
     w.db.run('UPDATE items SET holder_id = owner_id WHERE item_id = ?', it.item_id);
     w.db.run("UPDATE loans SET status = 'returned', returned_at = ? WHERE loan_id = ?", now, loan.loan_id);

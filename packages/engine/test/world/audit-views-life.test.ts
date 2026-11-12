@@ -128,24 +128,29 @@ describe('审计 32：现场聊天查询带下界', () => {
   });
 });
 
-describe('审计 34：住宅街 doors 不遍历全部注册居民', () => {
-  it('街上只有自己在场时只列自己家；邻居走来后多一扇；有效邀请的家也列出', () => {
+describe('审计 34：会馆门前的 doors 不遍历全部注册居民', () => {
+  it('只列自己家、有效邀请的家、此刻在场的邻居的家；不表达谁在不在家；邀请的家不在场也列出', () => {
     const t = makeTown();
     const people: Actor[] = [];
     for (let i = 0; i < 8; i++) people.push(t.join(`居民${i}`, i % 2 ? 'agent' : 'human'));
     const a = people[0]!;
-    const street = String(a.row().street_id);
-    const same = people.filter((p) => p !== a && p.row().street_id === street);
-    expect(same.length).toBeGreaterThanOrEqual(2);
-    a.go(street);
+    const others = people.filter((p) => p !== a);
+    a.go('residential');
+    expect(a.row().location_id).toBe('residential');
     const doors = () => (a.view().here!.doors ?? []).map((d) => d.owner.name).sort();
-    const off = same[0]!;
+    const off = others[0]!;
     off.leave();
-    // 不在场、也没邀请我的邻居没有门；在场的邻居（不管在屋里还是别处）有
-    expect(doors()).toEqual(['居民0', ...same.filter((p) => p !== off).map((p) => p.name)].sort());
+    // 门牌是公开地址：在场的人都有门（不管此刻在屋里、广场还是别处），不在场、也没邀请我的人没有
+    expect(doors()).toEqual([a.name, ...others.filter((p) => p !== off).map((p) => p.name)].sort());
+    // 门牌不表达在不在家：让一位邻居进自己家、另一位留在广场，门牌条目的形状完全一样
+    const inHome = others[1]!;
+    inHome.go('home');
+    expect(inHome.row().location_id).toBe(`home:${inHome.residentId}`);
+    const shapes = (a.view().here!.doors ?? []).filter((d) => d.owner.id !== a.residentId).map((d) => Object.keys(d).sort().join(','));
+    expect(new Set(shapes).size).toBe(1);
     // 他回来当面邀请我之后离开：不在场，但我手上有他的有效邀请，所以他的门出现且可进
     off.enter();
-    off.go(street);
+    off.go('residential');
     off.act('invite', { to: a.residentId });
     off.go('plaza');
     off.leave();

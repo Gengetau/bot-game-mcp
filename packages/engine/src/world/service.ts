@@ -21,6 +21,9 @@ import { WorldError, badRequest, precondition } from './errors.js';
 import { resolveParams, type TownParams } from './params.js';
 import { businessDate } from './time.js';
 import type { ResidentRow, ResidentState } from './types.js';
+import { compileMap } from './spatial/compile.js';
+import { TOWN_MAP_SOURCE } from './spatial/town-map.js';
+import type { CompiledMap, MapSource } from './spatial/types.js';
 
 export interface WorldOptions {
   /** 数据库文件；':memory:' 只用于测试 */
@@ -42,6 +45,8 @@ export interface WorldOptions {
   publicUrl?: string | null;
   /** 允许本地开发登录（不经可信平台核实身份）。只该在本机试玩时打开 */
   devLogin?: boolean;
+  /** 地图源。缺省是栖灯镇的地图；测试可以换一张小图 */
+  map?: MapSource;
 }
 
 export interface Auth {
@@ -79,6 +84,8 @@ export type JobHandler = (payload: Record<string, any>, job: JobRow, now: number
 
 /** 定时任务的固定优先级：同一时刻先处理到达与失效，再处理别的。数字小的先执行。 */
 export const JOB_PRIORITY: Record<string, number> = {
+  nav_step: 1,
+  // 旧版的到达任务：v3 迁移时已全部作废，留着优先级只为读旧库
   move_arrive: 1,
   grant_expire: 2,
   offer_expire: 2,
@@ -146,6 +153,8 @@ export class WorldService {
   readonly publicUrl: string | null;
   readonly devLogin: boolean;
   readonly seed: string | null;
+  /** 编译好的地图：可行走网格、区域、锚点、物件位置。空间模块（space.ts）据此判定 */
+  readonly map: CompiledMap;
   /** 每次进程启动一个新值：重启后的在场状态要重新确认 */
   readonly bootId: string;
   status: 'recovering' | 'running' | 'degraded' | 'closed' = 'recovering';
@@ -160,10 +169,14 @@ export class WorldService {
   readonly hooks = {
     /** 居民离线（租约到期、显式离开、重启）时 */
     offline: [] as ((r: ResidentRow, at: number, reason: string) => void)[],
-    /** 居民离开一个空间（开始移动、被请出门）时 */
+    /** 居民离开一个区域（走出去、被请出门）时。区域 = location_id，同一区域内走动不触发 */
     leaveSpace: [] as ((r: ResidentRow, spaceId: string, at: number) => void)[],
-    /** 居民到达一个空间时 */
+    /** 居民进入一个区域时 */
     arrive: [] as ((r: ResidentRow, spaceId: string, at: number) => void)[],
+    /** 居民迈步（开始或改变导航）时：坐着做的事在这里收尾 */
+    walk: [] as ((r: ResidentRow, at: number) => void)[],
+    /** 一条居民动作执行成功之后（同一事务内） */
+    afterCommand: [] as ((r: ResidentRow, at: number) => void)[],
     /** 启动恢复时（估计的停机时长） */
     recover: [] as ((downtimeMs: number, now: number) => void)[],
     /** 每次 tick（已在 running 状态） */
@@ -180,6 +193,7 @@ export class WorldService {
   private readonly secret: Buffer;
   private pendingBumps = new Set<string>();
   private pendingPublic = false;
+  private pendingSpace = new Set<string>();
   private lastAliveWrite = 0;
   /** 已提交的小游戏记录缓存（可以随时从数据库重建） */
   readonly gameCache = new Map<string, { rec: GameRecord; rng: string | null; revision: number }>();
@@ -209,6 +223,7 @@ export class WorldService {
     this.publicUrl = opts.publicUrl?.trim() || null;
     this.devLogin = Boolean(opts.devLogin);
     this.seed = opts.seed ?? null;
+    this.map = compileMap(opts.map ?? TOWN_MAP_SOURCE);
     this.bootId = randomBytes(8).toString('hex');
     this.emitter.setMaxListeners(0);
     this.db = new TownDb(opts.dbPath);
@@ -286,7 +301,6 @@ export class WorldService {
     return {
       ...(row as ResidentRow),
       state: parseJson<ResidentState>(row.state_json, {} as ResidentState),
-      move: parseJson(row.move_json, null),
     };
   }
 
@@ -306,16 +320,15 @@ export class WorldService {
     return row ? this.hydrate(row) : undefined;
   }
 
-  /** 把 state / move 写回，并递增 revision。 */
+  /** 把居民行写回，并递增 revision。 */
   saveResident(r: ResidentRow): void {
     r.revision += 1;
     this.db.run(
-      `UPDATE residents SET name = ?, location_id = ?, move_json = ?, activity_id = ?, context_version = ?, control_epoch = ?,
+      `UPDATE residents SET name = ?, location_id = ?, activity_id = ?, context_version = ?, control_epoch = ?,
         controller_client = ?, controller_until = ?, presence_epoch = ?, present_since = ?, present_ms = ?, revision = ?,
         state_json = ?, last_seen_at = ? WHERE resident_id = ?`,
       r.name,
       r.location_id,
-      r.move ? JSON.stringify(r.move) : null,
       r.activity_id,
       r.context_version,
       r.control_epoch,
@@ -331,21 +344,21 @@ export class WorldService {
     );
   }
 
-  /** 居民当前所在的空间；在途时为 null（没有任何地点的现场资格）。 */
-  spaceOf(r: ResidentRow): string | null {
-    return r.move ? null : r.location_id;
+  /** 居民当前所在的区域。走在路上也有区域（'road' 或正经过的地点），不会是空的。 */
+  spaceOf(r: ResidentRow): string {
+    return r.location_id;
   }
 
-  /** 在场、不在途、不在小游戏里：可以现场互动。 */
+  /** 在场、不在小游戏里：可以现场互动。正在走路也算。 */
   interactive(r: ResidentRow): boolean {
-    return r.present_since !== null && !r.move && !r.activity_id;
+    return r.present_since !== null && !r.activity_id;
   }
 
   /** 某个空间里此刻可互动的居民（现场消息的受众）。 */
   audienceIn(spaceId: string): ResidentRow[] {
     return this.db
       .all(
-        `SELECT * FROM residents WHERE world_id = ? AND location_id = ? AND present_since IS NOT NULL AND move_json IS NULL AND activity_id IS NULL
+        `SELECT * FROM residents WHERE world_id = ? AND location_id = ? AND present_since IS NOT NULL AND activity_id IS NULL
          ORDER BY resident_id`,
         this.worldId,
         spaceId,
@@ -499,8 +512,10 @@ export class WorldService {
   private flushBumps(): void {
     const ids = this.pendingBumps;
     const pub = this.pendingPublic;
+    const space = this.pendingSpace;
     this.pendingBumps = new Set();
     this.pendingPublic = false;
+    this.pendingSpace = new Set();
     // 订阅者出错不能影响已经提交的结果（否则调用方会把成功的事务当成失败重试）
     const safeEmit = (name: string) => {
       // 逐个调用：一个订阅者抛错不影响其他订阅者
@@ -514,11 +529,35 @@ export class WorldService {
     };
     for (const id of ids) safeEmit(`r:${id}`);
     if (pub) safeEmit('public');
+    if (space.size > 0) {
+      const keys = [...space];
+      for (const fn of this.emitter.listeners('space')) {
+        try {
+          (fn as (keys: string[]) => void)(keys);
+        } catch (e) {
+          this.log(`[town] 空间订阅者出错（已忽略）：${e instanceof Error ? e.message : String(e)}`);
+        }
+      }
+    }
   }
 
   private dropBumps(): void {
     this.pendingBumps = new Set();
     this.pendingPublic = false;
+    this.pendingSpace = new Set();
+  }
+
+  /**
+   * 某个场景实例里有人的位置或运动变了（键是「场景|实例」）。和事件一样，提交之后才通知订阅者。
+   * 空间更新是可合并的画面同步，不是耐久事件：不进事件表，丢了重新取快照就行。
+   */
+  bumpSpace(sceneKey: string): void {
+    this.pendingSpace.add(sceneKey);
+  }
+
+  onSpace(fn: (sceneKeys: string[]) => void): () => void {
+    this.emitter.on('space', fn);
+    return () => this.emitter.off('space', fn);
   }
 
   /** 订阅某位居民的新事件通知（SSE 用）。返回取消函数。 */
@@ -694,6 +733,7 @@ export class WorldService {
         const result = handler({ w: this, r, action: action as Record<string, any>, now, requestId }) ?? {};
         domainMs = performance.now() - d0;
         const after = this.mustResident(r.resident_id);
+        for (const h of this.hooks.afterCommand) h(after, now);
         const response: Record<string, unknown> = {
           ok: true,
           requestId,

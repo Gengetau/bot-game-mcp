@@ -13,12 +13,12 @@ describe('门牌只列已得知且已生效的邀请', () => {
     const t = makeTown();
     const a = t.join('阿灯');
     const b = t.join('小岚', 'agent');
-    a.go('street_east');
+    a.go('residential');
     const out = a.act('send_letter', { to: b.residentId, body: '来坐坐', invite: true });
     a.leave();
     expect(a.row().present_since).toBeNull();
-    b.go('street_east');
-    expect(b.row().location_id).toBe('street_east');
+    b.go('residential');
+    expect(b.row().location_id).toBe('residential');
     // 信还在路上
     expect(t.clock.t).toBeLessThan(out.deliverAt);
     expect(doorNames(b.view().here)).not.toContain('阿灯');
@@ -30,7 +30,7 @@ describe('门牌只列已得知且已生效的邀请', () => {
     // 读信（要在自己家）后回到巷子
     b.go('home');
     b.act('read_letter', { letterId: out.letterId });
-    b.go('street_east');
+    b.go('residential');
     expect(doorNames(b.view().here)).toContain('阿灯');
   });
 });

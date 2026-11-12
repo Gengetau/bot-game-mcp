@@ -37,6 +37,12 @@ function twoAtPlaza(seed = 'prop-1') {
   return { t, a, b };
 }
 
+/** 迈步出发，一直走到离开 zone 这片区域的那一刻为止（每步不超过导航租约）。 */
+function walkOutOf(t: Town, who: Actor, zone: string): void {
+  for (let i = 0; i < 60 && who.row().location_id === zone; i++) t.advance(500);
+  expect(who.row().location_id).not.toBe(zone);
+}
+
 const err = (e: WorldError) => `${e.code}/${e.reason ?? ''}`;
 
 // ───────────────────────── 账本与物品 ─────────────────────────
@@ -173,8 +179,14 @@ describe('财物：商店', () => {
     expect(a.coins()).toBe(20);
     a.go('tea_house');
     a.act('buy', { shop: 'tea_counter', sku: 'tea_leaves' });
-    // 走在路上也不行
-    a.act('move', { to: 'plaza' });
+    // 刚迈步、还在茶馆这片区域里：照样买得了（按区域判定，不按有没有在走）
+    a.act('navigate', { to: 'plaza' });
+    t.advance(300);
+    expect(a.row().location_id).toBe('tea_house');
+    expect(a.act('buy', { shop: 'tea_counter', sku: 'tea_leaves' }).status).toBe('completed');
+    // 走出茶馆这片区域（灯笼路上）就买不了了
+    for (let i = 0; i < 40 && a.row().location_id === 'tea_house'; i++) t.advance(500);
+    expect(a.row().location_id).toBe('road');
     expect(a.fail('buy', { shop: 'tea_counter', sku: 'tea_leaves' }).reason).toBe('not_here');
     checkInvariants(t);
   });
@@ -473,6 +485,12 @@ describe('财物：报价（送礼与交换）', () => {
     const { t, a, b } = twoAtPlaza();
     const o1 = a.act('offer', { kind: 'gift', to: b.residentId, give: { coins: 5 } });
     b.act('move', { to: 'tea_house' });
+    // 刚迈步、还在广场这片区域里：报价还在
+    t.advance(300);
+    expect(b.row().location_id).toBe('plaza');
+    expect(t.w.db.get('SELECT status FROM offers WHERE offer_id = ?', o1.offer.id)!.status).toBe('open');
+    // 走出广场的那一刻撤销
+    walkOutOf(t, b, 'plaza');
     expect(t.w.db.get('SELECT status, close_reason FROM offers WHERE offer_id = ?', o1.offer.id)).toMatchObject({ status: 'cancelled' });
     expect(a.view().inventory.coins.reserved).toBe(0);
     checkInvariants(t);
@@ -482,11 +500,49 @@ describe('财物：报价（送礼与交换）', () => {
     const { t, a, b } = twoAtPlaza();
     const o = a.act('offer', { kind: 'gift', to: b.residentId, give: { coins: 5, items: [{ type: 'seeds', qty: 1 }] } });
     a.act('move', { to: 'tea_house' });
+    walkOutOf(t, a, 'plaza');
     expect(t.w.db.get('SELECT status FROM offers WHERE offer_id = ?', o.offer.id)!.status).toBe('cancelled');
     expect(b.view().offers).toEqual([]);
     expect(b.fail('accept_offer', { offerId: o.offer.id }).reason).toBe('offer_closed');
     expect(a.view().inventory.coins.reserved).toBe(0);
     expect(a.view().inventory.items.find((i) => i.type === 'seeds')!.available).toBe(2);
+    checkInvariants(t);
+  });
+
+  it('边走边做：同在广场的两个人，一方正在走路（还没出广场）也能发起、接受交换', () => {
+    const { t, a, b } = twoAtPlaza();
+    a.act('navigate', { to: 'tea_house' });
+    t.advance(300);
+    expect(a.row().location_id).toBe('plaza');
+    expect(a.pos().moving).toBe(true);
+    // 走着的人发起
+    const o = a.act('offer', { kind: 'trade', to: b.residentId, give: { coins: 3 }, want: { items: [{ type: 'seeds', qty: 1 }] } });
+    // 对方也迈步走开一步，仍在广场里，接受照样成交
+    b.act('navigate', { to: 'bookshop' });
+    t.advance(300);
+    expect(b.row().location_id).toBe('plaza');
+    expect(b.pos().moving).toBe(true);
+    b.act('accept_offer', { offerId: o.offer.id });
+    expect(t.w.db.get('SELECT status FROM offers WHERE offer_id = ?', o.offer.id)!.status).toBe('accepted');
+    expect(a.coins()).toBe(17);
+    expect(b.coins()).toBe(23);
+    expect(a.qty('seeds')).toBe(3);
+    checkInvariants(t);
+  });
+
+  it('跨区域那一刻撤销没完成的交换：在路上（灯笼路）的一方，已经和广场上的另一方不在一处', () => {
+    const { t, a, b } = twoAtPlaza();
+    const o = a.act('offer', { kind: 'trade', to: b.residentId, give: { coins: 4 }, want: { items: [{ type: 'seeds', qty: 1 }] } });
+    expect(a.view().inventory.coins.reserved).toBe(4);
+    b.act('navigate', { to: 'tea_house' });
+    walkOutOf(t, b, 'plaza');
+    expect(b.row().location_id).toBe('road');
+    expect(t.w.db.get('SELECT status, close_reason FROM offers WHERE offer_id = ?', o.offer.id)).toMatchObject({ status: 'cancelled' });
+    expect(a.view().inventory.coins.reserved).toBe(0);
+    expect(b.view().offers).toEqual([]);
+    expect(b.fail('accept_offer', { offerId: o.offer.id }).reason).toBe('offer_closed');
+    expect(a.coins()).toBe(20);
+    expect(b.coins()).toBe(20);
     checkInvariants(t);
   });
 
@@ -518,19 +574,22 @@ describe('财物：报价（送礼与交换）', () => {
     checkInvariants(t);
   });
 
-  it('不能对不在场的人发起：不同地点、离线、在途、自己、不存在', () => {
+  it('不能对不在场的人发起：不同区域（含灯笼路上）、离线、自己、不存在', () => {
     const { t, a, b } = twoAtPlaza();
     const give = { coins: 1 };
     expect(a.fail('offer', { kind: 'gift', to: a.residentId, give }).reason).toBe('not_here');
     expect(a.fail('offer', { kind: 'gift', to: 'r_nobody', give }).reason).toBe('not_here');
     b.act('move', { to: 'tea_house' });
-    expect(a.fail('offer', { kind: 'gift', to: b.residentId, give }).reason).toBe('not_here'); // 在途
-    t.advance(10_000);
-    expect(a.fail('offer', { kind: 'gift', to: b.residentId, give }).reason).toBe('not_here'); // 另一地点
+    t.advance(300);
+    expect(a.act('offer', { kind: 'gift', to: b.residentId, give }).status).toBe('accepted'); // 刚迈步、还在广场：照样在场
+    walkOutOf(t, b, 'plaza');
+    expect(a.fail('offer', { kind: 'gift', to: b.residentId, give }).reason).toBe('not_here'); // 灯笼路上：已不在一处
+    b.walk();
+    expect(a.fail('offer', { kind: 'gift', to: b.residentId, give }).reason).toBe('not_here'); // 另一区域
     a.go('tea_house');
     b.leave();
     expect(a.fail('offer', { kind: 'gift', to: b.residentId, give }).reason).toBe('not_here'); // 离线
-    expect(t.w.db.scalar('SELECT COUNT(*) FROM offers')).toBe(0);
+    expect(t.w.db.scalar("SELECT COUNT(*) FROM offers WHERE status = 'open'")).toBe(0);
     checkInvariants(t);
   });
 
@@ -754,17 +813,14 @@ describe('财物：出借与归还', () => {
     checkInvariants(t);
   });
 
-  it('归还途径二：主人巷子的归还箱（主人不在场、不在线也行；别的地方不行）', () => {
+  it('归还途径二：会馆门口的归还箱（主人不在场、不在线也行；别的地方不行）', () => {
     const { t, a, b } = twoAtPlaza();
     const { itemId } = lend(t, a, b);
-    const street = a.row().street_id;
-    const other = street === 'street_east' ? 'street_west' : 'street_east';
     a.leave(); // 主人离线
-    b.go(other);
-    expect(b.fail('return_item', { itemId }).reason).toBe('not_here'); // 错的巷子
-    b.go('plaza');
     expect(b.fail('return_item', { itemId }).reason).toBe('not_here'); // 广场不行
-    b.go(street);
+    b.go('tea_house');
+    expect(b.fail('return_item', { itemId }).reason).toBe('not_here'); // 茶馆不行
+    b.go('residential');
     const cursor = a.events().cursor;
     b.act('return_item', { itemId });
     expect(t.w.db.get('SELECT holder_id FROM items WHERE item_id = ?', itemId)!.holder_id).toBe(a.residentId);

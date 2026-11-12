@@ -10,7 +10,7 @@ export const CONTENT_VERSION = 1;
 
 // ───────────────────────── 地图 ─────────────────────────
 
-export type PlaceKind = 'public' | 'street';
+export type PlaceKind = 'public' | 'residential';
 
 export interface PlaceDef {
   id: string;
@@ -20,8 +20,14 @@ export interface PlaceDef {
   blurb: string;
   /** 室内（下雨时更有吸引力） */
   indoor: boolean;
+  /** 只是路过的地方：不算目的地，没有店和物件（路上） */
+  through?: boolean;
 }
 
+/**
+ * 地点 = 地图上有名字的区域（区域编号和地图数据 spatial/town-map.ts 里的 zone 一致）。
+ * 位置本身是连续的坐标；这里的编号只是「这一片叫什么」，也是 navigate 的目的地别名。
+ */
 export const PLACES: readonly PlaceDef[] = [
   { id: 'plaza', name: '灯下广场', kind: 'public', blurb: '公告、集合、小集市，新居民从这里进镇。', indoor: false },
   { id: 'tea_house', name: '栖灯茶馆', kind: 'public', blurb: '坐下来喝杯茶，慢慢聊。', indoor: true },
@@ -29,27 +35,24 @@ export const PLACES: readonly PlaceDef[] = [
   { id: 'kitchen', name: '公共厨房', kind: 'public', blurb: '一起做饭，做好了分着吃。', indoor: true },
   { id: 'garden', name: '后巷花园', kind: 'public', blurb: '浇水、整理、照看大家的花。', indoor: false },
   { id: 'arcade', name: '游戏馆', kind: 'public', blurb: '凑一桌，按老规矩玩一局。', indoor: true },
-  { id: 'street_east', name: '东灯巷', kind: 'street', blurb: '住宅街。各家门口有信箱和归还箱。', indoor: false },
-  { id: 'street_west', name: '西灯巷', kind: 'street', blurb: '住宅街。各家门口有信箱和归还箱。', indoor: false },
+  { id: 'road', name: '灯笼路', kind: 'public', blurb: '连着各处的路。走在路上也能和身边的人说话。', indoor: false, through: true },
+  { id: 'residential', name: '灯巷会馆', kind: 'residential', blurb: '住宅接入点。信箱和归还箱在这里，回家、做客都从会馆门口进。', indoor: false },
 ];
 
-/** 无向边。不设必须绕行的迷宫路线：广场是枢纽，任意两处最多两段路。 */
-export const EDGES: readonly (readonly [string, string])[] = [
-  ['plaza', 'tea_house'],
-  ['plaza', 'bookshop'],
-  ['plaza', 'kitchen'],
-  ['plaza', 'garden'],
-  ['plaza', 'arcade'],
-  ['tea_house', 'bookshop'],
-  ['kitchen', 'garden'],
-  ['plaza', 'street_east'],
-  ['plaza', 'street_west'],
-  ['garden', 'street_east'],
-  ['tea_house', 'street_west'],
-];
+/** 可以当目的地的地点（不含「路上」）。 */
+export const DESTINATIONS: readonly PlaceDef[] = PLACES.filter((p) => !p.through);
 
-export const STREETS = PLACES.filter((p) => p.kind === 'street').map((p) => p.id);
+/** 门牌上的巷名。两条巷子不再是能走到的地点：各家都从会馆门口进，巷名只用来写地址。 */
+export const LANES: readonly { id: string; name: string }[] = [
+  { id: 'street_east', name: '东灯巷' },
+  { id: 'street_west', name: '西灯巷' },
+];
+export const STREETS = LANES.map((l) => l.id);
+export const laneName = (id: string): string => LANES.find((l) => l.id === id)?.name ?? id;
+
 export const ENTRY_PLACE = 'plaza';
+export const ROAD_PLACE = 'road';
+export const RESIDENTIAL_PLACE = 'residential';
 
 export const placeDef = (id: string): PlaceDef | undefined => PLACES.find((p) => p.id === id);
 export const isHome = (spaceId: string): boolean => spaceId.startsWith('home:');
@@ -673,42 +676,3 @@ export const EMBEDDED_GAMES: readonly EmbeddedGameDef[] = [
 ];
 
 export const embeddedGameDef = (type: string): EmbeddedGameDef | undefined => EMBEDDED_GAMES.find((g) => g.type === type);
-
-// ───────────────────────── 地图计算 ─────────────────────────
-
-/** 邻接表（只含公共地点和住宅街；住宅另算）。 */
-export function neighbors(placeId: string): string[] {
-  const out: string[] = [];
-  for (const [a, b] of EDGES) {
-    if (a === placeId) out.push(b);
-    else if (b === placeId) out.push(a);
-  }
-  return out;
-}
-
-/** 两个公共节点之间的最短路径（含起点和终点）。不连通返回 null。 */
-export function shortestPath(from: string, to: string): string[] | null {
-  if (from === to) return [from];
-  const prev = new Map<string, string>();
-  const queue = [from];
-  const seen = new Set([from]);
-  while (queue.length > 0) {
-    const cur = queue.shift()!;
-    for (const n of neighbors(cur).sort()) {
-      if (seen.has(n)) continue;
-      seen.add(n);
-      prev.set(n, cur);
-      if (n === to) {
-        const path = [to];
-        let p = to;
-        while (prev.has(p)) {
-          p = prev.get(p)!;
-          path.unshift(p);
-        }
-        return path;
-      }
-      queue.push(n);
-    }
-  }
-  return null;
-}

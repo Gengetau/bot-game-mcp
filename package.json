@@ -24,7 +24,9 @@
     "load": "tsx scripts/load.ts",
     "world:simulate": "tsx scripts/world-simulate.ts",
     "world:load": "tsx scripts/world-load.ts",
-    "world:recovery": "tsx scripts/world-recovery.ts"
+    "world:recovery": "tsx scripts/world-recovery.ts",
+    "client:export": "bash client/tools/export.sh",
+    "client:e2e": "tsx scripts/client-e2e.mjs"
   },
   "devDependencies": {
     "@modelcontextprotocol/sdk": "^1.32.2",

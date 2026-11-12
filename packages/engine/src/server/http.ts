@@ -207,7 +207,8 @@ export async function startHttpServer(rt: Runtime, log: (msg: string) => void = 
   }
 
   const closeWeb = config.web ? mountWeb(app, manager, log) : () => undefined;
-  const closeTown = rt.world ? mountTown(app, rt.world, log) : () => undefined;
+  const town = rt.world ? mountTown(app, rt.world, log, { clientDir: config.town.clientDir }) : null;
+  const closeTown = town ?? (() => undefined);
 
   // 空闲会话清理
   const idleMs = config.sessionIdleMinutes * 60_000;
@@ -226,6 +227,7 @@ export async function startHttpServer(rt: Runtime, log: (msg: string) => void = 
     const srv = app.listen(config.port, config.host, () => resolve(srv));
     srv.on('error', reject);
   });
+  town?.attach(server); // /town/ws 的 upgrade 处理
   const addr = server.address();
   const port = typeof addr === 'object' && addr ? addr.port : config.port;
   const hostForUrl = config.host === '0.0.0.0' || config.host === '::' ? '127.0.0.1' : config.host;

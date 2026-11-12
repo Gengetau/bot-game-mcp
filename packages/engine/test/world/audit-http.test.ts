@@ -89,3 +89,14 @@ describe('审计：http', () => {
     expect(Number(last!.headers.get('retry-after'))).toBeGreaterThanOrEqual(1);
   });
 });
+
+describe('空间接口：公开地图不要登录；票据与导航续租要登录', () => {
+  it('map 不带 Cookie 也能取；ws-ticket / nav/renew / scene 未登录 401', async () => {
+    const base = await serve({ requestsPerMinute: 100_000 });
+    expect((await fetch(`${base}/town/api/map`)).status).toBe(200);
+    expect((await fetch(`${base}/town/api/scene`)).status).toBe(401);
+    const post = (path: string) => fetch(`${base}${path}`, { method: 'POST', headers: { 'content-type': 'application/json', origin: base }, body: JSON.stringify({ clientId: 'tab-audit-0001' }) });
+    expect((await post('/town/api/ws-ticket')).status).toBe(401);
+    expect((await post('/town/api/nav/renew')).status).toBe(401);
+  });
+});

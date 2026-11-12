@@ -6,11 +6,13 @@
  * 关系记忆、屋内的东西），在一个丰富的场景里跑完，再对每个出口的 JSON 投影做「不得出现」断言。
  */
 import { describe, expect, it } from 'vitest';
+import { renewNavigation, sceneView } from '../../src/world/space.js';
 import { agentView, chatHistory, directory, meView, publicView } from '../../src/world/views.js';
 import { listLetters } from '../../src/world/mail.js';
 import { outboxPending, report } from '../../src/world/reports.js';
 import { relationsOf } from '../../src/world/social.js';
 import { Actor, makeTown, type Town } from './helpers.js';
+import { checkSpaceInvariants } from './invariants.js';
 
 const STEP = 50_000;
 const homeOf = (a: Actor) => `home:${a.residentId}`;
@@ -55,7 +57,7 @@ interface Rich {
 /**
  * 阿灯（寄信人，真人）、小岚（AI，收信人）、小满（路人）、小朵（旁观者）。
  * 阿灯和小岚在广场聊天、问爱好；阿灯买了小灯笼，回家读信、把灯笼摆出来；小岚受邀进了阿灯家并在屋里聊天；
- * 小朵站在东灯巷（阿灯家门口的巷子）；小满在广场。
+ * 小朵站在会馆门前（灯巷会馆，进各家门的公共入口）；小满在广场。
  */
 function richTown(): Rich {
   const t = makeTown();
@@ -88,7 +90,7 @@ function richTown(): Rich {
   pulse(all);
   a.act('speak', { text: HOME_A });
   b.act('speak', { text: HOME_B });
-  d.go('street_east');
+  d.go('residential');
   pulse(all);
   c.go('plaza');
   pulse(all);
@@ -124,6 +126,7 @@ function richTown(): Rich {
       `"interest":${(needs.find(([y]) => y === x)![1] + 0.1).toFixed(1)}`,
     ]);
   }
+  checkSpaceInvariants(t);
   return { t, a, b, c, d, all, letterInviteGrant, personalGrant, letterIds: { l1: l1.letterId, l2: l2.letterId, l3: l3.letterId }, secrets };
 }
 
@@ -180,18 +183,52 @@ describe('栖灯镇隐私：公开出口（公开地图、公开事件流、名�
     }
   });
 
-  it('公开地图里住宅区的人只到「住宅区」这一层，不分巷子、不分谁家', () => {
+  it('公开地图里住宅区的人只到「住宅区」这一层，不分会馆门前还是谁家', () => {
     const s = richTown();
     const v = publicView(s.t.w);
     const residential = v.residential.residents.map((r) => r.name).sort();
-    // 阿灯在家里、小岚在阿灯家、小朵在东灯巷：公开层面三个人完全一样
+    // 阿灯在家里、小岚在阿灯家、小朵在会馆门前：公开层面三个人完全一样
     expect(residential).toEqual(['寄信人阿灯', '收信人小岚', '旁观者小朵'].sort());
     for (const spot of v.residential.residents) expect(Object.keys(spot).sort()).toEqual(['at', 'id', 'kind', 'name']);
     expect(v.residential.residents.every((r) => r.at === 'residential')).toBe(true);
     // 公共地点里只有真正在那里的人
     expect(v.places.find((p) => p.id === 'plaza')!.residents.map((r) => r.name)).toEqual(['路人小满']);
-    expect(v.edges.flat()).not.toContain('street_east');
-    expect(v.edges.flat()).not.toContain('street_west');
+    // 没有旧的在途 / 路网字段，也没有旧的两条巷子
+    expect('moving' in v).toBe(false);
+    expect('edges' in v).toBe(false);
+    expect(v.places.map((p) => p.id)).not.toContain('street_east');
+    expect(v.places.map((p) => p.id)).not.toContain('street_west');
+    expect(v.places.find((p) => p.id === 'road')).toMatchObject({ through: true });
+  });
+
+  it('公开投影（公开地图、公开事件流、名录、日报）里没有坐标、折线、到达 / 租约时间、home:<谁>、实例编号——居民正在路上时也一样', () => {
+    const s = richTown();
+    // 让几个人同时在走：小满去茶馆、小朵去书屋，小岚从阿灯家出来往广场走
+    s.c.act('navigate', { to: 'tea_house' });
+    s.d.act('navigate', { to: 'bookshop' });
+    s.b.act('navigate', { to: 'plaza' });
+    for (let i = 0; i < 7; i++) {
+      s.t.advanceAlive(1_000, s.all, 1_000);
+      for (const x of s.all) {
+        const nav = x.view().location.navigation;
+        if (nav) renewNavigation(s.t.w, x.auth, { navigationId: nav.navigationId, revision: nav.revision });
+      }
+    }
+    expect(s.t.w.db.scalar('SELECT COUNT(*) FROM world_actors WHERE nav_json IS NOT NULL')).toBeGreaterThan(0);
+    checkSpaceInvariants(s.t); // 正在走的人也满足空间不变量
+    const STRUCT = /"(x|z|heading|points|path|route|arriveAt|arrive_at|leaseUntil|lease_until|renewEveryMs|navigationId|navigation|startedAt|crossings|instance|instance_id|scene|scene_id|nav_json|moving|edges)":/;
+    const homes = s.all.map((x) => homeOf(x));
+    for (const [label, text] of Object.entries(publicSurfaces(s.t))) {
+      expect(STRUCT.test(text), `公开出口 ${label} 出现了坐标 / 路线 / 时间 / 实例字段：${STRUCT.exec(text)?.[0]}`).toBe(false);
+      expectClean(`公开出口 ${label}`, text, [...homes, 'home:']);
+    }
+    // 公开事件流里的位置事件只有 id、名字、种类、公开区域
+    for (const e of s.t.w.readPublicEvents(s.t.w.encodeCursor('p', 'public', 0), 5000).events.filter((x) => x.type === 'place')) {
+      expect(Object.keys((e.data as { resident: object }).resident).sort()).toEqual(expect.arrayContaining(['at', 'id', 'kind', 'name']));
+      expect(Object.keys((e.data as { resident: object }).resident).every((k) => ['at', 'id', 'kind', 'name', 'playing'].includes(k))).toBe(true);
+      const at = (e.data as { resident: { at: string | null } }).resident.at;
+      expect([null, 'plaza', 'tea_house', 'bookshop', 'kitchen', 'garden', 'arcade', 'road', 'residential']).toContain(at);
+    }
   });
 
   it('日报（公开）只有聚合句子，不含信件、聊天、物品', () => {
@@ -232,7 +269,7 @@ describe('栖灯镇隐私：别人的视图与事件流（逐一对照）', () =
   it('没读过的信：收信人在外面的视图 / 事件里没有正文、寄信人、信件编号、邀请编号、寄信人家的门牌', () => {
     const s = richTown();
     // 小岚此刻在阿灯家里，换到一个完全不相干的地方，确保「在外面」
-    s.b.go('street_east');
+    s.b.go('residential');
     s.b.go('plaza');
     pulse(s.all);
     s.c.go('tea_house'); // 小满离开广场，广场上只剩小岚
@@ -287,21 +324,23 @@ describe('栖灯镇隐私：别人的视图与事件流（逐一对照）', () =
     expectClean('屋里的现场视图', text, [...(s.secrets.get(s.a.residentId) ?? []), L2, 'inventory']);
   });
 
-  it('旁观者站在巷子里：看不到屋里的人和物、听不到屋里说的话；只有门牌和能不能进', () => {
+  it('旁观者站在会馆门前：看不到屋里的人和物、听不到屋里说的话；只有门牌和能不能进', () => {
     const s = richTown();
-    expect(s.d.row().location_id).toBe('street_east');
+    expect(s.d.row().location_id).toBe('residential');
     const v = s.d.view();
-    expect(v.here?.kind).toBe('street');
+    expect(v.here?.kind).toBe('residential');
     expect(v.here?.residents).toEqual([]); // 阿灯、小岚都在屋里
     expect(v.here?.home).toBeUndefined();
     expect(v.here?.objects).toEqual([]);
     const door = v.here!.doors!.find((x) => x.home === homeOf(s.a))!;
     expect(door.canEnter).toBe(false);
-    expect(Object.keys(door).sort()).toEqual(['canEnter', 'home', 'no', 'owner']);
+    // 门牌条目的形状固定：不表达主人此刻在不在家
+    expect(Object.keys(door).sort()).toEqual(['canEnter', 'home', 'lane', 'no', 'owner']);
+    for (const d of v.here!.doors!) expect(Object.keys(d).sort()).toEqual(Object.keys(door).sort());
     for (const [label, text] of Object.entries(surfaces(s.t, s.d))) {
       expectClean(`小朵的 ${label}`, text, [HOME_A, HOME_B, DECOR]);
     }
-    expect(s.d.fail('move', { to: homeOf(s.a) }).reason).toBe('no_access');
+    expect(s.d.fail('navigate', { to: homeOf(s.a) }).reason).toBe('no_access');
   });
 
   it('不在受众里的人（路人、旁观者）的所有出口都没有别人的现场发言', () => {
@@ -333,10 +372,10 @@ describe('栖灯镇隐私：住宅区内部的走动、公开层只到「住宅�
   /** 公开地图里和位置有关的部分（去掉游标和时间）。 */
   const residentialSnapshot = (t: Town) => {
     const v = publicView(t.w);
-    return JSON.stringify({ residential: v.residential, moving: v.moving, places: v.places, counts: v.counts });
+    return JSON.stringify({ residential: v.residential, places: v.places, counts: v.counts });
   };
 
-  it('在屋里、巷子里、别人家里、自己家里：公开地图看起来完全一样，公开事件流没有任何新事件', () => {
+  it('会馆门前、别人家里、自己家里来回走：公开地图看起来完全一样，公开事件流没有任何新事件', () => {
     const t = makeTown();
     const a = t.join('阿灯');
     const b = t.join('小岚', 'agent');
@@ -353,32 +392,29 @@ describe('栖灯镇隐私：住宅区内部的走动、公开层只到「住宅�
     const snap0 = residentialSnapshot(t);
     const pubCount = t.w.db.scalar('SELECT COUNT(*) FROM public_events');
 
-    // 小岚：阿灯家 → 东灯巷（3 秒）→ 阿灯家 → 经广场回自己家（西灯巷，共 26 秒）；阿灯：自己家 → 小岚家（经广场）
-    b.go('street_east');
+    // 小岚：阿灯家 → 会馆门前 → 阿灯家 → 会馆门前 → 自己家；阿灯：自己家 → 小岚家。全程没有离开住宅区
+    b.go('residential');
+    expect(b.row().location_id).toBe('residential');
     expect(residentialSnapshot(t)).toBe(snap0);
     pulse(all);
     b.go(homeOf(a));
+    expect(b.row().location_id).toBe(homeOf(a));
     expect(residentialSnapshot(t)).toBe(snap0);
     pulse(all);
-    const out = b.act('move', { to: 'home' });
-    t.advanceAlive(out.move.arriveAt - t.clock.t - 1, all, 10_000);
-    expect(b.row().move).not.toBeNull(); // 仍在路上
-    expect(residentialSnapshot(t)).toBe(snap0); // 路上经过广场，公开层面仍然只是「住宅区」
-    t.advanceTo(out.move.arriveAt);
+    b.go('home'); // 从阿灯家直接去自己家：出门、过会馆门口、进门，一趟走完
     expect(b.row().location_id).toBe(homeOf(b));
     expect(residentialSnapshot(t)).toBe(snap0);
     pulse(all);
-    const out2 = a.act('move', { to: homeOf(b) });
-    t.advanceAlive(out2.move.arriveAt - t.clock.t, all, 10_000);
+    a.go(homeOf(b));
     expect(a.row().location_id).toBe(homeOf(b));
     expect(residentialSnapshot(t)).toBe(snap0);
 
     // 整个过程没有写入任何公开事件
     expect(t.w.db.scalar('SELECT COUNT(*) FROM public_events')).toBe(pubCount);
-    expect(publicView(t.w).moving).toEqual([]);
+    checkSpaceInvariants(t);
   });
 
-  it('从公共地点进住宅区、再出来：公开事件只有「去了住宅区」和「回到某个公共地点」，没有巷子和门牌', () => {
+  it('从公共地点进住宅区、再出来：公开事件只有位置变化（路上、住宅区、公共地点），没有会馆门前和门牌', () => {
     const t = makeTown();
     const a = t.join('阿灯');
     t.join('小岚', 'agent');
@@ -388,10 +424,13 @@ describe('栖灯镇隐私：住宅区内部的走动、公开层只到「住宅�
     const events = t.w.readPublicEvents(cursor, 100).events;
     expect(events.length).toBeGreaterThan(0);
     expect(events.every((e) => e.type === 'place')).toBe(true);
-    expectClean('公开事件', JSON.stringify(events), ['home:', 'street_', a.row().street_id, 'house']);
+    expectClean('公开事件', JSON.stringify(events), ['home:', 'street_', 'house', 'residential_door', '"x"', '"z"']);
     const spots = events.map((e) => (e.data.resident as { at: string | null }).at);
     expect(spots).toContain('residential');
     expect(spots).toContain('plaza');
+    // 从别处走到住宅区：只出现一次 at:'residential'（进门、出门都不重复）
+    expect(spots.filter((x) => x === 'residential')).toHaveLength(1);
+    expect(new Set(spots)).toEqual(new Set(['road', 'residential', 'plaza']));
   });
 
   it('住宅区里的人被请出家门：公开层面无变化', () => {
@@ -405,7 +444,7 @@ describe('栖灯镇隐私：住宅区内部的走动、公开层只到「住宅�
     const snap = JSON.stringify(publicView(t.w).residential);
     const n = t.w.db.scalar('SELECT COUNT(*) FROM public_events');
     a.act('revoke_invite', { grantId: g });
-    expect(b.row().location_id).toBe('street_east');
+    expect(b.row().location_id).toBe('residential');
     expect(JSON.stringify(publicView(t.w).residential)).toBe(snap);
     expect(t.w.db.scalar('SELECT COUNT(*) FROM public_events')).toBe(n);
   });
@@ -413,15 +452,13 @@ describe('栖灯镇隐私：住宅区内部的走动、公开层只到「住宅�
   it('被请出门之后，客人的视图里不再有屋里的东西', () => {
     const s = richTown();
     s.a.act('revoke_invite', { grantId: s.personalGrant });
-    expect(s.b.row().location_id).toBe('street_east');
+    expect(s.b.row().location_id).toBe('residential');
     const v = s.b.view();
     expect(v.here?.home).toBeUndefined();
     expectClean('被请出后的小岚', JSON.stringify(v) + JSON.stringify(agentView(s.t.w, s.b.row(), s.b.clientId)), [DECOR, HOME_A]);
   });
 
-  it('公开路径上的时间不暴露目的巷子和是否进门', () => {
-    // 阿灯住东灯巷、小岚住西灯巷：从茶馆回家的路程长短不同，从家里出来也一样。
-    // 公开层面进出住宅区的路上一直算「在住宅区」，不给出发和到达时间。
+  it('公开层面看不出谁进了哪一家：进门不产生公开事件，公开事件里没有进出门的时间点', () => {
     const t = makeTown();
     const a = t.join('阿灯');
     const b = t.join('小岚', 'agent');
@@ -431,46 +468,202 @@ describe('栖灯镇隐私：住宅区内部的走动、公开层只到「住宅�
     const placeEvents = () =>
       (t.w.db.all('SELECT occurred_at, projection FROM public_events WHERE type = ? ORDER BY cursor', 'place') as { occurred_at: number; projection: string }[]).map((e) => ({
         at: e.occurred_at,
-        resident: (JSON.parse(e.projection) as { resident: { id: string; at: string | null; moving?: unknown } }).resident,
+        resident: JSON.parse(e.projection).resident as { id: string; at: string | null },
       }));
 
-    // 回家：出发那一刻公开位置就变成住宅区，之后（真正到达时）不再有公开事件
+    // 回家：公开位置依次是路上、广场、路上、住宅区；走到会馆门口那一刻出现 residential，进门那一刻没有任何公开事件
     let before = placeEvents().length;
-    const leftAt = t.clock.t;
-    a.act('move', { to: 'home' });
-    b.act('move', { to: 'home' });
-    let view = publicView(t.w);
-    expect(view.moving).toHaveLength(0);
-    expect(view.residential.residents.map((x) => x.id).sort()).toEqual([a.residentId, b.residentId].sort());
+    a.go('home');
+    b.go('home');
+    expect(a.row().location_id).toBe(homeOf(a));
+    expect(b.row().location_id).toBe(homeOf(b));
     let fresh = placeEvents().slice(before);
-    expect(fresh.map((e) => [e.at, e.resident.at, e.resident.moving])).toEqual([
-      [leftAt, 'residential', undefined],
-      [leftAt, 'residential', undefined],
-    ]);
+    for (const x of [a, b]) {
+      const mine = fresh.filter((e) => e.resident.id === x.residentId);
+      expect(mine.at(-1)!.resident.at).toBe('residential');
+      expect(mine.filter((e) => e.resident.at === 'residential')).toHaveLength(1);
+      // 进门发生在 residential 事件之后：它之后没有任何关于这个人的公开事件
+      expect(fresh.filter((e) => e.resident.id === x.residentId && e.at > mine.at(-1)!.at)).toHaveLength(0);
+    }
+    // 在屋里待着、屋里来回、出门到会馆门口：都没有公开事件
     before = placeEvents().length;
     stay(t, 40_000, [a, b]);
-    expect(a.row().location_id).toBe(`home:${a.residentId}`);
-    expect(b.row().location_id).toBe(`home:${b.residentId}`);
+    a.go('residential');
+    expect(a.row().location_id).toBe('residential');
+    a.go('home');
     expect(placeEvents().slice(before)).toHaveLength(0);
 
-    // 出门：出发时没有公开事件，到了目的地才现身；公开地图上路上的人不带时间
+    // 出门去茶馆：从会馆门口走出去才有公开事件（路上、广场……），公开事件里不带任何时间字段
     before = placeEvents().length;
-    a.act('move', { to: 'tea_house' });
-    b.act('move', { to: 'tea_house' });
-    view = publicView(t.w);
-    expect(view.moving).toHaveLength(0);
-    expect(view.residential.residents).toHaveLength(2);
-    expect(placeEvents().slice(before)).toHaveLength(0);
-    expect(JSON.stringify(view)).not.toContain('arriveAt');
-    stay(t, 40_000, [a, b]);
+    a.go('tea_house');
     fresh = placeEvents().slice(before);
-    expect(fresh.map((e) => e.resident.at)).toEqual(['tea_house', 'tea_house']);
-    expect(fresh.every((e) => e.resident.moving === undefined)).toBe(true);
+    expect(fresh.length).toBeGreaterThan(0);
+    expect(fresh.every((e) => e.resident.id === a.residentId)).toBe(true);
+    expect(fresh.at(-1)!.resident.at).toBe('tea_house');
+    expect(JSON.stringify(fresh.map((e) => e.resident))).not.toMatch(/arrive|lease|until|nav/i);
+    expect(JSON.stringify(publicView(t.w))).not.toMatch(/arriveAt|leaseUntil/);
+  });
+});
+
+describe('栖灯镇隐私：空间事件与场景快照', () => {
+  const COORD = /"(x|z|points|heading|arriveAt|leaseUntil|renewEveryMs|navigationId|startedAt|crossings|instance|instance_id|scene_id)":/;
+  const allEvents = (x: Actor, cursor?: string) => x.events(cursor ?? x.t.w.encodeCursor('r', x.residentId, 0)).events;
+
+  it('别的居民拿到的事件（left / arrived / presence / chat …）里没有坐标，也没有路线和时间字段', () => {
+    const s = richTown();
+    // 让小满、小朵走几趟，阿灯出门，大家的事件都攒起来
+    s.c.go('tea_house');
+    s.d.go('plaza');
+    s.a.go('plaza');
+    s.b.go('plaza');
+    s.d.go('home');
+    for (const x of s.all) {
+      const events = allEvents(x).filter((e) => ['left', 'arrived', 'presence', 'chat'].includes(e.type));
+      expect(events.length).toBeGreaterThan(0);
+      for (const e of events) {
+        expect(COORD.test(JSON.stringify(e.data)), `${x.name} 的 ${e.type} 事件里有结构化位置字段`).toBe(false);
+        if (e.type === 'left' || e.type === 'arrived') {
+          expect(Object.keys(e.data).sort(), `${e.type} 事件只有居民名片和区域标签`).toEqual(['resident', 'space']);
+          expect(Object.keys(e.data.resident as object).sort()).toEqual(['id', 'kind', 'name']);
+        }
+      }
+    }
+  });
+
+  it('站在会馆门前的人看到有人「到了 / 离开了」，但无法从事件区分对方是进了谁家还是走去了别处', () => {
+    const t = makeTown();
+    const w = t.join('守门人');
+    const x = t.join('进屋的人');
+    const y = t.join('出门的人', 'agent');
+    const z = t.join('另一位住户');
+    for (const p of [w, x, y, z]) p.go('residential');
+    const cursor = w.view().cursor;
+    const pubCursor = t.w.publicCursor();
+    // 进屋：x 进自己家，z 进 x 的邻居（自己家）；出门：y 走去广场
+    x.go('home');
+    z.go('home');
+    const afterEnter = allEvents(w, cursor);
+    const enterLeft = afterEnter.filter((e) => e.type === 'left');
+    expect(enterLeft.map((e) => (e.data.resident as { id: string }).id).sort()).toEqual([x.residentId, z.residentId, ].sort());
+    expect(t.w.readPublicEvents(pubCursor).events).toHaveLength(0); // 进屋：公开位置不变，没有公开事件
+    const cursor2 = w.view().cursor;
+    const pub2 = t.w.publicCursor();
+    y.go('plaza');
+    const exitLeft = allEvents(w, cursor2).filter((e) => e.type === 'left');
+    expect(exitLeft).toHaveLength(1);
+    expect((exitLeft[0]!.data.resident as { id: string }).id).toBe(y.residentId);
+    // 走去路上：公开位置变了（road），这是公开信息
+    expect(t.w.readPublicEvents(pub2).events.map((e) => (e.data.resident as { at: string | null }).at)).toEqual(expect.arrayContaining(['road']));
+    // 进屋和出门的 left 事件长得一模一样：区域标签都是 residential，没有目的地、没有谁家
+    for (const e of [...enterLeft, ...exitLeft]) {
+      expect(e.data.space).toBe('residential');
+      expect(Object.keys(e.data).sort()).toEqual(['resident', 'space']);
+      expectClean('left 事件', JSON.stringify(e), ['home:', 'street_', 'to', 'target', 'destination', homeOf(x), homeOf(z)]);
+    }
+    // 屋里的 x 没有出现在守门人的任何 arrived / presence 里
+    expect(allEvents(w, cursor).filter((e) => e.type === 'arrived' && (e.data.resident as { id: string }).id === x.residentId)).toHaveLength(0);
+    // 反过来：x 出门回到会馆门前，守门人看到「到了」，同样没有来处
+    const cursor3 = w.view().cursor;
+    x.go('residential');
+    const back = allEvents(w, cursor3).filter((e) => e.type === 'arrived');
+    expect(back).toHaveLength(1);
+    expect(back[0]!.data).toMatchObject({ space: 'residential' });
+    expectClean('arrived 事件', JSON.stringify(back), ['home:', homeOf(x)]);
+  });
+
+  it('公共场景的快照里没有任何私宅里的人；私宅快照只给屋里的人；离线的人不在快照里（自己除外）', () => {
+    const s = richTown();
+    const now = s.t.clock.t;
+    // 小满在广场：看到广场上的人，看不到屋里的阿灯和小岚
+    const outside = sceneView(s.t.w, s.c.row(), now);
+    expect(outside.scene).toBe('town');
+    expect(outside.actors.map((x) => x.id).sort()).toEqual([s.c.residentId, s.d.residentId].sort());
+    expectClean('公共场景快照', JSON.stringify(outside), [homeOf(s.a), homeOf(s.b), s.a.residentId, s.b.residentId]);
+    // 站在会馆门前的小朵也一样
+    const door = sceneView(s.t.w, s.d.row(), now);
+    expect(door.actors.map((x) => x.id)).not.toContain(s.a.residentId);
+    expect(door.actors.map((x) => x.id)).not.toContain(s.b.residentId);
+    // 阿灯家：只有阿灯和做客的小岚；不含别家
+    const inside = sceneView(s.t.w, s.a.row(), now);
+    expect(inside.scene).toBe('home');
+    expect(inside.space).toBe(homeOf(s.a));
+    expect(inside.actors.map((x) => x.id).sort()).toEqual([s.a.residentId, s.b.residentId].sort());
+    expectClean('私宅快照', JSON.stringify(inside), [s.c.residentId, s.d.residentId, homeOf(s.c), homeOf(s.d), homeOf(s.b)]);
+    // 小岚自己家（没人在）的快照从来不会出现在阿灯家的快照里；小岚进入自己家之后，阿灯家只剩阿灯
+    s.b.go('home');
+    const after = sceneView(s.t.w, s.a.row(), s.t.clock.t);
+    expect(after.actors.map((x) => x.id)).toEqual([s.a.residentId]);
+    expect(sceneView(s.t.w, s.b.row(), s.t.clock.t).actors.map((x) => x.id)).toEqual([s.b.residentId]);
+    // 离线的人不在别人的快照里；她自己的快照里只有自己，看不到还在场的人（不在场就不在现场）
+    s.c.leave();
+    expect(sceneView(s.t.w, s.d.row(), s.t.clock.t).actors.map((x) => x.id)).not.toContain(s.c.residentId);
+    const gone = sceneView(s.t.w, s.c.row(), s.t.clock.t);
+    expect(gone.actors.map((x) => x.id)).toEqual([s.c.residentId]);
+    expectClean('离线者的快照', JSON.stringify(gone), [s.a.residentId, s.b.residentId, s.d.residentId]);
+    // 屋里的客人离线：主人的快照里没有他，他的快照里也没有主人
+    s.b.go(homeOf(s.a));
+    expect(sceneView(s.t.w, s.a.row(), s.t.clock.t).actors.map((x) => x.id)).toContain(s.b.residentId);
+    s.b.leave();
+    expect(sceneView(s.t.w, s.a.row(), s.t.clock.t).actors.map((x) => x.id)).toEqual([s.a.residentId]);
+    expect(sceneView(s.t.w, s.b.row(), s.t.clock.t).actors.map((x) => x.id)).toEqual([s.b.residentId]);
+  });
+
+  it('本人视图里只有自己的坐标：here.residents 里别人没有坐标，agentView 里谁都没有坐标', () => {
+    const t = makeTown();
+    const a = t.join('阿灯');
+    const b = t.join('小岚', 'agent');
+    const v = a.view();
+    expect(typeof v.location.x).toBe('number');
+    expect(typeof v.location.z).toBe('number');
+    expect(v.location.scene).toBe('town');
+    expect(JSON.stringify(v.here?.residents)).not.toMatch(/"(x|z|heading|scene)":/);
+    expect(v.here!.residents.map((r) => r.id)).toEqual([b.residentId]);
+    // 别人的坐标数值不出现在我的视图里：让小岚走到广场里一个和谁都不重合的点再比
+    b.go({ x: 36.5, z: 33.25 });
+    const bp = b.pos();
+    const mine = a.pos();
+    expect(a.row().location_id).toBe(b.row().location_id);
+    expect(bp.x).not.toBe(mine.x);
+    expect(bp.z).not.toBe(mine.z);
+    const web = JSON.stringify(a.view());
+    expect(web).toContain(`"x":${mine.x}`);
+    for (const out of [web, JSON.stringify(agentView(t.w, a.row(), a.clientId)), JSON.stringify(a.events())]) {
+      expect(out).not.toContain(`"x":${bp.x}`);
+      expect(out).not.toContain(`"z":${bp.z}`);
+      expect(out).not.toContain(String(bp.x));
+    }
+    const agent = JSON.stringify(agentView(t.w, a.row(), a.clientId));
+    expect(agent).not.toMatch(/"(x|z|heading|points|scene|instance)":/);
+    // 走路时：本人看得到路线的元信息（编号、版本、时间），身边的人看不到
+    a.act('navigate', { to: 'tea_house' });
+    expect(a.view().location.navigation).not.toBeNull();
+    expect(JSON.stringify(b.view())).not.toMatch(/arriveAt|leaseUntil|navigationId/);
+    expect(JSON.stringify(b.events())).not.toMatch(/arriveAt|leaseUntil|navigationId/);
+  });
+
+  it('门牌不表达谁在家：同一位在场邻居无论在家、在茶馆还是在会馆门前，别人看到的门牌一模一样', () => {
+    const t = makeTown();
+    const watcher = t.join('看门牌的人');
+    const n = t.join('邻居');
+    watcher.go('residential');
+    const doorOf = () => watcher.view().here!.doors!.find((d) => d.home === homeOf(n))!;
+    n.go('tea_house');
+    const atPlaza = doorOf();
+    n.go('home');
+    const atHome = doorOf();
+    n.go('residential');
+    const atDoor = doorOf();
+    expect(atHome).toEqual(atPlaza);
+    expect(atDoor).toEqual(atPlaza);
+    // 邻居离线了：门牌（公开地址）仍在列表外，不因在家与否而变化——这里只确认离线不留下「在家」的痕迹
+    n.go('home');
+    n.leave();
+    expect(watcher.view().here!.doors!.map((d) => d.home)).not.toContain(homeOf(n));
   });
 });
 
 describe('栖灯镇隐私：现场发言的受众', () => {
-  it('只有提交那一刻在同一空间、在场、不在途的人收得到；离线的、在路上的、在别处的、后来才到的都没有', () => {
+  it('只有提交那一刻在同一区域、在场的人收得到；离线的、此刻在别的区域（含路上）的、后来才到的都没有', () => {
     const t = makeTown();
     const speaker = t.join('说话人');
     const hearer = t.join('听众', 'agent');
@@ -481,12 +674,12 @@ describe('栖灯镇隐私：现场发言的受众', () => {
     walker.go('tea_house');
     away.go('bookshop');
     pulse(all);
-    walker.act('move', { to: 'plaza' }); // 在路上
+    walker.act('navigate', { to: 'plaza' }); // 从茶馆往广场走，说话的那一刻还在茶馆那边
     offline.leave();
     const MARK = 'AUDIENCE-暗号88';
     const out = speaker.act('speak', { text: MARK });
     expect(out.heardBy).toBe(1);
-    stay(t, 12_000, [speaker, hearer, walker, away]); // 在路上的人此时到达广场
+    walker.walk(); // 之后才走到广场
     expect(walker.row().location_id).toBe('plaza');
     offline.enter();
     const late = t.join('后来者');
@@ -550,14 +743,14 @@ describe('栖灯镇隐私：权限错误的说法一致', () => {
 });
 
 describe('二轮审查：未读邀请与已读回执', () => {
-  it('寄信人离线、信未读：收信人站在寄信人的巷子里，门牌没有寄信人；寄信人的已发信箱没有 read', () => {
+  it('寄信人离线、信未读：收信人站在会馆门前，门牌没有寄信人；寄信人的已发信箱没有 read', () => {
     const t = makeTown();
     const a = t.join('阿灯');
     const b = t.join('小岚', 'agent');
-    a.go('street_east');
+    a.go('residential');
     const out = a.act('send_letter', { to: b.residentId, body: '来坐坐', invite: true });
     a.leave();
-    b.go('street_east');
+    b.go('residential');
     expect((b.view().here?.doors ?? []).map((d) => d.owner.id)).not.toContain(a.residentId);
     expect(JSON.stringify(agentView(t.w, b.row(), b.clientId))).not.toContain('阿灯的家');
     const sent = listLetters(t.w, a.residentId, 'sent', null, 20, t.clock.t).letters.find((l) => l.id === out.letterId)!;

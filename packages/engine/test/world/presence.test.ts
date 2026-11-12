@@ -5,8 +5,10 @@
 import { describe, expect, it } from 'vitest';
 import { WorldError } from '../../src/world/errors.js';
 import { claimControl, heartbeat, leaveWorld } from '../../src/world/identity.js';
+import { renewNavigation, whereabouts } from '../../src/world/space.js';
 import { chatHistory, publicView } from '../../src/world/views.js';
 import { Actor, makeTown, tempDb, type Town } from './helpers.js';
+import { checkSpaceInvariants } from './invariants.js';
 
 function catchErr(fn: () => unknown): WorldError {
   try {
@@ -38,7 +40,7 @@ function restartFresh(t: Town) {
 const isPresent = (a: Actor) => a.row().present_since !== null;
 const publicNames = (t: Town) => {
   const v = publicView(t.w);
-  return [...v.places.flatMap((p) => p.residents), ...v.residential.residents, ...v.moving].map((s) => s.name);
+  return [...v.places.flatMap((p) => p.residents), ...v.residential.residents].map((s) => s.name);
 };
 const chatTexts = (a: Actor) => chatHistory(a.t.w, a.residentId, null, 100).messages.map((m) => m.text);
 
@@ -551,111 +553,147 @@ describe('栖灯镇：离线的居民不在现场', () => {
   });
 });
 
-describe('栖灯镇移动：路线时长与在途', () => {
-  const moveMs = (a: Actor, to: string) => {
-    const t0 = a.t.clock.t;
-    const out = a.act('move', { to });
-    return { ms: out.move.arriveAt - t0, out };
+describe('栖灯镇导航：用时由路程决定，路上属于脚下的区域', () => {
+  /** 往前走 ms：每秒推进一次，途中像真客户端那样心跳并续导航租约。 */
+  const stepWalk = (t: Town, ms: number, people: Actor[]) => {
+    for (let left = ms; left > 0; left -= 1_000) {
+      t.advance(Math.min(1_000, left));
+      for (const x of people) {
+        x.heartbeat();
+        const nav = whereabouts(t.w, x.row(), t.clock.t).navigation;
+        if (nav) renewNavigation(t.w, x.auth, { navigationId: nav.navigationId, revision: nav.revision });
+      }
+    }
   };
+  /** 一直走到脚下的区域标签变成 zone 为止（在这之前每一步都在路上）。 */
+  const walkInto = (t: Town, zone: string, people: Actor[], who: Actor) => {
+    for (let i = 0; i < 400; i++) {
+      if (who.row().location_id === zone) return;
+      stepWalk(t, 500, people);
+    }
+    throw new Error(`没有走进 ${zone}`);
+  };
+  const eventTypes = (a: Actor, cursor: string) => a.events(cursor).events.map((e) => e.type);
 
-  it('相邻公共地点 10 秒；经广场中转的 20 秒；取最短路', () => {
+  it('回执：accepted，没有路线；一路走过去，每到一处区域标签就对', () => {
     const t = makeTown();
     const a = t.join('阿灯');
-    expect(moveMs(a, 'tea_house').ms).toBe(10_000);
-    a.t.advance(10_000);
+    const out = a.act('navigate', { to: 'tea_house' });
+    expect(out.status).toBe('accepted');
+    expect(out.navigation.to).toMatchObject({ kind: 'place', id: 'tea_house' });
+    expect(out.navigation.arriveAt).toBeGreaterThan(t.clock.t);
+    expect(JSON.stringify(out)).not.toMatch(/points|path/);
+    a.walk();
     expect(a.row().location_id).toBe('tea_house');
-    // 茶馆 → 书屋有直连边，不经广场
-    const direct = moveMs(a, 'bookshop');
-    expect(direct.ms).toBe(10_000);
-    expect(direct.out.move.path).toEqual(['tea_house', 'bookshop']);
-    a.t.advance(10_000);
-    // 书屋 → 厨房：书屋 - 广场 - 厨房
-    const two = moveMs(a, 'kitchen');
-    expect(two.ms).toBe(20_000);
-    expect(two.out.move.path).toEqual(['bookshop', 'plaza', 'kitchen']);
-    a.t.advance(20_000);
-    // 厨房 → 花园 有直连边
-    expect(moveMs(a, 'garden').ms).toBe(10_000);
+    // 旧名 move 仍然认；一站一站走下去
+    for (const to of ['bookshop', 'kitchen', 'garden', 'arcade', 'plaza']) {
+      const r = a.act('move', { to });
+      expect(r.status).toBe('accepted');
+      a.walk();
+      expect(a.row().location_id).toBe(to);
+    }
   });
 
-  it('进出住宅的门 3 秒：回家 = 广场到巷子 10 秒 + 进门 3 秒', () => {
+  it('进出住宅：回家要先走到会馆门口再进门；出门落在会馆门口', () => {
     const t = makeTown();
     const a = t.join('阿灯');
-    const out = a.act('move', { to: 'home' });
-    expect(out.move.arriveAt - t.clock.t).toBe(13_000);
-    expect(out.move.path).toEqual(['plaza', a.row().street_id, `home:${a.residentId}`]);
-    t.advance(12_999);
-    expect(a.row().move).not.toBeNull();
-    t.advance(1);
-    expect(a.row().location_id).toBe(`home:${a.residentId}`);
-    expect(a.row().move).toBeNull();
-    // 出门回广场同样 13 秒
-    expect(moveMs(a, 'plaza').ms).toBe(13_000);
-    t.advance(13_000);
-    // 同一条巷子里直接进自己家：巷子到家 3 秒
-    a.go(a.row().street_id);
-    expect(moveMs(a, 'home').ms).toBe(3_000);
+    const home = `home:${a.residentId}`;
+    const out = a.go('home');
+    expect(out.status).toBe('accepted');
+    expect(out.navigation.continues).toBe(true);
+    expect(a.row().location_id).toBe(home);
+    expect(a.pos().scene).toBe('home');
+    expect(a.pos().instance).toBe(a.residentId);
+    // 出门：落在会馆门口，再往广场走
+    const back = a.go('plaza');
+    expect(back.status).toBe('accepted');
+    expect(a.row().location_id).toBe('plaza');
+    // 就在会馆门口时进自己家：很快就到
+    a.go('residential');
+    expect(a.row().location_id).toBe('residential');
+    const near = a.act('navigate', { to: 'home' });
+    expect(near.status === 'completed' || near.status === 'accepted').toBe(true);
+    a.walk();
+    expect(a.row().location_id).toBe(home);
   });
 
-  it('提前一毫秒还在路上，到点才到达；到达事件的时间 = 应到达时刻（即使很晚才被处理）', () => {
+  it('到点才到达：提前 1 毫秒仍在走，到达事件的时间 = 应到达时刻（即使很晚才被处理）', () => {
     const t = makeTown();
     const a = t.join('阿灯');
-    const out = a.act('move', { to: 'arcade' });
-    t.advance(9_999);
-    expect(a.view().location.moving).not.toBeNull();
-    expect(a.view().here).toBeNull();
-    // 过了很久才有人来处理：到达时间仍是 arriveAt
-    t.clock.advance(5 * 60_000);
+    const out = a.act('navigate', { to: 'tea_house' });
+    const arriveAt = out.navigation.arriveAt;
+    stepWalk(t, 5_000, [a]);
+    t.clock.advance(arriveAt - 1 - t.clock.t);
+    a.heartbeat();
+    t.w.tick();
+    expect(a.view().location.navigation).not.toBeNull();
+    // 过了很久才有人来处理（期间没人续租，但到达发生在租约截止之前）：到达时间仍是 arriveAt
+    t.clock.advance(40_000);
     t.w.tick();
     const rows = t.w.db.all("SELECT occurred_at FROM recipient_events WHERE resident_id = ? AND type = 'you_arrived'", a.residentId);
-    expect(rows.map((r) => r.occurred_at)).toContain(out.move.arriveAt);
-    expect(a.row().location_id).toBe('arcade');
+    expect(rows.map((r) => r.occurred_at)).toContain(arriveAt);
+    expect(a.row().location_id).toBe('tea_house');
+    expect(a.view().location.navigation).toBeNull();
   });
 
-  it('在途不能做现场动作，也不能再次移动；不属于任何地点', () => {
+  it('路上的人属于脚下的区域：能说话、能做事、能再次改道；公开地图把他放在「路上」', () => {
     const t = makeTown();
     const a = t.join('阿灯');
     const b = t.join('小岚', 'agent');
-    a.act('move', { to: 'tea_house' });
-    expect(a.fail('speak', { text: '路上说话' }).reason).toBe('moving');
-    expect(a.fail('move', { to: 'bookshop' }).reason).toBe('moving');
-    for (const [type, fields] of [
-      ['offer', { kind: 'gift', to: b.residentId, give: { coins: 1 } }],
-      ['invite', { to: b.residentId }],
-      ['ask_hobby', { target: b.residentId }],
-      ['buy', { shop: 'tea_counter', sku: 'tea_leaves' }],
-    ] as const) {
-      expect(a.fail(type, fields).code).toBe('precondition_failed');
-    }
-    expect(a.view().here).toBeNull();
-    // 对出发地和目的地的人而言，在途者都不在
-    expect(b.view().here?.residents).toEqual([]);
-    // 公开地图把他标成「在路上」，不在任何地点名单
+    a.act('navigate', { to: 'tea_house' });
+    // 刚出发：还在广场，身边的人看得见，也听得见
+    expect(a.view().here?.space).toBe('plaza');
+    expect(a.view().here?.residents.map((r) => r.name)).toEqual(['小岚']);
+    expect(a.act('speak', { text: '边走边说' }).ok).toBe(true);
+    expect(chatTexts(b)).toEqual(['边走边说']);
+    // 走到路上：属于路上这片区域，有自己的现场（不是空的，也不是「不在任何地点」）
+    walkInto(t, 'road', [a, b], a);
+    expect(a.view().location.space).toBe('road');
+    expect(a.view().here).not.toBeNull();
+    expect(a.view().here?.space).toBe('road');
+    expect(a.act('speak', { text: '路上说话' }).ok).toBe(true);
     const pub = publicView(t.w);
-    expect(pub.moving.map((m) => m.name)).toEqual(['阿灯']);
-    expect(pub.places.flatMap((p) => p.residents).map((r) => r.name)).toEqual(['小岚']);
-    // 公开路径只有公共区域
-    expect(pub.moving[0]!.moving?.path).toEqual(['plaza', 'tea_house']);
+    expect(pub.places.find((p) => p.id === 'road')).toMatchObject({ through: true });
+    expect(pub.places.find((p) => p.id === 'road')!.residents.map((r) => r.name)).toEqual(['阿灯']);
+    expect(pub.places.find((p) => p.id === 'plaza')!.residents.map((r) => r.name)).toEqual(['小岚']);
+    // 在路上改道不需要先停下
+    const again = a.act('navigate', { to: 'bookshop' });
+    expect(again.status).toBe('accepted');
+    a.walk();
+    expect(a.row().location_id).toBe('bookshop');
   });
 
-  it('在途者听不到发言；到达后才取得目的地的现场，也补不到之前的话', () => {
+  it('走过一片区域时听得到这里的话，走出去之后听不到；说话的受众是那一刻同一区域里在场的人', () => {
     const t = makeTown();
     const a = t.join('阿灯');
     const b = t.join('小岚', 'agent');
-    a.act('move', { to: 'tea_house' });
-    t.advance(5_000);
-    b.act('speak', { text: '广场上的话' });
-    t.advance(5_000);
-    expect(a.view().here?.space).toBe('tea_house');
-    expect(chatTexts(a)).toEqual([]);
-    expect(a.view().here?.chat).toEqual([]);
-    // 目的地的人是在他到达之后才看到他
     const c = t.join('小满');
-    c.go('tea_house');
-    expect(c.view().here?.residents.map((r) => r.name)).toEqual(['阿灯']);
+    a.go('tea_house');
+    c.go('garden');
+    // 阿灯从茶馆走向花园，途中路过广场（小岚在那里）
+    a.act('navigate', { to: 'garden' });
+    expect(a.row().location_id).toBe('tea_house');
+    walkInto(t, 'plaza', [a, b, c], a);
+    b.act('speak', { text: '广场上的话' });
+    a.act('speak', { text: '路过广场' });
+    expect(chatTexts(a)).toContain('广场上的话'); // 走过这里时听得到
+    expect(chatTexts(b)).toContain('路过广场');
+    expect(chatTexts(c)).toEqual([]); // 花园里的人听不到
+    // 走出广场之后：这里的话听不到了
+    walkInto(t, 'road', [a, b, c], a);
+    const heardBefore = chatTexts(a).length;
+    b.act('speak', { text: '你走远了' });
+    expect(chatTexts(a).length).toBe(heardBefore);
+    expect(chatTexts(a)).not.toContain('你走远了');
+    // 到了花园：听得到花园里的话，补不到之前别处的话
+    walkInto(t, 'garden', [a, b, c], a);
+    c.act('speak', { text: '花园里的话' });
+    expect(chatTexts(a)).toContain('花园里的话');
+    expect(chatTexts(c)).not.toContain('路过广场');
+    expect(chatTexts(c)).not.toContain('广场上的话');
   });
 
-  it('出发时现场的人收到 left，到达时目的地的人收到 arrived，本人收到 you_arrived', () => {
+  it('跨区域时：出发地的人收到 left，目的地的人收到 arrived，本人收到 you_arrived；事件里没有坐标', () => {
     const t = makeTown();
     const a = t.join('阿灯');
     const b = t.join('小岚', 'agent');
@@ -665,46 +703,149 @@ describe('栖灯镇移动：路线时长与在途', () => {
     const cc = c.view().cursor;
     const ca = a.view().cursor;
     a.go('tea_house');
-    expect(b.events(cb).events.map((e) => e.type)).toEqual(['left']);
-    expect(c.events(cc).events.map((e) => e.type)).toEqual(['arrived']);
-    expect(a.events(ca).events.map((e) => e.type)).toEqual(['you_arrived']);
+    expect(eventTypes(b, cb)).toEqual(['left']);
+    expect(eventTypes(c, cc)).toEqual(['arrived']);
+    const mine = a.events(ca).events.map((e) => e.type);
+    expect(mine).toContain('you_arrived');
+    for (const who of [b, c, a]) {
+      const cur = who === b ? cb : who === c ? cc : ca;
+      expect(JSON.stringify(who.events(cur).events)).not.toMatch(/"(x|z|points|arriveAt|leaseUntil)"/);
+    }
   });
 
-  it('不存在的地方、已经在这里、别人的家（没邀请）都不能去', () => {
+  it('不存在的地方、已经在这里、别人的家（没邀请）都不能去；失败后没有在走', () => {
     const t = makeTown();
     const a = t.join('阿灯');
     const b = t.join('小岚', 'agent');
-    expect(a.fail('move', { to: 'moon_base' }).reason).toBe('no_such_place');
-    expect(a.fail('move', { to: 'plaza' }).reason).toBe('already_here');
-    expect(a.fail('move', { to: `home:${b.residentId}` }).reason).toBe('no_access');
-    expect(a.fail('move', { to: 'home:r_nobody' }).reason).toBe('no_such_place');
-    expect(a.fail('move', {}).reason).toBe('no_such_place');
-    expect(a.row().move).toBeNull();
+    expect(a.fail('navigate', { to: 'moon_base' }).reason).toBe('no_such_place');
+    expect(a.fail('navigate', { to: 'plaza' }).reason).toBe('already_here');
+    expect(a.fail('navigate', { to: `home:${b.residentId}` }).reason).toBe('no_access');
+    expect(a.fail('navigate', { to: 'home:r_nobody' }).reason).toBe('no_such_place');
+    expect(a.fail('navigate', {}).reason).toBe('no_such_place');
+    expect(a.view().location.navigation).toBeNull();
   });
 
-  it('移动请求用同一个请求号重放，只走一次', () => {
+  it('导航请求用同一个请求号重放，只走一次', () => {
     const t = makeTown();
     const a = t.join('阿灯');
-    const first = a.act('move', { to: 'tea_house' }, { requestId: 'move-req-0001' });
-    t.advance(2_000);
-    const again = a.act('move', { to: 'tea_house' }, { requestId: 'move-req-0001' });
+    const first = a.act('navigate', { to: 'tea_house' }, { requestId: 'move-req-0001' });
+    stepWalk(t, 2_000, [a]);
+    const again = a.act('navigate', { to: 'tea_house' }, { requestId: 'move-req-0001' });
     expect(again.replayed).toBe(true);
-    expect(again.move.arriveAt).toBe(first.move.arriveAt);
-    t.advance(8_000);
+    expect(again.navigation.navigationId).toBe(first.navigation.navigationId);
+    expect(again.navigation.revision).toBe(first.navigation.revision);
+    expect(t.w.db.scalar("SELECT COUNT(*) FROM scheduled_jobs WHERE kind = 'nav_step' AND status = 'pending'")).toBe(1);
+    a.walk();
     expect(a.row().location_id).toBe('tea_house');
-    expect(t.w.db.scalar("SELECT COUNT(*) FROM scheduled_jobs WHERE kind = 'move_arrive'")).toBe(1);
   });
 
-  it('离线的居民已经提交的移动照常完成', () => {
+  it('离线立即停步：停在离线那一刻的位置，不再有到达任务；回来时人就在停下的地方', () => {
     const t = makeTown();
     const a = t.join('阿灯');
-    a.act('move', { to: 'tea_house' });
+    const b = t.join('小岚', 'agent');
+    a.act('navigate', { to: 'tea_house' });
+    stepWalk(t, 3_000, [a, b]);
+    const cb = b.view().cursor;
+    const stoppedAt = t.clock.t;
     a.leave();
-    t.advance(10_000);
-    expect(a.row().location_id).toBe('tea_house');
     expect(isPresent(a)).toBe(false);
-    // 离线的人不在公开地图上
+    const where = a.pos();
+    expect(where.moving).toBe(false);
+    expect(a.view().location.navigation).toBeNull();
+    expect(t.w.db.scalar("SELECT COUNT(*) FROM scheduled_jobs WHERE kind = 'nav_step' AND status = 'pending'")).toBe(0);
+    // 离线的人不在公开地图上；同一区域的人收到的是 presence，不是 left（人没有离开这片区域）
     expect(publicNames(t)).not.toContain('阿灯');
+    expect(eventTypes(b, cb)).toEqual(['presence']);
+    // 过了再久，也不会自己走到茶馆
+    stepWalk(t, 120_000, [b]);
+    expect(a.row().location_id).toBe('plaza');
+    expect(a.pos()).toMatchObject({ x: where.x, z: where.z });
+    // 有效在场时间只算到离线那一刻
+    expect(a.row().last_seen_at).toBe(stoppedAt);
+    // 回来：位置还是停下的地方，从那里重新出发
+    a.enter();
+    expect(a.row().location_id).toBe('plaza');
+    expect(a.pos()).toMatchObject({ x: where.x, z: where.z });
+    expect(publicNames(t)).toContain('阿灯');
+    a.go('tea_house');
+    expect(a.row().location_id).toBe('tea_house');
+    checkSpaceInvariants(t);
+  });
+
+  it('离开时已经走出了广场、但区域变化还没被结算：先结算再离线，广场上的人看到的是 left，不是 presence', () => {
+    const t = makeTown();
+    const a = t.join('阿灯');
+    const b = t.join('小岚', 'agent');
+    const out = a.act('navigate', { to: 'tea_house' });
+    const cb = b.view().cursor;
+    const pubCur = t.w.publicCursor();
+    t.clock.advance(8_000); // 不 tick：广场 → 路上的区域变化已到期但还没处理
+    expect(a.row().location_id).toBe('plaza');
+    a.leave();
+    expect(a.row().location_id).toBe('road');
+    expect(eventTypes(b, cb)).toEqual(['left']);
+    checkSpaceInvariants(t);
+    // 公开层面：先出现「路上」，再离线
+    const spots = t.w.readPublicEvents(pubCur).events.filter((e) => e.type === 'place').map((e) => (e.data as { resident: { id: string; at: string | null } }).resident).filter((r) => r.id === a.residentId);
+    expect(spots.slice(-2).map((r) => r.at)).toEqual(['road', null]);
+    void out;
+  });
+
+  it('走在半路（已经出了广场）离线：停在路上，回来时人在路上，再走完', () => {
+    const t = makeTown();
+    const a = t.join('阿灯');
+    a.act('navigate', { to: 'tea_house' });
+    walkInto(t, 'road', [a], a);
+    a.leave();
+    stepWalk(t, 90_000, []);
+    expect(a.row().location_id).toBe('road');
+    a.enter();
+    expect(a.row().location_id).toBe('road');
+    expect(a.view().here?.space).toBe('road');
+    expect(publicView(t.w).places.find((p) => p.id === 'road')!.residents.map((r) => r.name)).toEqual(['阿灯']);
+    a.go('tea_house');
+    expect(a.row().location_id).toBe('tea_house');
+  });
+
+  it('谁都不再续租：先因导航租约停在半路，再因在场租约到期离线；离线时的区域标签就是停下的地方', () => {
+    const t = makeTown();
+    const a = t.join('阿灯');
+    const c = t.join('小满');
+    c.go('tea_house');
+    const cc = c.view().cursor;
+    const ca = a.view().cursor;
+    a.act('navigate', { to: 'tea_house' });
+    t.advance(2_000);
+    t.advanceAlive(100_000, [c]);
+    expect(isPresent(a)).toBe(false);
+    expect(a.view().location.navigation).toBeNull();
+    const stopped = a.row().location_id;
+    expect(stopped).not.toBe('tea_house');
+    expect(a.events(ca).events.find((e) => e.type === 'nav_stopped')?.data).toMatchObject({ reason: 'lease' });
+    // 茶馆里的人从头到尾没有看到他
+    expect(eventTypes(c, cc)).toEqual([]);
+    // 回来时还停在那里
+    a.enter();
+    expect(a.row().location_id).toBe(stopped);
+    checkSpaceInvariants(t);
+  });
+
+  it('控制权被接管：正在走的路立即停步，本人收到 nav_stopped（control）；不丢位置', () => {
+    const t = makeTown();
+    const a = t.join('阿灯');
+    const tab2 = otherClient(t, a, 'web:tab-two');
+    tab2.enter();
+    const cur = a.view().cursor;
+    a.act('navigate', { to: 'tea_house' });
+    stepWalk(t, 2_000, [a]);
+    tab2.claim();
+    expect(a.view().location.navigation).toBeNull();
+    expect(a.pos().moving).toBe(false);
+    const ev = a.events(cur).events.find((e) => e.type === 'nav_stopped');
+    expect(ev?.data).toMatchObject({ reason: 'control' });
+    // 旧的页面没法再续这条路
+    stepWalk(t, 20_000, [tab2]);
+    expect(a.row().location_id).not.toBe('tea_house');
   });
 });
 

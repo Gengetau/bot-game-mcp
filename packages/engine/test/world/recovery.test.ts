@@ -15,6 +15,7 @@ import { report } from '../../src/world/reports.js';
 import type { WorldService } from '../../src/world/service.js';
 import { localToUtc, nextDate } from '../../src/world/time.js';
 import { Actor, makeTown, tempDb, type Town } from './helpers.js';
+import { checkSpaceInvariants } from './invariants.js';
 
 const MIN = 60_000;
 const HOUR = 60 * MIN;
@@ -88,33 +89,42 @@ function comeBack(a: Actor): void {
 }
 
 describe('启动恢复：停机期间到期的事务各结算一次，保留应发生的时间', () => {
-  it('移动、信件、邀请过期、在场租约：各只结算一次，时间是应发生的那一刻', () => {
+  it('导航、信件、邀请过期、在场租约：各只结算一次，时间是应发生的那一刻；没走完的路停在检查点', () => {
     const { t } = fileTown();
     const a = t.join('阿灯');
     const b = t.join('小岚', 'agent');
     const letter = a.act('send_letter', { to: b.residentId, body: '停机前寄的信', invite: {} });
-    const mv = a.act('move', { to: 'tea_house' });
+    const mv = a.act('navigate', { to: 'tea_house' });
+    expect(mv.status).toBe('accepted');
     const grant = t.w.db.get('SELECT grant_id, expires_at FROM home_access_grants')!;
     expect(grant.expires_at).toBe(letter.deliverAt + DAY);
     t.advance(1000);
     reopen(t, { down: 26 * HOUR });
     const w = t.w;
     expect(w.lastOutageMs).toBe(26 * HOUR);
-    // 移动：到了，事实时间是应该到的那一刻
-    expect(w.mustResident(a.residentId).location_id).toBe('tea_house');
-    expect(w.mustResident(a.residentId).move).toBeNull();
-    const arrived = w.db.all("SELECT occurred_at FROM world_events WHERE type = 'arrived'");
-    expect(arrived.map((r) => r.occurred_at)).toContain(mv.move.arriveAt);
+    // 导航：重启就是离线，立即停步，停在最后一个耐久检查点；不会在停机期间「走到」茶馆，也没有到达事实
+    const row = w.mustResident(a.residentId);
+    expect(row.location_id).toBe('plaza');
+    expect(row.present_since).toBeNull();
+    expect(w.db.get('SELECT nav_json FROM world_actors WHERE actor_id = ?', a.residentId)!.nav_json).toBeNull();
+    expect(w.db.scalar("SELECT COUNT(*) FROM scheduled_jobs WHERE kind IN ('nav_step','move_arrive') AND status = 'pending'")).toBe(0);
+    expect(w.db.all("SELECT type FROM world_events WHERE type = 'arrived'").length).toBe(0);
     // 信件：送达时间 = 应送达时间；收信人只有一条「有新信」
     expect(w.db.get('SELECT delivered_at FROM letters')!.delivered_at).toBe(letter.deliverAt);
     const mails = w.db.all("SELECT occurred_at FROM recipient_events WHERE resident_id = ? AND type = 'mail'", b.residentId);
     expect(mails.map((r) => r.occurred_at)).toEqual([letter.deliverAt]);
     // 每条到期任务只结算一次，没有留下到期待办
-    for (const key of [`grant:${grant.grant_id}`, `letter:${letter.letterId}`, `move:${a.residentId}:${mv.move.arriveAt - 10_000}`]) {
+    for (const key of [`grant:${grant.grant_id}`, `letter:${letter.letterId}`]) {
       expect(w.db.get('SELECT status FROM scheduled_jobs WHERE dedupe_key = ?', key)?.status, key).toBe('done');
     }
     expect(w.pendingJobs()).toBe(0);
     expect(w.status).toBe('running');
+    // 回来之后从停下的地方重新走
+    a.enter();
+    expect(a.row().location_id).toBe('plaza');
+    a.go('tea_house');
+    expect(a.row().location_id).toBe('tea_house');
+    checkSpaceInvariants(t);
   });
 
   it('登门邀请在停机期间过期：屋里的客人被送到门口，只收到一条固定模板通知', () => {
@@ -127,7 +137,9 @@ describe('启动恢复：停机期间到期的事务各结算一次，保留应�
     expect(b.row().location_id).toBe(`home:${a.residentId}`);
     reopen(t, { down: 30 * HOUR });
     const row = t.w.mustResident(b.residentId);
-    expect(row.location_id).toBe(a.row().street_id);
+    expect(row.location_id).toBe('residential');
+    const spot = t.w.db.get('SELECT scene_id, instance_id FROM world_actors WHERE actor_id = ?', b.residentId)!;
+    expect(spot).toMatchObject({ scene_id: 'town', instance_id: '' });
     expect(t.w.db.get('SELECT status FROM scheduled_jobs WHERE dedupe_key = ?', `grant:${inv.invite.grantId}`)!.status).toBe('done');
     const notices = t.w.db.all("SELECT projection, occurred_at FROM recipient_events WHERE resident_id = ? AND type = 'notice'", b.residentId);
     expect(notices.length).toBe(1);
@@ -165,6 +177,8 @@ describe('启动恢复：停机期间到期的事务各结算一次，保留应�
     b.go('tea_house');
     a.act('buy', { shop: 'tea_counter', sku: 'tea_leaves', qty: 1 });
     const table = a.view().here!.objects.find((o) => o.type === 'tea_table')!;
+    a.go(table.id);
+    b.go(table.id);
     const ix = a.act('start_interaction', { objectId: table.id });
     b.act('join_interaction', { interactionId: ix.interaction.id });
     a.act('begin_interaction', { interactionId: ix.interaction.id });

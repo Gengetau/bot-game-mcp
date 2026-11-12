@@ -3,8 +3,10 @@
  *
  *  公开（不用登录，只有公开投影）：
  *   GET  /town/                         页面（静态文件，全部来自仓库）
+ *   GET  /town/3d/…                     三维网页客户端（静态托管 town.clientDir，见 docs/TOWN.md）
  *   GET  /town/api/config               世界名、可选的个性与兴趣、是否开放开发登录
  *   GET  /town/api/public               公开的小镇地图
+ *   GET  /town/api/map                  空间地图清单（带 ETag，可缓存；客户端按 checksum 校验）
  *   GET  /town/api/public/events        SSE：公开事件流（?cursor= 续传）
  *   GET  /town/api/public/game/:id      小游戏的观战投影
  *   GET  /town/api/public/report        公开日报（?date=）
@@ -18,6 +20,10 @@
  *   GET  /town/api/me?clientId=         本人视图
  *   POST /town/api/actions              {clientId, requestId, actionWindow, expected, action}
  *   POST /town/api/heartbeat            {clientId, presenceEpoch}
+ *   GET  /town/api/scene                本人所在场景的完整快照（SceneView）
+ *   POST /town/api/nav/renew            {clientId, navigationId, revision} 续导航控制租约
+ *   POST /town/api/ws-ticket            {clientId} → {ticket, expiresAt}：一次性、30 秒内有效，换 WebSocket 登录
+ *   WS   /town/ws                       空间同步（hello 里带票据；协议见 ws.ts）
  *   POST /town/api/claim                {clientId} 接管控制权
  *   POST /town/api/leave                主动离开小镇
  *   GET  /town/api/events?clientId=     SSE：本人的事件 + 公开事件（各有游标）
@@ -25,7 +31,9 @@
  *
  * 身份只来自会话 Cookie：请求里自报的居民编号、号码一律不认。
  */
-import { readFileSync, statSync } from 'node:fs';
+import { createReadStream, readFileSync, realpathSync, statSync } from 'node:fs';
+import { resolve as resolvePath, sep } from 'node:path';
+import type { Server as HttpServer } from 'node:http';
 import express, { type Express, type Request, type Response } from 'express';
 import { INTERESTS, TRAITS } from './content.js';
 import { HTTP_STATUS, WorldError } from './errors.js';
@@ -34,10 +42,12 @@ import { claimControl, devLoginSession, exchangeTicket, heartbeat, leaveWorld, r
 import { enterWorld } from './index.js';
 import { listLetters } from './mail.js';
 import { report } from './reports.js';
-import type { WorldService } from './service.js';
+import { sha256, type WorldService } from './service.js';
 import { relationMemories, relationsOf } from './social.js';
+import { mapManifest, renewNavigation, sceneView } from './space.js';
 import { chatHistory, directory, meView, publicView } from './views.js';
 import type { Principal } from './types.js';
+import { createTownWs, type TownWsOptions } from './ws.js';
 
 const TOWN_DIR = new URL('../../town/', import.meta.url);
 const TYPES: Record<string, string> = {
@@ -52,12 +62,40 @@ const TYPES: Record<string, string> = {
 };
 const COOKIE = 'town_session';
 
+/** /town/3d/ 能发的文件类型（Godot 网页导出 + 随包资源）；不在表里的后缀一律 404 */
+const TYPES_3D: Record<string, string> = {
+  ...TYPES,
+  wasm: 'application/wasm',
+  pck: 'application/octet-stream',
+  glb: 'model/gltf-binary',
+  ogg: 'audio/ogg',
+  wav: 'audio/wav',
+  mp3: 'audio/mpeg',
+  ico: 'image/x-icon',
+};
+
 const CSP =
   "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; " +
   "font-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
 
-function secure(res: Response): void {
-  res.setHeader('Content-Security-Policy', CSP);
+/**
+ * /town/3d/ 的 CSP：在 CSP 的基础上只放宽三维客户端必需的部分。
+ * connect-src 另外显式列出同源的 ws:// / wss:// 源（extraConnect）：CSP3 规定 'self' 匹配同源 ws/wss，
+ * 但旧版 Safari（约 15.4 之前的 WebKit）不认，会拦掉同源 WebSocket。
+ */
+function csp3d(extraConnect: string[]): string {
+  return (
+    "default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; " +
+    `connect-src ${["'self'", ...extraConnect].join(' ')}; media-src 'self' blob:; worker-src 'self' blob:; ` +
+    "font-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+  );
+}
+
+/** 只接受 主机名 / IPv4 / [IPv6] 加可选端口；任何别的字符（空格、分号、引号、逗号……）都不能进 CSP */
+const SAFE_HOST = /^(?:[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?|\[[0-9A-Fa-f:.]{2,45}\])(?::\d{1,5})?$/;
+
+function secure(res: Response, csp: string = CSP): void {
+  res.setHeader('Content-Security-Policy', csp);
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('Referrer-Policy', 'no-referrer');
   res.setHeader('X-Frame-Options', 'DENY');
@@ -89,9 +127,17 @@ export interface TownHttpOptions {
   requestsPerMinute?: number;
   /** 同一 IP 同时开着的事件流上限（旁观流、居民流各算各的），默认 8 */
   maxStreamsPerIp?: number;
+  /** WebSocket 的参数（测试里缩短超时用） */
+  ws?: TownWsOptions;
+  /** 三维客户端的导出目录（town.clientDir）；不给或目录不存在时 /town/3d/ 返回 404 */
+  clientDir?: string | null;
 }
 
-export function mountTown(app: Express, w: WorldService, log: (msg: string) => void, opts: TownHttpOptions = {}): () => void {
+/** mountTown 的返回值：调用即关闭所有长连接；还要把 attach 挂到 HTTP 服务器上才有 /town/ws。 */
+export type TownMount = (() => void) & { attach(server: HttpServer): void };
+
+export function mountTown(app: Express, w: WorldService, log: (msg: string) => void, opts: TownHttpOptions = {}): TownMount {
+  const wsHub = createTownWs(w, log, { maxPerIp: opts.maxStreamsPerIp ?? 8, ...(opts.ws ?? {}) });
   const allow = rateLimiter(opts.requestsPerMinute ?? 240);
   const allowAuth = rateLimiter(20);
   const pingMs = opts.heartbeatMs ?? 20_000;
@@ -234,6 +280,144 @@ export function mountTown(app: Express, w: WorldService, log: (msg: string) => v
     if (path.endsWith('/')) return sendFile('index.html', res);
     res.redirect(301, `/town/${q < 0 ? '' : url.slice(q)}`);
   });
+  // ── 三维客户端（静态托管导出目录）──
+  // 必须排在 /town/:file 之前，免得 "3d" 被当成文件名吞掉。
+  const sameOriginConnect = (req: Request): string[] => {
+    const out = new Set<string>();
+    const add = (host: string | undefined, https: boolean) => {
+      if (!host || !SAFE_HOST.test(host)) return;
+      out.add(`${https ? 'wss' : 'ws'}://${host.toLowerCase()}`);
+    };
+    // 请求自己的主机（和 ws.ts 的同源判断一致：先看 X-Forwarded-Host）；Host 头不可信，必须过格式校验
+    const host = req.header('x-forwarded-host')?.split(',')[0]?.trim() || req.header('host');
+    add(host, isHttps(req));
+    if (w.publicUrl) {
+      try {
+        const u = new URL(w.publicUrl);
+        add(u.host, u.protocol === 'https:');
+      } catch {
+        /* publicUrl 不合法就当没配 */
+      }
+    }
+    return [...out];
+  };
+  const notFound3d = (req: Request, res: Response, msg = '没有这个文件。') => {
+    // 流打开失败时头已按文件设好；404 的纯文本体不能再带着原文件的编码和校验头（浏览器会按 br/gzip 解码出乱码）
+    for (const h of ['Content-Encoding', 'ETag', 'Last-Modified', 'Content-Length']) res.removeHeader(h);
+    secure(res, csp3d(sameOriginConnect(req)));
+    res.status(404).type('text/plain; charset=utf-8').send(msg);
+  };
+  /** 请求路径 → clientDir 里的真实文件；任何可疑写法都返回 null */
+  const resolve3d = (root: string, rawPath: string): string | null => {
+    let decoded: string;
+    try {
+      decoded = decodeURIComponent(rawPath);
+    } catch {
+      return null;
+    }
+    if (decoded.includes('\0') || decoded.includes('\\')) return null;
+    const segs = decoded === '' ? ['index.html'] : decoded.split('/');
+    if (segs.some((s) => s === '' || s.startsWith('.'))) return null;
+    const full = resolvePath(root, ...segs);
+    if (!full.startsWith(root + sep)) return null;
+    return full;
+  };
+  const acceptsEncoding = (header: string | undefined, enc: string): boolean => {
+    if (!header) return false;
+    for (const part of header.split(',')) {
+      const [name, ...params] = part.trim().split(';');
+      if (name!.trim().toLowerCase() !== enc) continue;
+      const q = params.map((p) => /^\s*q\s*=\s*([\d.]+)\s*$/i.exec(p)).find(Boolean);
+      return !q || Number(q[1]) > 0;
+    }
+    return false;
+  };
+  app.use('/town/3d', (req, res, next) => {
+    if (req.method !== 'GET' && req.method !== 'HEAD') {
+      res.setHeader('Allow', 'GET, HEAD');
+      secure(res, csp3d(sameOriginConnect(req)));
+      res.status(405).type('text/plain; charset=utf-8').send('只支持 GET。');
+      return;
+    }
+    const full = req.originalUrl;
+    const q = full.indexOf('?');
+    const urlPath = q < 0 ? full : full.slice(0, q);
+    if (urlPath === '/town/3d') {
+      res.redirect(301, `/town/3d/${q < 0 ? '' : full.slice(q)}`);
+      return;
+    }
+    if (!urlPath.startsWith('/town/3d/')) return next();
+    const csp = csp3d(sameOriginConnect(req));
+    if (!opts.clientDir) return notFound3d(req, res, '三维客户端还没有部署：服务器没有配置 town.clientDir。请先用旧页面 /town/。');
+    let root: string;
+    try {
+      root = realpathSync(resolvePath(opts.clientDir));
+      if (!statSync(root).isDirectory()) throw new Error('not a directory');
+    } catch {
+      return notFound3d(req, res, '三维客户端还没有部署：town.clientDir 指向的目录不存在。请先用旧页面 /town/。');
+    }
+    const target = resolve3d(root, urlPath.slice('/town/3d/'.length));
+    const name = target?.split(sep).pop() ?? '';
+    const ext = name.includes('.') ? name.split('.').pop()!.toLowerCase() : '';
+    const type = TYPES_3D[ext];
+    if (!target || !type) return notFound3d(req, res);
+    // 符号链接逃逸：真实路径必须还在 clientDir 的真实路径之内（预压缩文件同理）
+    const inside = (p: string): string | null => {
+      try {
+        const real = realpathSync(p);
+        return real.startsWith(root + sep) && statSync(real).isFile() ? real : null;
+      } catch {
+        return null;
+      }
+    };
+    const plain = inside(target);
+    if (!plain) return notFound3d(req, res);
+    let file = plain;
+    let encoding: 'br' | 'gzip' | null = null;
+    const ae = req.header('accept-encoding');
+    for (const [enc, suffix] of [['br', '.br'], ['gzip', '.gz']] as const) {
+      if (!acceptsEncoding(ae, enc)) continue;
+      const pre = inside(target + suffix);
+      if (pre) {
+        file = pre;
+        encoding = enc;
+        break;
+      }
+    }
+    let st;
+    try {
+      st = statSync(file);
+    } catch {
+      return notFound3d(req, res);
+    }
+    const etag = `"${st.size.toString(16)}-${Math.floor(st.mtimeMs).toString(16)}${encoding ? `-${encoding}` : ''}"`;
+    secure(res, csp);
+    res.setHeader('Content-Type', type);
+    res.setHeader('Vary', 'Accept-Encoding');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('ETag', etag);
+    res.setHeader('Last-Modified', st.mtime.toUTCString());
+    if (encoding) res.setHeader('Content-Encoding', encoding);
+    const inm = req.header('if-none-match');
+    if (inm && inm.split(',').some((t) => t.trim().replace(/^W\//, '') === etag || t.trim() === '*')) {
+      res.status(304).end();
+      return;
+    }
+    res.setHeader('Content-Length', String(st.size));
+    if (req.method === 'HEAD') {
+      res.end();
+      return;
+    }
+    // 大文件（wasm 约 40 MB）用流发送，不进内存缓存
+    const stream = createReadStream(file);
+    stream.on('error', (e) => {
+      log(`[town] 静态文件读取失败：${e.message}`);
+      if (!res.headersSent) notFound3d(req, res);
+      else res.destroy();
+    });
+    res.on('close', () => stream.destroy());
+    stream.pipe(res);
+  });
   app.get('/town/:file', (req, res, next) => {
     const name = String(req.params.file);
     if (name === 'api') return next();
@@ -284,6 +468,24 @@ export function mountTown(app: Express, w: WorldService, log: (msg: string) => v
     })),
   );
   app.get('/town/api/public', api(() => publicView(w)));
+  // 地图清单：公开、可缓存。校验值就是 ETag，地图一变（checksum 变）客户端自然取到新的
+  let mapBody: { checksum: string; body: string } | null = null;
+  app.get(
+    '/town/api/map',
+    api((req, res) => {
+      const m = mapManifest(w);
+      if (!mapBody || mapBody.checksum !== m.checksum) mapBody = { checksum: m.checksum, body: JSON.stringify(m) };
+      const etag = `"${m.checksum}"`;
+      res.setHeader('ETag', etag);
+      res.setHeader('Cache-Control', 'public, max-age=300');
+      const inm = req.header('if-none-match');
+      if (inm && inm.split(',').some((t) => t.trim().replace(/^W\//, '') === etag || t.trim() === '*')) {
+        res.status(304).end();
+        return;
+      }
+      res.type('application/json').send(mapBody.body);
+    }),
+  );
   app.get(
     '/town/api/public/game/:id',
     api((req) => {
@@ -332,6 +534,7 @@ export function mountTown(app: Express, w: WorldService, log: (msg: string) => v
       if (token) {
         revokeSession(w, token);
         for (const close of [...(streamsOfToken.get(token) ?? [])]) close();
+        wsHub.closeSession(sha256(token));
       }
       setCookie(req, res, '', 0);
       return { ok: true };
@@ -379,6 +582,33 @@ export function mountTown(app: Express, w: WorldService, log: (msg: string) => v
     post((req) => {
       const p = principalOf(req);
       return { ok: true, ...heartbeat(w, { principalId: p.principal_id, clientId: clientIdOf(req) }, req.body?.presenceEpoch) };
+    }),
+  );
+  app.get(
+    '/town/api/scene',
+    api((req) => {
+      const { r } = residentOf(req);
+      return sceneView(w, r, w.now());
+    }),
+  );
+  app.post(
+    '/town/api/nav/renew',
+    json,
+    post((req) => {
+      const p = principalOf(req);
+      const b = req.body ?? {};
+      return renewNavigation(w, { principalId: p.principal_id, clientId: clientIdOf(req) }, { navigationId: b.navigationId, revision: b.revision });
+    }),
+  );
+  app.post(
+    '/town/api/ws-ticket',
+    json,
+    post((req) => {
+      const { p } = residentOf(req);
+      // 票据记着取票时的登录会话：会话过期或登出，用它连上的 WebSocket 也跟着断
+      const token = tokenOf(req);
+      const session = token ? { key: sha256(token), valid: () => sessionPrincipal(w, token)?.principal_id === p.principal_id } : undefined;
+      return { ok: true, ...wsHub.issueTicket(p.principal_id, clientIdOf(req), session) };
     }),
   );
   app.post(
@@ -609,7 +839,9 @@ export function mountTown(app: Express, w: WorldService, log: (msg: string) => v
     res.status(404).json({ ok: false, error: 'not_available', message: '没有这个接口。' });
   });
 
-  return () => {
+  const closeAll = () => {
     for (const close of [...closers]) close();
+    wsHub.close();
   };
+  return Object.assign(closeAll, { attach: (server: HttpServer) => wsHub.attach(server) });
 }

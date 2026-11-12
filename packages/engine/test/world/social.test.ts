@@ -31,13 +31,16 @@ const rel = (t: Town, a: Actor, b: Actor) => {
 
 /** 大家一起走到某地。 */
 function gather(place: string, ...people: Actor[]): void {
-  const t = people[0]!.t;
-  let arrive = t.clock.t;
   for (const p of people) {
     if (p.view().location.space === place) continue;
-    arrive = Math.max(arrive, p.act('move', { to: place }).move.arriveAt);
+    p.go(place);
   }
-  t.advanceTo(arrive);
+  for (const p of people) p.heartbeat();
+}
+
+/** 大家走到某个公共物件旁边（够得着才能用）。 */
+function near(objectId: string, ...people: Actor[]): void {
+  for (const p of people) p.go(objectId);
   for (const p of people) p.heartbeat();
 }
 
@@ -338,6 +341,7 @@ describe('关系：结构化事实驱动', () => {
     const b = t.join('小岚', 'agent');
     const c = t.join('阿木');
     gather('tea_house', a, b, c);
+    near('tea_house:table1', a, b, c);
     const ix = a.act('start_interaction', { objectId: 'tea_house:table1', wait: true }).interaction;
     b.act('join_interaction', { interactionId: ix.id });
     c.act('join_interaction', { interactionId: ix.id });
@@ -352,6 +356,7 @@ describe('关系：结构化事实驱动', () => {
     // 一个人读书：没有关系变化
     gather('bookshop', a);
     const before = JSON.stringify(t.w.db.all('SELECT * FROM relationships ORDER BY resident_id, other_id'));
+    near('bookshop:shelf', a);
     a.act('start_interaction', { objectId: 'bookshop:shelf' });
     t.advanceAlive(10 * MIN + 2000, [a, b, c]);
     expect(JSON.stringify(t.w.db.all('SELECT * FROM relationships ORDER BY resident_id, other_id'))).toBe(before);
@@ -362,6 +367,7 @@ describe('关系：结构化事实驱动', () => {
     const a = t.join('阿灯');
     const b = t.join('小岚', 'agent');
     gather('tea_house', a, b);
+    near('tea_house:table1', a, b);
     a.act('buy', { shop: 'tea_counter', sku: 'tea_leaves', qty: 3 });
     for (let i = 0; i < 5; i++) {
       const ix = a.act('start_interaction', { objectId: 'tea_house:table1', wait: true }).interaction;
@@ -442,6 +448,7 @@ describe('关系：结构化事实驱动', () => {
     b.act('accept_offer', { offerId: tr.offer.id });
     a.act('ask_hobby', { target: b.residentId });
     gather('bookshop', a, b);
+    near('bookshop:shelf', a, b);
     const ix = a.act('start_interaction', { objectId: 'bookshop:shelf', wait: true }).interaction;
     b.act('join_interaction', { interactionId: ix.id });
     a.act('begin_interaction', { interactionId: ix.id });
@@ -555,6 +562,8 @@ describe('愿望：生成与定义副本', () => {
         const def = JSON.parse(r.def_json);
         expect(def.place).toBeDefined();
         expect(def.place).not.toBe('plaza');
+        // 候选只来自可以当目的地的公共地点：灯笼路只是路过，会馆是住宅接入点，都不出现
+        expect(['tea_house', 'bookshop', 'kitchen', 'garden', 'arcade']).toContain(def.place);
         expect(def.paths[0].where.place).toBe(def.place);
         expect(def.title).not.toContain('$');
         seen++;
@@ -739,12 +748,33 @@ describe('愿望：进度只来自结构化事实，完成只结算一次', () =
     expect(goalRow(t, id).status).toBe('completed');
   });
 
+  it('去某地走走：路过的区域（灯笼路、中途经过的地点）不算到达；走到一半停下也不算', () => {
+    const t = quietTown();
+    const a = t.join('阿灯');
+    const id = giveGoal(t, a, 'visit_place', { place: 'tea_house' });
+    const arrivedPlaces = () => t.w.db.all("SELECT payload FROM world_events WHERE type = 'arrived'").map((r) => JSON.parse(String(r.payload)).place as string);
+    // 广场 -> 花园要经过灯笼路：路过不记「到过」
+    a.go('garden');
+    expect(goalRow(t, id).status).toBe('active');
+    expect(arrivedPlaces()).toEqual(['garden']);
+    // 往茶馆走，在路上停下：导航没走完，不记
+    a.act('navigate', { to: 'tea_house' });
+    t.advanceAlive(2_000, [a]);
+    a.act('stop_navigation');
+    expect(a.view().location.space).not.toBe('tea_house');
+    expect(goalRow(t, id).status).toBe('active');
+    expect(arrivedPlaces()).toEqual(['garden']);
+    a.go('tea_house');
+    expect(goalRow(t, id).status).toBe('completed');
+  });
+
   it('共同活动类愿望：一个人做汤算"做一锅汤"，但不算"和人一起做件事"', () => {
     const t = quietTown();
     const a = t.join('阿灯');
     const cook = giveGoal(t, a, 'cook_once');
     const shared = giveGoal(t, a, 'join_shared', { replaceAll: false });
     a.go('kitchen');
+    near('kitchen:stove1', a);
     a.act('start_interaction', { objectId: 'kitchen:stove1' });
     t.advanceAlive(5 * MIN + 2000, [a]);
     expect(goalRow(t, cook).status).toBe('completed');
@@ -757,6 +787,7 @@ describe('愿望：进度只来自结构化事实，完成只结算一次', () =
     const b = t.join('小岚', 'agent');
     const id = giveGoal(t, a, 'join_shared');
     gather('tea_house', a, b);
+    near('tea_house:table1', a, b);
     const ix = a.act('start_interaction', { objectId: 'tea_house:table1', wait: true }).interaction;
     a.act('leave_interaction');
     expect(goalRow(t, id).status).toBe('active');
@@ -896,6 +927,7 @@ describe('防刷：两个居民互相刷', () => {
     const a = t.join('阿灯', 'human', { interests: ['tea'] });
     const b = t.join('小岚', 'agent', { interests: ['tea'] });
     gather('tea_house', a, b);
+    near('tea_house:table1', a, b);
     a.act('buy', { shop: 'tea_counter', sku: 'tea_leaves', qty: 5 });
     const coins0 = a.coins() + b.coins();
     // 交谈刷屏
@@ -953,6 +985,7 @@ describe('防刷：两个居民互相刷', () => {
     const a = t.join('阿灯');
     const b = t.join('小岚', 'agent');
     gather('tea_house', a, b);
+    near('tea_house:table1', a, b);
     a.act('buy', { shop: 'tea_counter', sku: 'tea_leaves', qty: 6 });
     const coins0 = a.coins() + b.coins();
     for (let i = 0; i < 6; i++) {

@@ -8,6 +8,7 @@ import { WorldError } from '../../src/world/errors.js';
 import { claimControl } from '../../src/world/identity.js';
 import { enterWorld } from '../../src/world/index.js';
 import { JOB_PRIORITY, type CommandRequest, type JobRow, type WorldService } from '../../src/world/service.js';
+import { renewNavigation, whereabouts } from '../../src/world/space.js';
 import { Actor, makeTown, type Town } from './helpers.js';
 
 const MIN = 60_000;
@@ -47,17 +48,25 @@ function pair(): { t: Town; a: Actor; b: Actor } {
 }
 
 describe('命令管线：到期任务先于新动作', () => {
-  it('移动到点的任务在没有 tick 的情况下，由下一条命令先结算再生效', () => {
+  it('导航到点的任务在没有 tick 的情况下，由下一条命令先结算再生效', () => {
     const { t, a } = pair();
-    const out = a.act('move', { to: 'tea_house' });
-    // 只推进时钟，不调用 tick：到达任务已到期但还没结算
-    t.clock.advance(out.move.arriveAt - t.clock.t);
-    expect(a.row().move).not.toBeNull();
-    // 在途时不能说话；如果到期任务没有先结算，这条会失败
+    const out = a.act('navigate', { to: 'tea_house' });
+    expect(out.status).toBe('accepted');
+    // 只推进时钟，不调用 tick：沿路的区域变化和到达任务已到期但还没结算。中途续一次租约，免得停在半路
+    t.clock.advance(5_000);
+    a.heartbeat();
+    expect(renewNavigation(t.w, a.auth, { navigationId: out.navigation.navigationId, revision: out.navigation.revision }).ok).toBe(true);
+    t.clock.advance(out.navigation.arriveAt - t.clock.t);
+    a.heartbeat();
+    expect(a.row().location_id).not.toBe('tea_house');
+    expect(whereabouts(t.w, a.row(), t.clock.t).navigation).not.toBeNull();
+    // 如果到期任务没有先结算，这条话会说在旧区域里
     const spoke = a.act('speak', { text: '到茶馆了' });
     expect(spoke.ok).toBe(true);
     expect(a.row().location_id).toBe('tea_house');
-    expect(a.row().move).toBeNull();
+    expect(whereabouts(t.w, a.row(), t.clock.t).navigation).toBeNull();
+    const msg = t.w.db.get('SELECT space_id FROM chat_messages WHERE sender_id = ? ORDER BY message_id DESC LIMIT 1', a.residentId);
+    expect(msg?.space_id).toBe('tea_house');
   });
 
   it('报价到期先于接受：过期的报价不能再接受', () => {
@@ -351,7 +360,7 @@ describe('提交后才唤醒', () => {
     const pubCur = t.w.publicCursor();
     t.w.onPublic(() => seen.push({ inTx: t.w.db.inTx, events: 0, pub: t.w.readPublicEvents(pubCur).events.length }));
     a.act('speak', { text: '给你听' });
-    a.act('move', { to: 'tea_house' });
+    a.go('tea_house');
     expect(seen.length).toBeGreaterThanOrEqual(2);
     expect(seen.every((s) => !s.inTx)).toBe(true);
     expect(seen.filter((s) => s.events > 0).length).toBeGreaterThanOrEqual(1);

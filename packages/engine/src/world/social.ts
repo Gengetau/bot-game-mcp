@@ -5,7 +5,7 @@
  * 说「我们是好朋友」不会改变任何数值，模型的叙述也不能直接写入长期事实。
  * 防刷：同一对居民每天每类往来只有前几次带来关系变化；互相来回送同一种东西不加分。
  */
-import { GOALS, INTERACTIONS, INTERESTS, PLACES, SHOPS, EMBEDDED_GAMES, type GoalDef, type GoalPath } from './content.js';
+import { GOALS, INTERACTIONS, INTERESTS, PLACES, DESTINATIONS, ENTRY_PLACE, SHOPS, EMBEDDED_GAMES, type GoalDef, type GoalPath } from './content.js';
 import { type Row, parseJson } from './db.js';
 import { badRequest, precondition } from './errors.js';
 import { addMood, bumpCounter, counter, pairScope } from './life.js';
@@ -312,7 +312,7 @@ function createGoal(w: WorldService, r: ResidentRow, kind: 'long' | 'short', now
   let stored: StoredGoalDef = JSON.parse(JSON.stringify(def)) as StoredGoalDef;
   if (JSON.stringify(def).includes('$place')) {
     const prefer = r.state.interests.map((id) => INTERESTS.find((i) => i.id === id)?.place).filter((p): p is string => Boolean(p) && p !== r.location_id);
-    const others = PLACES.filter((p) => p.kind === 'public' && p.id !== r.location_id && p.id !== 'plaza').map((p) => p.id);
+    const others = DESTINATIONS.filter((p) => p.kind === 'public' && p.id !== r.location_id && p.id !== ENTRY_PLACE).map((p) => p.id);
     const candidates = prefer.length ? prefer : others;
     const place = candidates[w.rng.int(candidates.length)]!;
     const name = PLACES.find((p) => p.id === place)!.name;

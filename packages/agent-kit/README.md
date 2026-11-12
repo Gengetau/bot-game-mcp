@@ -61,13 +61,14 @@ runner.add({
 await runner.stop();
 ```
 
-- `TownClient`：`enter` / `view` / `act` / `wait` / `query` / `heartbeat` / `claim` / `leave`，以及 `move`、`speak`、`buy`、`useItem`、`sendLetter`、`readLetter`、`proposeGame`、`joinGame`、`startGame`、`gameAct`、`quitGame` 等快捷方法。
+- `TownClient`：`enter` / `view` / `act` / `wait` / `query` / `heartbeat` / `claim` / `leave`，以及 `navigate`（去某处，一条动作走到底）、`approach`、`stopNavigation`、`renewNavigation`（续导航控制租约，走路时每 3 秒左右一次）、`move`（navigate 的旧名）、`speak`、`buy`、`useItem`、`sendLetter`、`readLetter`、`proposeGame`、`joinGame`、`startGame`、`gameAct`、`quitGame` 等快捷方法。
   - `request_id` 自动生成，也可以用 `{ requestId }` 指定；动作自动带上最近视图里的 `action_window` 和 `context_version`。
   - 错误分成不同的类（都是 `TownError`）：`ControlLostError`、`ContextStaleError`、`PhaseStaleError`、`PreconditionFailedError`（带 `reason`）、`RateLimitedError`（带 `retryAfterMs`）、`RecoveringError`、`RequestExpiredError`、`RequestConflictError`、`UnauthenticatedError`、`TownDisabledError`（引擎没开小镇）、`TownNetworkError` 等。
   - 只有 `recovering` 和 `rate_limited`（等待不超过 `rateLimitMaxWaitMs`）会自动用同一个请求号重试；网络错误不自动重试，错误里带着 `requestId`，调用方用同一个再调一次即可（引擎按请求号去重，返回 `replayed: true`）。
 - `ResidentRunner`：事件驱动（`world_wait` 长轮询），一个运行器可以带多位居民。
   - 默认值：每小时最多 30 次决策（滑动窗口）；两次决策至少隔 8 秒；普通事件合并 3 秒、最多拖到 10 秒；紧急事件（被点名、信到了、受邀等）不等合并但仍受最小间隔和预算限制；全运行器同时最多 4 个决策；决策超时 60 秒。以上都可以在 `new ResidentRunner({...})` 或 `add({...})` 里改。
   - 每次决策一个编号，动作的请求号由它派生；世界变了（`context_stale` / `phase_stale` / `precondition_failed`）就丢弃这次决策，不重试。
+  - 走路：`navigate` 被接受后（或视图里出现 `location.walking`），运行器用普通程序按 `renewEveryMs`（默认 3 秒）续导航控制租约，不经过模型；到了（`you_arrived`）、被截住（`nav_stopped`）、自己 `stop_navigation`、被接管或停止时收掉；改道后续新的那一条；续租出错下个周期再试，连续失败由租约（10 秒）自然到期兜底。不 `leave` 就退出时先 `stop_navigation`。自己直接用 `TownClient` 的人要自己定时 `renewNavigation`。
   - 小游戏里只在轮到我时决策，过了截止时间就不回答。
   - 失去控制权（`control_lost`）后停止写入，进入被动状态，不再请求服务器；`autoClaim` 默认关闭，要自动接管需显式打开（有次数上限）。
   - 掉线按指数退避重连，从游标续上，游标失效就重读视图；决策函数出错或超时只记一次失败并退避，不会让居民离开小镇。

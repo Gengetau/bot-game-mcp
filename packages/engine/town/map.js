@@ -1,4 +1,4 @@
-// 小镇地图：手绘风格的 SVG。地点之间的边来自服务器的 PublicView.edges，居民位置来自公开投影或本人视图。
+// 小镇地图：手绘风格的示意图。路是固定的装饰线（服务器已经没有「边」）；居民只按所在区域显示，路上的人放进「路上」。
 import { s } from './dom.js';
 
 /** @typedef {import('./types.js').PublicView} PublicView */
@@ -16,8 +16,24 @@ const NODES = {
   arcade: { x: 546, y: 330, label: 54, dot: -78, name: '游戏馆' },
   kitchen: { x: 440, y: 498, label: 54, dot: -74, name: '公共厨房' },
   garden: { x: 206, y: 504, label: 54, dot: -72, name: '后巷花园' },
-  residential: { x: 92, y: 336, label: 64, dot: -56, name: '住宅区' },
+  residential: { x: 92, y: 336, label: 64, dot: -56, name: '灯巷会馆' },
+  // 灯笼路：只是路过的地方，不是目的地（不可点）
+  road: { x: 322, y: 598, label: 24, dot: -34, name: '路上' },
 };
+
+/** 装饰用的路（不代表可走的路线）。 */
+const ROADS = [
+  ['plaza', 'tea_house'],
+  ['plaza', 'bookshop'],
+  ['plaza', 'kitchen'],
+  ['plaza', 'garden'],
+  ['plaza', 'arcade'],
+  ['plaza', 'residential'],
+  ['tea_house', 'bookshop'],
+  ['tea_house', 'residential'],
+  ['residential', 'garden'],
+  ['garden', 'kitchen'],
+];
 
 /** 路的弯曲：从 a 到 b 的二次贝塞尔控制点（键按字典序）。 */
 const BENDS = {
@@ -114,20 +130,30 @@ export function createMap(opts) {
   clipped.appendChild(people);
   clipped.appendChild(s('rect', { x: 3, y: 3, width: W - 6, height: H - 6, rx: 24, class: 'm-border', 'pointer-events': 'none' }));
 
-  /** @type {Map<string, SVGPathElement>} */
-  const roadPaths = new Map();
   /** @type {Map<string, SVGGElement>} */
   const placeGroups = new Map();
   /** @type {Map<string, { badge: SVGTextElement, flag: SVGGElement, flagText: SVGTextElement, game: SVGGElement, gameText: SVGTextElement, nameText: SVGTextElement }>} */
   const placeBits = new Map();
   /** @type {Map<string, SVGGElement>} */
   const dots = new Map();
-  let builtEdges = '';
   let lastWeather = '';
   let lastSky = '';
 
   // 地点
   for (const [id, n] of Object.entries(NODES)) {
+    if (id === 'road') {
+      places.appendChild(s('rect', { class: 'm-road-pill', x: n.x - 70, y: n.y - 50, width: 140, height: 76, rx: 22, fill: 'none', stroke: 'currentColor', 'stroke-opacity': '0.35', 'stroke-dasharray': '5 5', 'pointer-events': 'none' }));
+      const nameText = s('text', { class: 'm-label', x: n.x, y: n.y + n.label, 'text-anchor': 'middle' }, n.name);
+      const badge = s('text', { class: 'm-count', x: n.x, y: n.y + n.label + 18, 'text-anchor': 'middle' });
+      labels.appendChild(nameText);
+      labels.appendChild(badge);
+      const flagText = s('text', { display: 'none' });
+      const flag = s('g', { display: 'none' }, flagText);
+      const gameText = s('text', { display: 'none' });
+      const game = s('g', { display: 'none' }, gameText);
+      placeBits.set(id, { badge, flag, flagText, game, gameText, nameText });
+      continue;
+    }
     const g = s('g', { class: 'place', transform: `translate(${n.x} ${n.y})`, tabindex: '0', role: 'button', 'data-id': id, 'aria-label': n.name });
     g.appendChild(s('circle', { r: 64, class: 'hit' }));
     g.appendChild(building(id));
@@ -159,17 +185,11 @@ export function createMap(opts) {
     lamps.appendChild(s('circle', { cx: n.x, cy: n.y - 6, r: 62, fill: 'url(#glow)', class: 'lamp-glow' }));
   }
 
-  /** @param {PublicView} pub */
-  function buildRoads(pub) {
-    const key = JSON.stringify(pub.edges);
-    if (key === builtEdges) return;
-    builtEdges = key;
-    roads.replaceChildren();
-    roadPaths.clear();
+  function buildRoads() {
     const under = s('g', { class: 'road-under' });
     const inner = s('g', { class: 'road-inner' });
     const over = s('g', { class: 'road-over' });
-    for (const [a, b] of pub.edges) {
+    for (const [a, b] of ROADS) {
       const A = NODES[/** @type {keyof typeof NODES} */ (a)];
       const B = NODES[/** @type {keyof typeof NODES} */ (b)];
       if (!A || !B) continue;
@@ -179,49 +199,12 @@ export function createMap(opts) {
       under.appendChild(s('path', { d, class: 'road-edge' }));
       inner.appendChild(s('path', { d, class: 'road' }));
       over.appendChild(s('path', { d, class: 'road-line' }));
-      const p = /** @type {SVGPathElement} */ (s('path', { d, fill: 'none', stroke: 'none' }));
-      over.appendChild(p);
-      roadPaths.set(`${a}>${b}`, p);
     }
     roads.appendChild(under);
     roads.appendChild(inner);
     roads.appendChild(over);
   }
-
-  /**
-   * 沿 from→to 这条路走了 t（0~1）之后的位置。
-   * @param {string} from
-   * @param {string} to
-   * @param {number} t
-   */
-  function pointOnRoad(from, to, t) {
-    const fwd = roadPaths.get(`${from}>${to}`);
-    const rev = roadPaths.get(`${to}>${from}`);
-    const path = fwd ?? rev;
-    const A = NODES[/** @type {keyof typeof NODES} */ (from)];
-    const B = NODES[/** @type {keyof typeof NODES} */ (to)];
-    if (path && path.getTotalLength) {
-      const len = path.getTotalLength();
-      const at = fwd ? t * len : (1 - t) * len;
-      const pt = path.getPointAtLength(at);
-      return { x: pt.x, y: pt.y };
-    }
-    if (A && B) return { x: A.x + (B.x - A.x) * t, y: A.y + (B.y - A.y) * t };
-    return { x: W / 2, y: H / 2 };
-  }
-
-  /**
-   * @param {{ path: string[], startedAt: number, arriveAt: number }} mv
-   * @param {number} now
-   */
-  function positionOnPath(mv, now) {
-    const path = mv.path;
-    const segs = Math.max(1, path.length - 1);
-    const p = Math.min(1, Math.max(0, (now - mv.startedAt) / Math.max(1, mv.arriveAt - mv.startedAt)));
-    const seg = Math.min(segs - 1, Math.floor(p * segs));
-    const local = p * segs - seg;
-    return pointOnRoad(path[seg] ?? path[0] ?? 'plaza', path[seg + 1] ?? path[path.length - 1] ?? 'plaza', Math.min(1, Math.max(0, local)));
-  }
+  buildRoads();
 
   /**
    * @param {string} id
@@ -255,8 +238,6 @@ export function createMap(opts) {
     if (instant) requestAnimationFrame(() => requestAnimationFrame(() => g.classList.remove('no-ease')));
   }
 
-  /** @type {{ mv: { path: string[], startedAt: number, arriveAt: number }, g: SVGGElement }[]} */
-  let movers = [];
   /** @type {PublicView | null} */
   let lastPub = null;
   /** @type {MeView | null} */
@@ -270,7 +251,6 @@ export function createMap(opts) {
     lastPub = pub;
     lastMe = me;
     if (!pub) return;
-    buildRoads(pub);
     const myId = me?.me.id ?? null;
 
     // 各地点的居民（不含我自己：我的位置以本人视图为准）
@@ -278,8 +258,8 @@ export function createMap(opts) {
     const byPlace = new Map();
     for (const p of pub.places) byPlace.set(p.id, p.residents.filter((r) => r.id !== myId));
     byPlace.set('residential', pub.residential.residents.filter((r) => r.id !== myId));
-    const mePlace = me ? zoneOfMe(me) : null;
-    if (me && mePlace && !me.location.moving) {
+    const mePlace = me ? zoneOfId(me.location.space) : null;
+    if (me && mePlace) {
       byPlace.set(mePlace, [{ id: me.me.id, name: me.me.name, kind: me.me.kind, at: mePlace }, ...(byPlace.get(mePlace) ?? [])]);
     }
 
@@ -308,38 +288,8 @@ export function createMap(opts) {
       }
     }
 
-    // 在路上的人
-    movers = [];
-    /** @type {{ id: string, name: string, kind: string, mv: { path: string[], startedAt: number, arriveAt: number } }[]} */
-    const moving = pub.moving.filter((m) => m.id !== myId && m.moving).map((m) => ({ id: m.id, name: m.name, kind: m.kind, mv: /** @type {{ path: string[], startedAt: number, arriveAt: number }} */ (m.moving) }));
-    if (me?.location.moving) {
-      const mv = me.location.moving;
-      const zp = dedupe(mv.path.map(zoneOfId));
-      if (zp.length >= 2) moving.push({ id: me.me.id, name: me.me.name, kind: me.me.kind, mv: { path: zp, startedAt: mv.startedAt, arriveAt: mv.arriveAt } });
-      else {
-        const z = zp[0];
-        const n = z ? NODES[/** @type {keyof typeof NODES} */ (z)] : undefined;
-        if (n) {
-          const g = ensureDot(me.me.id, me.me.name, me.me.kind, true);
-          g.removeAttribute('display');
-          place(g, n.x, n.y + n.dot, !g.dataset.placed);
-          seen.add(me.me.id);
-        }
-      }
-    }
-    for (const m of moving) {
-      const g = ensureDot(m.id, m.name, m.kind, m.id === myId);
-      g.removeAttribute('display');
-      g.classList.add('walking');
-      const pt = positionOnPath(m.mv, input.now);
-      place(g, pt.x, pt.y, !g.dataset.placed);
-      movers.push({ mv: m.mv, g });
-      seen.add(m.id);
-    }
     for (const [id, g] of dots) {
-      if (!seen.has(id)) {
-        g.setAttribute('display', 'none');
-      } else if (!movers.some((m) => m.g === g)) g.classList.remove('walking');
+      if (!seen.has(id)) g.setAttribute('display', 'none');
     }
 
     // 事件旗与小游戏
@@ -378,36 +328,22 @@ export function createMap(opts) {
     svg.dataset.night = t.night > 0.5 ? '1' : '0';
   }
 
-  /** 每帧推进在路上的人。 @param {number} now */
-  function tick(now) {
-    for (const m of movers) {
-      const pt = positionOnPath(m.mv, now);
-      place(m.g, pt.x, pt.y);
-    }
-  }
+  /** 示意图不再有逐帧动画（保留接口给外壳调用）。 */
+  /** @param {number} [_now] */
+  function tick(_now) {}
 
   return {
     el: svg,
     update,
     tick,
-    hasMovers: () => movers.length > 0,
+    hasMovers: () => false,
     lastInput: () => ({ pub: lastPub, me: lastMe }),
   };
 }
 
-/** @param {string} id */
+/** 区域编号 → 地图上的节点：各家屋内统一画在会馆处。 @param {string} id */
 function zoneOfId(id) {
   return id in NODES ? id : 'residential';
-}
-/** @param {string[]} a */
-function dedupe(a) {
-  return a.filter((v, i) => v !== a[i - 1]);
-}
-/** @param {MeView} me */
-function zoneOfMe(me) {
-  if (me.location.moving) return null;
-  const sp = me.location.space;
-  return sp ? zoneOfId(sp) : null;
 }
 
 // ───────────────────────── 画面元素 ─────────────────────────

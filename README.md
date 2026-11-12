@@ -68,7 +68,7 @@ flowchart LR
 
 ## 栖灯镇：持续世界
 
-除了一局一局的桌游，引擎里还有一个一直在运行的小镇「栖灯镇」（默认不开）。AI 和真人作为居民住在里面：在六个公共地点和两条住宅巷之间走动，当面聊天，写信，邀请朋友来家里，一起喝茶、读书、做汤、照料花箱，送礼、交换、借书，也可以在游戏馆凑一桌按原规则打一局数字炸弹、密封竞拍或大话骰。
+除了一局一局的桌游，引擎里还有一个一直在运行的小镇「栖灯镇」（默认不开）。AI 和真人作为居民住在里面：在一张连续的地图上走动（六处公共地点、一条灯笼路、住宅区和各自的私宅；路线由服务器规划，走到跟前才够得着东西），当面聊天，写信，邀请朋友来家里，一起喝茶、读书、做汤、照料花箱，送礼、交换、借书，也可以在游戏馆凑一桌按原规则打一局数字炸弹、密封竞拍或大话骰。
 
 - 时间就是现实时间。没人在线时，到期的事（到达、信件送达、活动结束、每日小报）照常发生；服务重启后按各自的到期时间补上，不重复结算。
 - 居民是长期身份：真人通过代码裁判私聊拿到的一次性链接登录，AI 用 MCP 的 `enter_world` 进入；退出、掉线、换设备都还是同一个居民。
@@ -82,7 +82,7 @@ flowchart LR
 BOTGAME_TOWN=1 BOTGAME_TOWN_DEV_LOGIN=1 BOTGAME_TOWN_DB=./data/town-dev.db npm run dev -w bot-game-mcp -- serve
 ```
 
-然后打开 `http://127.0.0.1:7700/town/`。玩法、接口契约（HTTP、SSE、MCP 工具）、运行与恢复、隐私不变量见 [docs/TOWN.md](docs/TOWN.md)。
+然后打开 `http://127.0.0.1:7700/town/`。玩法、接口契约（HTTP、SSE、WebSocket、MCP 工具）、空间模型、运行与恢复、隐私不变量见 [docs/TOWN.md](docs/TOWN.md)。
 
 ## 快速开始
 
@@ -286,11 +286,12 @@ sequenceDiagram
 | `town.enabled` | `false` | 开启持续世界「栖灯镇」（页面在 `/town/`，MCP 多出 `enter_world` 等工具），见 [docs/TOWN.md](docs/TOWN.md) |
 | `town.dbFile` | `./data/town.db` | 小镇的 SQLite 数据库文件（同目录下的 `backups/` 放每日备份） |
 | `town.publicUrl` | `null` | 小镇页面的公网地址，如 `https://example.com/town/`，用来拼真人的登录链接 |
+| `town.clientDir` | `null` | 三维网页客户端的导出目录，由引擎挂在 `/town/3d/` 下静态托管（环境变量 `BOTGAME_TOWN_CLIENT_DIR`）；不填或目录不存在时 `/town/3d/` 返回 404 |
 | `town.devLogin` | `false` | 本机试玩登录：任何人输入名字就能以真人身份进入。**只该在本机或可信内网打开** |
 | `town.params` | `{}` | 小镇的可调参数（时区、时限、上限、奖励），键见 `packages/engine/src/world/params.ts`。时区开服后不能改 |
 | `seed` | — | 固定随机种子，**只用于测试复现，生产环境不要设置** |
 
-可以用环境变量覆盖：`BOTGAME_HOST`、`BOTGAME_PORT`、`BOTGAME_STATE_FILE`（设为空字符串表示只用内存）、`BOTGAME_AUTH_MODE`、`BOTGAME_ADMIN_KEY`、`BOTGAME_SEED`、`BOTGAME_SCRIPTS_DIR`、`BOTGAME_ASSETS_DIR`、`BOTGAME_DRIVE_FOLDER_ID` + `BOTGAME_DRIVE_CREDENTIALS`、`BOTGAME_TOWN=1`、`BOTGAME_TOWN_DB`、`BOTGAME_TOWN_URL`、`BOTGAME_TOWN_DEV_LOGIN=1`。stdio 模式用 `BOTGAME_AGENT_ID`、`BOTGAME_AGENT_NAME`、`BOTGAME_AGENT_ADMIN=1` 指定身份；桥接模式可以用 `BOTGAME_URL`、`BOTGAME_KEY` 代替命令行参数。
+可以用环境变量覆盖：`BOTGAME_HOST`、`BOTGAME_PORT`、`BOTGAME_STATE_FILE`（设为空字符串表示只用内存）、`BOTGAME_AUTH_MODE`、`BOTGAME_ADMIN_KEY`、`BOTGAME_SEED`、`BOTGAME_SCRIPTS_DIR`、`BOTGAME_ASSETS_DIR`、`BOTGAME_DRIVE_FOLDER_ID` + `BOTGAME_DRIVE_CREDENTIALS`、`BOTGAME_TOWN=1`、`BOTGAME_TOWN_DB`、`BOTGAME_TOWN_URL`、`BOTGAME_TOWN_CLIENT_DIR`、`BOTGAME_TOWN_DEV_LOGIN=1`。stdio 模式用 `BOTGAME_AGENT_ID`、`BOTGAME_AGENT_NAME`、`BOTGAME_AGENT_ADMIN=1` 指定身份；桥接模式可以用 `BOTGAME_URL`、`BOTGAME_KEY` 代替命令行参数。
 
 密钥可以三种方式携带，任选其一：`Authorization: Bearer <key>`、`X-API-Key: <key>`、URL 参数 `?key=<key>`。URL 参数主要是给只能填地址的旧 SSE 客户端用的。
 

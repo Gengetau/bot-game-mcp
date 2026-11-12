@@ -4,7 +4,7 @@
  *   const t = makeTown();
  *   const a = t.join('阿灯');            // 注册并进入（真人，开发登录）
  *   const b = t.join('小岚', 'agent');   // AI 居民
- *   a.act('move', { to: 'tea_house' }); t.advance(10_000);
+ *   a.go('tea_house');                   // 走过去（途中自动续导航租约）
  *   a.act('speak', { text: '你好' });
  */
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -16,6 +16,7 @@ import { WorldError } from '../../src/world/errors.js';
 import { agentPrincipal, claimControl, heartbeat, issueTicket, exchangeTicket, sessionPrincipal, leaveWorld } from '../../src/world/identity.js';
 import { createWorld, enterWorld } from '../../src/world/index.js';
 import type { WorldService } from '../../src/world/service.js';
+import { positionOfResident, renewNavigation, whereabouts } from '../../src/world/space.js';
 import { meView, type MeView } from '../../src/world/views.js';
 import { FakeClock } from '../helpers.js';
 
@@ -91,10 +92,38 @@ export class Actor {
     return claimControl(this.t.w, this.auth);
   }
 
-  /** 走到某处并等到达。 */
-  go(to: string): void {
-    const out = this.act('move', { to });
-    this.t.advanceTo(out.move.arriveAt);
+  /**
+   * 走到某处并等到达：途中像真正的客户端那样每隔几秒续一次导航租约（顺带保持在场）。
+   * 进出家门的多段路一并走完。目的地可以是地点、物件、居民编号或地图点。
+   */
+  go(to: string | { x: number; z: number }): Record<string, any> {
+    const out = this.act('navigate', { to });
+    if (out.status === 'accepted') this.walk();
+    return out;
+  }
+
+  /** 把正在走的这一趟走完。没在走就什么也不做。 */
+  walk(): void {
+    const w = this.t.w;
+    for (let guard = 0; guard < 600; guard++) {
+      const nav = whereabouts(w, this.row(), w.now()).navigation;
+      if (!nav) return;
+      this.t.advanceTo(Math.max(w.now(), Math.min(nav.arriveAt, w.now() + w.params.navRenewEveryMs)));
+      try {
+        this.heartbeat();
+        renewNavigation(w, this.auth, { navigationId: nav.navigationId, revision: nav.revision });
+      } catch (e) {
+        if (!(e instanceof WorldError)) throw e;
+      }
+    }
+    throw new Error(`${this.name} 走了太久还没到`);
+  }
+
+  /** 此刻的权威位置。 */
+  pos(): { scene: string; instance: string; x: number; z: number; moving: boolean } {
+    const p = positionOfResident(this.t.w, this.residentId, this.t.w.now());
+    if (!p) throw new Error(`${this.name} 还没有位置`);
+    return p;
   }
 
   /** 这位居民游标之后的事件。 */
@@ -138,9 +167,10 @@ export class Town {
     return w;
   }
 
-  /** 模拟进程重启：关掉再用同一个数据库文件打开（需要 dbPath）。 */
-  restart(): WorldService {
-    this.w.close();
+  /** 模拟进程重启：关掉再用同一个数据库文件打开（需要 dbPath）。crash=true 是进程被杀：不写 last_alive_at。 */
+  restart(opts: { crash?: boolean } = {}): WorldService {
+    if (opts.crash) this.w.db.db.close();
+    else this.w.close();
     this.w = this.open();
     return this.w;
   }

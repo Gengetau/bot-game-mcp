@@ -44,7 +44,7 @@ beforeAll(async () => {
         { key: KEY_B, id: '1002', name: '乙' },
       ],
     },
-    town: { enabled: true, dbFile: join(dir, 'town.db'), params: { moveDurationMs: 40, doorDurationMs: 20, chatPerMinute: 600, chatBurst: 100 } },
+    town: { enabled: true, dbFile: join(dir, 'town.db'), params: { chatPerMinute: 600, chatBurst: 100 } },
   });
   rt = createRuntime(config, () => undefined);
   await rt.world!.start();
@@ -105,14 +105,27 @@ describe('TownClient：真引擎', () => {
     expect(v2.coins).toBeLessThan(before);
     expect(v2.items.some((i) => i.type === 'cookie')).toBe(true);
 
-    // 移动：accepted，到了以后有 you_arrived 事件
-    const mv = await a.move('tea_house');
+    // 走路：navigate 一条动作走到底（accepted + 导航信息），续租走 renewNavigation，到了有 you_arrived。
+    // 在广场内走一小段（真实时间，约 1 秒）；去茶馆这种长路在 town-engine-residents.test.ts 里由运行器自动续租
+    const mv = await a.navigate({ x: 35, z: 30.25 });
     expect(mv.status).toBe('accepted');
+    expect(mv.navigation?.navigationId).toBeTruthy();
+    expect(mv.navigation?.renewEveryMs).toBeGreaterThan(0);
+    const renewed = await a.renewNavigation({ navigationId: mv.navigation!.navigationId, revision: mv.navigation!.revision });
+    expect(renewed.navigation).not.toBeNull();
     const arrived = await waitFor(a, (e) => e.type === 'you_arrived');
-    expect(arrived.space).toBe('tea_house');
-    expect((await a.view()).location.space).toBe('tea_house');
-    await a.move('plaza');
-    await waitFor(a, (e) => e.type === 'you_arrived');
+    expect(arrived.space).toBe('plaza');
+    expect((await a.view()).location.space).toBe('plaza');
+    // 已经没有在走的路：续租 ok:false、navigation:null
+    expect(await a.renewNavigation({ navigationId: mv.navigation!.navigationId, revision: mv.navigation!.revision })).toMatchObject({ ok: false, navigation: null, space: 'plaza' });
+    // 已经在这一片区域：already_here
+    const here = await a.navigate('plaza').catch((e) => e);
+    expect(here).toBeInstanceOf(PreconditionFailedError);
+    expect(here.reason).toBe('already_here');
+    // 去不了的地方：precondition_failed + reason
+    const nowhere = await a.navigate('nowhere_land').catch((e) => e);
+    expect(nowhere).toBeInstanceOf(PreconditionFailedError);
+    expect(nowhere.reason).toBe('no_such_place');
     await b.view();
 
     // 查询、心跳

@@ -17,6 +17,7 @@ import { addMood, applyNeeds, bumpCounter } from './life.js';
 import { card } from './project.js';
 import { mint } from './property.js';
 import { sha256, type WorldService } from './service.js';
+import { stopNav, touchScene } from './space.js';
 import type { ResidentRow } from './types.js';
 
 interface Loaded {
@@ -148,6 +149,7 @@ export function installGames(w: WorldService): void {
     r.activity_id = null;
     r.context_version += 1;
     w.saveResident(r);
+    touchScene(w, residentId);
     if (r.present_since !== null) {
       const others = w.audienceIn(r.location_id).filter((x) => x.resident_id !== residentId);
       w.emitTo(others.map((x) => x.resident_id), 'arrived', { resident: card(r), space: r.location_id, fromGame: true }, at);
@@ -366,7 +368,8 @@ export function installGames(w: WorldService): void {
     w.cancelJob(`al:${act.activity_id}`);
     w.schedule('activity_deadline', `ad:${act.activity_id}`, deadline, { activityId: act.activity_id });
     for (const m of members) {
-      // 进入小游戏前收尾：没完成的交换撤销、手上的共同活动退出
+      // 进入小游戏前收尾：正在走的站住，没完成的交换撤销、手上的共同活动退出
+      stopNav(w, m.resident_id, now, 'activity');
       for (const h of w.hooks.leaveSpace) h(m, act.venue_id, now);
       const fresh = w.mustResident(m.resident_id);
       const seat = rec.players.find((p) => p.id === m.resident_id)!.seat;
@@ -374,6 +377,7 @@ export function installGames(w: WorldService): void {
       fresh.activity_id = act.activity_id;
       fresh.context_version += 1;
       w.saveResident(fresh);
+      touchScene(w, m.resident_id);
       w.emitTo([m.resident_id], 'game_started', { activityId: act.activity_id, gameId, name: w.runner.def(def.type).name, seat }, now);
     }
     const running = w.db.get('SELECT * FROM activities WHERE activity_id = ?', act.activity_id)!;

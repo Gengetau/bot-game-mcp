@@ -397,8 +397,75 @@ function applyMe(v) {
   if (v.control.mine) state.taken = false;
   if (v.here) mergeChat(v.here.chat.map((c) => ({ messageId: c.messageId, space: v.here?.space ?? '', spaceName: v.here?.name ?? '', from: c.from, text: c.text, at: c.at })));
   presenceEpoch = v.control.presenceEpoch;
+  syncNavLease();
   emit('me');
   emit('flags');
+}
+
+// ───────────────────────── 导航控制租约 ─────────────────────────
+
+let navTimer = 0;
+/** 正在续的那一趟（navigationId:revision） */
+let navKey = '';
+
+function stopNavLease() {
+  clearTimeout(navTimer);
+  navTimer = 0;
+  navKey = '';
+}
+
+/**
+ * 走路期间每 renewEveryMs 续一次租约（普通请求，不走动作管线）。
+ * 页面在后台时浏览器会降频定时器，续不上租约人就会停在半路——这是预期行为。
+ */
+function syncNavLease() {
+  const nav = state.me?.location.navigation;
+  if (!nav || !running || state.readOnly || state.phase !== 'town') {
+    stopNavLease();
+    return;
+  }
+  const key = `${nav.navigationId}:${nav.revision}`;
+  if (navTimer && navKey === key) return;
+  clearTimeout(navTimer);
+  navKey = key;
+  scheduleNavRenew(nav.renewEveryMs || 3000);
+}
+
+/** @param {number} ms */
+function scheduleNavRenew(ms) {
+  clearTimeout(navTimer);
+  navTimer = window.setTimeout(() => void renewNavOnce(), ms);
+}
+
+async function renewNavOnce() {
+  const nav = state.me?.location.navigation;
+  if (!nav || !running || state.phase !== 'town') {
+    stopNavLease();
+    return;
+  }
+  const every = nav.renewEveryMs || 3000;
+  try {
+    const r = await http('POST', '/nav/renew', { clientId, navigationId: nav.navigationId, revision: nav.revision });
+    const d = r.data;
+    const cur = state.me?.location.navigation;
+    if (!cur || cur.navigationId !== nav.navigationId) return; // 视图已经换了，由新的同步接手
+    if (d?.ok && d.navigation) {
+      cur.revision = d.navigation.revision;
+      cur.leaseUntil = d.navigation.leaseUntil ?? d.leaseUntil ?? cur.leaseUntil;
+      cur.arriveAt = d.navigation.arriveAt ?? cur.arriveAt;
+      navKey = `${cur.navigationId}:${cur.revision}`;
+      scheduleNavRenew(cur.renewEveryMs || every);
+      // 走路的人自己跨区域时没有事件：续租的回答里带着脚下的区域，变了就重读现场
+      if (typeof d.space === 'string' && d.space !== state.me?.location.space) scheduleRefreshMe(0);
+      return;
+    }
+    // 已经停了或到了：停掉定时器，重读视图
+    stopNavLease();
+    scheduleRefreshMe(0);
+  } catch {
+    // 网络抖动：租约还没过期就再试一次
+    if (navTimer || state.me?.location.navigation) scheduleNavRenew(1000);
+  }
 }
 
 let meInflight = /** @type {Promise<void> | null} */ (null);
@@ -673,6 +740,7 @@ function startRuntime() {
 export function stopRuntime() {
   running = false;
   clearTimeout(hbTimer);
+  stopNavLease();
   clearTimeout(meTimer);
   clearTimeout(pubTimer);
   clearTimeout(pubPoll);
@@ -839,6 +907,9 @@ function onPrivate(ev) {
     case 'you_arrived':
       toast(`到了${d.name ?? '目的地'}。`, 'ok', 2800);
       break;
+    case 'nav_stopped':
+      toast(d.reason === 'lease' ? '没能及时续上行程，停在了半路。' : d.reason === 'blocked' ? '没能进去，停在了门口。' : d.reason === 'activity' ? '开始做别的事，停下了脚步。' : d.reason === 'control' ? '另一个页面接管了行程。' : '停下了脚步。', d.reason === 'lease' ? 'warn' : 'info', 3500);
+      break;
     case 'arrived':
       sysLine(`${d.resident?.name ?? '有人'}${d.fromGame ? '回到了这里' : '来了'}。`, ev.at);
       break;
@@ -904,13 +975,11 @@ function offerToast(o) {
 }
 
 /** 地点 id → 名字 */
-const STATIC_NAMES = { street_east: '东灯巷', street_west: '西灯巷' };
 /** @param {string} space */
 export function spaceLabel(space) {
   if (space === 'residential') return '住宅区';
   const place = state.pub?.places.find((p) => p.id === space);
   if (place) return place.name;
-  if (space in STATIC_NAMES) return STATIC_NAMES[/** @type {keyof typeof STATIC_NAMES} */ (space)];
   if (state.me && space === state.me.location.space) return state.me.location.name;
   if (space.startsWith('home:')) return state.me && space === state.me.me.home.id ? '自己的家' : '别人家';
   return space;

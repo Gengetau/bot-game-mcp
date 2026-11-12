@@ -14,6 +14,7 @@ import { ENTRY_PLACE, INTERESTS, STREETS, TRAITS } from './content.js';
 import { WorldError, badRequest, precondition } from './errors.js';
 import { card, publicSpot } from './project.js';
 import { sha256, type Auth, type WorldService } from './service.js';
+import { stopNav, touchScene } from './space.js';
 import type { Principal, ResidentRow, ResidentState } from './types.js';
 
 export interface ProfileInput {
@@ -247,6 +248,8 @@ function comeOnline(w: WorldService, r: ResidentRow, now: number): void {
   if (r.present_since !== null) return;
   r.present_since = now;
   w.saveResident(r);
+  // 同一场景实例里的人要在快照里看到她出现（她自己的快照也从「只有自己」变成整个现场）
+  touchScene(w, r.resident_id);
   const space = w.spaceOf(r);
   if (space) {
     const others = w.audienceIn(space).filter((x) => x.resident_id !== r.resident_id);
@@ -291,12 +294,18 @@ export function enter(w: WorldService, auth: Auth, input: { clientKind?: 'web' |
       w.bootId,
     );
     // 控制权：没人握着、握着的人租约过期、或者本来就是这个客户端 → 归这个客户端
+    let tookOver = false;
     if (!r.controller_client || r.controller_until <= now || r.controller_client === auth.clientId) {
-      if (r.controller_client !== auth.clientId) r.control_epoch += 1;
+      if (r.controller_client !== auth.clientId) {
+        r.control_epoch += 1;
+        tookOver = true;
+      }
       r.controller_client = auth.clientId;
       r.controller_until = expires;
     }
     w.saveResident(r);
+    // 控制权换了手：原来那个客户端安排的路线不再有人续，立即站住
+    if (tookOver && stopNav(w, r.resident_id, now, 'control')) r = w.mustResident(r.resident_id);
     comeOnline(w, r, now);
     w.reschedule('presence_expire', presenceJobKey(r.resident_id), maxLeaseExpiry(w, r), { residentId: r.resident_id });
     return {
@@ -364,13 +373,16 @@ export function heartbeat(w: WorldService, auth: Auth, presenceEpoch: unknown): 
 
 /**
  * 主动离开小镇：立即失去在场资格，撤销这位居民的全部在场租约和控制权，两个代数都递增。
- * 已经提交的移动、制作照常完成；之后不会替她发起任何新动作。
+ * 正在走的路立即停步（停在离开那一刻的位置，回来时人就在那里）；已经提交的制作照常完成；之后不会替她发起任何新动作。
  */
 export function leaveWorld(w: WorldService, principalId: string): { ok: true; presenceEpoch: number } {
   const out = w.commit(() => {
     const now = w.now();
-    const r = w.residentOfPrincipal(principalId);
-    if (!r) throw new WorldError('unauthenticated', '还没有居民身份。', 'no_resident');
+    const found = w.residentOfPrincipal(principalId);
+    if (!found) throw new WorldError('unauthenticated', '还没有居民身份。', 'no_resident');
+    // 先结算走过的区域并停步：离开通知要发在人此刻所在的区域，而不是出发时的区域
+    if (found.present_since !== null) stopNav(w, found.resident_id, now, 'offline');
+    const r = w.mustResident(found.resident_id);
     r.presence_epoch += 1;
     r.control_epoch += 1;
     r.controller_client = null;
@@ -404,13 +416,16 @@ export function claimControl(w: WorldService, auth: Auth): { control: { epoch: n
     if (!r) throw new WorldError('unauthenticated', '还没有居民身份，请先进入小镇。', 'no_resident');
     const lease = w.db.get('SELECT epoch, expires_at FROM presence_leases WHERE resident_id = ? AND client_id = ?', r.resident_id, auth.clientId);
     if (!lease || lease.epoch !== r.presence_epoch || lease.expires_at <= now) throw precondition('在场状态已经失效，请重新进入小镇。', 'presence_lost');
-    if (r.controller_client !== auth.clientId) {
+    const tookOver = r.controller_client !== auth.clientId;
+    if (tookOver) {
       r.control_epoch += 1;
       r.controller_client = auth.clientId;
     }
     // 控制权不比握着它的这条租约活得更久：这个客户端掉线，控制权就跟着过期
     r.controller_until = Number(lease.expires_at);
     w.saveResident(r);
+    // 接管：原来那个客户端安排的路线立即站住，新的控制者自己决定往哪走
+    if (tookOver) stopNav(w, r.resident_id, now, 'control');
     w.emitTo([r.resident_id], 'control', { epoch: r.control_epoch }, now);
     return { control: { epoch: r.control_epoch, mine: true as const } };
   });
@@ -419,7 +434,7 @@ export function claimControl(w: WorldService, auth: Auth): { control: { epoch: n
 export function installIdentity(w: WorldService): void {
   // 在场租约到期：没有任何有效租约了才转为离线，离线时刻记为租约到期的那一刻
   w.jobHandlers.set('presence_expire', (payload, job, now) => {
-    const r = w.resident(String(payload.residentId));
+    let r = w.resident(String(payload.residentId));
     if (!r) return;
     const latest = maxLeaseExpiry(w, r);
     if (latest > now) {
@@ -429,6 +444,9 @@ export function installIdentity(w: WorldService): void {
     w.db.run('DELETE FROM presence_leases WHERE resident_id = ? AND expires_at <= ?', r.resident_id, now);
     if (r.present_since !== null) {
       const at = Math.max(r.present_since, latest || job.due_at);
+      // 还在走的路先结算到离线那一刻并停步，离线通知发在人当时所在的区域
+      stopNav(w, r.resident_id, at, 'offline');
+      r = w.mustResident(r.resident_id);
       announceAway(w, r, at);
       w.goOffline(r, at, 'lease_expired');
     }
@@ -450,6 +468,7 @@ export function installIdentity(w: WorldService): void {
         throw precondition(`已经有一位居民叫「${name}」了。`, 'name_taken');
       }
       r.name = name;
+      touchScene(w, r.resident_id);
     }
     if (action.bio !== undefined) r.state.bio = sanitizeName(String(action.bio), 80);
     if (action.traits !== undefined) r.state.traits = pickList(action.traits, KNOWN_TRAITS, w.params.traitCount, '个性倾向');
