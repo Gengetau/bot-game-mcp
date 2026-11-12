@@ -22,14 +22,30 @@ SKIP_COMPRESS=1 npm run client:export   # 开发时跳过 .br/.gz（brotli 11 �
 ## 本机启动
 
 ```bash
+# 在仓库根目录。BOTGAME_TOWN_CLIENT_DIR 必须是绝对路径：npm 的 -w 会先切到 packages/engine 再跑，
+# 写成相对路径会指到 packages/engine/client/...，页面就是「三维客户端还没有部署」的 404。
 BOTGAME_TOWN=1 BOTGAME_TOWN_DEV_LOGIN=1 BOTGAME_TOWN_DB=/tmp/town.db \
-BOTGAME_TOWN_CLIENT_DIR=client/town/build/web \
+BOTGAME_TOWN_CLIENT_DIR="$PWD/client/town/build/web" \
 npm run dev -w bot-game-mcp -- serve
 # 打开 http://127.0.0.1:7700/town/3d/      调试钩子：加 ?debug=1
 ```
 
+没有导出目录、或路径不对时，`/town/3d/` 返回 404 和一句中文说明（「三维客户端还没有部署」），先查路径。
+
 客户端必须挂在 `/town/` 下（会话 Cookie 的 Path 是 `/town`），引擎按 `/town/3d/` 托管，CSP 见 `docs/TOWN.md`。
 不开开发登录时，从旧页面 `/town/` 用登录票据进入，Cookie 共享。
+
+## 端到端演示与验收
+
+```bash
+npm run client:export   # 先导出
+npm run client:e2e      # 约 3.5 分钟，不进 CI
+```
+
+脚本 `scripts/client-e2e.mjs` 自己起引擎（子进程、开发登录、keys 认证里放一个测试 AI 密钥、临时库、随机端口），
+开桌面 1440x900 和手机 390x844（触摸）两个 Chromium 上下文加一个 agent-kit 的 AI 居民，走完 11 步并检查控制台、CSP 和失败请求，
+截图写到 `client/demo/`，结果写到 `client/demo/results.json`，验收记录见 `client/demo/README.md`。需要 Playwright 和 Chromium
+（`require('playwright')` 能解析即可）。导出目录不存在时脚本提示先导出并以退出码 2 退出。
 
 ## 目录
 
@@ -70,7 +86,8 @@ client/art_source/, client/ASSETS.md   素材来源与台账
 ## 已知限制
 
 - 只有灰盒和一个居民模型；角色外观、动画、昼夜都是占位。墙画成半高（斜俯视免得挡住室内）。
-- 无头 Chromium 用 SwiftShader 渲染，帧率约 3 到 7，没有性能参考意义。画面像素超过 250 万时会自动降 3D 分辨率。
+- 无头 Chromium 用 SwiftShader 渲染，帧率约 3 到 8，没有性能参考意义。画面像素超过 250 万时会自动降 3D 分辨率。桌面 deviceScaleFactor 2（520 万像素）时只剩 1 到 2 帧，页面的时钟估计会被拖到往返 1.5 秒、位置偏差到 0.7 到 1 米，所以验收里桌面用 dsf 1（见 `client/demo/README.md`）。
+- 服务器只在有人走动时推场景快照，别人进镇或离开不会触发；客户端因此在 WebSocket 通着时每 3 秒再取一次 `GET /scene` 兜底（`main.gd` 的 `SAFETY_POLL_MS`）。服务端补上推送后可以去掉。
 - 服务器规则失败（422 等）时 Chromium 控制台会有一行「Failed to load resource」，这是 fetch 对非 2xx 的固有输出，不是脚本错误。
 - 标签页在后台时浏览器暂停渲染循环，心跳和续租也暂停（在场租约 60 秒），回前台会重新进入并取快照。
 - 声音：没有在真机上听过；被浏览器阻止时静音继续。没有在 Godot 里测过音量。
@@ -91,7 +108,7 @@ client/art_source/, client/ASSETS.md   素材来源与台账
 
 | 环境 | 状态 |
 |---|---|
-| 无头 Chromium（Playwright 1.63，SwiftShader，桌面 1440x900 与手机模拟 390x844 触摸） | 已验证：登录进入、点地走、停下、改道、走近物件做动作、进家出门、控制权接管、断线重连、双指和滚轮缩放、无 CSP 违规 |
+| 无头 Chromium（Playwright，SwiftShader，桌面 1440x900 与手机模拟 390x844 触摸） | 已验证：`npm run client:e2e` 的 11 步全过（含 AI 居民、断线重连、两个标签页控制权），无 CSP 违规；细节见 `client/demo/README.md` |
 | 安卓 Chrome | 待真机验证 |
 | iOS Safari（含 `connect-src` 同源 ws、音频手势、安全区） | 待真机验证 |
 | Windows Chrome / Edge | 待真机验证 |

@@ -9,6 +9,9 @@
  * 退出码：全部通过为 0；任何步骤失败、控制台错误、页面错误、CSP 违规、请求失败都算失败（非零）。
  * 结果写到 client/demo/results.json，截图写到 client/demo/NN-说明.png（deviceScaleFactor 2）。
  *
+ * 分辨率说明：手机上下文是 390x844、deviceScaleFactor 2；桌面上下文是 1440x900、deviceScaleFactor 1。桌面如果也用 2，
+ * 画布有 520 万像素，SwiftShader 只剩 1~2 帧每秒，页面的时钟估计被拖慢到往返 1.5 秒，位置精度断言会被渲染饥饿而不是客户端本身搞坏（实测）。
+ *
  * 时间容差说明：无头 Chromium 用 SwiftShader 软件渲染，渲染循环只有 3 到 7 帧每秒，页面里的「显示位置」
  * 是按帧更新的，所以对比「页面里的位置」和「按服务器折线 + 服务器时间现算的位置」时留了 0.6 米
  * （走路速度 2.4 米每秒，约 250 毫秒）的容差。这不是靠加长等待糊过去：每个断言都是定时轮询到条件成立为止。
@@ -270,7 +273,7 @@ const snap = (page) =>
     return {
       self: t.self, scene: t.scene, space: t.space, spaceName: t.spaceName, conn: t.connection, mine: t.mine,
       pending: t.pending, selected: t.selected, nearValid: t.nearValid, zoom: t.zoom, vp: t.vp,
-      serverNow: t.serverNow, off: t.serverTimeOffset, rtt: t.rttMs, lastError: t.lastError, toasts: t.toasts,
+      serverNow: t.serverNow, off: t.serverTimeOffset, rtt: t.rttMs, fps: t.fps, lastError: t.lastError, toasts: t.toasts,
       actors: t.actors.map((a) => ({ id: a.id, name: a.name, x: a.x, z: a.z, moving: a.moving })),
       objects: t.objects,
     };
@@ -387,7 +390,7 @@ async function main() {
     metrics.bundle.push({ file: f, raw, gzip: gz, brotli: br });
   }
 
-  A = await newPlayer(chromiumBrowserA, 'A 桌面', { viewport: { width: 1440, height: 900 }, deviceScaleFactor: 2 }, { wsGate: true });
+  A = await newPlayer(chromiumBrowserA, 'A 桌面', { viewport: { width: 1440, height: 900 }, deviceScaleFactor: 1 }, { wsGate: true });
   B = await newPlayer(chromiumBrowserB, 'B 手机', { viewport: { width: 390, height: 844 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true });
   const nameA = `阿桌${rnd()}`;
   const nameB = `阿机${rnd()}`;
@@ -422,7 +425,6 @@ async function main() {
     }, 8000, '服务器 /scene 里 A 带 nav（在走）');
     note(`服务器：nav ${sc0.nav.id} rev ${sc0.nav.revision}，${normPts(sc0.nav.points).length} 个折点，速度 ${sc0.nav.speed} 米/秒`);
     await until(async () => (await seen(B.page, A.id))?.moving, 8000, 'B 页面里 A 在走（moving）');
-    await shot(A.page, '04-desktop-walking');
     // 若干个时刻：B 页面的 A 显示位置 vs 服务器折线在「B 页面的服务器时间」的位置
     const errs = [];
     for (let i = 0; i < 14; i++) {
@@ -452,7 +454,8 @@ async function main() {
   await step(3, 'A 走路中点「停下」：服务器 nav 为空；B 页面里 A 停住并与服务器一致', async () => {
     await clickWorld(A, 24, 21);
     await until(async () => selfActor(await serverScene(A))?.nav, 8000, 'A 开始走');
-    await sleep(1500);
+    await sleep(1200);
+    await shot(A.page, '04-desktop-walking');
     check(await A.page.$eval('#stopBtn', (e) => !e.disabled), '走路中「停下」应可点');
     await A.page.click('#stopBtn');
     await until(async () => !selfActor(await serverScene(A))?.nav, 8000, '服务器里 A 的 nav 清空');
@@ -501,30 +504,7 @@ async function main() {
 
   // ── 5 ──
   await step(5, '点不可走的地方：有失败提示，角色不动；点障碍内部：按服务器规则', async () => {
-    await walkTo(A, 14, 39.5); // 走到南边路的下沿，正南 4 米处的空地离最近可走点 > 2.5 米，又在视野里
-    const before = selfActor(await serverScene(A));
-    const n0 = A.w.actions.length;
-    // 路（z 36~40）以南、游戏馆（x≥24）以西的空地 (14,43.5)，离最近可走点约 3.8 米 > 2.5 米；不缩回视野，直接点这个点
-    const void_ = await project(A.page, 14, 43.5);
-    const vp0 = await viewport(A.page);
-    check(void_.x > 24 && void_.x < vp0.w - 24 && void_.y > 100 && void_.y < vp0.h - 170, `空地投影 (${void_.x.toFixed(0)},${void_.y.toFixed(0)}) 不在视野内`);
-    await A.page.mouse.click(void_.x, void_.y);
-    const rec = await until(() => A.w.actions.slice(n0).find((r) => r.type === 'navigate' && r.status >= 400 && r.code), 8000, '服务器拒绝这次 navigate');
-    note(`服务器拒绝：HTTP ${rec.status} ${rec.code}/${rec.reason}「${rec.message}」`);
-    check([rec.code, rec.reason].some((c) => ['unreachable', 'no_route'].includes(c)), `期望 unreachable 或 no_route，实际 ${rec.code}/${rec.reason}`);
-    const shown = await until(async () => {
-      const s = await snap(A.page);
-      const hasToast = (s.toasts ?? []).length > 0;
-      return hasToast || s.lastError ? { toasts: s.toasts, lastError: s.lastError } : null;
-    }, 5000, '界面上出现失败提示');
-    note(`界面提示：${JSON.stringify(shown.toasts)} lastError=${JSON.stringify(shown.lastError)}`);
-    await shot(A.page, '05-desktop-unreachable');
-    await sleep(600);
-    const after = selfActor(await serverScene(A));
-    check(!after.nav && after.x === before.x && after.z === before.z, '被拒绝后角色不应移动');
-    await until(async () => !(await snap(A.page)).pending, 6000, '界面不再处于等待确认');
-    // 障碍内部（喷泉正中）：服务器规则是「2.5 米内取最近可走点」，要么拒绝要么走到喷泉边上
-    await until(async () => !selfActor(await serverScene(A))?.nav, 5000, '空闲');
+    // 先点障碍内部（喷泉正中，从广场里点得到）。服务器规则是「2.5 米内取最近可走点」：要么拒绝要么走到喷泉边上
     const m0 = A.w.actions.length;
     const spot = { x: 32, z: 24 }; // 喷泉正中，喷泉脚印 (30.5..33.5, 22.5..25.5)
     const q = await project(A.page, spot.x, spot.z);
@@ -542,8 +522,30 @@ async function main() {
         check(!inside, '角色不应停在喷泉脚印里');
       }
     } else {
-      note('喷泉不在当前视野内，跳过这一小项（正文一项已验证 unreachable）');
+      throw new Error('喷泉不在当前视野内，没法点它');
     }
+    await walkTo(A, 14, 39.5); // 走到南边路的下沿，正南 4 米处的空地离最近可走点 > 2.5 米，又在视野里
+    const before = selfActor(await serverScene(A));
+    const n0 = A.w.actions.length;
+    // 路（z 36~40）以南、游戏馆（x≥24）以西的空地 (14,43.5)，离最近可走点约 3.8 米 > 2.5 米；不缩回视野，直接点这个点
+    const void_ = await project(A.page, 14, 43.5);
+    const vp0 = await viewport(A.page);
+    check(void_.x > 24 && void_.x < vp0.w - 24 && void_.y > 100 && void_.y < vp0.h - 170, `空地投影 (${void_.x.toFixed(0)},${void_.y.toFixed(0)}) 不在视野内`);
+    await A.page.mouse.click(void_.x, void_.y);
+    const rec = await until(() => A.w.actions.slice(n0).find((r) => r.type === 'navigate' && r.status >= 400 && r.code), 8000, '服务器拒绝这次 navigate');
+    note(`服务器拒绝：HTTP ${rec.status} ${rec.code}/${rec.reason}「${rec.message}」`);
+    check([rec.code, rec.reason].some((c) => ['unreachable', 'no_route'].includes(c)), `期望 unreachable 或 no_route，实际 ${rec.code}/${rec.reason}`);
+    const shown = await until(async () => {
+      const s = await snap(A.page);
+      const hit = rec.message && JSON.stringify(s.toasts ?? []).includes(rec.message);
+      return hit ? { toasts: s.toasts, lastError: s.lastError } : null;
+    }, 5000, '界面上出现失败提示');
+    note(`界面提示：${JSON.stringify(shown.toasts)} lastError=${JSON.stringify(shown.lastError)}`);
+    await shot(A.page, '05-desktop-unreachable');
+    await sleep(600);
+    const after = selfActor(await serverScene(A));
+    check(!after.nav && after.x === before.x && after.z === before.z, '被拒绝后角色不应移动');
+    await until(async () => !(await snap(A.page)).pending, 6000, '界面不再处于等待确认');
   });
 
   // ── 6 ──
@@ -623,8 +625,9 @@ async function main() {
     await sleep(500);
     await B.page.touchscreen.tap(...(await B.page.$eval('#destBtn', (e) => { const r = e.getBoundingClientRect(); return [r.x + r.width / 2, r.y + r.height / 2]; })));
     await sleep(500);
-    const open = await B.page.$eval('#destBtn', (e) => e.getAttribute('aria-expanded'));
-    note(`点「地点」按钮后 aria-expanded=${open}`);
+    const menuOpen = await B.page.$eval('#destMenu', (e) => !e.hidden && getComputedStyle(e).display !== 'none').catch(() => false);
+    check(menuOpen, '触摸点「地点」按钮应展开菜单（说明点到了按钮）');
+    note('点「声音」「地点」按钮：按钮起作用（地点菜单展开），没有发出 navigate');
     await B.page.touchscreen.tap(...(await B.page.$eval('#destBtn', (e) => { const r = e.getBoundingClientRect(); return [r.x + r.width / 2, r.y + r.height / 2]; })));
     await sleep(800);
     const navs = B.w.actions.slice(nAct).filter((r) => r.type === 'navigate');
@@ -649,9 +652,9 @@ async function main() {
     let sawA = false;
     let sawB = false;
     let maxDiff = 0;
+    const diag = [];
     const t0 = Date.now();
     let lastRenew = 0;
-    let shotTaken = false;
     // AI 自己每 3 秒续租（ResidentRunner 会自动做；这里只用 TownClient，手动续）
     for (;;) {
       if (Date.now() - t0 > 90_000) throw new Error('AI 90 秒内没走到');
@@ -667,13 +670,15 @@ async function main() {
       const ai = sc.actors.find((a) => a.id === aiId);
       if (pa?.moving) sawA = true;
       if (pb?.moving) sawB = true;
-      if (ai?.nav && pa && pb) maxDiff = Math.max(maxDiff, dist(pa, polyAt(ai.nav, sa.serverNow)), dist(pb, polyAt(ai.nav, sb.serverNow)));
-      if (!shotTaken && pb?.moving && Date.now() - t0 > 2500) {
-        shotTaken = true;
-        await shot(B.page, '09-mobile-sees-ai-walking');
+      if (ai?.nav && pa && pb) {
+        const ea = dist(pa, polyAt(ai.nav, sa.serverNow));
+        const eb = dist(pb, polyAt(ai.nav, sb.serverNow));
+        if (Math.max(ea, eb) > 0.5) diag.push(`A ${ea.toFixed(2)} (fps ${sa.fps?.toFixed?.(1)}, rtt ${sa.rtt}) B ${eb.toFixed(2)} (fps ${sb.fps?.toFixed?.(1)}, rtt ${sb.rtt}) rev ${ai.nav.revision} 服务器此刻-A页时间 ${sc.serverTime - sa.serverNow} ms`);
+        maxDiff = Math.max(maxDiff, ea, eb);
       }
       await sleep(400);
     }
+    for (const d of diag) note(`偏差较大的采样：${d}`);
     check(sawA && sawB, `两个页面都应看见 AI 在走：A ${sawA}，B ${sawB}`);
     const sc = await serverScene(A);
     const anchor = { x: 28, z: 10.25 }; // 地图里 bookshop 的落脚点
@@ -691,7 +696,7 @@ async function main() {
     check(dist(sa, anchor) < 2.0, `AI 应停在书屋落脚点旁边，实际离 ${dist(sa, anchor).toFixed(2)} 米`);
     check(dist(sa, pa) < 0.4 && dist(sa, pb) < 0.4, 'AI 停下后两个页面与服务器应一致');
     check(maxDiff < T_POS, `AI 走路时页面位置与服务器折线现算位置最多相差 ${maxDiff.toFixed(2)} 米，超过 ${T_POS}`);
-    await shot(A.page, '10-desktop-ai-arrived');
+    await shot(A.page, '09-desktop-ai-arrived');
   });
 
   // ── 9 ──
@@ -702,10 +707,10 @@ async function main() {
     await sleep(1200);
     const sa = await snap(A.page);
     note(`A 页面：scene=${sa.scene}，space=${sa.space}（${sa.spaceName}）`);
-    await shot(A.page, '11-desktop-home');
+    await shot(A.page, '10-desktop-home');
     await until(async () => !(await seen(B.page, A.id)), 10_000, 'B 页面里 A 消失');
     const sb = await serverScene(B);
-    check(!sb.actors.some((a) => a.id === A.id), 'B 的服务器场景里不应有 A');
+    check(!sb.actors.some((a) => a.id === A.id) && !JSON.stringify(sb).includes(A.id), 'B 的服务器场景里不应有 A（连编号都不该出现）');
     note('B 看不到 A（客户端与服务器场景快照都没有 A；不含私宅坐标）');
     // A 出门
     await A.page.click('#homeBtn'); // 家里变「出门」
@@ -740,7 +745,7 @@ async function main() {
     const banner = await A.page.$eval('#connText', (e) => (e.hidden ? '' : e.textContent));
     check(/重连|离线/.test(banner), `断线时界面应显示文字提示，实际「${banner}」`);
     note(`界面文字提示：「${banner}」`);
-    await shot(A.page, '12-desktop-reconnecting');
+    await shot(A.page, '11-desktop-reconnecting');
     await sleep(2500); // 断着的这几秒，A 走路的续租走 POST /nav/renew
     A.gate.block = false;
     await until(async () => (await snap(A.page)).conn === 'ok', 40_000, '重连成功');
@@ -777,7 +782,7 @@ async function main() {
     await page2.mouse.click(q.x, q.y);
     await sleep(900);
     check(A2.w.actions.slice(m0).filter((r) => r.type === 'navigate').length === 0, '只读标签页点地不应发 navigate');
-    await shot(page2, '13-desktop-readonly-tab');
+    await shot(page2, '12-desktop-readonly-tab');
     await page2.click('#claimBtn');
     await until(async () => (await snap(page2)).mine === true, 10_000, '第二个标签页接管成功');
     await until(async () => A.page.$eval('#readonly', (e) => !e.hidden && getComputedStyle(e).display !== 'none').catch(() => false), 15_000, '原来的标签页变只读');
@@ -788,7 +793,7 @@ async function main() {
     await clickWorld({ page: page2, touch: false }, me.x + 4, me.z - 3);
     await until(() => A2.w.actions.slice(n1).find((r) => r.type === 'navigate' && r.status === 200), 8000, '接管后新标签页 navigate 成功');
     await sleep(500);
-    await shot(A.page, '14-desktop-old-tab-readonly');
+    await shot(A.page, '13-desktop-old-tab-readonly');
   });
 }
 

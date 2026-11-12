@@ -73,6 +73,7 @@ var next_heartbeat: float = 0.0
 var next_poll: float = 0.0
 ## WebSocket 通着时的保险：服务器只在有人走动时推快照，别人进镇 / 离开不会触发，所以隔几秒主动取一次 /scene
 var next_safety_poll: float = 0.0
+var last_scene_time: float = -1.0
 const SAFETY_POLL_MS := 3000.0
 var last_pong_ms: float = 0.0
 var ping_sent: Dictionary = {}
@@ -595,6 +596,12 @@ func _on_scene(msg: Dictionary) -> void:
 		if not map_loading:
 			_reload_map_after_mismatch()
 		return
+	# 旧快照不能盖掉新的：WS 推送和 GET /scene 兜底在路上会交错，晚到的旧回应会把刚开始走的人「按回原地」
+	if msg.has("serverTime"):
+		var st: float = float(msg["serverTime"])
+		if st < last_scene_time:
+			return
+		last_scene_time = st
 	var sid: String = str(msg.get("scene", cur_scene))
 	if msg.has("serverTime"):
 		clock.rough(float(msg["serverTime"]))
