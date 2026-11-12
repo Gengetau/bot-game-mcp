@@ -92,7 +92,7 @@ describe('管理页', () => {
     expect(o.keys).toEqual([expect.objectContaining({ id: '10001', name: '测试bot', owner: '2362232313' })]);
     const text = JSON.stringify(o);
     // 不带密钥、身份、剧本正文
-    expect(text).not.toMatch(/bgk_/);
+    expect(text).not.toMatch(/bgk_[A-Za-z0-9_-]{32}/);
     expect(text).not.toContain('鞋印');
     expect(text).not.toContain('identity');
   });

@@ -630,7 +630,8 @@ describe('栖灯镇隐私：空间事件与场景快照', () => {
     for (const out of [web, JSON.stringify(agentView(t.w, a.row(), a.clientId)), JSON.stringify(a.events())]) {
       expect(out).not.toContain(`"x":${bp.x}`);
       expect(out).not.toContain(`"z":${bp.z}`);
-      expect(out).not.toContain(String(bp.x));
+      // 游标/动作窗口的签名是随机的，先去掉再查数值（"36.5" 会跨在 "36" + "." + 签名首字符上）
+      expect(out.replace(/\.[A-Za-z0-9_-]{10}/g, '.')).not.toContain(String(bp.x));
     }
     const agent = JSON.stringify(agentView(t.w, a.row(), a.clientId));
     expect(agent).not.toMatch(/"(x|z|heading|points|scene|instance)":/);

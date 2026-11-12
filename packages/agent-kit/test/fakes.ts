@@ -200,6 +200,7 @@ export class FakePort implements TownPort {
   }
 }
 
-export const chat = (from = 'r_other', text = '你好', extra: Record<string, unknown> = {}): TownEvent => ({ type: 'chat', at: Date.now(), space: 'plaza', from: { id: from, name: from }, text, messageId: Math.floor(Math.random() * 1e9), ...extra });
-export const ev = (type: string, extra: Record<string, unknown> = {}): TownEvent => ({ type, at: Date.now() + Math.floor(Math.random() * 1e6), ...extra });
+let evSeq = 0; // 自增保证每个事件内容唯一（runner 按内容哈希去重，随机的 at 可能碰巧相同）
+export const chat = (from = 'r_other', text = '你好', extra: Record<string, unknown> = {}): TownEvent => ({ type: 'chat', at: Date.now(), space: 'plaza', from: { id: from, name: from }, text, messageId: 1e9 + ++evSeq, ...extra });
+export const ev = (type: string, extra: Record<string, unknown> = {}): TownEvent => ({ type, at: Date.now() + 1e6 + ++evSeq, ...extra });
 export { flush };

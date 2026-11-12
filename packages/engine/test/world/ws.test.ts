@@ -310,10 +310,12 @@ describe('WS：票据与握手', () => {
     expect(await wrong.waitClosed()).toBe(4401);
 
     const u = await new User(app).login('阿灯');
+    const tk = await u.ticket(); // 取票（HTTP 往返）放在 open 之前，别占用 150ms 的 hello 超时
+    const tk2 = await u.ticket();
     const c = await Client.open(app.wsUrl);
-    c.hello(await u.ticket());
+    c.hello(tk);
     await c.type('hello');
-    c.hello(await u.ticket());
+    c.hello(tk2);
     expect((await c.type('error')).code).toBe('bad_request');
     c.send({ t: 'ping', n: 7 });
     expect(await c.type('pong')).toMatchObject({ n: 7, serverTime: app.t.clock.now() });
@@ -718,8 +720,9 @@ describe('WS：关闭、限额与保活', () => {
   it('心跳：不回协议层 pong 的客户端被断开；会回的不受影响', async () => {
     const app = await serve({ ws: { pingMs: 40 } });
     const u = await new User(app).login('阿灯');
+    const ticket = await u.ticket(); // 取票放在 open 之前，别占用 pingMs 的计时
     const dead = await Client.open(app.wsUrl, { autoPong: false });
-    dead.hello(await u.ticket());
+    dead.hello(ticket);
     await dead.type('hello');
     const live = await attach(app, await new User(app).login('小满'));
     expect(await dead.waitClosed(3000)).toBe(1006);
