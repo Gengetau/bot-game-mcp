@@ -1,4 +1,4 @@
-# 栖灯镇三维网页客户端（P0 灰盒）
+# 栖灯镇三维网页客户端（街景与居民美术）
 
 Godot 4.7.2（GDScript，Compatibility 渲染，单线程网页导出）。Godot 只画三维世界，所有文字界面是叠在画布上的普通 DOM。
 服务端协议见 `docs/TOWN.md`（「空间与导航」「HTTP 接口」「空间同步（WebSocket）」），客户端不改服务端规则。
@@ -56,7 +56,7 @@ npm run client:e2e      # 约 4.3 分钟，不进 CI；需要完整导出（含 
 client/town/
   project.godot, export_presets.cfg, main.tscn, icon.svg
   scripts/   clock.gd（服务器时间估计） bridge.gd（fetch、界面桥） net.gd（WebSocket）
-             actor.gd（居民：折线插值、动画） world.gd（从 /map 生成灰盒） rig.gd（镜头）
+             actor.gd（居民：折线插值、动画） world.gd（从 /map 生成街景） rig.gd（镜头）
              audio.gd（音效） main.gd（启动流程、协议、输入、续租、重连）
   web/       shell.html（导出外壳，无内联脚本） boot.js（启动引擎、fetch 通道、AudioContext 拦截）
              hud.js / hud.css（DOM 界面：面板、姓名牌、按钮、提示条、声音开关）
@@ -68,7 +68,7 @@ client/art_source/, client/ASSETS.md   素材来源与台账
 ## 协议要点（实现位置都在 main.gd）
 
 - 启动：点「进入小镇」（用户手势：恢复 AudioContext、播确认音）-> `GET /session`、`/config` -> 未登录且开放开发登录则显示名字框
-  `POST /auth/dev`，否则提示去旧页面 -> `POST /enter` -> `GET /map`（生成灰盒）-> `POST /ws-ticket` -> 连 `/town/ws` -> hello -> scene。
+  `POST /auth/dev`，否则提示去旧页面 -> `POST /enter` -> `GET /map`（生成街景）-> `POST /ws-ticket` -> 连 `/town/ws` -> hello -> scene。
 - 网络：`fetch` 经 `boot.js` 的 `TownHost.fetchJson`（同源 Cookie），结果回调进 Godot；WebSocket 用 `WebSocketPeer`，每帧 poll。
   **不使用 `JavaScriptBridge.eval`**（这条路径的 CSP 没有 `unsafe-eval`）。
 - 位置：只按 scene 里的折线 + `speed` + `startedAt` + `until` 和服务器时间现算（`hello.serverTime` + ping/pong 取最小往返的样本）。
@@ -81,7 +81,7 @@ client/art_source/, client/ASSETS.md   素材来源与台账
 - 在场与控制权：`/enter`、按 `nextHeartbeatMs` 心跳；没有控制权时只读并给「接管」（`POST /claim`）。`clientId` 存 `sessionStorage`（每个标签页一个），用 Web Locks 判断复制出来的标签页并给它换新 id。
 - 断线：WS 关闭后退避重连（1 -> 15 秒，每次重新取票据），断着时每 1.5 秒 `GET /scene`；回到前台（或主循环停过超过 3 秒）立即对时、心跳、取快照，并发一次探测，3 秒内没有任何回应就按死连接重连；前台使用时 12 秒没收到任何消息也按死连接重连；后台期间停掉的时间不算静默。
   `hello.map.checksum` 和手里清单不一致时重新取 `/map` 并重建场景。
-- 私宅：scene 里 `scene` 变成 `home` 时切到 home 灰盒；出门切回。
+- 私宅：scene 里 `scene` 变成 `home` 时切到 home 场景；出门切回。
 - 一件可交互物件：藏书架的「读书」（一个人就能开始、不用先买东西）。远处点它 -> 走近 -> 出现「读书」按钮 -> `start_interaction`
   -> 服务器确认 -> 提示条和「正在：读书」。远的时候直接发会得到 `too_far`，界面提示「离……太远了」（`?debug=1` 下 `__town.act({...})` 可直接发任意动作）。
 - 调试钩子：`?debug=1` 时每 100 毫秒写 `window.__town`：`{self, scene, space, serverTimeOffset, connection, actors:[{id,name,x,z,moving,sx,sy}], objects, mine, pending, ...}`，
@@ -89,7 +89,7 @@ client/art_source/, client/ASSETS.md   素材来源与台账
 
 ## 已知限制
 
-- 只有灰盒和一个居民模型；角色外观、动画、昼夜都是占位。墙画成半高（斜俯视免得挡住室内）。
+- 房屋是剖开式：屋顶、山墙和上半墙在角色进屋或挡住视线时淡出，不画成半高墙。居民 8 套服装、站走坐挥手互动动画；昼夜跟服务器世界时间。美术是第一版，之后可以换模型（见下节）。
 - 无头 Chromium 用 SwiftShader 渲染，帧率约 3 到 8，没有性能参考意义。画面像素超过 250 万时会自动降 3D 分辨率。桌面 deviceScaleFactor 2（520 万像素）时只剩 1 到 2 帧，页面的时钟估计会被拖到往返 1.5 秒、位置偏差到 0.7 到 1 米，所以验收里桌面用 dsf 1（见 `client/demo/README.md`）。
 - 服务器规则失败（422 等）时 Chromium 控制台会有一行「Failed to load resource」，这是 fetch 对非 2xx 的固有输出，不是脚本错误；端到端要求这类行数等于步骤里声明过的预期失败次数。
 - 软件渲染（3 到 8 帧每秒）下页面的服务器时间估计比真实服务器慢约 110 到 290 毫秒（端到端步骤 2、8 的对时数据；推断原因是 pong 要等下一帧才被读到），折成位置是整体滞后 0.3 到 0.7 米；真机待测。
@@ -150,3 +150,13 @@ client/art_source/, client/ASSETS.md   素材来源与台账
 断线：            开飞行模式 10 秒再关，界面是否显示「重连中」并恢复
 发现的问题：
 ```
+
+
+## 美术层与可替换素材
+
+- `town/assets/art_table.json`：物件种类（kind）到模型的对应表。每条可写 `model`（glb 路径）或 `proc`（`town_art.gd` 里程序生成的函数名）、`scale`、`yaw`、`offset`、`palette`、`fade`（挡镜头时淡出）、`glow`（夜里发光点，偏移用最终摆放空间）。
+- `town/scripts/art.gd`（`TArt`）读这张表；`town/scripts/town_layout.gd` 摆放非可走地面上的装饰（树、路灯、围栏、摊位、长椅……），`world.gd` 的 `put()` 会拿服务器地图校验脚印，压到可走格的装饰被拒绝，不会挡路。
+- **私有覆盖目录** `town/art_private/`（已在 `.gitignore`，不进仓库）：放 `art_table.json` 和模型文件，同名 kind 覆盖仓库里的条目，路径用 `res://art_private/...`。不是 CC0 的素材（例如 YumeForge）只能放这里。没有这个目录时用仓库里的 CC0 默认素材，导出照常成功。
+- 居民外观：`actor.gd` 的 `appearance_for(id)`，按编号 hash 选 8 套服装之一；要换规则只改这个函数。
+- 画质：HUD 的「画质」按钮切高 / 低（localStorage `town3d.quality`）。高 = 平行光阴影；低 = 脚底圆影，手机和软件渲染默认低。3D 分辨率会在帧率长期过低时自动下调（动态分辨率）。
+- 调试：`?debug=1&hour=19` 固定世界钟点（昼夜截图用）。

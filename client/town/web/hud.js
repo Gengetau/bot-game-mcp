@@ -132,6 +132,34 @@
     if (soundOn && window.TownHost) window.TownHost.unlockAudio();
   });
 
+  /* ── 画质：高 = 实时阴影；低 = 只有脚下的软影（手机默认低）。选择记在本机 ── */
+  var qualityHigh = (function () {
+    var v = lsGet('town3d.quality');
+    if (v === 'high') return true;
+    if (v === 'low') return false;
+    if (window.matchMedia && window.matchMedia('(pointer: coarse)').matches) return false;
+    // 软件渲染（SwiftShader / llvmpipe）开实时阴影只会更卡
+    try {
+      var gl = document.createElement('canvas').getContext('webgl2');
+      var ext = gl && gl.getExtension('WEBGL_debug_renderer_info');
+      var rn = ext ? String(gl.getParameter(ext.UNMASKED_RENDERER_WEBGL)) : '';
+      if (/swiftshader|llvmpipe|software/i.test(rn)) return false;
+    } catch (e) {
+      /* 取不到就按桌面默认 */
+    }
+    return true;
+  })();
+  function renderQuality() {
+    $('qualityBtn').textContent = qualityHigh ? '画质：高' : '画质：低';
+  }
+  renderQuality();
+  $('qualityBtn').addEventListener('click', function () {
+    qualityHigh = !qualityHigh;
+    lsSet('town3d.quality', qualityHigh ? 'high' : 'low');
+    renderQuality();
+    emit('quality', qualityHigh ? 'high' : 'low');
+  });
+
   /* ── 面板 ── */
   var state = {};
   var dead = false;
@@ -175,6 +203,7 @@
   $('enterBtn').addEventListener('click', function () {
     if (window.TownHost) window.TownHost.unlockAudio();
     emit('sound', soundOn ? '1' : '0');
+    emit('quality', qualityHigh ? 'high' : 'low');
     emit('enter');
   });
   $('retryBtn').addEventListener('click', function () {

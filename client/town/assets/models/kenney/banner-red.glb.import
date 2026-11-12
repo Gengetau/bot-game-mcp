@@ -3,13 +3,13 @@
 importer="scene"
 importer_version=1
 type="PackedScene"
-uid="uid://cyybljqpm4ylp"
-path="res://.godot/imported/resident.glb-9334e81880a5cf7844f17ac8b0e27a66.scn"
+uid="uid://bptvb5eb2rg3c"
+path="res://.godot/imported/banner-red.glb-7e655c5a82073d393dc5d5674ad8e60c.scn"
 
 [deps]
 
-source_file="res://assets/models/characters/resident.glb"
-dest_files=["res://.godot/imported/resident.glb-9334e81880a5cf7844f17ac8b0e27a66.scn"]
+source_file="res://assets/models/kenney/banner-red.glb"
+dest_files=["res://.godot/imported/banner-red.glb-7e655c5a82073d393dc5d5674ad8e60c.scn"]
 
 [params]
 

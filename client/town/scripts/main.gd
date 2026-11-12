@@ -151,21 +151,26 @@ func _ready() -> void:
 	print("[town] 客户端已就绪")
 
 
+## 光照和昼夜在 daynight.gd（按服务器世界时间），画质档由界面按钮 / 默认值决定。
+var _fps_avg: float = 60.0
+var _drs: float = 1.0
+var _drs_t: float = 0.0
+var daynight: TDayNight = null
+var quality_high: bool = true
+
+
 func _build_environment() -> void:
-	var env := Environment.new()
-	env.background_mode = Environment.BG_COLOR
-	env.background_color = Color(0.62, 0.74, 0.86)
-	env.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
-	env.ambient_light_color = Color(0.72, 0.74, 0.8)
-	env.ambient_light_energy = 0.9
-	var we := WorldEnvironment.new()
-	we.environment = env
-	add_child(we)
-	var sun := DirectionalLight3D.new()
-	sun.rotation_degrees = Vector3(-58.0, -35.0, 0.0)
-	sun.light_energy = 0.9
-	sun.shadow_enabled = false
-	add_child(sun)
+	daynight = TDayNight.new()
+	add_child(daynight)
+	daynight.debug_hour = bridge.debug_hour
+	_set_quality(not DisplayServer.is_touchscreen_available())
+
+
+func _set_quality(high: bool) -> void:
+	quality_high = high
+	if daynight != null:
+		daynight.set_quality(high)
+	world.set_quality(high)
 
 
 func _build_marker() -> void:
@@ -199,6 +204,8 @@ func _on_ui(ev: String, arg: String) -> void:
 				_run_flow()
 		"login":
 			login_submitted.emit(arg)
+		"quality":
+			_set_quality(arg == "high")
 		"sound":
 			audio.set_enabled(arg == "1")
 		"stop":
@@ -328,6 +335,9 @@ func _flow_body() -> bool:
 	if int(cfg["status"]) == 200 and cfg["data"] is Dictionary:
 		dev_login = bool(cfg["data"].get("devLogin", false))
 		heartbeat_ms = int(cfg["data"].get("heartbeatMs", 20000))
+		var winfo = cfg["data"].get("world")
+		if winfo is Dictionary and daynight != null:
+			daynight.set_timezone(str(winfo.get("timezone", "")))
 	var logged_in: bool = bool((sess["data"] as Dictionary).get("loggedIn", false))
 	if logged_in:
 		user_name = str((sess["data"] as Dictionary).get("name", ""))
@@ -1315,7 +1325,7 @@ func _process(dt: float) -> void:
 	var vs: Vector2 = get_viewport().get_visible_rect().size
 	if vs.y > 1.0:
 		rig.set_aspect(vs.x / vs.y)
-		_adapt_resolution(vs)
+		_adapt_resolution(vs, dt)
 
 	# 连接维护
 	if want_net:
@@ -1353,7 +1363,11 @@ func _process(dt: float) -> void:
 
 	# 角色
 	for id in actors:
-		(actors[id] as TActor).tick(dt, now_s)
+		var ta: TActor = actors[id]
+		ta.tick(dt, now_s)
+		_update_sitting(ta)
+		ta.set_shadow_visible(true)
+	_update_scenery(dt, now_s)
 	var sa: TActor = actors.get(self_id)
 	if sa != null:
 		rig.follow(Vector3(sa.disp.x, 0.0, sa.disp.y), dt)
@@ -1388,10 +1402,52 @@ func _process(dt: float) -> void:
 			_push_debug()
 
 
+## 坐下：站在茶桌的座位锚点上、那张桌子正在被使用时坐着（自己的活动也算）。
+func _update_sitting(a: TActor) -> void:
+	if a.moving:
+		return
+	var spot: Dictionary = world.sit_spot(cur_scene, a.disp)
+	if spot.is_empty():
+		a.set_sitting(false)
+		return
+	var active: bool = false
+	for o in here.get("objects", []):
+		if str(o.get("id", "")) == str(spot["object"]) and o.get("active") != null:
+			active = true
+	if a.is_self and my_interaction is Dictionary and str(my_interaction.get("objectId", "")) == str(spot["object"]):
+		active = true
+	a.set_sitting(active, spot["center"])
+
+
+## 昼夜（服务器世界时间）、遮挡淡出（屋顶、树）。
+func _update_scenery(dt: float, now_s: float) -> void:
+	if daynight != null:
+		daynight.tick(now_s)
+		world.set_night(daynight.night)
+	var heads: Array = []
+	for id in actors:
+		var ha: TActor = actors[id]
+		heads.append(Vector3(ha.disp.x, 1.6, ha.disp.y))
+	world.update_view(rig.cam.global_position, heads, dt)
+
+
 ## 画面像素太多（高分屏手机）时降低 3D 渲染分辨率，保证帧率；界面是 DOM，不受影响。
-func _adapt_resolution(vs: Vector2) -> void:
+func _adapt_resolution(vs: Vector2, dt: float = 0.0) -> void:
 	var px: float = vs.x * vs.y
 	var scale: float = 1.0 if px <= 2500000.0 else sqrt(2500000.0 / px)
+	# 动态分辨率：帧率长期过低（软件渲染、老手机）就逐步降低 3D 渲染分辨率，恢复后慢慢升回去；界面是 DOM，文字不受影响
+	if dt > 0.0:
+		_fps_avg = lerpf(_fps_avg, 1.0 / maxf(dt, 0.0005), 1.0 - exp(-dt * 0.7))
+		if dt > 0.35 and _drs > 0.3:
+			_drs = maxf(0.3, _drs * 0.7)  # 一帧就超过 0.35 秒：马上降一档，不等平均值
+		_drs_t += dt
+		if _drs_t > 1.5:
+			_drs_t = 0.0
+			if _fps_avg < 24.0 and _drs > 0.3:
+				_drs = maxf(0.3, _drs * 0.85)
+			elif _fps_avg > 52.0 and _drs < 1.0:
+				_drs = minf(1.0, _drs * 1.08)
+	scale = minf(scale, _drs)
 	if absf(get_viewport().scaling_3d_scale - scale) > 0.01:
 		get_viewport().scaling_3d_scale = scale
 
@@ -1580,6 +1636,9 @@ func _push_debug() -> void:
 		"objects": ol,
 		"vp": m,
 		"zoom": rig.dist,
+		"drs": snappedf(_drs, 0.01),
+		"quality": "high" if quality_high else "low",
+		"hour": snappedf(daynight.hour, 0.01) if daynight != null else -1.0,
 		"serverNow": clock.server_now(),
 		"fps": Engine.get_frames_per_second(),
 		"checksum": str(manifest.get("checksum", "")),

@@ -558,6 +558,17 @@ async function main() {
     check(r.headers()['content-encoding'] === 'br', `index.pck 应发 br 预压缩，实际 content-encoding=${r.headers()['content-encoding']}`);
     await sleep(800);
     await shot(A.page, '02-desktop-two-residents');
+    {
+      // 记下两个页面这时的帧率和 3D 渲染分辨率（软件渲染下会被动态分辨率压低）：每 2 秒一次，共 5 次
+      const rows = [];
+      for (let i = 0; i < 5; i++) {
+        await sleep(2000);
+        const ra = await A.page.evaluate(() => [window.__town.fps, window.__town.drs, window.__town.quality].join('/'));
+        const rb = await B.page.evaluate(() => [window.__town.fps, window.__town.drs, window.__town.quality].join('/'));
+        rows.push(`${ra} | ${rb}`);
+      }
+      note(`帧率/3D分辨率/画质（软件渲染，桌面 | 手机）：${rows.join('；')}`);
+    }
   });
 
   // ── 2 ──
@@ -829,6 +840,8 @@ async function main() {
     const m0 = A.w.actions.length;
     // 声明：下面空地那一下必定被拒绝（1 次）；喷泉正中的 navigate 是否被拒取决于「最近可走点」规则（再多 0~1 次）
     allowFailure(A.w, 'POST', /\/town\/api\/actions$/, { min: 1, max: 2, why: '步骤 5：点空地必定 unreachable；喷泉正中可能被拒' });
+    // 新镜头更近（俯角低、距离短），喷泉要离角色 ~10 米以内才在可点区域里：先走到广场南侧
+    await walkTo(A, 32, 29);
     const spot = { x: 32, z: 24 }; // 喷泉正中，喷泉脚印 (30.5..33.5, 22.5..25.5)
     const q = await project(A.page, spot.x, spot.z);
     const vp = await viewport(A.page);

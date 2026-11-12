@@ -5,7 +5,9 @@
 
 | 包名（版本） | 作者 | 原始页面 | 取得日期 | 许可证 | 对应文件 | 修改说明 |
 |---|---|---|---|---|---|---|
-| Mini Characters (2.0) | Kenney (www.kenney.nl) | https://kenney.nl/assets/mini-characters | 2026-11-12 | CC0 1.0（包内 License.txt：`art_source/third_party/kenney_mini-characters/License.txt`） | 输入：`art_source/source/kenney_mini_character_male_a.glb`（原包 `character-male-a.glb`）、`art_source/source/Textures/colormap.png`；输出：`town/assets/models/characters/resident.glb`、`town/assets/models/characters/resident_colormap.png`（与输入的 `colormap.png` 逐字节相同，Kenney CC0 原图；resident.glb 导入后以外部资源引用它，删掉会报 `No loader found for resource` 并丢失角色贴图） | `art_source/build_resident.py` 整理：只留 `idle`、`walk` 两个动作（原包 34 个，其余删除）；整体放大到身高 1.7 米，缩放烘进顶点、骨骼和动作位移；脚底在 y=0；贴图同时随 glb 内嵌并在同目录放一份 PNG。网格、骨架、两个动作的内容和贴图是原作，没有重画 |
+| Fantasy Town Kit (2.0) | Kenney (www.kenney.nl) | https://kenney.nl/assets/fantasy-town-kit | 2026-11-13 | CC0 1.0（包内 License.txt 写 "Creative Commons Zero, CC0"：`art_source/third_party/kenney_fantasy-town-kit/License.txt`）；zip 的 sha256 `1a7530c09f4d2fa2cdee259876f089334f8b1f27fa86a0c4f54ef86cdd8676ef` | `town/assets/models/kenney/`：tree、tree-high、tree-crooked、lantern、fence、fence-gate、hedge、hedge-large、stall-red、cart、rock-large、rock-small、rock-wide、banner-red、banner-green、stall-stool 的 glb，加 `Textures/colormap.png`（共约 408 KB，包里其余模型没有进仓库） | 只留用到的模型。`art_source/recolor_kenney.py` 重绘调色板贴图（奶油、木棕、灰蓝瓦的色调，更柔）；重绘后的贴图和脚本都进了仓库。网格没有改；摆放、缩放、朝向、发光点在 `town/assets/art_table.json`；房屋、地面、小物件（长椅、桌、书架、灶、花坛、喷泉……）是 `scripts/town_art.gd` 用程序生成的，不属于任何第三方包 |
+| Adventurers (2.0 FREE) | Kay Lousberg (www.kaylousberg.com) | https://kaylousberg.itch.io/kaykit-adventurers | 2026-11-13 | CC0 1.0（包内 License.txt 写 "Creative Commons Zero, CC0"，署名可选：`art_source/third_party/kaykit_adventurers/License.txt`）；zip 的 sha256 `abe48f4763fba0896bab486ee9e6d08ca6b5b3884b9601f235c8847ae94dc479` | `town/assets/models/characters/body_{rogue,ranger,mage,knight}.scn`、`outfit_0..7.png` | `art_source/build_residents.sh` + `build_residents.gd`：只取 4 个身体（骨架相同），去掉武器道具，存成 Godot 场景；`recolor_residents.py` 把原调色板重绘成 8 套服装（`outfit_*.png`，重绘贴图和脚本都进仓库）。网格没有改 |
+| Character Animations (1.1) | Kay Lousberg (www.kaylousberg.com) | https://kaylousberg.itch.io/kaykit-character-animations | 2026-11-13 | CC0 1.0（`art_source/third_party/kaykit_character-animations/License.txt`）；zip 的 sha256 `65882f31f905ad2e953819648a59287cdeab8f623908d5ef701971d3758be20f` | `town/assets/models/characters/residents_anims.res`（约 93 KB） | `build_residents.gd` 只摘出用到的动作（idle、walk、sit 三段、wave、interact 等）合成一个动画库，循环动作设成 LOOP_LINEAR；其余动作没有进仓库 |
 | Interface Sounds (1.0) | Kenney (www.kenney.nl) | https://kenney.nl/assets/interface-sounds | 2026-11-12 | CC0 1.0（`art_source/third_party/kenney_interface-sounds/License.txt`） | 输入：`art_source/source/audio/kenney_interface_confirmation_001.ogg`；输出：`town/assets/audio/sfx/confirm.wav` | `art_source/convert_sfx.sh`：ogg 转单声道 44.1 kHz 16 位 wav，去开头静音，音量归一（峰值约 -3 dB） |
 | Impact Sounds (1.0) | Kenney (www.kenney.nl) | https://kenney.nl/assets/impact-sounds | 2026-11-12 | CC0 1.0（`art_source/third_party/kenney_impact-sounds/License.txt`） | 输入：`art_source/source/audio/kenney_impact_footstep_concrete_001.ogg`；输出：`town/assets/audio/sfx/footstep.wav` | 同上（峰值约 -4 dB，比确认音轻） |
 | Godot Engine (4.7.2.stable) | Godot Engine contributors | https://godotengine.org | 以 `/opt/godot/godot --headless --version` 确认：`4.7.2.stable.official.ed1daf0bf` | MIT；引擎内置的第三方组件各有自己的许可（完整清单见 Godot 自带的 `COPYRIGHT.txt`，或引擎「第三方许可」页面） | 网页导出产物里的引擎 `index.wasm`、`index.js` 等（`client/town/build/web/`） | 引擎随网页导出一起分发；没有核对过是否用了官方模板、有无自行改动 |
@@ -17,31 +19,33 @@
 
 CC0 不要求署名；按 Kenney 的建议，游戏的「关于」里可以写一句 Kenney (www.kenney.nl)。
 
+**旧资产说明**：P0 的 Kenney Mini Characters (2.0，CC0，2026-11-12 取得) 已不再使用，运行时文件 `resident.glb` 等已删除；`art_source/` 里还留着它的原始输入、`build_resident.py`、`check_resident.gd` 和 License.txt，仅作历史记录，可以整体删除。
+
 ## 居民模型的实测属性（Godot 4.7.2 导入后）
 
-- 动作：`idle`（1.333 秒）、`walk`（0.667 秒，一个周期两步，约每 0.33 秒一次脚落地）。**导入后 loop_mode 是 NONE（glTF 没有循环标志）**，客户端播放前要设成 `Animation.LOOP_LINEAR`（或在 `resident.glb.import` 里设置）。
-- 骨架 `Skeleton3D`，7 根骨：`root`、`leg-left`、`leg-right`、`torso`、`arm-left`、`arm-right`、`head`；`AnimationPlayer` 在导入出的场景根下面。
-- 身高 1.698 米，脚底 y=0，原点在两脚中间；静止姿态是 T 字，所以左右宽约 1.9 米（只是两臂平伸，不是身体宽）。
-- 朝向：**正面朝 +Z**（Godot 里 glTF 的「前」，用渲染截图确认过：相机在 +Z 看到的是脸）。Godot 的「向前」约定是 -Z，所以客户端要让角色朝移动方向时，用 `atan2(dx, dz)` 作为绕 Y 轴的旋转，不要用 `look_at`（它让 -Z 指向目标）；或者给模型外面套一层旋转 180 度的节点。
-- 文件体积：resident.glb 约 109 KB；confirm.wav 约 25 KB；footstep.wav 约 9 KB。
-- 材质：一张 colormap 调色板贴图（glb 里内嵌；Godot 导入后实际引用同目录的 `resident_colormap.png`，该文件不能删），一个 `StandardMaterial3D`。
+- 骨架是 KayKit 的 Rig_Medium，4 个身体共用；动画库 `residents_anims.res` 里的动作：idle、walk、sit 的坐下 / 静坐 / 站起、wave、interact。客户端在运行时给身体加 `AnimationPlayer`（root_node 指到上一级），不依赖 glb 里带的播放器。
+- 身高在 `actor.gd` 里按包围盒缩放到 1.72 米（约三头身）；脚底 y=0。服装由 `appearance_for(id) = abs(id.hash()) % 8` 决定，只在这一个函数里，换规则改它。
+- 材质：城镇着色器（`assets/shaders/town.gdshader`）采样 `outfit_N.png` 调色板，无高光。
+- 体积：4 个身体 + 动画库 + 8 张调色板合计约 0.2 MB；整个 `index.pck` 见 `docs/PROGRESS.md`。
+
+## 可替换的美术层
+
+物件的模型对应表在 `town/assets/art_table.json`（kind -> 模型、缩放、朝向、偏移、调色板、淡出、发光）。
+可选的私有覆盖目录 `client/town/art_private/`（git 忽略，不进仓库），里面放 `art_table.json` 和模型就会覆盖同名条目；用法见 `client/README.md`。
+**不是 CC0 的素材（例如 YumeForge）只能放在 art_private 里，不得进 git。**
 
 ## 怎么重新生成
 
 ```bash
-# 一次性准备：Python 3.13 虚拟环境装 bpy（不需要装 Blender）
-python3.13 -m venv /tmp/bpyenv && /tmp/bpyenv/bin/pip install bpy
+# 一次性准备：Python 3.13 虚拟环境装 bpy（不需要装 Blender）；Pillow
+python3.13 -m venv /tmp/bpyenv && /tmp/bpyenv/bin/pip install bpy pillow
 
-# 居民模型（输入在 art_source/source/，输出 town/assets/models/characters/resident.glb）
-/tmp/bpyenv/bin/python client/art_source/build_resident.py
+# Kenney 调色板重绘
+/tmp/bpyenv/bin/python client/art_source/recolor_kenney.py
+# 居民：身体 + 动画库 + 服装调色板（需要 Godot 4.7.2；两个原始 zip 各解压在独立目录）
+bash client/art_source/build_residents.sh <KayKit_Adventurers 目录> <KayKit_Character_Animations 目录>
+/tmp/bpyenv/bin/python client/art_source/recolor_residents.py
 
 # 音效（需要 ffmpeg）
 bash client/art_source/convert_sfx.sh
-
-# 用 Godot 验收导入结果，见 client/art_source/README.md 的「验收」
 ```
-
-## 这是 P0 的验证资产
-
-Mini Characters 的这个角色是为 P0 验证「Blender -> GLB -> Godot -> 网页」链路选的，不是正式居民美术。
-设计文档里说的坐下、站起、挥手等动作，原包有 `sit`、`emote-yes`、`interact-*` 等，后续需要时可以从同一个原始文件里加回来（改 `KEEP_ACTIONS`）。
