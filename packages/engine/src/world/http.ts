@@ -35,7 +35,7 @@ import { enterWorld } from './index.js';
 import { listLetters } from './mail.js';
 import { report } from './reports.js';
 import type { WorldService } from './service.js';
-import { relationsOf } from './social.js';
+import { relationMemories, relationsOf } from './social.js';
 import { chatHistory, directory, meView, publicView } from './views.js';
 import type { Principal } from './types.js';
 
@@ -424,6 +424,10 @@ export function mountTown(app: Express, w: WorldService, log: (msg: string) => v
     '/town/api/relations',
     api((req) => {
       const { r } = residentOf(req);
+      // ?with=<居民id>[&before=<next>&limit=]：翻看与这位居民的共同记忆
+      if (typeof req.query.with === 'string' && req.query.with) {
+        return relationMemories(w, r.resident_id, req.query.with, typeof req.query.before === 'string' ? req.query.before : null, Number(req.query.limit) || undefined);
+      }
       return { relations: relationsOf(w, r.resident_id) };
     }),
   );

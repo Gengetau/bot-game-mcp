@@ -131,6 +131,9 @@ class Histogram {
   }
 }
 
+/** 请求号：8~80 个字符，只能是字母、数字、下划线和 . : -（文档、MCP schema、接入端同一个规则）。 */
+export const REQUEST_ID_RE = /^[\w.:-]{8,80}$/;
+
 export class WorldService {
   readonly db: TownDb;
   readonly worldId: string;
@@ -649,7 +652,7 @@ export class WorldService {
       throw new WorldError('recovering', this.status === 'recovering' ? '小镇正在恢复，请稍后用同一个请求号重试。' : '小镇暂时不能保存变化，请稍后用同一个请求号重试。');
     }
     const requestId = typeof req?.requestId === 'string' ? req.requestId : '';
-    if (!/^[\w.:-]{8,80}$/.test(requestId)) throw badRequest('需要 requestId（8~80 个字母、数字或 -_.:）。每个有意的新动作用一个新的请求号。');
+    if (!REQUEST_ID_RE.test(requestId)) throw badRequest('需要 requestId（8~80 个字母、数字或 -_.:）。每个有意的新动作用一个新的请求号。');
     const action = req.action;
     if (!action || typeof action !== 'object' || typeof action.type !== 'string') throw badRequest('需要 action.type。');
     const handler = this.handlers.get(action.type);

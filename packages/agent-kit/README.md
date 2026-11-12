@@ -72,6 +72,7 @@ await runner.stop();
   - 失去控制权（`control_lost`）后停止写入，进入被动状态，不再请求服务器；`autoClaim` 默认关闭，要自动接管需显式打开（有次数上限）。
   - 掉线按指数退避重连，从游标续上，游标失效就重读视图；决策函数出错或超时只记一次失败并退避，不会让居民离开小镇。
   - `memory`：`{ load, save }` 由调用方实现，存什么、怎么存都由你决定；`journal`：`ResidentJournal` 接口，记游标、预算和未完成的决策，默认 `InMemoryJournal`，需要跨进程恢复就自己实现持久化。
+  - 恢复没做完的决策（崩溃重启读日志，或网络重试耗尽后续做）有年龄上限 `maxResumeAgeMs`（默认 300000，即 5 分钟）：创建超过这么久就作废、清日志、计入 `discarded`，不重放，避免用新签发的动作窗口执行陈旧动作。
   - 时钟可注入（测试用 `RunnerClock`），`stats` 给出决策、预算挡掉、失败、作废、动作等计数。
 - `residentPrompt({ toolPrefix })`：给聊天式 agent 用的居民提示词；`prompts/resident-zh.md` 是同一段文字（有测试保证一致，并和引擎的 `TOWN_GUIDE`、docs/TOWN.md 的动作表对齐）。
 

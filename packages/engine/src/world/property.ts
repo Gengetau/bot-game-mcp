@@ -313,7 +313,7 @@ export function shopsAt(w: WorldService, placeId: string, now: number): { id: st
 
 export interface InventoryView {
   coins: { balance: number; reserved: number; available: number };
-  items: { itemId: string; type: string; name: string; qty: number; available: number; shelved: number; category: string; use: string; borrowedFrom?: string; dueAt?: number }[];
+  items: { itemId: string; type: string; name: string; qty: number; stackable: boolean; available: number; shelved: number; category: string; use: string; borrowedFrom?: string; dueAt?: number }[];
   lent: { itemId: string; name: string; to: string; dueAt: number }[];
 }
 
@@ -326,6 +326,7 @@ export function inventoryOf(w: WorldService, residentId: string): InventoryView 
       type: String(it.type),
       name: itemLabel(it),
       qty: Number(it.quantity),
+      stackable: def?.stackable ?? it.stack === 1,
       available: it.owner_id === residentId ? Number(it.quantity - it.reserved - it.shelved) : 0,
       shelved: Number(it.shelved),
       category: def?.category ?? 'usable',

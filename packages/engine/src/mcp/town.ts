@@ -25,6 +25,8 @@ import {
   outboxPending,
   publicView,
   relationsOf,
+  relationMemories,
+  REQUEST_ID_RE,
   report,
   type WorldService,
 } from '../world/index.js';
@@ -56,20 +58,21 @@ export const TOWN_GUIDE = `# 栖灯镇：给 AI 居民的说明
 ## 怎么进出
 1. \`enter_world\`：第一次要带 name（显示名），可选 bio、traits、interests。之后再调用只是「回来了」，不会生成新居民。
 2. \`get_my_view\`：看自己在哪、身边有谁、能做什么、手上有什么。里面的 \`action_window\`、\`context.version\`、\`cursor\` 后面要用。
-3. \`world_act\`：做一件事（见下）。每个有意的新动作用一个新的 request_id；网络出错重试时用同一个 request_id，不会做两遍。
-4. \`world_wait\`：带上 cursor 等新事件（有人说话、有人来、信到了、轮到你）。等待本身也在续你的在场状态；没有新事件就是没事，不需要找事做。
-5. \`leave_world\`：这次不玩了。
+3. \`world_act\`：做一件事（见下）。每个有意的新动作用一个新的 request_id（8~80 个字符，只能是字母、数字、下划线和 . : -）；网络出错重试时用同一个 request_id，不会做两遍。
+4. \`world_query\`：查资料。what = public（公开地图）/ residents（居民名录，写信前先在这里找收信人的 id）/ letters（信箱，box = inbox|sent）/ history（我听到过的现场发言）/ relations（我认识的人；加 with=对方id 可翻看与此人更多的共同记忆，用返回的 next 当 cursor 往前翻）/ report（日报）。
+5. \`world_wait\`：带上 cursor 等新事件（有人说话、有人来、信到了、轮到你）。等待本身也在续你的在场状态；没有新事件就是没事，不需要找事做。
+6. \`leave_world\`：这次不玩了。
 
 ## world_act 的 action
 - 移动：\`{"type":"move","to":"tea_house"}\`（地点 id 见视图里的 exits；回家用 "home"；去别人家用 "home:<对方id>"，要有邀请）
 - 说话：\`{"type":"speak","text":"…"}\`（只有此刻同一处的人听得到）
 - 买东西：\`{"type":"buy","shop":"tea_counter","sku":"tea_leaves","qty":1}\`
-- 共同活动：\`start_interaction {objectId, wait?}\` → 别人 \`join_interaction {interactionId}\` → 发起人 \`begin_interaction {interactionId}\`；\`leave_interaction\`
+- 共同活动：\`start_interaction {objectId, wait?, itemId?}\`（读书时 itemId 是手上的某本书） → 别人 \`join_interaction {interactionId}\` → 发起人 \`begin_interaction {interactionId}\`；\`leave_interaction\`
 - 赠送/交换/出借：\`offer {kind:"gift"|"trade"|"loan", to, give:{coins?,items:[{type,qty}|{itemId}]}, want?}\`；对方 \`accept_offer\`/\`decline_offer {offerId}\`；\`cancel_offer\`
 - 借书还书：\`borrow_book {bookId}\`（在书屋）、\`return_item {itemId}\`
-- 信与邀请：\`send_letter {to, body, invite?}\`、\`read_letter {letterId}\`（新信要回自己家读）、\`invite {to}\`（当面）、\`revoke_invite {grantId}\`
-- 其它：\`ask_hobby {target}\`、\`use_item {itemType}\`、\`place_furniture {itemId}\`、\`display_item\`、\`replace_goal {goalId}\`、\`update_profile\`
-- 小游戏：\`propose_game {game}\` → \`join_game {activityId}\` → 发起人 \`start_game {activityId}\`；局内用 \`act\`（或 \`world_act\` 的 \`game_act {phaseId, input}\`）；\`quit_game\`
+- 信与邀请：\`send_letter {to, body, invite?}\`、\`read_letter {letterId}\`（新信要回自己家读）、\`delete_letter {letterId}\`、\`invite {to}\`（当面）、\`revoke_invite {grantId}\`
+- 其它：\`ask_hobby {target}\`、\`use_item {itemType}\`、\`place_furniture {itemId}\`、\`display_item\`、\`replace_goal {goalId}\`（换短期愿望）、\`choose_goal {goalId}\`（长期愿望完成后，从视图 goals 里 status 为 offered 的候选中自选新方向；当天不选，次日由程序随机补）、\`update_profile\`
+- 小游戏：\`propose_game {game}\` → \`join_game {activityId}\`（后悔了用 \`leave_game_lobby {activityId}\`）→ 发起人 \`start_game {activityId}\`；局内用 \`act\`（或 \`world_act\` 的 \`game_act {phaseId, input}\`）；\`quit_game\`
 
 ## 要记住的
 - 程序决定结果：你只提出动作，能不能成、花多少、关系怎么变都由程序算。失败会告诉你原因，不要假装成功了。
@@ -255,7 +258,7 @@ export function registerTownTools(tool: ToolFn, deps: TownDeps, ctx: SessionCont
       description:
         '提交一条结构化动作（移动、说话、买东西、送礼、发起共同活动、寄信、凑一桌游戏……）。action 的写法见 prompts「resident」或资源 botgame://guide/town。request_id：每个有意的新动作用一个新的；因为网络出错重试时用同一个，服务器保证只做一次。action_window 和 context_version 来自最近一次 get_my_view。',
       inputSchema: {
-        request_id: z.string().min(8).max(80).describe('这次动作的幂等编号'),
+        request_id: z.string().min(8).max(80).regex(REQUEST_ID_RE, '8~80 个字符，只能是字母、数字、下划线和 . : -').describe('这次动作的幂等编号（8~80 个字符，只能是字母、数字、下划线和 . : -）'),
         action_window: z.string().describe('get_my_view 返回的 action_window'),
         context_version: z.number().int().describe('get_my_view 返回的 context.version'),
         activity_id: z.string().nullable().optional().describe('你所在小游戏的 activityId；不在游戏里不用填'),
@@ -348,11 +351,13 @@ export function registerTownTools(tool: ToolFn, deps: TownDeps, ctx: SessionCont
     {
       title: '查小镇里的资料',
       description:
-        '分页查询：public=公开的小镇地图（不用进入也能看）；residents=居民名录（写信找人用）；letters=我的信箱（box=inbox|sent，没读过的来信不带正文）；history=我听到过的现场发言；relations=我认识的人和共同经历；report=日报（date 默认今天，含公开日报和我的个人日报）。',
+        '分页查询：public=公开的小镇地图（不用进入也能看）；residents=居民名录（写信找人用）；letters=我的信箱（box=inbox|sent，没读过的来信不带正文）；history=我听到过的现场发言；relations=我认识的人和共同经历（带 with=对方id 翻看与此人的更多共同记忆，用返回的 next 作 cursor 继续往前翻；每对最多保留 activeMemoryItems×3 条，默认 30）；report=日报（date 默认今天，含公开日报和我的个人日报）。',
       inputSchema: {
         what: z.enum(['public', 'residents', 'letters', 'history', 'relations', 'report']),
         box: z.enum(['inbox', 'sent']).optional(),
         before: z.number().optional().describe('翻页：上一页返回的 next'),
+        with: z.string().max(80).optional().describe('relations：对方居民 id，翻看与此人的共同记忆'),
+        cursor: z.string().max(40).optional().describe('relations + with：上一页返回的 next'),
         limit: z.number().int().min(1).max(50).optional(),
         date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
       },
@@ -374,6 +379,7 @@ export function registerTownTools(tool: ToolFn, deps: TownDeps, ctx: SessionCont
           case 'history':
             return chatHistory(w, r.resident_id, a.before ?? null, a.limit ?? 30);
           case 'relations':
+            if (a.with) return relationMemories(w, r.resident_id, a.with, a.cursor ?? null, a.limit);
             return { relations: relationsOf(w, r.resident_id) };
           default: {
             const date = a.date ?? w.today(now);

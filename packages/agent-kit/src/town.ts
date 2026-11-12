@@ -48,6 +48,7 @@ export const TOWN_ACTION_TYPES = [
   'begin_interaction',
   'leave_interaction',
   'replace_goal',
+  'choose_goal',
   'propose_game',
   'join_game',
   'leave_game_lobby',
@@ -444,7 +445,7 @@ export class TownClient {
     await this.caller.close?.();
   }
 
-  /** 生成一个新的请求号（8~80 个字符）。 */
+  /** 生成一个新的请求号（8~80 个字符，只能是字母、数字、下划线和 . : -）。 */
   newRequestId(): string {
     return `${this.o.requestIdPrefix}-${randomUUID()}`;
   }
@@ -543,7 +544,7 @@ export class TownClient {
    */
   async act(action: TownAction, opts: ActOptions = {}): Promise<ActResult> {
     const requestId = opts.requestId ?? this.newRequestId();
-    if (!/^.{8,80}$/.test(requestId)) throw new Error('requestId 需要 8~80 个字符');
+    if (!/^[\w.:-]{8,80}$/.test(requestId)) throw new Error('requestId 需要 8~80 个字符，只能是字母、数字、下划线和 . : -');
     if (!opts.actionWindow && !this.state.actionWindow) await this.view();
     for (let attempt = 0; ; attempt++) {
       try {

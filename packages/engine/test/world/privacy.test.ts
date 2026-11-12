@@ -548,3 +548,19 @@ describe('栖灯镇隐私：权限错误的说法一致', () => {
     }
   });
 });
+
+describe('二轮审查：未读邀请与已读回执', () => {
+  it('寄信人离线、信未读：收信人站在寄信人的巷子里，门牌没有寄信人；寄信人的已发信箱没有 read', () => {
+    const t = makeTown();
+    const a = t.join('阿灯');
+    const b = t.join('小岚', 'agent');
+    a.go('street_east');
+    const out = a.act('send_letter', { to: b.residentId, body: '来坐坐', invite: true });
+    a.leave();
+    b.go('street_east');
+    expect((b.view().here?.doors ?? []).map((d) => d.owner.id)).not.toContain(a.residentId);
+    expect(JSON.stringify(agentView(t.w, b.row(), b.clientId))).not.toContain('阿灯的家');
+    const sent = listLetters(t.w, a.residentId, 'sent', null, 20, t.clock.t).letters.find((l) => l.id === out.letterId)!;
+    expect('read' in sent).toBe(false);
+  });
+});

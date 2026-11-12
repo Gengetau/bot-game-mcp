@@ -166,6 +166,13 @@ describe('TownClient：真引擎', () => {
     expect((await a.speak('这局真刺激')).status).toBe('completed');
   }, 60_000);
 
+  it('本地校验请求号字符集：空格 / 中文 / # 在发出前就被拒绝（和服务端同一个规则）', async () => {
+    for (const bad of ['move to tea 001', '请求号一二三四五六七八', 'req#00000001', 'a/b/c/d/e/f/g/h', 'short']) {
+      await expect(a.speak('你好', { requestId: bad }), bad).rejects.toThrow(/requestId/);
+    }
+    expect((await a.speak('请求号合法', { requestId: 'ok.req:id-0001_x' })).status).toBe('completed');
+  });
+
   it('同一个 request_id 重试只做一次；换了内容是 request_conflict', async () => {
     await a.view();
     const coins0 = (await a.view()).coins;

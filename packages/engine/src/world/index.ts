@@ -66,7 +66,8 @@ export {
 export { agentView, chatHistory, directory, meView, publicView, type MeView, type PublicView } from './views.js';
 export { publicGameView, gameViewFor } from './games.js';
 export { listLetters } from './mail.js';
-export { relationsOf } from './social.js';
+export { relationsOf, relationMemories } from './social.js';
+export { REQUEST_ID_RE } from './service.js';
 export { outboxAck, outboxPending, recap, report } from './reports.js';
 export { TownDb, verifyBackup } from './db.js';
 export * as townContent from './content.js';

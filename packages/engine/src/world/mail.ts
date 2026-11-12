@@ -29,6 +29,19 @@ function validGrant(w: WorldService, guestId: string, home: string, now: number)
   );
 }
 
+/** 我手上「已得知且已生效」的邀请对应的主人（与 validGrant 同一套条件，供街道门牌使用） */
+export function activeInviteOwners(w: WorldService, guestId: string, now: number, limit: number): string[] {
+  return w.db
+    .all(
+      'SELECT owner_id FROM home_access_grants WHERE guest_id = ? AND revoked_at IS NULL AND learned_at IS NOT NULL AND valid_from <= ? AND expires_at > ? ORDER BY expires_at DESC LIMIT ?',
+      guestId,
+      now,
+      now,
+      limit,
+    )
+    .map((g) => String(g.owner_id));
+}
+
 export interface InviteView {
   grantId: string;
   home: string;
@@ -132,7 +145,8 @@ export interface LetterView {
   to: ReturnType<typeof card>;
   sentAt: number;
   deliveredAt: number | null;
-  read: boolean;
+  /** 只给收信人自己的信箱；寄信人看不到对方是否已读（读信要在自己家，会暴露行踪） */
+  read?: boolean;
   /** 没读过的来信不带正文（第一次读要回到自己家） */
   body?: string;
   invite?: { grantId: string; expiresAt: number; active: boolean };
@@ -149,7 +163,7 @@ function letterView(w: WorldService, row: Row, viewerId: string, now: number): L
     to: card(w.mustResident(row.recipient_id)),
     sentAt: Number(row.sent_at),
     deliveredAt: row.delivered_at === null ? null : Number(row.delivered_at),
-    read: row.read_at !== null,
+    ...(inbox ? { read: row.read_at !== null } : {}),
     ...(readable ? { body: String(row.body) } : {}),
     ...(g ? { invite: { grantId: String(g.grant_id), expiresAt: Number(g.expires_at), active: g.revoked_at === null && g.expires_at > now } } : {}),
   };

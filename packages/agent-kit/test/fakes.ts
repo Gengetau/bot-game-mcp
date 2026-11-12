@@ -147,13 +147,17 @@ export class FakePort implements TownPort {
     if (this.queue.length || (opts.waitSeconds ?? 0) <= 0 || this.nextResync) return result(this.queue.length ? 'event' : 'timeout');
     const ac = new AbortController();
     const signal = opts.signal;
+    let onAbort: () => void = () => undefined;
     await new Promise<void>((resolve, reject) => {
-      const onAbort = () => reject(new DOMException('aborted', 'AbortError'));
+      onAbort = () => reject(new DOMException('aborted', 'AbortError'));
       if (signal?.aborted) return onAbort();
       signal?.addEventListener('abort', onAbort, { once: true });
       this.waiters.push(resolve);
       this.clock.sleep((opts.waitSeconds ?? 25) * 1000, ac.signal).then(resolve, () => undefined);
-    }).finally(() => ac.abort());
+    }).finally(() => {
+      ac.abort();
+      signal?.removeEventListener('abort', onAbort);
+    });
     return result(this.queue.length ? 'event' : 'timeout');
   }
 

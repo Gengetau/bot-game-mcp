@@ -210,6 +210,8 @@ export interface ResidentTuning {
   waitSeconds: number;
   /** 决策函数超时，默认 60000 */
   decideTimeoutMs: number;
+  /** 恢复没做完的决策的年龄上限：创建超过这么久就作废（清日志、计入 discarded），不重放，默认 300000（5 分钟） */
+  maxResumeAgeMs: number;
   /** 小游戏：留给提交的安全余量，默认 1500；剩余时间不够就不决策 */
   gameSafetyMarginMs: number;
   /** 决策失败后的退避（指数），默认 5000 起、最长 300000 */
@@ -248,6 +250,7 @@ export const DEFAULT_TUNING: ResidentTuning = {
   urgentDebounceMs: 0,
   waitSeconds: 25,
   decideTimeoutMs: 60_000,
+  maxResumeAgeMs: 300_000,
   gameSafetyMarginMs: 1_500,
   failureBackoffBaseMs: 5_000,
   failureBackoffMaxMs: 300_000,
@@ -610,8 +613,13 @@ class Resident implements ResidentHandle {
     if (this.stopped) return;
     this.status = 'running';
     this.lastActivityAt = this.lastIdleTickAt = this.clock.now();
-    if (this.js.pending && this.js.pending.done < this.js.pending.actions.length) this.pendingResume = this.js.pending;
-    else if (this.js.pending) this.js.pending = null;
+    if (this.js.pending && this.js.pending.done < this.js.pending.actions.length) {
+      if (this.resumeTooOld(this.js.pending)) {
+        this.log('日志里没做完的决策已过期，作废不重放');
+        this.stats.discarded++;
+        this.js.pending = null;
+      } else this.pendingResume = this.js.pending;
+    } else if (this.js.pending) this.js.pending = null;
     if (this.t.decideOnStart || this.pendingResume) this.addTrigger('start', 'urgent');
     await this.saveJournal();
   }
@@ -1125,11 +1133,22 @@ class Resident implements ResidentHandle {
     }
   }
 
+  private resumeTooOld(p: PendingDecision): boolean {
+    return this.clock.now() - p.createdAt > this.t.maxResumeAgeMs;
+  }
+
   /** 崩溃 / 断线后接着做没做完的决策（世界变了服务器会拒绝，那就作废）。 */
   private async tryResumePending(): Promise<void> {
     const pending = this.pendingResume;
     if (!pending || this.inflight || this.status !== 'running') return;
     this.pendingResume = null;
+    if (this.resumeTooOld(pending)) {
+      this.log('没做完的决策已过期，作废不重放');
+      this.stats.discarded++;
+      this.js.pending = null;
+      await this.saveJournal();
+      return;
+    }
     this.inflight = (async () => {
       try {
         const view = await this.town.view({ signal: this.ac.signal });
@@ -1154,12 +1173,16 @@ class Resident implements ResidentHandle {
       ctrl.abort();
       throw new DecideTimeout(`决策函数超过 ${ms} 毫秒没有返回`);
     });
+    let onStop: () => void = () => {};
     const stopped = new Promise<never>((_, reject) => {
-      const onStop = () => reject(new DOMException('aborted', 'AbortError'));
+      onStop = () => reject(new DOMException('aborted', 'AbortError'));
       if (this.ac.signal.aborted) onStop();
       else this.ac.signal.addEventListener('abort', onStop, { once: true });
     });
-    return Promise.race([Promise.resolve(p), timeout, stopped]).finally(() => timerAc.abort());
+    return Promise.race([Promise.resolve(p), timeout, stopped]).finally(() => {
+      timerAc.abort();
+      this.ac.signal.removeEventListener('abort', onStop);
+    });
   }
 }
 

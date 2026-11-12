@@ -12,7 +12,7 @@ import { parseJson } from './db.js';
 import { activitiesAt, gameViewFor, gamesOfferedAt, type ActivityView } from './games.js';
 import { myInteraction, objectsIn, publicEventsToday, weatherAt } from './interact.js';
 import { checkHomeAccess, currentMood, settledNeeds, spaceName } from './life.js';
-import { invitesOf, mailboxSummary } from './mail.js';
+import { activeInviteOwners, invitesOf, mailboxSummary } from './mail.js';
 import { RESIDENTIAL, card, publicSpot, zoneOf, type PublicSpot } from './project.js';
 import { inventoryOf, itemLabel, openOffers, shopsAt } from './property.js';
 import { recap, type Recap } from './reports.js';
@@ -140,7 +140,7 @@ function hereView(w: WorldService, r: ResidentRow, space: string, now: number): 
     // 只列够用的门：自己家、我手上有效邀请对应的家、此刻在场的邻居的家（不遍历全部注册居民）
     const DOOR_CAP = 60;
     const ids = new Set<string>([r.resident_id]);
-    for (const g of w.db.all('SELECT owner_id FROM home_access_grants WHERE guest_id = ? AND expires_at > ? AND revoked_at IS NULL ORDER BY expires_at DESC LIMIT ?', r.resident_id, now, DOOR_CAP)) ids.add(String(g.owner_id));
+    for (const id of activeInviteOwners(w, r.resident_id, now, DOOR_CAP)) ids.add(id);
     // 住在这条街上、此刻在场的邻居（不管人在屋里还是在街上）
     for (const x of w.db.all('SELECT resident_id FROM residents WHERE world_id = ? AND street_id = ? AND present_since IS NOT NULL ORDER BY house_no LIMIT ?', w.worldId, space, DOOR_CAP)) ids.add(String(x.resident_id));
     view.doors = [...ids]
@@ -300,7 +300,7 @@ export function agentView(w: WorldService, r: ResidentRow, clientId: string, opt
         }
       : null,
     coins: v.inventory.coins.available,
-    items: v.inventory.items.map((i) => ({ ...(i.qty === 1 && i.category !== 'consumable' ? { itemId: i.itemId } : {}), type: i.type, name: i.name, qty: i.qty, ...(i.borrowedFrom ? { borrowed_from: i.borrowedFrom } : {}) })),
+    items: v.inventory.items.map((i) => ({ ...(!i.stackable && i.category !== 'consumable' ? { itemId: i.itemId } : {}), type: i.type, name: i.name, qty: i.qty, ...(i.borrowedFrom ? { borrowed_from: i.borrowedFrom } : {}) })),
     goals: v.goals.map((g) => ({ id: g.id, kind: g.kind, title: g.title, how: g.description, progress: `${g.progress}/${g.target}` })),
     mail_unread: v.mail.unread,
     invites: v.invites.received.map((i) => ({ home: i.home, host: i.host.name, expires_at: i.expiresAt })),

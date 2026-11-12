@@ -99,6 +99,48 @@ export function relationsOf(w: WorldService, residentId: string, limit = 30): Re
     }));
 }
 
+export interface RelationMemoriesPage {
+  memories: { text: string; at: number }[];
+  /** 下一页游标（没有更早的了就是 null）。游标由发生时间和同刻序号组成，不含全局自增号。 */
+  next: string | null;
+}
+
+/**
+ * 与某位居民的共同记忆，新的在前，可翻页。每对最多保留 activeMemoryItems*3 条（更早的由日报承担）。
+ * 只查本人的关系：对方必须是 residentId 认识的人。
+ */
+export function relationMemories(w: WorldService, residentId: string, otherId: string, cursor?: string | null, limit?: number): RelationMemoriesPage {
+  if (!w.db.get('SELECT 1 AS x FROM relationships WHERE resident_id = ? AND other_id = ?', residentId, otherId)) throw precondition('你还不认识这位居民。', 'not_known');
+  const cap = w.params.activeMemoryItems * 3;
+  const size = Math.max(1, Math.min(cap, Math.floor(Number(limit)) || w.params.activeMemoryItems));
+  let at = Number.MAX_SAFE_INTEGER;
+  let skip = 0;
+  if (cursor) {
+    const m = /^(\d{1,16})\.(\d{1,4})$/.exec(cursor);
+    if (!m) throw badRequest('cursor 不对，请用上一页返回的 next。');
+    at = Number(m[1]);
+    skip = Number(m[2]);
+  }
+  const rows = w.db.all(
+    'SELECT summary, occurred_at FROM memory_refs WHERE owner_id = ? AND other_id = ? AND occurred_at <= ? ORDER BY occurred_at DESC, ref_id DESC LIMIT ?',
+    residentId,
+    otherId,
+    at,
+    size + skip + 1,
+  );
+  const rest = rows.slice(skip);
+  const page = rest.slice(0, size);
+  const more = rest.length > size;
+  const last = page[page.length - 1];
+  let next: string | null = null;
+  if (more && last) {
+    const lastAt = Number(last.occurred_at);
+    const sameBefore = page.filter((m) => Number(m.occurred_at) === lastAt).length + (lastAt === at ? skip : 0);
+    next = `${lastAt}.${sameBefore}`;
+  }
+  return { memories: page.map((m) => ({ text: String(m.summary), at: Number(m.occurred_at) })), next };
+}
+
 /** 这条事实对「一对居民」意味着什么。返回 null 表示不涉及关系。 */
 function gainFor(f: FactRecord): Gain | null {
   const d = f.data as Record<string, any>;
@@ -202,8 +244,22 @@ function goalView(w: WorldService, row: Row): GoalView {
   };
 }
 
+/**
+ * 候选长期愿望：复用 resident_goals，status='replaced' 且 progress_json 带 offered 标记（不用迁移）。
+ * 长期愿望完成后生成一小组，本人用 choose_goal 选一个；到下一个世界日仍没选，就删掉候选、按原来的随机逻辑补。
+ */
+const OFFER_SIZE = 3;
+const OFFER_FILTER = "status = 'replaced' AND completed_at IS NULL AND kind = 'long' AND progress_json LIKE '%\"offered\":true%'";
+
+function offerRows(w: WorldService, residentId: string): Row[] {
+  return w.db.all(`SELECT * FROM resident_goals WHERE resident_id = ? AND ${OFFER_FILTER} ORDER BY created_at, goal_id`, residentId);
+}
+
 export function goalsOf(w: WorldService, residentId: string): GoalView[] {
-  return w.db.all("SELECT * FROM resident_goals WHERE resident_id = ? AND status = 'active' ORDER BY kind, created_at", residentId).map((row) => goalView(w, row));
+  const active = w.db.all("SELECT * FROM resident_goals WHERE resident_id = ? AND status = 'active' ORDER BY kind, created_at", residentId).map((row) => goalView(w, row));
+  // 候选只给本人（goalsOf 只用于本人视图）；status='offered'，用 choose_goal 的 goalId 选
+  const offers = offerRows(w, residentId).map((row) => ({ ...goalView(w, row), status: 'offered' }));
+  return [...active, ...offers];
 }
 
 export function titlesOf(w: WorldService, residentId: string, publicOnly: boolean): string[] {
@@ -235,7 +291,7 @@ function interestWeight(def: GoalDef, r: ResidentRow): number {
   return 2;
 }
 
-function createGoal(w: WorldService, r: ResidentRow, kind: 'long' | 'short', now: number, exclude: Set<string>): boolean {
+function createGoal(w: WorldService, r: ResidentRow, kind: 'long' | 'short', now: number, exclude: Set<string>, offered = false): boolean {
   const active = new Set(w.db.all("SELECT def_id FROM resident_goals WHERE resident_id = ? AND status = 'active'", r.resident_id).map((x) => String(x.def_id)));
   const doneLong = new Set(w.db.all("SELECT def_id FROM resident_goals WHERE resident_id = ? AND status = 'completed' AND kind = 'long'", r.resident_id).map((x) => String(x.def_id)));
   let pool = GOALS.filter((g) => g.kind === kind && available(g) && !active.has(g.id) && !exclude.has(g.id) && !(kind === 'long' && doneLong.has(g.id)));
@@ -263,10 +319,11 @@ function createGoal(w: WorldService, r: ResidentRow, kind: 'long' | 'short', now
     stored = JSON.parse(JSON.stringify(def).replaceAll('$placeName', name).replaceAll('$place', place)) as StoredGoalDef;
     stored.place = place;
   }
-  const progress: GoalProgress = { count: 0, partners: [] };
-  if (stored.measure === 'owned') progress.count = ownedCount(w, r.resident_id, stored);
+  const progress: GoalProgress & { offered?: boolean } = { count: 0, partners: [] };
+  if (offered) progress.offered = true;
+  else if (stored.measure === 'owned') progress.count = ownedCount(w, r.resident_id, stored);
   w.db.run(
-    "INSERT INTO resident_goals(goal_id, resident_id, def_id, def_version, def_json, kind, progress_json, status, created_at) VALUES (?,?,?,?,?,?,?,'active',?)",
+    `INSERT INTO resident_goals(goal_id, resident_id, def_id, def_version, def_json, kind, progress_json, status, created_at) VALUES (?,?,?,?,?,?,?,'${offered ? 'replaced' : 'active'}',?)`,
     w.id('g'),
     r.resident_id,
     def.id,
@@ -288,11 +345,25 @@ function ownedCount(w: WorldService, residentId: string, def: GoalDef): number {
 export function refillGoals(w: WorldService, r: ResidentRow, now: number): void {
   const count = (kind: string) => w.db.scalar("SELECT COUNT(*) FROM resident_goals WHERE resident_id = ? AND status = 'active' AND kind = ?", r.resident_id, kind);
   const date = w.today(now);
+  const offers = offerRows(w, r.resident_id);
+  if (offers.length > 0) {
+    // 候选还在选择窗口里（同一个世界日）：先不补长期愿望；过了一天没选，作废候选，按原逻辑随机补
+    if (offers.every((o) => w.today(Number(o.created_at)) === date)) {
+      refillShort(w, r, now, date);
+      return;
+    }
+    w.db.run(`DELETE FROM resident_goals WHERE resident_id = ? AND ${OFFER_FILTER}`, r.resident_id);
+  }
   for (let n = count('long'); n < w.params.longGoals; n++) {
     if (counter(w, `goals:${r.resident_id}`, 'long', date) >= w.params.longGoals) break;
     if (!createGoal(w, r, 'long', now, new Set())) break;
     bumpCounter(w, `goals:${r.resident_id}`, 'long', date);
   }
+  refillShort(w, r, now, date);
+}
+
+function refillShort(w: WorldService, r: ResidentRow, now: number, date: string): void {
+  const count = (kind: string) => w.db.scalar("SELECT COUNT(*) FROM resident_goals WHERE resident_id = ? AND status = 'active' AND kind = ?", r.resident_id, kind);
   for (let n = count('short'); n < w.params.shortGoals; n++) {
     if (counter(w, `goals:${r.resident_id}`, 'short', date) >= w.params.shortGoals) break;
     if (!createGoal(w, r, 'short', now, new Set())) break;
@@ -311,6 +382,24 @@ function pathMatches(path: GoalPath, f: FactRecord, role: string): boolean {
   if (wh.role && role !== wh.role) return false;
   if (wh.itemType && d.itemType !== wh.itemType) return false;
   return true;
+}
+
+/** 长期愿望完成：生成一小组候选（占用当天的一个长期愿望名额，和原来的补位一样受每日上限约束）。 */
+function offerLongGoals(w: WorldService, residentId: string, now: number): void {
+  const r = w.mustResident(residentId);
+  const date = w.today(now);
+  const active = w.db.scalar("SELECT COUNT(*) FROM resident_goals WHERE resident_id = ? AND status = 'active' AND kind = 'long'", residentId);
+  if (active >= w.params.longGoals || offerRows(w, residentId).length > 0) return;
+  if (counter(w, `goals:${residentId}`, 'long', date) >= w.params.longGoals) return;
+  const exclude = new Set<string>();
+  let made = 0;
+  for (let i = 0; i < OFFER_SIZE; i++) {
+    const before = w.db.all(`SELECT def_id FROM resident_goals WHERE resident_id = ? AND ${OFFER_FILTER}`, residentId).map((x) => String(x.def_id));
+    for (const id of before) exclude.add(id);
+    if (!createGoal(w, r, 'long', now, exclude, true)) break;
+    made++;
+  }
+  if (made > 0) bumpCounter(w, `goals:${residentId}`, 'long', date);
 }
 
 function applyGoals(w: WorldService, f: FactRecord): void {
@@ -341,6 +430,7 @@ function applyGoals(w: WorldService, f: FactRecord): void {
       if (def.title_award) {
         w.db.run("INSERT OR IGNORE INTO titles(resident_id, title, visibility, source, awarded_at) VALUES (?,?,'public',?,?)", party.id, def.title_award, `goal:${def.id}`, f.occurredAt);
       }
+      if (row.kind === 'long') offerLongGoals(w, party.id, f.occurredAt);
       addMood(w, party.id, row.kind === 'long' ? 'happy' : 'content', `完成了愿望「${def.title}」`, f.eventId, f.occurredAt);
       w.emitTo([party.id], 'goal', { goal: goalView(w, { ...row, status: 'completed', progress_json: JSON.stringify(p), completed_at: f.occurredAt }), completed: true, reward, ...(def.title_award ? { title: def.title_award } : {}) }, f.occurredAt);
     }
@@ -375,6 +465,22 @@ export function installSocial(w: WorldService): void {
     w.db.run("UPDATE resident_goals SET status = 'replaced', completed_at = ? WHERE goal_id = ?", now, row.goal_id);
     if (!createGoal(w, r, 'short', now, new Set([String(row.def_id)]))) throw precondition('暂时没有别的愿望可换。', 'none_available');
     bumpCounter(w, `goals:${r.resident_id}`, 'swap', date);
+    return { status: 'completed', goals: goalsOf(w, r.resident_id) };
+  });
+
+  // 长期愿望完成后，从候选里自选新方向；其余候选作废
+  w.handlers.set('choose_goal', ({ r, action }) => {
+    const id = String(action.goalId ?? '');
+    const row = offerRows(w, r.resident_id).find((o) => String(o.goal_id) === id);
+    if (!row) throw precondition('没有这个候选愿望（可能已经选过或过期了）。', 'no_such_offer');
+    if (w.db.scalar("SELECT COUNT(*) FROM resident_goals WHERE resident_id = ? AND status = 'active' AND kind = 'long'", r.resident_id) >= w.params.longGoals) {
+      throw precondition('长期愿望已经满了。', 'goals_full');
+    }
+    const def = parseJson<StoredGoalDef>(row.def_json, {} as StoredGoalDef);
+    const progress: GoalProgress = { count: 0, partners: [] };
+    if (def.measure === 'owned') progress.count = ownedCount(w, r.resident_id, def);
+    w.db.run("UPDATE resident_goals SET status = 'active', progress_json = ? WHERE goal_id = ?", JSON.stringify(progress), row.goal_id);
+    w.db.run(`DELETE FROM resident_goals WHERE resident_id = ? AND ${OFFER_FILTER}`, r.resident_id);
     return { status: 'completed', goals: goalsOf(w, r.resident_id) };
   });
   void badRequest;
