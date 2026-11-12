@@ -9,6 +9,7 @@
  */
 import { DESTINATIONS, INTERESTS, PLACES, RESIDENTIAL_PLACE, TRAITS, homeId, homeOwner, isHome, laneName, placeDef } from './content.js';
 import { parseJson } from './db.js';
+import { nearbyHistory, recentHeard, townChatDigest } from './chat.js';
 import { activitiesAt, gameViewFor, gamesOfferedAt, type ActivityView } from './games.js';
 import { myInteraction, objectsIn, publicEventsToday, weatherAt } from './interact.js';
 import { checkHomeAccess, currentMood, settledNeeds, spaceName } from './life.js';
@@ -262,6 +263,7 @@ export function meView(w: WorldService, r: ResidentRow, clientId: string, opts: 
 export function agentView(w: WorldService, r: ResidentRow, clientId: string, opts: { recapSince?: number | null } = {}): Record<string, unknown> {
   const v = meView(w, r, clientId, opts);
   const here = v.here;
+  const digest = townChatDigest(w, r, w.now());
   return {
     world: { name: v.world.name, clock: v.world.clock, date: v.world.date, weather: v.world.weather.name },
     me: { id: v.me.id, name: v.me.name, traits: v.me.traits.map((t) => t.name), interests: v.me.interests.map((t) => t.name), needs: v.me.needs, mood: v.me.mood?.name ?? null, titles: v.me.titles, home: v.me.home.id, home_street: v.me.home.streetName },
@@ -307,6 +309,8 @@ export function agentView(w: WorldService, r: ResidentRow, clientId: string, opt
     game: v.game ? { game_id: v.game.game_id, name: v.game.name, status: v.game.status, phase_id: v.game.phase_id, your_turn: v.game.your_turn ?? false, todo: v.game.todo ?? null, you: v.game.you, public: v.game.public, events: v.game.events.slice(-12) } : null,
     events_today: v.events.filter((e) => e.status === 'open' || e.status === 'scheduled').map((e) => ({ title: e.title, place: placeDef(e.place)?.name, status: e.status, opens_at: e.opensAt })),
     suggestions: v.suggestions,
+    // 全镇公屏的少量相关摘要（提到我的、和我有约定的人说的、公共活动和求助）；对局中、不在场、静音的居民没有
+    ...(digest && digest.length ? { town_chat: digest } : {}),
     ...(v.recap ? { recap: v.recap.lines } : {}),
   };
 }
@@ -325,52 +329,13 @@ export function directory(w: WorldService, now: number): { id: string; name: str
     });
 }
 
-/**
- * 对外的现场发言编号：每位居民自己连续的序号（stream_heads 里 chat:<id> 的高水位，发言时给每个受众各取一个）。
- * 内部 message_id 是全世界共用的，不外露。某条消息的序号 = 高水位 - 我这边比它更新的消息条数；清理旧消息不会让它变。
- */
-function chatHigh(w: WorldService, residentId: string): number {
-  return Number(w.db.scalar('SELECT high_water FROM stream_heads WHERE stream_key = ?', `chat:${residentId}`) ?? 0);
-}
-function chatSeqOf(w: WorldService, residentId: string, high: number, messageId: number): number {
-  return high - Number(w.db.scalar('SELECT COUNT(*) FROM chat_audience WHERE resident_id = ? AND message_id > ?', residentId, messageId));
-}
-
 function hereChat(w: WorldService, residentId: string, space: string, now: number): HereView['chat'] {
-  const cut = now - 30 * 60_000;
-  // message_id 随时间递增：给受众表的主键扫描加下界（30 分钟窗口内最早的消息），查询量与历史长度无关
-  const rows = w.db.all(
-    `SELECT m.message_id, m.sender_id, m.body, m.sent_at FROM chat_audience a JOIN chat_messages m ON m.message_id = a.message_id
-     WHERE a.resident_id = ? AND a.message_id >= (SELECT COALESCE(MIN(message_id), 9223372036854775807) FROM chat_messages WHERE sent_at > ?)
-       AND m.space_id = ? AND m.sent_at > ? ORDER BY a.message_id DESC LIMIT 20`,
-    residentId,
-    cut,
-    space,
-    cut,
-  );
-  const high = chatHigh(w, residentId);
-  return rows
-    .reverse()
-    .map((m) => ({ messageId: chatSeqOf(w, residentId, high, Number(m.message_id)), from: card(w.mustResident(m.sender_id)), text: String(m.body), at: Number(m.sent_at) }));
+  return recentHeard(w, residentId, space, now);
 }
 
-/** 我听到过的现场发言（按我自己的消息序号往前翻页）。只包含当时我在受众里的消息。 */
-export function chatHistory(w: WorldService, residentId: string, before: number | null, limit: number): { messages: { messageId: number; space: string; spaceName: string; from: ReturnType<typeof card>; text: string; at: number }[]; next: number | null } {
-  const lim = Math.max(1, Math.min(100, Math.floor(Number.isFinite(limit) ? limit : 30)));
-  const high = chatHigh(w, residentId);
-  // before 是序号：跳过序号 >= before 的那些（它们是最新的 high-before+1 条）
-  const skip = before === null || !Number.isFinite(before) ? 0 : Math.max(0, high - Math.floor(before) + 1);
-  const rows = w.db.all(
-    `SELECT m.* FROM chat_audience a JOIN chat_messages m ON m.message_id = a.message_id
-     WHERE a.resident_id = ? ORDER BY a.message_id DESC LIMIT ? OFFSET ?`,
-    residentId,
-    lim + 1,
-    skip,
-  );
-  const page = rows.slice(0, lim);
-  const top = page.length ? chatSeqOf(w, residentId, high, Number(page[0]!.message_id)) : 0;
-  const messages = page.map((m, i) => ({ messageId: top - i, space: String(m.space_id), spaceName: spaceName(w, m.space_id, residentId), from: card(w.mustResident(m.sender_id)), text: String(m.body), at: Number(m.sent_at) }));
-  return { messages, next: rows.length > lim ? top - (page.length - 1) : null };
+/** 我听到过的现场发言（附近聊天；按我自己的消息序号往前翻页）。只包含当时我在受众里的消息。 */
+export function chatHistory(w: WorldService, residentId: string, before: number | string | null, limit: number): ReturnType<typeof nearbyHistory> {
+  return nearbyHistory(w, residentId, before, limit, (spaceId) => spaceName(w, spaceId, residentId));
 }
 
 export { relationsOf };

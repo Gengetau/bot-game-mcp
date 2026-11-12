@@ -101,6 +101,7 @@ export const JOB_PRIORITY: Record<string, number> = {
   public_event_close: 8,
   daily_rollover: 9,
   prune: 9,
+  town_chat_purge: 9,
 };
 
 const sha256 = (s: string) => createHash('sha256').update(s).digest('hex');
@@ -194,6 +195,7 @@ export class WorldService {
   private pendingBumps = new Set<string>();
   private pendingPublic = false;
   private pendingSpace = new Set<string>();
+  private pendingTownChat = false;
   private lastAliveWrite = 0;
   /** 已提交的小游戏记录缓存（可以随时从数据库重建） */
   readonly gameCache = new Map<string, { rec: GameRecord; rng: string | null; revision: number }>();
@@ -449,13 +451,13 @@ export class WorldService {
   }
 
   /** 游标对外是不透明字符串，绑定世界、主体和流类型：拿别人的或别的流的游标来用会被要求重同步。 */
-  encodeCursor(kind: 'r' | 'p', scope: string, n: number): string {
+  encodeCursor(kind: 'r' | 'p' | 'c' | 'n', scope: string, n: number): string {
     return `${kind}${n.toString(36)}.${this.mac(`${kind}:${this.worldId}:${scope}:${n}`)}`;
   }
 
-  decodeCursor(kind: 'r' | 'p', scope: string, cursor: string | undefined | null): number | null {
+  decodeCursor(kind: 'r' | 'p' | 'c' | 'n', scope: string, cursor: string | undefined | null): number | null {
     if (cursor === undefined || cursor === null || cursor === '') return null;
-    const m = /^([rp])([0-9a-z]+)\.([\w-]+)$/.exec(String(cursor));
+    const m = /^([rpcn])([0-9a-z]+)\.([\w-]+)$/.exec(String(cursor));
     if (!m || m[1] !== kind) return null;
     const n = Number.parseInt(m[2]!, 36);
     if (!Number.isSafeInteger(n) || n < 0) return null;
@@ -513,9 +515,11 @@ export class WorldService {
     const ids = this.pendingBumps;
     const pub = this.pendingPublic;
     const space = this.pendingSpace;
+    const townChat = this.pendingTownChat;
     this.pendingBumps = new Set();
     this.pendingPublic = false;
     this.pendingSpace = new Set();
+    this.pendingTownChat = false;
     // 订阅者出错不能影响已经提交的结果（否则调用方会把成功的事务当成失败重试）
     const safeEmit = (name: string) => {
       // 逐个调用：一个订阅者抛错不影响其他订阅者
@@ -529,6 +533,7 @@ export class WorldService {
     };
     for (const id of ids) safeEmit(`r:${id}`);
     if (pub) safeEmit('public');
+    if (townChat) safeEmit('town_chat');
     if (space.size > 0) {
       const keys = [...space];
       for (const fn of this.emitter.listeners('space')) {
@@ -545,6 +550,7 @@ export class WorldService {
     this.pendingBumps = new Set();
     this.pendingPublic = false;
     this.pendingSpace = new Set();
+    this.pendingTownChat = false;
   }
 
   /**
@@ -553,6 +559,16 @@ export class WorldService {
    */
   bumpSpace(sceneKey: string): void {
     this.pendingSpace.add(sceneKey);
+  }
+
+  /** 全镇公屏有了新消息（提交之后才通知）。订阅者自己按游标去读，没有内容随通知走。 */
+  bumpTownChat(): void {
+    this.pendingTownChat = true;
+  }
+
+  onTownChat(fn: () => void): () => void {
+    this.emitter.on('town_chat', fn);
+    return () => this.emitter.off('town_chat', fn);
   }
 
   onSpace(fn: (sceneKeys: string[]) => void): () => void {

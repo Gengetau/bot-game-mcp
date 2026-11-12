@@ -12,9 +12,10 @@
  *                                              被丢弃（旧序号、太频繁）→ {t:'dir_dropped', seq, reason}；
  *                                              没有控制权、不在场、在游戏里等 → {t:'error', code, message}。不带坐标
  * 服务器 → 客户端：
- *   {t:'hello', v:1, serverTime, resident, map:{mapVersion,checksum}, renewEveryMs, dirLeaseMs, dirConn, cursor}
+ *   {t:'hello', v:1, serverTime, resident, map:{mapVersion,checksum}, renewEveryMs, dirLeaseMs, dirConn, cursor, townChat:{cursor}}
  *   {t:'scene', …SceneView}                    完整快照（合并发送，每秒最多 10 次）
  *   {t:'events', events, cursor} / {t:'resync', cursor}   耐久私有事件（与 SSE 同一套投影）
+ *   {t:'town_chat', messages, cursor}          全镇公屏的新消息（连上之后的，不回放历史；历史走 GET /town-chat）
  *   {t:'error', code, message}
  *
  * 所有发送都发生在事务提交之后（onSpace / onResident 本来就是提交后回调）。
@@ -23,6 +24,7 @@ import { randomBytes } from 'node:crypto';
 import type { IncomingMessage, Server as HttpServer } from 'node:http';
 import type { Duplex } from 'node:stream';
 import { WebSocket, WebSocketServer, type RawData } from 'ws';
+import { townChatHead, townChatSince } from './chat.js';
 import { WorldError } from './errors.js';
 import { controlDisconnected, directionInput, renewNavigation, sceneKeyOfResident, sceneView } from './space.js';
 import type { WorldService } from './service.js';
@@ -227,6 +229,7 @@ export function createTownWs(w: WorldService, log: (msg: string) => void, opts: 
     let cursor: string | undefined;
     let lastKey: string | null = null;
     let lastSceneAt = 0;
+    let townSeq = 0;
     let sceneTimer: NodeJS.Timeout | null = null;
     let missedPongs = 0;
     let msgWindowStart = 0;
@@ -311,6 +314,27 @@ export function createTownWs(w: WorldService, log: (msg: string) => void, opts: 
       } catch (e) {
         log(`[town] ws 事件推送出错：${e instanceof Error ? e.message : String(e)}`);
         conn.closeWith(1011, '服务器出错');
+      }
+    };
+
+    /** 公屏的新消息：连上之后才有的，按本连接自己记的位置读；内容按本人投影（id 绑定世界和本人）。 */
+    const pushTownChat = () => {
+      if (ws.readyState !== WebSocket.OPEN || !residentId) return;
+      try {
+        // 对局中的 AI 居民不收公屏（对局期间内容不进入这局 AI 的上下文）；真人的网页连接照常收。位置照样往前推，不留到以后补发
+        const me = w.resident(residentId);
+        if (me && me.kind === 'agent' && me.activity_id) {
+          townSeq = townChatHead(w);
+          return;
+        }
+        for (let i = 0; i < 5; i++) {
+          const read = townChatSince(w, residentId, townSeq, 50);
+          townSeq = read.seq;
+          if (read.messages.length) send({ t: 'town_chat', messages: read.messages, cursor: read.messages[read.messages.length - 1]!.id });
+          if (!read.more) break;
+        }
+      } catch (e) {
+        log(`[town] ws 公屏推送出错：${e instanceof Error ? e.message : String(e)}`);
       }
     };
 
@@ -416,7 +440,10 @@ export function createTownWs(w: WorldService, log: (msg: string) => void, opts: 
         dirConn: serial,
         // 坏游标不回显：随后的 resync 会给出新的
         cursor: usable ? given : w.cursorOf(r.resident_id),
+        // 公屏从这一刻之后的新消息会以 town_chat 推来；要历史读 GET /town-chat
+        townChat: { cursor: w.encodeCursor('c', `tc:${r.resident_id}`, townChatHead(w)) },
       });
+      townSeq = townChatHead(w);
       // 先登记订阅，再发首份快照和补发事件：中间不会漏
       offs.push(
         w.onSpace((keys) => {
@@ -425,6 +452,7 @@ export function createTownWs(w: WorldService, log: (msg: string) => void, opts: 
         }),
       );
       offs.push(w.onResident(r.resident_id, pump));
+      offs.push(w.onTownChat(pushTownChat));
       offs.push(
         w.onRevoke(r.resident_id, () => {
           sendError('revoked', '会话已失效或已离开小镇。');

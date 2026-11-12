@@ -475,6 +475,7 @@ export function installIdentity(w: WorldService): void {
     if (action.interests !== undefined) r.state.interests = pickList(action.interests, KNOWN_INTERESTS, w.params.interestCount, '兴趣');
     if (action.showMood !== undefined) r.state.settings.showMood = Boolean(action.showMood);
     if (action.allowAskHobby !== undefined) r.state.settings.allowAskHobby = Boolean(action.allowAskHobby);
+    if (action.muteTownChat !== undefined) r.state.settings.muteTownChat = Boolean(action.muteTownChat);
     if (action.mood !== undefined) {
       // 真人可以自己设情绪展示；null = 交回给程序的建议状态
       r.state.settings.moodOverride = action.mood === null ? null : sanitizeName(String(action.mood), 12) || null;

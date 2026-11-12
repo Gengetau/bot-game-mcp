@@ -42,7 +42,7 @@ export function loadSqlite(): SqliteModule {
 export type Row = Record<string, any>;
 export type Param = SQLInputValue;
 
-export const SCHEMA_VERSION = 3;
+export const SCHEMA_VERSION = 4;
 
 const MIGRATIONS: readonly string[] = [
   // ───── v1 ─────
@@ -598,6 +598,23 @@ const MIGRATIONS: readonly string[] = [
   -- 旧的到达任务全部作废；在途的旧移动由程序按截止规则结清一次（space.ts 的 settleLegacyMoves）
   UPDATE scheduled_jobs SET status = 'cancelled', processed_at = CAST(strftime('%s','now') AS INTEGER) * 1000
     WHERE kind = 'move_arrive' AND status = 'pending';
+  `,
+  // v4：全镇公屏（独立的频道和序号；附近聊天仍在 chat_messages / chat_audience）
+  `
+  CREATE TABLE town_chat_messages (
+    world_id TEXT NOT NULL,
+    -- 公屏自己的连续序号（stream_heads 里 tc:<world> 的高水位），不是别的表的自增号
+    seq INTEGER NOT NULL,
+    sender_id TEXT NOT NULL,
+    kind TEXT NOT NULL CHECK (kind IN ('chat','activity','help')),
+    body TEXT NOT NULL,
+    -- 活动 / 求助消息的位置提示：只存公共地点编号（区域级），没有坐标
+    place TEXT,
+    sent_at INTEGER NOT NULL,
+    PRIMARY KEY (world_id, seq)
+  ) STRICT, WITHOUT ROWID;
+  CREATE INDEX town_chat_time ON town_chat_messages(world_id, sent_at);
+  CREATE INDEX town_chat_sender ON town_chat_messages(world_id, sender_id, seq);
   `,
 ];
 

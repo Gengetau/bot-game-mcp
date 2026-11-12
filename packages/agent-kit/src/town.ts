@@ -28,7 +28,11 @@ export const TOWN_ACTION_TYPES = [
   'stop_navigation',
   /** navigate 的旧名，仍可用 */
   'move',
+  /** 附近聊天（旧名 speak 同义）：交谈距离内、同一房间的人听得到 */
+  'say_nearby',
   'speak',
+  /** 全镇公屏 */
+  'say_town',
   'ask_hobby',
   'update_profile',
   'buy',
@@ -207,7 +211,7 @@ export interface WaitResult {
   present: boolean;
 }
 
-export type TownQueryWhat = 'public' | 'residents' | 'letters' | 'history' | 'relations' | 'report';
+export type TownQueryWhat = 'public' | 'residents' | 'letters' | 'history' | 'town_chat' | 'relations' | 'report';
 
 // ───────────────────────── 错误 ─────────────────────────
 
@@ -545,7 +549,7 @@ export class TownClient {
     return r;
   }
 
-  query(what: TownQueryWhat, opts: { box?: 'inbox' | 'sent'; before?: number; limit?: number; date?: string } = {}): Promise<any> {
+  query(what: TownQueryWhat, opts: { box?: 'inbox' | 'sent'; before?: number | string; limit?: number; date?: string } = {}): Promise<any> {
     return this.raw('world_query', {
       what,
       ...(opts.box ? { box: opts.box } : {}),
@@ -636,8 +640,27 @@ export class TownClient {
   move(to: string, o?: ActOptions) {
     return this.act({ type: 'move', to }, o);
   }
+  /** 附近聊天（旧名 speak，超长会被截断）。 */
   speak(text: string, o?: ActOptions) {
     return this.act({ type: 'speak', text }, o);
+  }
+  /** 附近聊天：超长明确报错。只有交谈距离内、同一房间的人听得到。 */
+  sayNearby(text: string, o?: ActOptions) {
+    return this.act({ type: 'say_nearby', text }, o);
+  }
+  /** 全镇公屏：所有居民都看得到。对局中只读。place 是公共地点编号（位置提示）。 */
+  sayTown(text: string, opts: { kind?: 'chat' | 'activity' | 'help'; place?: string } & ActOptions = {}) {
+    const { kind, place, ...o } = opts;
+    return this.act({ type: 'say_town', text, ...(kind ? { kind } : {}), ...(place ? { place } : {}) }, o);
+  }
+  /** 读全镇公屏：不带 cursor 是最近一页；direction=before 往前翻，after 追新。resync=true 就重读最近一页。 */
+  townChat(opts: { cursor?: string; direction?: 'before' | 'after'; limit?: number } = {}): Promise<any> {
+    return this.raw('world_query', {
+      what: 'town_chat',
+      ...(opts.cursor ? { cursor: opts.cursor } : {}),
+      ...(opts.direction ? { direction: opts.direction } : {}),
+      ...(opts.limit !== undefined ? { limit: opts.limit } : {}),
+    });
   }
   buy(shop: string, sku: string, qty = 1, o?: ActOptions) {
     return this.act({ type: 'buy', shop, sku, qty }, o);
