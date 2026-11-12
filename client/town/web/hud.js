@@ -626,6 +626,8 @@
     }
     (d.actors || []).forEach(px);
     (d.objects || []).forEach(px);
+    /* 最长帧间隔：Godot 每次推送带来「自上次推送以来的最大值」，这里累计，端到端每步开头清零、结尾读取 */
+    window.__frameMaxMs = Math.max(window.__frameMaxMs || 0, d.frameMaxMs || 0);
     d.canvasRect = { left: r.left, top: r.top, width: r.width, height: r.height };
     d.audio = window.TownHost ? window.TownHost.audioState() : [];
     d.soundOn = soundOn;

@@ -8,7 +8,7 @@
  * 选项：--no-shots 不写截图；--only=3,4 只跑指定步骤（步骤之间有先后依赖，只用于调试）；--keep-engine-log 失败时不删临时目录。
  * 反向验证：E2E_AI_NO_RENEW=1 npx tsx scripts/client-e2e.mjs --only=1,8 --no-shots（步骤 8 里让 AI 的端口没有续租方法，运行器不续租，这一步应当失败）。
  * 退出码：全部通过为 0；任何步骤失败、控制台错误、页面错误、CSP 违规、请求失败都算失败（非零）。
- * 结果写到 client/demo/results.json，截图写到 client/demo/NN-说明.png（手机 deviceScaleFactor 2，桌面 1）。
+ * 结果写到 client/demo/results.json，截图写到 client/demo/NN-说明.jpg（手机 deviceScaleFactor 2，桌面 1）。
  * 只有全部通过（退出码 0）且没有 --only 时才覆盖这两样；失败的运行把结果写到 client/demo/results.failed.json（已 gitignore），
  * 截图先写到临时目录，通过后才搬过去，不会把已提交的验收记录换成失败记录。
  *
@@ -192,12 +192,30 @@ function note(msg) {
 function check(cond, msg) {
   if (!cond) throw new Error(msg);
 }
+const livePages = () => [A, B, A2, A3, ...extra].filter(Boolean);
+async function resetFrameStats() {
+  for (const p of livePages()) await p.page.evaluate(() => { window.__frameMaxMs = 0; if (window.__long) window.__long = { max: 0, n: 0, over500: 0 }; }).catch(() => {});
+}
+/** 这一步里每个页面最长的 Godot 帧间隔和浏览器长任务；一眼分清是「机器忙（到处都慢）」还是「某处卡了一下主线程」。 */
+async function noteFrameStats() {
+  const rows = [];
+  for (const p of livePages()) {
+    const r = await p.page.evaluate(() => ({ f: window.__frameMaxMs ?? null, l: window.__long ?? null })).catch(() => null);
+    if (r && r.f !== null) rows.push(`${p.label} ${Math.round(r.f)} ms` + (r.l ? `（长任务 ${r.l.n} 个，最长 ${Math.round(r.l.max)} ms，超 500 ms ${r.l.over500} 个）` : ''));
+  }
+  for (const p of livePages()) {
+    const r = await p.page.evaluate(() => (window.__frameMaxMs >= 500 ? window.__town?.slow ?? [] : [])).catch(() => []);
+    if (r.length) note(`${p.label} 慢帧记录（[时刻 种类 毫秒 ...]）：${r.slice(-6).join(' | ')}`);
+  }
+  if (rows.length) note(`最长帧间隔：${rows.join('；')}`);
+}
 async function step(n, title, fn) {
   if (ONLY.length && !ONLY.includes(n)) return;
   current = { n, title, ok: false, ms: 0, notes: [] };
   notes.length = 0;
   const t0 = Date.now();
   console.log(`\n步骤 ${n}  ${title}`);
+  await resetFrameStats();
   try {
     await fn();
     settleAllowed();
@@ -209,6 +227,7 @@ async function step(n, title, fn) {
     console.log(`  ✗ 步骤 ${n} 失败：${current.error}`);
   }
   current.ms = Date.now() - t0;
+  await noteFrameStats();
   current.notes = [...notes];
   results.push(current);
 }
@@ -230,8 +249,9 @@ const shots = [];
 async function shot(page, name) {
   if (NO_SHOTS) return;
   mkdirSync(SHOT_TMP, { recursive: true });
-  const file = join(SHOT_TMP, `${name}.png`);
-  await page.screenshot({ path: file });
+  const file = join(SHOT_TMP, `${name}.jpg`);
+  // JPEG：街景画面细节多，PNG 一张四五百 KB，每刷新一次验收记录仓库就涨 6 MB 多；JPEG 质量 82 肉眼看不出差别，约为五分之一
+  await page.screenshot({ path: file, type: 'jpeg', quality: 82 });
   shots.push({ name, size: statSync(file).size });
 }
 
@@ -309,6 +329,19 @@ async function newPlayer(browser, label, ctxOpts, { wsGate = false } = {}) {
   await page.addInitScript(() => {
     window.__csp = [];
     document.addEventListener('securitypolicyviolation', (e) => window.__csp.push(`${e.violatedDirective} ${e.blockedURI}`));
+    // 主线程长任务（浏览器自己量的，和 Godot 的帧间隔互相印证）：每步开头清零、结尾读取
+    window.__long = { max: 0, n: 0, over500: 0 };
+    try {
+      new PerformanceObserver((list) => {
+        for (const e of list.getEntries()) {
+          window.__long.n++;
+          window.__long.max = Math.max(window.__long.max, e.duration);
+          if (e.duration >= 500) window.__long.over500++;
+        }
+      }).observe({ type: 'longtask', buffered: true });
+    } catch {
+      /* 浏览器不支持就没有这一项 */
+    }
   });
   let gate = null;
   if (wsGate) {
@@ -685,6 +718,13 @@ async function main() {
     await sleep(600);
     const T_STOP = 1000; // 松开到服务器里停下：服务器端租约 500 毫秒，加上帧间隔和往返
     const navNow = async () => selfActor(await serverScene(A))?.nav ?? null;
+    // 起步等待超时时把位置和页面状态带进错误信息，分得清是「没发出方向帧」还是「服务器没接受」
+    const startedWalking = (ms, what) =>
+      until(navNow, ms, what).catch(async (e) => {
+        const me = selfActor(await serverScene(A));
+        const d = await A.page.evaluate(() => ({ dir: window.__town.dir, mine: window.__town.mine, conn: window.__town.connection, last: window.__town.lastError }));
+        throw new Error(`${e.message}；A 在 (${me?.x?.toFixed(2)}, ${me?.z?.toFixed(2)})，页面 ${JSON.stringify(d)}，已发方向帧 ${A.gate.dirFrames.length} 条，最后一条 ${A.gate.dirFrames.at(-1) ?? '无'}`);
+      });
     const stoppedWithin = async (ms, what) => {
       const t0 = Date.now();
       await until(async () => !(await navNow()), ms, what, 100);
@@ -695,7 +735,7 @@ async function main() {
 
     // 1. 按住 D（向东）：服务器里是一段短路线，租约约 500 毫秒；B 页面看到的位置与服务器折线一致
     await A.page.keyboard.down('d');
-    const n1 = await until(navNow, 8000, '按下 D 后服务器里 A 在走');
+    const n1 = await startedWalking(8000, '按下 D 后服务器里 A 在走');
     check(n1.until - n1.startedAt <= 600, `方向输入的路线租约应约 500 毫秒，实际 ${n1.until - n1.startedAt} 毫秒`);
     check(normPts(n1.points).length === 2 && normPts(n1.points)[1].x > normPts(n1.points)[0].x, '按 D 应是朝东的一段直线');
     const errs = [];
@@ -763,8 +803,10 @@ async function main() {
     check(q1.x < q0.x && q1.z < q0.z, '应走到西北方向');
 
     // 4. Esc 停步：键还按着也不会再走，松开键之后才能再次起步
+    // 前面几段一路向东，走得快时会贴到东边的障碍（x≈44）上，那时再按 D 服务器没有路可走，nav 为空：先回到开阔处
+    await walkTo(A, p0.x, p0.z, 1.5);
     await A.page.keyboard.down('d');
-    await until(navNow, 8000, '再次按下 D 后在走');
+    await startedWalking(8000, '再次按下 D 后在走');
     await sleep(500);
     await A.page.keyboard.press('Escape');
     const tEsc = await stoppedWithin(T_STOP + 2000, 'Esc 后服务器里 A 停下');
@@ -782,9 +824,10 @@ async function main() {
     check(dist(e0, e1) < 0.06 && !(await navNow()), 'Esc 之后键还按着，不应继续走');
     await A.page.keyboard.up('d');
 
-    // 5. 窗口失焦：当作全部松开
+    // 5. 窗口失焦：当作全部松开（同上，先回到开阔处，免得上一段向东走到障碍边）
+    await walkTo(A, p0.x, p0.z, 1.5);
     await A.page.keyboard.down('d');
-    await until(navNow, 8000, '第三次按下 D 后在走');
+    await startedWalking(8000, '第三次按下 D 后在走');
     await sleep(400);
     await A.page.evaluate(() => window.dispatchEvent(new Event('blur')));
     const tBlur = await stoppedWithin(T_STOP + 2000, '窗口失焦后服务器里 A 停下');
@@ -1669,7 +1712,7 @@ try {
       mkdirSync(DEMO_DIR, { recursive: true });
       if (exitCode === 0) {
         // 全部通过：截图和 results.json 一起换成这一遍的（截图是先写在临时目录里的）
-        for (const sh of shots) copyFileSync(join(SHOT_TMP, `${sh.name}.png`), join(DEMO_DIR, `${sh.name}.png`));
+        for (const sh of shots) copyFileSync(join(SHOT_TMP, `${sh.name}.jpg`), join(DEMO_DIR, `${sh.name}.jpg`));
         writeFileSync(join(DEMO_DIR, 'results.json'), JSON.stringify(report, null, 2));
         rmSync(join(DEMO_DIR, 'results.failed.json'), { force: true });
       } else {

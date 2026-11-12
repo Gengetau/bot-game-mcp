@@ -1,5 +1,7 @@
 # 栖灯镇三维网页客户端：端到端演示与独立验收记录
 
+最近一次整跑：2026-11-13（并入街景美术、音频和场景预热之后），17 项全部通过，各步耗时、每步两个页面的最长帧间隔都在 `results.json` 里；下面表格里的耗时是 2026-11-12 灰盒阶段那几遍的数字，步骤内容没有变，另外多了步骤 15（声音：昼夜切换、三个音量与静音、刷新后保持、后台挂起）。
+
 日期：2026-11-12。验收人：没有参与客户端开发的「外人」，只按 `client/README.md` 的步骤从头走一遍。
 
 ## 环境
@@ -49,23 +51,26 @@
 
 ## 截图
 
-桌面 1440x900（dsf 1），手机 780x1688（390x844，dsf 2）。全部是 Playwright 原样输出，没有量化：01 和 14 因为画面里有大面积渐变背景各约 450 KB，其余 31 到 117 KB。没有 09：原来的 09 是「AI 走到书屋」，改成走到茶馆之后，A 页面的镜头跟着 A 站在书屋里，AI 走路和到达时都不在画面里（试过在走路时两个页面里找 AI 拍，两次都没拍到），所以删掉了，步骤 8 靠数字断言。
+桌面 1440x900（dsf 1；16 是 1280x800），手机 780x1688（390x844，dsf 2）。JPEG，质量 82：换成街景之后画面细节多，PNG 一张四五百 KB，每刷新一次验收记录仓库就涨 6 MB 多，JPEG 每张 20 到 145 KB，肉眼看不出差别。没有 09：原来的 09 是「AI 走到书屋」，改成走到茶馆之后，A 页面的镜头跟着 A 站在书屋里，AI 走路和到达时都不在画面里（试过在走路时两个页面里找 AI 拍，两次都没拍到），所以删掉了，步骤 8 靠数字断言。
 
 | 文件 | 内容 |
 |---|---|
-| `01-desktop-enter.png` | 进入面板 |
-| `02-desktop-two-residents.png` | 登录进入后，桌面页里两个居民 |
-| `03-mobile-walking.png` | 手机触摸点地后走路 |
-| `04-desktop-walking.png` | 桌面走路中，地面标记 |
-| `05-desktop-unreachable.png` | 点到走不过去的地方：提示「那里走不过去。」 |
-| `06-desktop-too-far.png` | 远处直接做动作：提示「离镇上的藏书架太远了」 |
-| `07-desktop-reading.png` | 走近藏书架后「正在：读书」 |
-| `08-mobile-pinch-zoom.png` | 手机双指缩放中 |
-| `10-desktop-home.png` | 进了自己家（home 场景） |
-| `11-desktop-reconnecting.png` | 断线，左上角「重连中…」 |
-| `12-desktop-readonly-tab.png` | 第二个标签页：只读横幅和「接管」 |
-| `13-desktop-old-tab-readonly.png` | 被接管后原来那个标签页只读 |
-| `14-desktop-left-town.png` | 主动离开后停在「你已经离开了小镇」面板 |
+| `01-desktop-enter.jpg` | 进入面板 |
+| `02-desktop-two-residents.jpg` | 登录进入后，桌面页里两个居民 |
+| `03-mobile-walking.jpg` | 手机触摸点地后走路 |
+| `04-desktop-walking.jpg` | 桌面走路中，地面标记 |
+| `05-desktop-unreachable.jpg` | 点到走不过去的地方：提示「那里走不过去。」 |
+| `06-desktop-too-far.jpg` | 远处直接做动作：提示「离镇上的藏书架太远了」 |
+| `07-desktop-reading.jpg` | 走近藏书架后「正在：读书」 |
+| `08-mobile-pinch-zoom.jpg` | 手机双指缩放中 |
+| `10-desktop-home.jpg` | 进了自己家（home 场景） |
+| `11-desktop-reconnecting.jpg` | 断线，左上角「重连中…」 |
+| `12-desktop-readonly-tab.jpg` | 第二个标签页：只读横幅和「接管」 |
+| `13-desktop-old-tab-readonly.jpg` | 被接管后原来那个标签页只读 |
+| `14-desktop-left-town.jpg` | 主动离开后停在「你已经离开了小镇」面板 |
+| `15-desktop-keyboard-walk.jpg` | 键盘走路中（傍晚，路灯亮起），左下角是按键提示 |
+| `16-desktop-sound-panel.jpg` | 桌面的音量面板 |
+| `17-mobile-sound-panel.jpg` | 手机的音量面板 |
 
 ## 包体（来自 `npm run client:export` 的产物，brotli 11）
 

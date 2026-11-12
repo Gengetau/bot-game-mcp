@@ -43,6 +43,7 @@ var _mm: Dictionary = {}  # 摆放中的 MultiMesh 数据 scene -> kind -> Array
 var _glows: Dictionary = {}  # scene -> Array[Transform3D]
 var _lamps: Dictionary = {}  # scene -> Array[Vector4]
 var _kind_cache: Dictionary = {}
+var _warmed: Dictionary = {}
 var _cur: Dictionary = {}  # 正在构建的场景的上下文
 var rejected: int = 0
 var placed: int = 0
@@ -101,6 +102,35 @@ func show_scene(sid: String) -> void:
 	current = sid
 	for k in roots:
 		(roots[k] as Node3D).visible = (k == sid)
+	_warm_up(sid)
+
+
+## 预热：兼容渲染器在某个东西第一次进入画面时才编译着色器、上传缓冲，软件渲染下一次可达半秒以上，
+## 正好发生在玩家走到那里的那一帧（按住方向键的租约只有 0.5 秒，会因此停下）。
+## 这里用一个很小的离屏视口、从正上方的正交镜头把整个场景画一遍，让这些一次性开销在进入小镇时就付掉。
+func _warm_up(sid: String) -> void:
+	if _warmed.has(sid) or not bounds.has(sid) or not is_inside_tree():
+		return
+	_warmed[sid] = true
+	var r: Rect2 = bounds[sid]
+	var vp := SubViewport.new()
+	vp.size = Vector2i(48, 48)
+	vp.render_target_update_mode = SubViewport.UPDATE_ONCE
+	vp.disable_3d = false
+	var cam := Camera3D.new()
+	cam.projection = Camera3D.PROJECTION_ORTHOGONAL
+	cam.size = maxf(r.size.x, r.size.y) * 1.05
+	cam.near = 0.5
+	cam.far = 300.0
+	cam.current = true
+	vp.add_child(cam)
+	add_child(vp)
+	var c: Vector2 = r.get_center()
+	cam.global_position = Vector3(c.x, 120.0, c.y)
+	cam.look_at(Vector3(c.x, 0.0, c.y), Vector3.FORWARD)
+	for i in range(3):
+		await get_tree().process_frame
+	vp.queue_free()
 
 
 func scene_objects(sid: String) -> Array:

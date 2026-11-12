@@ -15,6 +15,9 @@ var bridge := TBridge.new()
 var clock := TClock.new()
 var net := TNet.new()
 var audio := TAudio.new()
+var _frame_max_ms: float = 0.0
+var _last_wall_us: int = 0
+var _slow: Array = []
 var world := TWorld.new()
 var rig := TRig.new()
 var actors_root := Node3D.new()
@@ -1331,6 +1334,17 @@ func _is_near(oid: String) -> bool:
 
 
 func _process(dt: float) -> void:
+	# 墙钟量帧间隔：引擎传进来的 dt 会被主循环截断（长卡顿只显示成约 150 毫秒），不能用来看卡顿
+	var wall_us: int = Time.get_ticks_usec()
+	if _last_wall_us > 0:
+		var gap: float = float(wall_us - _last_wall_us) / 1000.0
+		_frame_max_ms = maxf(_frame_max_ms, gap)
+		if gap > 400.0:
+			var pa: TActor = actors.get(self_id)
+			_slow.append("%d gap %.0f drs %.2f pos %s mv %s" % [Time.get_ticks_msec(), gap, _drs, str(pa.disp.snapped(Vector2(0.1, 0.1))) if pa != null else "-", str(pa.moving) if pa != null else "-"])
+			if _slow.size() > 12:
+				_slow.pop_front()
+	_last_wall_us = wall_us
 	net.poll()
 	if phase != Phase.PLAYING:
 		if _dirty:
@@ -1665,5 +1679,9 @@ func _push_debug() -> void:
 		"dir": {"conn": dir_conn, "seq": dir_seq, "active": dir_active, "suppressed": dir_suppressed, "keys": _key_vec_text()},
 		"screenScale": DisplayServer.screen_get_scale(),
 		"snd": audio.debug_info(),
+		# 自上次推送以来最长的一帧间隔（毫秒）。网页层累计，端到端每步结束时读，用来分清「机器忙」和「某处卡了主线程」
+		"frameMaxMs": snappedf(_frame_max_ms, 0.1),
+		"slow": _slow,
 	}
+	_frame_max_ms = 0.0
 	bridge.hud_debug(JSON.stringify(d))
