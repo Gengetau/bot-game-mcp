@@ -231,10 +231,13 @@
     var dirs = {};
     for (var c in held) if (held[c]) dirs[KEYMAP[c]] = true;
     var j = ['up', 'down', 'left', 'right'].filter(function (d) { return dirs[d]; }).join(',');
-    if (j === lastKeys) return;
-    lastKeys = j;
-    emit('keys', j);
+    // 末尾的编号是「按下沿」计数：只有新按下一个方向键才会加一，客户端靠它决定要不要解除"点地后的抑制"
+    var out = j + '|' + pressEdge;
+    if (out === lastKeys) return;
+    lastKeys = out;
+    emit('keys', out);
   }
+  var pressEdge = 0;
   function releaseAll() {
     held = {};
     emitKeys();
@@ -242,10 +245,16 @@
   window.addEventListener(
     'keydown',
     function (e) {
-      if (e.ctrlKey || e.metaKey || e.altKey || isTyping(e.target) || !playing()) return;
+      // macOS 上 Cmd 按着时，其他键的 keyup 不会送到页面：一见到修饰键就全部松开，免得粘键一直走
+      if (e.ctrlKey || e.metaKey || e.altKey || e.key === 'Meta' || e.key === 'Control' || e.key === 'Alt') {
+        releaseAll();
+        return;
+      }
+      if (isTyping(e.target) || !playing()) return;
       var code = e.code;
       if (KEYMAP[code]) {
         e.preventDefault();
+        if (!held[code] && !e.repeat) pressEdge++;
         held[code] = true;
         emitKeys();
       } else if (code === 'KeyE') {
@@ -254,7 +263,7 @@
       } else if (code === 'Escape') {
         if (e.repeat) return;
         if (!$('destMenu').hidden) show($('destMenu'), false);
-        else emit('stop');
+        else emit('esc');
       }
     },
     true,

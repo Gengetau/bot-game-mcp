@@ -108,7 +108,7 @@ var last_error: String = ""
 # 键盘方向输入（WASD / 方向键）。键位由网页层 hud.js 盯着（输入框里、窗口失焦、切后台都由它处理），这里只收「现在按着哪几个」。
 # 只发方向、序号、控制版本，不发坐标；服务器把它变成一段约 500 毫秒租约的短直线，所以按住时要定时重发，松手发零向量。
 const DIR_RESEND_MS := 175.0  # 按住时重发的间隔
-const DIR_MIN_GAP_MS := 60.0  # 方向变了也至少隔这么久才发（服务器限频：突发 10、每秒 10）
+const DIR_MIN_GAP_MS := 100.0  # 方向变了也至少隔这么久才发（和服务器限频的稳态一致：每秒 10 条）
 const INTERACT_RANGE := 8.0
 var key_up: bool = false
 var key_down: bool = false
@@ -118,7 +118,9 @@ var dir_seq: int = 0  # 只增不减，重连也不重置（服务器按连接�
 var dir_last: Vector2 = Vector2.ZERO
 var dir_sent_ms: float = -1.0e9
 var dir_active: bool = false  # 已经发过非零方向、还没发零
-var dir_suppressed: bool = false  # 按着键时点了地面或物件：这次按住不再发方向，等全部松开
+var dir_suppressed: bool = false  # 点了地面或物件、按了 Esc：不再发方向，直到出现新的按下沿（向量归零本身不解除）
+var key_edge: int = 0  # hud.js 给的按下沿计数
+var dir_conn: int = -1  # hello 里的连接序号，点地 / 停下时连同 dir_seq 一起作栅栏发给服务器
 var dir_toast_ms: float = -1.0e9
 var _dirty: bool = true
 var _state_timer: float = 0.0
@@ -205,6 +207,8 @@ func _on_ui(ev: String, arg: String) -> void:
 			_on_keys(arg)
 		"interact":
 			_do_interact()
+		"esc":
+			_do_esc()
 		"claim":
 			_do_claim()
 		"home":
@@ -623,6 +627,7 @@ func _on_ws_message(msg: Dictionary) -> void:
 			clock.reset()
 			clock.rough(float(msg.get("serverTime", 0.0)))
 			renew_every_ms = maxf(1000.0, float(msg.get("renewEveryMs", 3000.0)))
+			dir_conn = int(msg.get("dirConn", -1))
 			ev_cursor = str(msg.get("cursor", ev_cursor))
 			next_ping = 0.0
 			var m = msg.get("map")
@@ -647,7 +652,7 @@ func _on_ws_message(msg: Dictionary) -> void:
 		"renewed":
 			_on_renewed(msg)
 		"dir_dropped":
-			pass  # 旧序号或太频繁，丢了就丢了：下一次重发会补上
+			dir_last = Vector2.ZERO  # 丢了就当没发过：下一帧立刻重发（旧序号的丢弃由栅栏保证是对的）
 		"error":
 			var code: String = str(msg.get("code", ""))
 			if code == "revoked":
@@ -893,9 +898,15 @@ func _do_navigate(to: Dictionary, label: String, mark = null) -> void:
 	near_valid = false
 	if mark is Vector3:
 		_show_marker(mark, false)
-	var r: Dictionary = await _act({"type": "navigate"}.merged(to))
+	var r: Dictionary = await _act({"type": "navigate"}.merged(to).merged(_dir_fence()))
 	if gen != nav_generation:
-		return  # 之后又点了别处，这个回答不再代表现状
+		# 之后又点了别处或又按了方向键，这个回答不再代表现状，不画标记；但服务器的现状照记：谁生效由服务器的序号栅栏决定
+		if r["ok"] and r["data"] is Dictionary and r["data"].get("navigation") is Dictionary:
+			var nv0: Dictionary = r["data"]["navigation"]
+			renew_id = str(nv0.get("navigationId", ""))
+			renew_rev = int(nv0.get("revision", 0))
+			next_renew = clock.ticks_ms() + float(nv0.get("renewEveryMs", renew_every_ms))
+		return
 	if not r["ok"]:
 		_hide_marker()
 		_toast(str(r["message"]), "err")
@@ -923,7 +934,7 @@ func _do_stop() -> void:
 		return
 	_dir_cancel()
 	nav_generation += 1
-	var r: Dictionary = await _act({"type": "stop_navigation"})
+	var r: Dictionary = await _act({"type": "stop_navigation"}.merged(_dir_fence()))
 	_hide_marker()
 	if r["ok"]:
 		audio.confirm()
@@ -986,12 +997,18 @@ func _on_act_button(arg: String) -> void:
 
 ## 网页层报来现在按着的方向键（"up,left" 这样的列表，空串 = 都松开）。
 func _on_keys(arg: String) -> void:
-	var parts: PackedStringArray = arg.split(",", false)
+	var halves: PackedStringArray = arg.split("|")
+	var parts: PackedStringArray = halves[0].split(",", false)
+	var edge: int = int(halves[1]) if halves.size() > 1 else key_edge
 	var was_idle: bool = _key_vec() == Vector2.ZERO
 	key_up = "up" in parts
 	key_down = "down" in parts
 	key_left = "left" in parts
 	key_right = "right" in parts
+	if edge != key_edge:
+		key_edge = edge
+		if _key_vec() != Vector2.ZERO:
+			dir_suppressed = false  # 新按下了一个方向键：这才是新的一次起步
 	if phase != Phase.PLAYING:
 		return
 	if was_idle and _key_vec() != Vector2.ZERO and not control_mine:
@@ -1020,7 +1037,6 @@ func _send_dir(v: Vector2, now_t: float) -> void:
 func _tick_dir(now_t: float) -> void:
 	var v: Vector2 = _key_vec()
 	if v == Vector2.ZERO:
-		dir_suppressed = false
 		if dir_active:
 			dir_active = false
 			if net.is_open() and ws_ready:
@@ -1047,6 +1063,24 @@ func _dir_cancel() -> void:
 	dir_active = false
 	dir_sent_ms = -1.0e9
 	dir_suppressed = _key_vec() != Vector2.ZERO
+
+
+## 点地 / 停下时带上的序号栅栏：这个页面在这条连接上已经发出的最大方向序号。发在它之前、迟到的方向帧会被服务器丢弃。
+func _dir_fence() -> Dictionary:
+	if dir_conn < 0 or dir_seq <= 0:
+		return {}
+	return {"dirFence": {"conn": dir_conn, "seq": dir_seq}}
+
+
+## Esc（没有面板时）：只在确实在走的时候停下；只读页面、没在走都静默忽略。
+func _do_esc() -> void:
+	if phase != Phase.PLAYING or not control_mine:
+		return
+	var sa: TActor = actors.get(self_id)
+	if dir_active or (sa != null and sa.has_nav):
+		_do_stop()
+	elif _key_vec() != Vector2.ZERO:
+		dir_suppressed = true  # 没在走但键按着：Esc 也让这次按住作废
 
 
 func _dir_reset() -> void:
@@ -1077,6 +1111,12 @@ func _do_interact() -> void:
 		return
 	var sa: TActor = actors.get(self_id)
 	if sa == null:
+		return
+	var guard: int = 0
+	while me_busy and guard < 150:
+		await get_tree().process_frame  # 有一次读取在路上：等它读完，别拿旧的"够不够得着"去判断
+		guard += 1
+	if phase != Phase.PLAYING:
 		return
 	if not near_valid:
 		await _refresh_me()  # 刚停下时"够不够得着"还是旧的：读一次再决定
@@ -1546,7 +1586,7 @@ func _push_debug() -> void:
 		"lastError": last_error,
 		"markerVisible": marker.visible,
 		"tapLimit": _tap_limit(),
-		"dir": {"seq": dir_seq, "active": dir_active, "suppressed": dir_suppressed, "keys": _key_vec_text()},
+		"dir": {"conn": dir_conn, "seq": dir_seq, "active": dir_active, "suppressed": dir_suppressed, "keys": _key_vec_text()},
 		"screenScale": DisplayServer.screen_get_scale(),
 	}
 	bridge.hud_debug(JSON.stringify(d))
