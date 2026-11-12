@@ -5,3 +5,7 @@ data/
 .DS_Store
 coverage/
 botgame.config.json
+
+# Godot 网页客户端：导出产物和编辑器缓存不入库（*.import 文件要入库）
+client/town/build/
+client/town/.godot/

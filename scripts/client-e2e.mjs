@@ -1,0 +1,864 @@
+#!/usr/bin/env node
+/**
+ * 栖灯镇三维网页客户端的端到端演示与验收（不进 CI：CI 里没有 Godot）。
+ *
+ *   npm run client:export   # 先导出（见 client/README.md）
+ *   npm run client:e2e      # 起引擎（子进程、开发登录、临时库、随机端口）+ 两个浏览器上下文 + 一个 AI 居民
+ *
+ * 选项：--no-shots 不写截图；--only=3,4 只跑指定步骤（步骤之间有先后依赖，只用于调试）；--keep-engine-log 失败时不删临时目录。
+ * 退出码：全部通过为 0；任何步骤失败、控制台错误、页面错误、CSP 违规、请求失败都算失败（非零）。
+ * 结果写到 client/demo/results.json，截图写到 client/demo/NN-说明.png（deviceScaleFactor 2）。
+ *
+ * 时间容差说明：无头 Chromium 用 SwiftShader 软件渲染，渲染循环只有 3 到 7 帧每秒，页面里的「显示位置」
+ * 是按帧更新的，所以对比「页面里的位置」和「按服务器折线 + 服务器时间现算的位置」时留了 0.6 米
+ * （走路速度 2.4 米每秒，约 250 毫秒）的容差。这不是靠加长等待糊过去：每个断言都是定时轮询到条件成立为止。
+ */
+import { spawn, execFileSync } from 'node:child_process';
+import { createRequire } from 'node:module';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync, readdirSync } from 'node:fs';
+import { createServer } from 'node:net';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { randomBytes } from 'node:crypto';
+
+const ROOT = resolve(fileURLToPath(new URL('..', import.meta.url)));
+const CLIENT_DIR = join(ROOT, 'client', 'town', 'build', 'web');
+const DEMO_DIR = join(ROOT, 'client', 'demo');
+const ARGS = process.argv.slice(2);
+const NO_SHOTS = ARGS.includes('--no-shots');
+const KEEP = ARGS.includes('--keep-engine-log');
+const ONLY = (ARGS.find((a) => a.startsWith('--only=')) ?? '').slice(7).split(',').filter(Boolean).map(Number);
+const T_POS = 0.6; // 页面里的位置 与 服务器折线现算位置 的容差（米）
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const rnd = () => randomBytes(3).toString('hex');
+
+// ───────────────────────── 前置检查 ─────────────────────────
+
+if (!existsSync(join(CLIENT_DIR, 'index.html')) || !existsSync(join(CLIENT_DIR, 'index.wasm'))) {
+  console.error(`没有找到客户端导出目录：${CLIENT_DIR}\n请先运行：npm run client:export（需要 Godot 4.7.x，见 client/README.md）`);
+  process.exit(2);
+}
+
+function loadPlaywright() {
+  const req = createRequire(import.meta.url);
+  for (const p of ['playwright', '/opt/node-tools/node_modules/playwright']) {
+    try {
+      return req(p);
+    } catch {
+      /* 试下一个 */
+    }
+  }
+  console.error('找不到 playwright：npm i -D playwright 并 npx playwright install chromium，或把它装进 NODE_PATH。');
+  process.exit(2);
+}
+const { chromium } = loadPlaywright();
+
+// ───────────────────────── 引擎子进程 ─────────────────────────
+
+const freePort = () =>
+  new Promise((res, rej) => {
+    const s = createServer();
+    s.once('error', rej);
+    s.listen(0, '127.0.0.1', () => {
+      const p = s.address().port;
+      s.close(() => res(p));
+    });
+  });
+
+const TMP = mkdtempSync(join(tmpdir(), 'town-client-e2e-'));
+const AI_KEY = `bgk_e2e_${rnd()}${rnd()}${rnd()}`;
+let engine = null;
+const engineTail = [];
+let BASE = '';
+let PORT = 0;
+
+async function startEngine() {
+  PORT = await freePort();
+  BASE = `http://127.0.0.1:${PORT}`;
+  const cfg = {
+    host: '127.0.0.1',
+    port: PORT,
+    stateFile: null,
+    seed: 'client-e2e',
+    auth: { mode: 'keys', adminKeys: [], agents: [{ key: AI_KEY, id: '9001', name: '灯灯' }] },
+    town: { enabled: true, dbFile: join(TMP, 'town.db'), devLogin: true, clientDir: CLIENT_DIR },
+  };
+  const cfgFile = join(TMP, 'engine.json');
+  writeFileSync(cfgFile, JSON.stringify(cfg));
+  const tsx = join(ROOT, 'node_modules', '.bin', 'tsx');
+  engine = spawn(tsx, [join(ROOT, 'packages', 'engine', 'src', 'cli.ts'), 'serve'], {
+    cwd: ROOT,
+    detached: true, // 自成进程组，结束时整组杀掉（tsx 会再起一层 node）
+    stdio: ['ignore', 'pipe', 'pipe'],
+    env: { ...process.env, BOTGAME_CONFIG: cfgFile },
+  });
+  const onData = (b) => {
+    for (const l of b.toString('utf8').split('\n')) if (l.trim()) engineTail.push(l);
+    if (engineTail.length > 120) engineTail.splice(0, engineTail.length - 120);
+  };
+  engine.stdout.on('data', onData);
+  engine.stderr.on('data', onData);
+  const deadline = Date.now() + 40_000;
+  for (;;) {
+    if (engine.exitCode !== null) throw new Error(`引擎提前退出：\n${engineTail.slice(-15).join('\n')}`);
+    try {
+      const r = await fetch(`${BASE}/health`, { signal: AbortSignal.timeout(1500) });
+      if (r.ok) break;
+    } catch {
+      /* 还没起来 */
+    }
+    if (Date.now() > deadline) throw new Error(`引擎 40 秒内没有就绪：\n${engineTail.slice(-15).join('\n')}`);
+    await sleep(150);
+  }
+}
+
+function stopEngine() {
+  if (!engine || engine.exitCode !== null || !engine.pid) return;
+  try {
+    process.kill(-engine.pid, 'SIGTERM');
+  } catch {
+    try {
+      engine.kill('SIGTERM');
+    } catch {
+      /* 已经退出 */
+    }
+  }
+}
+
+// ───────────────────────── 步骤记录 ─────────────────────────
+
+const results = [];
+let current = null;
+const notes = [];
+function note(msg) {
+  notes.push(msg);
+  console.log(`      · ${msg}`);
+}
+function check(cond, msg) {
+  if (!cond) throw new Error(msg);
+}
+async function step(n, title, fn) {
+  if (ONLY.length && !ONLY.includes(n)) return;
+  current = { n, title, ok: false, ms: 0, notes: [] };
+  notes.length = 0;
+  const t0 = Date.now();
+  console.log(`\n步骤 ${n}  ${title}`);
+  try {
+    await fn();
+    current.ok = true;
+    console.log(`  ✓ 步骤 ${n} 通过（${((Date.now() - t0) / 1000).toFixed(1)} 秒）`);
+  } catch (e) {
+    current.error = e instanceof Error ? e.message : String(e);
+    console.log(`  ✗ 步骤 ${n} 失败：${current.error}`);
+  }
+  current.ms = Date.now() - t0;
+  current.notes = [...notes];
+  results.push(current);
+}
+
+// ───────────────────────── 浏览器侧工具 ─────────────────────────
+
+const shots = [];
+async function shot(page, name) {
+  if (NO_SHOTS) return;
+  mkdirSync(DEMO_DIR, { recursive: true });
+  const file = join(DEMO_DIR, `${name}.png`);
+  await page.screenshot({ path: file });
+  shots.push({ name, size: statSync(file).size });
+}
+
+/** 一个被监视的页面：收集控制台错误、页面错误、CSP 违规、失败请求，以及 /actions 的回应。 */
+function watch(page, label) {
+  const w = { label, problems: [], expected: [], actions: [], csp: 0 };
+  page.on('console', (m) => {
+    const text = m.text();
+    if (/GPU stall|ReadPixels/.test(text)) return; // 软件渲染的驱动提示，不是错误
+    if (/Content Security Policy|violates the following/i.test(text)) {
+      w.csp++;
+      w.problems.push(`CSP：${text.slice(0, 200)}`);
+      return;
+    }
+    if (m.type() !== 'error') return;
+    // 服务器规则失败（4xx）时 Chromium 固定会打一行这个；本脚本故意触发几次规则失败，按「预期」单独记账
+    if (/^Failed to load resource: the server responded with a status of 4\d\d/.test(text)) {
+      w.expected.push(text);
+      return;
+    }
+    w.problems.push(`控制台错误：${text.slice(0, 300)}`);
+  });
+  page.on('pageerror', (e) => w.problems.push(`pageerror：${e.message.slice(0, 300)}`));
+  page.on('requestfailed', (r) => {
+    if (w.closing) return;
+    const u = r.url();
+    // 故意被我们拦下断开的 WebSocket 不经过这里；其余失败一律算问题
+    w.problems.push(`请求失败：${r.method()} ${u.replace(BASE, '')} ${r.failure()?.errorText ?? ''}`);
+  });
+  page.on('response', (r) => {
+    const u = r.url();
+    const st = r.status();
+    if (st >= 500) w.problems.push(`服务器 ${st}：${r.request().method()} ${u.replace(BASE, '')}`);
+    if (!/\/town\/api\/actions$/.test(u) || r.request().method() !== 'POST') return;
+    const rec = { status: st, type: null, code: null, message: null, t: Date.now() };
+    try {
+      const body = JSON.parse(r.request().postData() ?? '{}');
+      rec.type = body.action?.type ?? null;
+      rec.to = body.action?.to ?? null;
+    } catch {
+      /* 忽略 */
+    }
+    w.actions.push(rec);
+    r.json()
+      .then((j) => {
+        rec.code = j?.error ?? null;
+        rec.reason = j?.reason ?? j?.data?.reason ?? null;
+        rec.message = j?.message ?? null;
+      })
+      .catch(() => {});
+  });
+  return w;
+}
+
+async function newPlayer(browser, label, ctxOpts, { wsGate = false } = {}) {
+  const ctx = await browser.newContext(ctxOpts);
+  const page = await ctx.newPage();
+  const w = watch(page, label);
+  await page.addInitScript(() => {
+    window.__csp = [];
+    document.addEventListener('securitypolicyviolation', (e) => window.__csp.push(`${e.violatedDirective} ${e.blockedURI}`));
+  });
+  let gate = null;
+  if (wsGate) {
+    // 让测试能在需要的时候把 WebSocket 断掉并拦住重连
+    gate = { block: false, sockets: [] };
+    await page.routeWebSocket(/\/town\/ws/, (ws) => {
+      if (gate.block) {
+        ws.close();
+        return;
+      }
+      ws.connectToServer();
+      gate.sockets.push(ws);
+    });
+  }
+  return { ctx, page, w, label, touch: !!ctxOpts.hasTouch, gate, name: null };
+}
+
+async function login(p, name, { shotEnter } = {}) {
+  const t0 = Date.now();
+  await p.page.goto(`${BASE}/town/3d/?debug=1`);
+  await p.page.waitForSelector('#enterBtn:not([hidden])', { timeout: 120_000 });
+  const tButton = Date.now() - t0;
+  if (shotEnter) await shot(p.page, shotEnter);
+  const t1 = Date.now();
+  await p.page.click('#enterBtn');
+  await p.page.waitForSelector('#nameInput', { state: 'visible', timeout: 30_000 });
+  await p.page.fill('#nameInput', name);
+  await p.page.click('#loginBtn');
+  await p.page.waitForFunction(
+    () => window.__town && window.__town.actors.length > 0 && document.body.dataset.phase === 'playing',
+    null,
+    { timeout: 60_000 },
+  );
+  p.name = name;
+  return { toButtonMs: tButton, toPlayingMs: Date.now() - t1 };
+}
+
+const snap = (page) =>
+  page.evaluate(() => {
+    const t = window.__town;
+    return {
+      self: t.self, scene: t.scene, space: t.space, spaceName: t.spaceName, conn: t.connection, mine: t.mine,
+      pending: t.pending, selected: t.selected, nearValid: t.nearValid, zoom: t.zoom, vp: t.vp,
+      serverNow: t.serverNow, off: t.serverTimeOffset, rtt: t.rttMs, lastError: t.lastError, toasts: t.toasts,
+      actors: t.actors.map((a) => ({ id: a.id, name: a.name, x: a.x, z: a.z, moving: a.moving })),
+      objects: t.objects,
+    };
+  });
+
+const viewport = (page) => page.evaluate(() => ({ w: window.innerWidth, h: window.innerHeight }));
+const project = (page, x, z) => page.evaluate(([x, z]) => window.__town.project(x, 0, z), [x, z]);
+
+/** 点在页面里的世界坐标上（鼠标或触摸）。目标不在可点区域内就沿着自己到目标的连线往回缩，直到点得到。 */
+async function clickWorld(p, x, z) {
+  const s = await snap(p.page);
+  const me = s.actors.find((a) => a.id === s.self);
+  const vp = await viewport(p.page);
+  const ok = (q) => q.x > 24 && q.x < vp.w - 24 && q.y > 100 && q.y < vp.h - 170;
+  let k = 1;
+  let q = await project(p.page, x, z);
+  while (!ok(q) && k > 0.05) {
+    k -= 0.05;
+    q = await project(p.page, me.x + (x - me.x) * k, me.z + (z - me.z) * k);
+  }
+  check(ok(q), `世界点 (${x},${z}) 投影不到可点区域`);
+  if (p.touch) await p.page.touchscreen.tap(q.x, q.y);
+  else await p.page.mouse.click(q.x, q.y);
+  return { x: me.x + (x - me.x) * k, z: me.z + (z - me.z) * k, px: q };
+}
+
+/** 轮询直到 fn 返回真值；超时抛出带说明的错误。fn 可以是同步或异步。 */
+async function until(fn, timeoutMs, what, every = 150) {
+  const t0 = Date.now();
+  let last;
+  for (;;) {
+    try {
+      last = await fn();
+      if (last) return last;
+    } catch (e) {
+      last = e;
+    }
+    if (Date.now() - t0 > timeoutMs) throw new Error(`等待超时（${(timeoutMs / 1000).toFixed(0)} 秒）：${what}`);
+    await sleep(every);
+  }
+}
+
+// ───────────────────────── 服务器侧（用各自的 Cookie 读 /scene） ─────────────────────────
+
+async function serverScene(p) {
+  const r = await p.ctx.request.get(`${BASE}/town/api/scene`);
+  check(r.ok(), `GET /scene 返回 ${r.status()}`);
+  return r.json();
+}
+const selfActor = (sc) => sc.actors.find((a) => a.id === sc.self);
+const normPts = (pts) => pts.map((q) => (Array.isArray(q) ? { x: q[0], z: q[1] } : q));
+
+/** 按服务器折线 + 速度 + 出发时刻，在服务器时间 t（毫秒）的位置；截断在租约截止 until。 */
+function polyAt(nav, t) {
+  const pts = normPts(nav.points);
+  const tt = Math.min(t, nav.until ?? t);
+  let d = Math.max(0, (nav.speed * (tt - nav.startedAt)) / 1000);
+  for (let i = 1; i < pts.length; i++) {
+    const seg = Math.hypot(pts[i].x - pts[i - 1].x, pts[i].z - pts[i - 1].z);
+    if (d <= seg) {
+      const f = seg === 0 ? 0 : d / seg;
+      return { x: pts[i - 1].x + (pts[i].x - pts[i - 1].x) * f, z: pts[i - 1].z + (pts[i].z - pts[i - 1].z) * f };
+    }
+    d -= seg;
+  }
+  return pts[pts.length - 1];
+}
+const dist = (a, b) => Math.hypot(a.x - b.x, a.z - b.z);
+
+/** 分几段走到 (x,z)：每一段点视野内能点到的点（clickWorld 会缩回），等服务器里走完再点下一段。 */
+async function walkTo(p, x, z, tol = 0.8) {
+  for (let hop = 0; hop < 10; hop++) {
+    const me = selfActor(await serverScene(p));
+    if (dist(me, { x, z }) < tol) return me;
+    await clickWorld(p, x, z);
+    await until(async () => selfActor(await serverScene(p))?.nav, 5000, '开始走');
+    await until(async () => !selfActor(await serverScene(p))?.nav, 40_000, '这一段走完');
+  }
+  const me = selfActor(await serverScene(p));
+  check(dist(me, { x, z }) < tol, `走不到 (${x},${z})，停在 (${me.x.toFixed(1)},${me.z.toFixed(1)})`);
+  return me;
+}
+
+/** 某个页面里（按居民编号）看到的某人。 */
+const seen = async (page, id) => (await snap(page)).actors.find((a) => a.id === id) ?? null;
+
+// ───────────────────────── 主流程 ─────────────────────────
+
+const browsers = [];
+let A, B, A2;
+let aiClient = null;
+let aiId = null;
+const metrics = { versions: {}, bundle: [], load: {} };
+
+async function main() {
+  console.log(`栖灯镇客户端端到端：临时目录 ${TMP}`);
+  await startEngine();
+  console.log(`引擎已就绪：${BASE}（开发登录、keys 认证、临时库）`);
+
+  const chromiumBrowserA = await chromium.launch();
+  const chromiumBrowserB = await chromium.launch();
+  browsers.push(chromiumBrowserA, chromiumBrowserB);
+  metrics.versions.chromium = chromiumBrowserA.version();
+  metrics.versions.node = process.version;
+  try {
+    metrics.versions.godot = execFileSync(process.env.GODOT || '/opt/godot/godot', ['--version'], { encoding: 'utf8', timeout: 20_000 }).trim();
+  } catch {
+    metrics.versions.godot = '（本机没有 Godot 可执行文件，未取到版本）';
+  }
+  for (const f of ['index.wasm', 'index.pck', 'index.js']) {
+    const raw = statSync(join(CLIENT_DIR, f)).size;
+    const gz = existsSync(join(CLIENT_DIR, `${f}.gz`)) ? statSync(join(CLIENT_DIR, `${f}.gz`)).size : null;
+    const br = existsSync(join(CLIENT_DIR, `${f}.br`)) ? statSync(join(CLIENT_DIR, `${f}.br`)).size : null;
+    metrics.bundle.push({ file: f, raw, gzip: gz, brotli: br });
+  }
+
+  A = await newPlayer(chromiumBrowserA, 'A 桌面', { viewport: { width: 1440, height: 900 }, deviceScaleFactor: 2 }, { wsGate: true });
+  B = await newPlayer(chromiumBrowserB, 'B 手机', { viewport: { width: 390, height: 844 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true });
+  const nameA = `阿桌${rnd()}`;
+  const nameB = `阿机${rnd()}`;
+
+  // ── 1 ──
+  await step(1, '两个页面登录进入，各自看见对方', async () => {
+    const [la, lb] = await Promise.all([login(A, nameA, { shotEnter: '01-desktop-enter' }), login(B, nameB)]);
+    metrics.load.desktop = la;
+    metrics.load.mobile = lb;
+    note(`桌面：到「进入」按钮 ${la.toButtonMs} ms，点进入到可操作 ${la.toPlayingMs} ms；手机：${lb.toButtonMs} ms / ${lb.toPlayingMs} ms（两个浏览器同时在软件渲染，仅供参考）`);
+    const sa = await snap(A.page);
+    const sb = await snap(B.page);
+    check(sa.self && sb.self && sa.self !== sb.self, '两个页面应是两个不同的居民');
+    A.id = sa.self;
+    B.id = sb.self;
+    await until(async () => (await snap(A.page)).actors.some((a) => a.id === B.id) && (await snap(B.page)).actors.some((a) => a.id === A.id), 15_000, '两个页面互相看到对方');
+    check((await snap(A.page)).actors.length >= 2 && (await snap(B.page)).actors.length >= 2, '__town.actors 里应有两个人');
+    note(`A=${A.id}（${nameA}），B=${B.id}（${nameB}），都在 ${sa.space}（${sa.spaceName}）`);
+    // 引擎对 /town/3d/ 的包体：确认预压缩确实被选用（br）
+    const r = await A.ctx.request.get(`${BASE}/town/3d/index.pck`, { headers: { 'Accept-Encoding': 'br' } });
+    check(r.headers()['content-encoding'] === 'br', `index.pck 应发 br 预压缩，实际 content-encoding=${r.headers()['content-encoding']}`);
+    await sleep(800);
+    await shot(A.page, '02-desktop-two-residents');
+  });
+
+  // ── 2 ──
+  await step(2, 'A 点地走路：服务器里在走；B 页面里 A 的位置与服务器现算位置相差 < 0.6 米', async () => {
+    await clickWorld(A, 42, 21);
+    const sc0 = await until(async () => {
+      const a = selfActor(await serverScene(A));
+      return a?.nav ? a : null;
+    }, 8000, '服务器 /scene 里 A 带 nav（在走）');
+    note(`服务器：nav ${sc0.nav.id} rev ${sc0.nav.revision}，${normPts(sc0.nav.points).length} 个折点，速度 ${sc0.nav.speed} 米/秒`);
+    await until(async () => (await seen(B.page, A.id))?.moving, 8000, 'B 页面里 A 在走（moving）');
+    await shot(A.page, '04-desktop-walking');
+    // 若干个时刻：B 页面的 A 显示位置 vs 服务器折线在「B 页面的服务器时间」的位置
+    const errs = [];
+    for (let i = 0; i < 14; i++) {
+      // 同时取：B 页面的快照（含它自己的服务器时间）和服务器场景，减少两次读取之间的时间差
+      const [sb, sc] = await Promise.all([snap(B.page), serverScene(A)]);
+      const ab = sb.actors.find((a) => a.id === A.id);
+      const na = selfActor(sc);
+      if (!na?.nav) break; // 已走到
+      if (ab && na.nav.points) errs.push(dist(ab, polyAt(na.nav, sb.serverNow)));
+      await sleep(250);
+    }
+    check(errs.length >= 3, `有效采样太少（${errs.length}）`);
+    const max = Math.max(...errs);
+    note(`${errs.length} 个采样，B 页面里 A 的位置与服务器折线现算位置相差：${errs.map((e) => e.toFixed(2)).join(' ')} 米，最大 ${max.toFixed(2)}`);
+    check(max < T_POS, `最大偏差 ${max.toFixed(2)} 米，超过 ${T_POS} 米`);
+    // 走完后 A 页面、B 页面、服务器三者一致
+    await until(async () => !selfActor(await serverScene(A))?.nav, 30_000, 'A 走到目的地');
+    await sleep(1200);
+    const fin = selfActor(await serverScene(A));
+    const fa = await seen(A.page, A.id);
+    const fb = await seen(B.page, A.id);
+    check(dist(fin, fa) < 0.3 && dist(fin, fb) < 0.3, `停下后位置不一致：服务器 ${fin.x.toFixed(2)},${fin.z.toFixed(2)} A页 ${fa.x.toFixed(2)},${fa.z.toFixed(2)} B页 ${fb.x.toFixed(2)},${fb.z.toFixed(2)}`);
+    note(`到达后：服务器 (${fin.x.toFixed(2)}, ${fin.z.toFixed(2)})，A 页 ${dist(fin, fa).toFixed(2)} 米，B 页 ${dist(fin, fb).toFixed(2)} 米`);
+  });
+
+  // ── 3 ──
+  await step(3, 'A 走路中点「停下」：服务器 nav 为空；B 页面里 A 停住并与服务器一致', async () => {
+    await clickWorld(A, 24, 21);
+    await until(async () => selfActor(await serverScene(A))?.nav, 8000, 'A 开始走');
+    await sleep(1500);
+    check(await A.page.$eval('#stopBtn', (e) => !e.disabled), '走路中「停下」应可点');
+    await A.page.click('#stopBtn');
+    await until(async () => !selfActor(await serverScene(A))?.nav, 8000, '服务器里 A 的 nav 清空');
+    const srv = selfActor(await serverScene(A));
+    await until(async () => (await seen(B.page, A.id))?.moving === false, 8000, 'B 页面里 A 停住');
+    await sleep(1500); // 让显示位置收敛（指数衰减），不是等条件
+    const fb = await seen(B.page, A.id);
+    const fa = await seen(A.page, A.id);
+    const srv2 = selfActor(await serverScene(A));
+    check(srv2.x === srv.x && srv2.z === srv.z, '停下之后服务器位置不应再变');
+    check(dist(srv2, fb) < 0.3 && dist(srv2, fa) < 0.3, `停住后偏差：B页 ${dist(srv2, fb).toFixed(2)} 米，A页 ${dist(srv2, fa).toFixed(2)} 米`);
+    const traveled = dist(srv2, { x: 42, z: 21 });
+    note(`停在 (${srv2.x.toFixed(2)}, ${srv2.z.toFixed(2)})，离出发点 ${traveled.toFixed(1)} 米；B 页偏差 ${dist(srv2, fb).toFixed(2)}，A 页偏差 ${dist(srv2, fa).toFixed(2)}`);
+    check(srv2.x > 25, '应当是在去西边的半路上被停下的');
+  });
+
+  // ── 4 ──
+  await step(4, 'A 走路中再点别处（改道）：导航编号变了，最终到达新目标', async () => {
+    await clickWorld(A, 44, 21); // 从步骤 3 停下的位置往东走一段长路
+    const n1 = await until(async () => selfActor(await serverScene(A))?.nav, 8000, 'A 开始走');
+    await sleep(1200);
+    const target = { x: 38, z: 26 };
+    const clicked = await clickWorld(A, target.x, target.z);
+    note(`改道点击后动作记录：${JSON.stringify(A.w.actions.slice(-3).map((r) => [r.type, r.status, r.code]))}`);
+    const n2 = await until(async () => {
+      const nv = selfActor(await serverScene(A))?.nav;
+      return nv && (nv.id !== n1.id || nv.revision !== n1.revision) ? nv : null;
+    }, 8000, '导航编号或版本变化').catch(async (e) => {
+      const sc = selfActor(await serverScene(A));
+      throw new Error(`${e.message}；n1=${JSON.stringify({ id: n1.id, r: n1.revision, pts: n1.points })} 现在=${JSON.stringify(sc)} 动作=${JSON.stringify(A.w.actions.slice(-4))} 点击=${JSON.stringify(clicked)}`);
+    });
+    note(`旧 ${n1.id}#${n1.revision} → 新 ${n2.id}#${n2.revision}`);
+    await until(async () => !selfActor(await serverScene(A))?.nav, 40_000, 'A 走到新目标');
+    const fin = selfActor(await serverScene(A));
+    // 以客户端实际发给服务器的目标点为准（走路中镜头还在跟随，鼠标落点和 project 算出的点会差一小截；超出视野时 clickWorld 也会缩回来）
+    const sent = [...A.w.actions].reverse().find((r) => r.type === 'navigate' && r.to && typeof r.to === 'object');
+    check(sent, '没有记录到 navigate 的目标点');
+    const goal = { x: sent.to.x, z: sent.to.z };
+    note(`改道点击的世界点 (${clicked.x.toFixed(1)}, ${clicked.z.toFixed(1)})，客户端实际发出的目标 (${goal.x.toFixed(2)}, ${goal.z.toFixed(2)})`);
+    check(dist(fin, goal) < 1.0, `最终位置 (${fin.x.toFixed(2)},${fin.z.toFixed(2)}) 离新目标 (${goal.x.toFixed(2)},${goal.z.toFixed(2)}) ${dist(fin, goal).toFixed(2)} 米`);
+    await sleep(1200);
+    const fb = await seen(B.page, A.id);
+    check(dist(fin, fb) < 0.4, `B 页面里 A 离服务器位置 ${dist(fin, fb).toFixed(2)} 米`);
+    note(`到达 (${fin.x.toFixed(2)}, ${fin.z.toFixed(2)})，离新目标 ${dist(fin, goal).toFixed(2)} 米`);
+  });
+
+  // ── 5 ──
+  await step(5, '点不可走的地方：有失败提示，角色不动；点障碍内部：按服务器规则', async () => {
+    await walkTo(A, 14, 39.5); // 走到南边路的下沿，正南 4 米处的空地离最近可走点 > 2.5 米，又在视野里
+    const before = selfActor(await serverScene(A));
+    const n0 = A.w.actions.length;
+    // 路（z 36~40）以南、游戏馆（x≥24）以西的空地 (14,43.5)，离最近可走点约 3.8 米 > 2.5 米；不缩回视野，直接点这个点
+    const void_ = await project(A.page, 14, 43.5);
+    const vp0 = await viewport(A.page);
+    check(void_.x > 24 && void_.x < vp0.w - 24 && void_.y > 100 && void_.y < vp0.h - 170, `空地投影 (${void_.x.toFixed(0)},${void_.y.toFixed(0)}) 不在视野内`);
+    await A.page.mouse.click(void_.x, void_.y);
+    const rec = await until(() => A.w.actions.slice(n0).find((r) => r.type === 'navigate' && r.status >= 400 && r.code), 8000, '服务器拒绝这次 navigate');
+    note(`服务器拒绝：HTTP ${rec.status} ${rec.code}/${rec.reason}「${rec.message}」`);
+    check([rec.code, rec.reason].some((c) => ['unreachable', 'no_route'].includes(c)), `期望 unreachable 或 no_route，实际 ${rec.code}/${rec.reason}`);
+    const shown = await until(async () => {
+      const s = await snap(A.page);
+      const hasToast = (s.toasts ?? []).length > 0;
+      return hasToast || s.lastError ? { toasts: s.toasts, lastError: s.lastError } : null;
+    }, 5000, '界面上出现失败提示');
+    note(`界面提示：${JSON.stringify(shown.toasts)} lastError=${JSON.stringify(shown.lastError)}`);
+    await shot(A.page, '05-desktop-unreachable');
+    await sleep(600);
+    const after = selfActor(await serverScene(A));
+    check(!after.nav && after.x === before.x && after.z === before.z, '被拒绝后角色不应移动');
+    await until(async () => !(await snap(A.page)).pending, 6000, '界面不再处于等待确认');
+    // 障碍内部（喷泉正中）：服务器规则是「2.5 米内取最近可走点」，要么拒绝要么走到喷泉边上
+    await until(async () => !selfActor(await serverScene(A))?.nav, 5000, '空闲');
+    const m0 = A.w.actions.length;
+    const spot = { x: 32, z: 24 }; // 喷泉正中，喷泉脚印 (30.5..33.5, 22.5..25.5)
+    const q = await project(A.page, spot.x, spot.z);
+    const vp = await viewport(A.page);
+    if (q.x > 24 && q.x < vp.w - 24 && q.y > 100 && q.y < vp.h - 170) {
+      await A.page.mouse.click(q.x, q.y);
+      const r2 = await until(() => A.w.actions.slice(m0).find((r) => r.type === 'navigate'), 8000, '喷泉中心的 navigate 有回应');
+      if (r2.status >= 400) {
+        note(`喷泉正中：服务器拒绝 ${r2.code}`);
+      } else {
+        await until(async () => !selfActor(await serverScene(A))?.nav, 40_000, '走到喷泉边');
+        const f = selfActor(await serverScene(A));
+        const inside = f.x > 30.5 && f.x < 33.5 && f.z > 22.5 && f.z < 25.5;
+        note(`喷泉正中：服务器接受，走到最近可走点 (${f.x.toFixed(2)}, ${f.z.toFixed(2)})`);
+        check(!inside, '角色不应停在喷泉脚印里');
+      }
+    } else {
+      note('喷泉不在当前视野内，跳过这一小项（正文一项已验证 unreachable）');
+    }
+  });
+
+  // ── 6 ──
+  await step(6, '走近公共物件做动作：远处直接做 → too_far；走近后成功', async () => {
+    const n0 = A.w.actions.length;
+    await A.page.evaluate(() => window.__town.act({ type: 'start_interaction', objectId: 'bookshop:shelf' }));
+    const rec = await until(() => A.w.actions.slice(n0).find((r) => r.type === 'start_interaction' && r.code), 8000, 'too_far 回应');
+    check(rec.reason === 'too_far' || rec.code === 'too_far', `期望 too_far，实际 ${rec.code}/${rec.reason}（${rec.message}）`);
+    const msg = await until(async () => {
+      const s = await snap(A.page);
+      const all = JSON.stringify(s.toasts ?? []) + JSON.stringify(s.lastError ?? '');
+      return /太远/.test(all) ? all : null;
+    }, 5000, '界面提示里有「太远」');
+    note(`远处直接做：${rec.code}/${rec.reason}「${rec.message}」；界面 ${msg.slice(0, 80)}`);
+    await shot(A.page, '06-desktop-too-far');
+    await A.page.click('#destBtn');
+    await A.page.click('[data-dest=bookshop]');
+    await until(async () => {
+      const s = await snap(A.page);
+      const a = s.actors.find((x) => x.id === s.self);
+      return s.space === 'bookshop' && a && !a.moving;
+    }, 90_000, 'A 走进檐下书屋并停下');
+    await until(async () => (await snap(A.page)).nearValid === true, 10_000, '近处状态有效');
+    await sleep(500);
+    const shelf = (await snap(A.page)).objects.find((o) => o.id === 'bookshop:shelf');
+    check(shelf, '__town.objects 里应有藏书架');
+    const sp = await A.page.evaluate(() => window.__town.objects.find((o) => o.id === 'bookshop:shelf'));
+    await A.page.mouse.click(sp.sx, sp.sy);
+    await A.page.waitForSelector('#actions button.do', { timeout: 60_000 });
+    const label = await A.page.$eval('#actions button.do', (e) => e.textContent.trim());
+    const m0 = A.w.actions.length;
+    await A.page.click('#actions button.do');
+    const ok = await until(() => A.w.actions.slice(m0).find((r) => r.type === 'start_interaction'), 8000, '读书的 start_interaction 有回应');
+    check(ok.status === 200, `走近后做动作应成功，实际 ${ok.status} ${ok.code}`);
+    await until(async () => /读书|正在/.test(await A.page.$eval('#activityChip', (e) => (e.hidden ? '' : e.textContent))), 8000, '界面出现「正在：读书」');
+    await sleep(600);
+    note(`走近后点「${label}」：HTTP ${ok.status}`);
+    await shot(A.page, '07-desktop-reading');
+    if (await A.page.$eval('#leaveActBtn', (e) => !e.disabled && !e.hidden).catch(() => false)) {
+      await A.page.click('#leaveActBtn');
+      await sleep(600);
+    }
+  });
+
+  // ── 7 ──
+  await step(7, 'B（手机）触摸点地走、双指缩放不触发行走、点界面按钮不触发行走', async () => {
+    await until(async () => !selfActor(await serverScene(B))?.nav, 5000, 'B 空闲');
+    await clickWorld(B, 38, 27);
+    await until(async () => selfActor(await serverScene(B))?.nav, 8000, '触摸点地后服务器里 B 在走');
+    await until(async () => (await seen(A.page, B.id))?.moving, 8000, 'A 页面里 B 在走');
+    await sleep(700);
+    await shot(B.page, '03-mobile-walking');
+    await until(async () => !selfActor(await serverScene(B))?.nav, 30_000, 'B 走到');
+    const start = selfActor(await serverScene(B));
+    const nAct = B.w.actions.length;
+    // 双指缩放（CDP 触摸事件）
+    const cdp = await B.ctx.newCDPSession(B.page);
+    const touch = (type, pts) => cdp.send('Input.dispatchTouchEvent', { type, touchPoints: pts.map((q, i) => ({ x: q[0], y: q[1], id: i })) });
+    const z0 = (await snap(B.page)).zoom;
+    await touch('touchStart', [[150, 380], [240, 380]]);
+    for (let k = 1; k <= 7; k++) {
+      await touch('touchMove', [[150 - k * 12, 380], [240 + k * 12, 380]]);
+      await sleep(70);
+    }
+    await shot(B.page, '08-mobile-pinch-zoom');
+    await touch('touchEnd', []);
+    await sleep(500);
+    const z1 = (await snap(B.page)).zoom;
+    note(`双指张开：镜头距离 ${z0.toFixed(2)} → ${z1.toFixed(2)}`);
+    check(Math.abs(z1 - z0) > 0.05, '双指缩放应改变镜头距离');
+    await sleep(800);
+    const noNav = B.w.actions.slice(nAct).filter((r) => r.type === 'navigate');
+    check(noNav.length === 0, `双指缩放不应发出 navigate，实际发出 ${noNav.length} 条`);
+    check(!selfActor(await serverScene(B)).nav, '双指缩放之后服务器里 B 不应在走');
+    // 点界面按钮：声音开关、地点按钮（点开菜单再点一次关上），都不应触发行走
+    await B.page.touchscreen.tap(...(await B.page.$eval('#soundBtn', (e) => { const r = e.getBoundingClientRect(); return [r.x + r.width / 2, r.y + r.height / 2]; })));
+    await sleep(500);
+    await B.page.touchscreen.tap(...(await B.page.$eval('#destBtn', (e) => { const r = e.getBoundingClientRect(); return [r.x + r.width / 2, r.y + r.height / 2]; })));
+    await sleep(500);
+    const open = await B.page.$eval('#destBtn', (e) => e.getAttribute('aria-expanded'));
+    note(`点「地点」按钮后 aria-expanded=${open}`);
+    await B.page.touchscreen.tap(...(await B.page.$eval('#destBtn', (e) => { const r = e.getBoundingClientRect(); return [r.x + r.width / 2, r.y + r.height / 2]; })));
+    await sleep(800);
+    const navs = B.w.actions.slice(nAct).filter((r) => r.type === 'navigate');
+    check(navs.length === 0, `点界面按钮不应发出 navigate，实际 ${navs.length} 条`);
+    const end = selfActor(await serverScene(B));
+    check(!end.nav && end.x === start.x && end.z === start.z, '点界面按钮后 B 不应移动');
+  });
+
+  // ── 8 ──
+  await step(8, 'AI 居民（agent-kit 的 TownClient）navigate 到檐下书屋，两个页面都看见它走过去', async () => {
+    const { TownClient } = await import(new URL('../packages/agent-kit/src/index.ts', import.meta.url).href);
+    aiClient = await TownClient.connect({ url: `${BASE}/mcp`, key: AI_KEY, clientId: `e2e-ai-${rnd()}` });
+    const entered = await aiClient.enter({ name: '灯灯' });
+    aiId = entered.resident_id ?? aiClient.state.residentId;
+    check(aiId, '拿不到 AI 居民编号');
+    await until(async () => (await seen(A.page, aiId)) && (await seen(B.page, aiId)), 15_000, '两个页面都看见 AI 进镇');
+    const start = await seen(B.page, aiId);
+    note(`AI ${aiId} 进镇，起点 (${start.x.toFixed(1)}, ${start.z.toFixed(1)})，两个页面都看见`);
+    const r = await aiClient.act({ type: 'navigate', to: 'bookshop' });
+    check(r.navigation, 'navigate 应返回导航信息');
+    let nav = r.navigation;
+    let sawA = false;
+    let sawB = false;
+    let maxDiff = 0;
+    const t0 = Date.now();
+    let lastRenew = 0;
+    let shotTaken = false;
+    // AI 自己每 3 秒续租（ResidentRunner 会自动做；这里只用 TownClient，手动续）
+    for (;;) {
+      if (Date.now() - t0 > 90_000) throw new Error('AI 90 秒内没走到');
+      if (Date.now() - lastRenew >= (nav.renewEveryMs ?? 3000) - 200) {
+        lastRenew = Date.now();
+        const rn = await aiClient.renewNavigation({ navigationId: nav.navigationId, revision: nav.revision });
+        if (rn.navigation) nav = { ...nav, ...rn.navigation };
+        if (!rn.ok && !rn.navigation) break; // 没有在走的路了：到了
+      }
+      const [sa, sb, sc] = await Promise.all([snap(A.page), snap(B.page), serverScene(A)]);
+      const pa = sa.actors.find((a) => a.id === aiId);
+      const pb = sb.actors.find((a) => a.id === aiId);
+      const ai = sc.actors.find((a) => a.id === aiId);
+      if (pa?.moving) sawA = true;
+      if (pb?.moving) sawB = true;
+      if (ai?.nav && pa && pb) maxDiff = Math.max(maxDiff, dist(pa, polyAt(ai.nav, sa.serverNow)), dist(pb, polyAt(ai.nav, sb.serverNow)));
+      if (!shotTaken && pb?.moving && Date.now() - t0 > 2500) {
+        shotTaken = true;
+        await shot(B.page, '09-mobile-sees-ai-walking');
+      }
+      await sleep(400);
+    }
+    check(sawA && sawB, `两个页面都应看见 AI 在走：A ${sawA}，B ${sawB}`);
+    const sc = await serverScene(A);
+    const anchor = { x: 28, z: 10.25 }; // 地图里 bookshop 的落脚点
+    await until(async () => {
+      const pa = await seen(A.page, aiId);
+      const pb = await seen(B.page, aiId);
+      return pa && pb && !pa.moving && !pb.moving;
+    }, 10_000, '两个页面里 AI 都停下');
+    await sleep(1200);
+    const sa = sc.actors.find((a) => a.id === aiId);
+    const pa = await seen(A.page, aiId);
+    const pb = await seen(B.page, aiId);
+    check(sa, '服务器场景里应有 AI');
+    note(`AI 停在 (${sa.x.toFixed(2)}, ${sa.z.toFixed(2)})，离书屋落脚点 ${dist(sa, anchor).toFixed(2)} 米；A 页偏差 ${dist(sa, pa).toFixed(2)}，B 页偏差 ${dist(sa, pb).toFixed(2)}；走路时两个页面与服务器折线现算位置最多相差 ${maxDiff.toFixed(2)} 米`);
+    check(dist(sa, anchor) < 2.0, `AI 应停在书屋落脚点旁边，实际离 ${dist(sa, anchor).toFixed(2)} 米`);
+    check(dist(sa, pa) < 0.4 && dist(sa, pb) < 0.4, 'AI 停下后两个页面与服务器应一致');
+    check(maxDiff < T_POS, `AI 走路时页面位置与服务器折线现算位置最多相差 ${maxDiff.toFixed(2)} 米，超过 ${T_POS}`);
+    await shot(A.page, '10-desktop-ai-arrived');
+  });
+
+  // ── 9 ──
+  await step(9, 'A 进自己家：A 页面切到 home；B 页面里 A 消失；出门后 B 又看见 A 在会馆门前', async () => {
+    check(await A.page.$eval('#homeBtn', (e) => !e.disabled), '「回家」按钮应可点');
+    await A.page.click('#homeBtn');
+    await until(async () => (await snap(A.page)).scene === 'home' && (await seen(A.page, A.id)), 120_000, 'A 页面切到 home 场景');
+    await sleep(1200);
+    const sa = await snap(A.page);
+    note(`A 页面：scene=${sa.scene}，space=${sa.space}（${sa.spaceName}）`);
+    await shot(A.page, '11-desktop-home');
+    await until(async () => !(await seen(B.page, A.id)), 10_000, 'B 页面里 A 消失');
+    const sb = await serverScene(B);
+    check(!sb.actors.some((a) => a.id === A.id), 'B 的服务器场景里不应有 A');
+    note('B 看不到 A（客户端与服务器场景快照都没有 A；不含私宅坐标）');
+    // A 出门
+    await A.page.click('#homeBtn'); // 家里变「出门」
+    await until(async () => (await snap(A.page)).scene === 'town', 60_000, 'A 页面切回 town');
+    const door = { x: 3.25, z: 26.25 }; // residential.door
+    await until(async () => seen(B.page, A.id), 20_000, 'B 页面里 A 重新出现');
+    await sleep(1000);
+    const srv = selfActor(await serverScene(A));
+    const fb2 = await seen(B.page, A.id);
+    note(`出门后 B 看到 A 在 (${fb2.x.toFixed(2)}, ${fb2.z.toFixed(2)})，离会馆门口 ${dist(fb2, door).toFixed(2)} 米；服务器 (${srv.x.toFixed(2)}, ${srv.z.toFixed(2)})`);
+    check(dist(fb2, door) < 6 && dist(fb2, srv) < 0.6, 'A 应出现在会馆门口一带，且与服务器一致');
+  });
+
+  // ── 10 ──
+  await step(10, '断线：A 的 WebSocket 断开，界面显示重连中，恢复后位置与服务器一致', async () => {
+    await until(async () => !selfActor(await serverScene(A))?.nav, 20_000, 'A 空闲');
+    await clickWorld(A, 24, 28);
+    // 点的远点会被缩到视野内，所以走一段后再点一次更远的，保证断线期间还在路上
+    await until(async () => selfActor(await serverScene(A))?.nav, 8000, 'A 开始走');
+    await sleep(1500);
+    await clickWorld(A, 58, 28);
+    await sleep(800);
+    A.gate.block = true;
+    for (const ws of A.gate.sockets) ws.close();
+    A.gate.sockets.length = 0;
+    const down = await until(async () => {
+      const s = await snap(A.page);
+      return s.conn !== 'ok' ? s.conn : null;
+    }, 15_000, '界面显示断线');
+    note(`断开后界面连接状态：${down}`);
+    await sleep(1500);
+    const banner = await A.page.$eval('#connText', (e) => (e.hidden ? '' : e.textContent));
+    check(/重连|离线/.test(banner), `断线时界面应显示文字提示，实际「${banner}」`);
+    note(`界面文字提示：「${banner}」`);
+    await shot(A.page, '12-desktop-reconnecting');
+    await sleep(2500); // 断着的这几秒，A 走路的续租走 POST /nav/renew
+    A.gate.block = false;
+    await until(async () => (await snap(A.page)).conn === 'ok', 40_000, '重连成功');
+    await until(async () => !selfActor(await serverScene(A))?.nav, 60_000, 'A 走完');
+    await sleep(1500);
+    const srv = selfActor(await serverScene(A));
+    const fa = await seen(A.page, A.id);
+    check(dist(srv, fa) < 0.4, `重连后 A 页面与服务器相差 ${dist(srv, fa).toFixed(2)} 米`);
+    note(`重连后 A 页面 (${fa.x.toFixed(2)}, ${fa.z.toFixed(2)})，服务器 (${srv.x.toFixed(2)}, ${srv.z.toFixed(2)})，相差 ${dist(srv, fa).toFixed(2)} 米`);
+  });
+
+  // ── 11 ──
+  await step(11, '同一身份开第二个标签页：只读 + 接管按钮；接管后原来那个变只读', async () => {
+    const page2 = await A.ctx.newPage();
+    A2 = { ctx: A.ctx, page: page2, w: watch(page2, 'A2 第二标签页'), label: 'A2', touch: false };
+    await page2.addInitScript(() => {
+      window.__csp = [];
+      document.addEventListener('securitypolicyviolation', (e) => window.__csp.push(`${e.violatedDirective} ${e.blockedURI}`));
+    });
+    await page2.setViewportSize({ width: 1440, height: 900 });
+    await page2.goto(`${BASE}/town/3d/?debug=1`);
+    await page2.waitForSelector('#enterBtn:not([hidden])', { timeout: 120_000 });
+    await page2.click('#enterBtn');
+    // 已有会话：不再要名字，直接进入
+    await page2.waitForFunction(() => window.__town && window.__town.actors.length > 0 && document.body.dataset.phase === 'playing', null, { timeout: 60_000 });
+    await until(async () => page2.$eval('#readonly', (e) => !e.hidden && getComputedStyle(e).display !== 'none').catch(() => false), 10_000, '第二个标签页显示只读横幅');
+    check(await page2.$eval('#claimBtn', (e) => !e.hidden && getComputedStyle(e).display !== 'none'), '应有接管按钮');
+    check((await snap(page2)).mine === false, '第二个标签页不应握着控制权');
+    // 只读：点地不发 navigate
+    const m0 = A2.w.actions.length;
+    const s2 = await snap(page2);
+    const me = s2.actors.find((a) => a.id === s2.self);
+    const q = await project(page2, me.x + 4, me.z - 3);
+    await page2.mouse.click(q.x, q.y);
+    await sleep(900);
+    check(A2.w.actions.slice(m0).filter((r) => r.type === 'navigate').length === 0, '只读标签页点地不应发 navigate');
+    await shot(page2, '13-desktop-readonly-tab');
+    await page2.click('#claimBtn');
+    await until(async () => (await snap(page2)).mine === true, 10_000, '第二个标签页接管成功');
+    await until(async () => A.page.$eval('#readonly', (e) => !e.hidden && getComputedStyle(e).display !== 'none').catch(() => false), 15_000, '原来的标签页变只读');
+    check((await snap(A.page)).mine === false, '原标签页 mine 应为 false');
+    note('接管后：新标签页可操作，原标签页只读');
+    // 新标签页可以走路
+    const n1 = A2.w.actions.length;
+    await clickWorld({ page: page2, touch: false }, me.x + 4, me.z - 3);
+    await until(() => A2.w.actions.slice(n1).find((r) => r.type === 'navigate' && r.status === 200), 8000, '接管后新标签页 navigate 成功');
+    await sleep(500);
+    await shot(A.page, '14-desktop-old-tab-readonly');
+  });
+}
+
+// ───────────────────────── 收尾 ─────────────────────────
+
+function allWatches() {
+  return [A, B, A2].filter(Boolean).map((p) => p.w);
+}
+
+async function collectCsp() {
+  for (const p of [A, B, A2].filter(Boolean)) {
+    try {
+      const v = await p.page.evaluate(() => window.__csp ?? []);
+      if (v.length) p.w.problems.push(`CSP 违规事件：${v.join('; ')}`);
+      p.w.csp += v.length;
+    } catch {
+      /* 页面已关 */
+    }
+  }
+}
+
+let exitCode = 0;
+try {
+  await main();
+  await collectCsp();
+  // 页面级问题汇总成一个「步骤」
+  const probs = allWatches().flatMap((w) => w.problems.map((m) => `[${w.label}] ${m}`));
+  const expected = allWatches().reduce((n, w) => n + w.expected.length, 0);
+  console.log('\n全程检查');
+  if (probs.length === 0) console.log(`  ✓ 控制台错误 / pageerror / CSP 违规 / 失败请求：0 条（另有 ${expected} 行是故意触发的服务器规则失败留下的浏览器固有输出）`);
+  else {
+    console.log(`  ✗ 发现 ${probs.length} 条问题：`);
+    for (const m of probs) console.log(`      - ${m}`);
+  }
+  results.push({ n: 99, title: '全程没有控制台错误、页面错误、CSP 违规、失败请求', ok: probs.length === 0, ms: 0, notes: probs.length ? probs : [`0 条；故意触发的规则失败（4xx）留下的浏览器输出 ${expected} 行`], error: probs.length ? `${probs.length} 条问题` : undefined });
+} catch (e) {
+  console.error('\n脚本出错：', e);
+  results.push({ n: 0, title: '脚本自身', ok: false, ms: 0, error: String(e?.stack ?? e), notes: [] });
+} finally {
+  for (const p of [A, B, A2].filter(Boolean)) p.w.closing = true;
+  try {
+    await aiClient?.close();
+  } catch {
+    /* 忽略 */
+  }
+  for (const b of browsers) await b.close().catch(() => {});
+  stopEngine();
+  await sleep(500);
+  const failed = results.filter((r) => !r.ok);
+  console.log('\n汇总');
+  for (const r of results) console.log(`  ${r.ok ? '✓' : '✗'} ${r.n === 99 ? '全程' : `步骤 ${r.n}`}  ${r.title}${r.ok ? '' : `\n      ${r.error}`}`);
+  if (failed.length) {
+    console.log(`\n失败 ${failed.length} 项。引擎最近日志：`);
+    for (const l of engineTail.slice(-12)) console.log(`  | ${l}`);
+    exitCode = 1;
+  } else if (!results.length) {
+    exitCode = 1;
+  } else console.log(`\n全部 ${results.length} 项通过。`);
+  try {
+    mkdirSync(DEMO_DIR, { recursive: true });
+    const keep = readdirSync(DEMO_DIR).length >= 0;
+    if (keep && !ONLY.length) {
+      writeFileSync(
+        join(DEMO_DIR, 'results.json'),
+        JSON.stringify({ date: new Date().toISOString().slice(0, 10), versions: metrics.versions, bundle: metrics.bundle, load: metrics.load, steps: results, shots }, null, 2),
+      );
+    }
+  } catch {
+    /* 忽略 */
+  }
+  if (!(KEEP && exitCode)) rmSync(TMP, { recursive: true, force: true });
+  process.exit(exitCode);
+}

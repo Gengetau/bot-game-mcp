@@ -1,0 +1,1225 @@
+extends Node3D
+## 栖灯镇三维网页客户端的主控：启动流程、协议（HTTP + WebSocket）、场景同步、输入、续租、重连、界面桥。
+## 约定：位置只按服务器给的折线 + 服务器时间现算，没有客户端预测；界面文字都在网页 DOM 里（web/hud.js）。
+
+enum Phase { BOOT, READY, BUSY, LOGIN, ERROR, PLAYING }
+
+const API := "/town/api"
+const TAP_MAX_MOVE := 14.0
+const TAP_MAX_MS := 700.0
+const SELECT_NEAR := 15.0
+
+var bridge := TBridge.new()
+var clock := TClock.new()
+var net := TNet.new()
+var audio := TAudio.new()
+var world := TWorld.new()
+var rig := TRig.new()
+var actors_root := Node3D.new()
+var actors: Dictionary = {}  # id -> TActor
+var marker: MeshInstance3D
+var marker_mat: StandardMaterial3D
+
+var phase: int = Phase.BOOT
+var phase_msg: String = ""
+var phase_link: String = ""
+var login_title: String = ""
+var login_error: String = ""
+var flow_running: bool = false
+signal login_submitted(player_name: String)
+
+# 身份与会话
+var client_id: String = ""
+var dev_login: bool = false
+var user_name: String = ""
+var self_id: String = ""
+var heartbeat_ms: int = 20000
+var presence_epoch: int = 0
+
+# /me 的缓存
+var action_window: String = ""
+var ctx_version: int = 1
+var ctx_activity = null
+var control_epoch: int = 0
+var control_mine: bool = true
+var here: Dictionary = {}
+var my_interaction = null
+var my_exits: Array = []
+var me_busy: bool = false
+var me_again: bool = false
+
+# 地图与场景
+var manifest: Dictionary = {}
+var map_loading: bool = false
+var cur_scene: String = ""
+var cur_space: String = ""
+var cur_space_name: String = ""
+var speed: float = 2.4
+
+# 网络
+var want_net: bool = false
+var ticket_pending: bool = false
+var ws_ticket: String = ""
+var ws_ready: bool = false
+var reconnect_at: float = 0.0
+var backoff_ms: float = 1000.0
+var ev_cursor: String = ""
+var renew_every_ms: float = 3000.0
+var next_renew: float = 0.0
+var renew_id: String = ""
+var renew_rev: int = 0
+var next_ping: float = 0.0
+var next_heartbeat: float = 0.0
+var next_poll: float = 0.0
+## WebSocket 通着时的保险：服务器只在有人走动时推快照，别人进镇 / 离开不会触发，所以隔几秒主动取一次 /scene
+var next_safety_poll: float = 0.0
+const SAFETY_POLL_MS := 3000.0
+var last_pong_ms: float = 0.0
+var ping_sent: Dictionary = {}
+
+# 交互
+var pending: int = 0
+var selected_obj: String = ""
+var near_valid: bool = false
+var nav_generation: int = 0
+var req_counter: int = 0
+var _was_moving: bool = false
+var step_timer: float = 0.0
+var arrival_refresh_at: float = -1.0
+var _taps: Dictionary = {}
+var _tap_start: Dictionary = {}
+var _pinch_prev: float = 0.0
+var last_error: String = ""
+
+var _dirty: bool = true
+var _state_timer: float = 0.0
+var _debug_timer: float = 0.0
+var _last_tags: String = ""
+
+
+func _ready() -> void:
+	bridge.setup()
+	add_child(world)
+	add_child(rig)
+	add_child(actors_root)
+	add_child(audio)
+	_build_environment()
+	_build_marker()
+	bridge.ui_event.connect(_on_ui)
+	bridge.visibility_changed.connect(_on_visibility)
+	net.opened.connect(_on_ws_open)
+	net.message.connect(_on_ws_message)
+	net.closed.connect(_on_ws_closed)
+	client_id = bridge.client_id()
+	if not bridge.web:
+		print("[town] 不是网页环境：只做了加载检查。")
+		return
+	phase = Phase.READY
+	_dirty = true
+	_push_state()
+	print("[town] 客户端已就绪")
+
+
+func _build_environment() -> void:
+	var env := Environment.new()
+	env.background_mode = Environment.BG_COLOR
+	env.background_color = Color(0.62, 0.74, 0.86)
+	env.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
+	env.ambient_light_color = Color(0.72, 0.74, 0.8)
+	env.ambient_light_energy = 0.9
+	var we := WorldEnvironment.new()
+	we.environment = env
+	add_child(we)
+	var sun := DirectionalLight3D.new()
+	sun.rotation_degrees = Vector3(-58.0, -35.0, 0.0)
+	sun.light_energy = 0.9
+	sun.shadow_enabled = false
+	add_child(sun)
+
+
+func _build_marker() -> void:
+	marker = MeshInstance3D.new()
+	var cyl := CylinderMesh.new()
+	cyl.top_radius = 0.4
+	cyl.bottom_radius = 0.4
+	cyl.height = 0.03
+	cyl.radial_segments = 24
+	marker.mesh = cyl
+	marker_mat = StandardMaterial3D.new()
+	marker_mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	marker_mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	marker.material_override = marker_mat
+	marker.visible = false
+	add_child(marker)
+
+
+# ───────────────────────── 界面事件 ─────────────────────────
+
+
+func _on_ui(ev: String, arg: String) -> void:
+	match ev:
+		"enter":
+			audio.init_after_gesture()
+			audio.confirm()
+			if phase == Phase.READY or phase == Phase.ERROR:
+				_run_flow()
+		"retry":
+			if phase == Phase.ERROR:
+				_run_flow()
+		"login":
+			login_submitted.emit(arg)
+		"sound":
+			audio.set_enabled(arg == "1")
+		"stop":
+			_do_stop()
+		"claim":
+			_do_claim()
+		"home":
+			_do_navigate({"to": "home"}, "")
+		"leave_home":
+			_do_navigate({"to": "residential"}, "")
+		"dest":
+			selected_obj = ""
+			_do_navigate({"to": arg}, "")
+		"act":
+			_on_act_button(arg)
+		"leave_activity":
+			var r: Dictionary = await _act({"type": "leave_interaction"})
+			if r["ok"]:
+				_toast("已停下手上的事。", "ok")
+				audio.confirm()
+				await _refresh_me()
+		"debug_act":
+			if bridge.debug:
+				var parsed = JSON.parse_string(arg)
+				if parsed is Dictionary:
+					var r2: Dictionary = await _act(parsed)
+					_toast(str(r2.get("message", "ok")), "ok" if r2["ok"] else "err")
+					await _refresh_me()
+
+
+func _on_visibility(vis: bool) -> void:
+	if not vis or phase != Phase.PLAYING:
+		return
+	# 回到前台：马上对时、续心跳、要一份快照
+	next_ping = 0.0
+	next_heartbeat = 0.0
+	if not ws_ready:
+		reconnect_at = 0.0
+	_poll_scene()
+
+
+func _set_phase(p: int, msg: String = "", link: String = "") -> void:
+	phase = p
+	phase_msg = msg
+	phase_link = link
+	_dirty = true
+	_push_state()
+
+
+func _toast(msg: String, kind: String = "info") -> void:
+	bridge.hud_toast(msg, kind)
+
+
+# ───────────────────────── 启动流程 ─────────────────────────
+
+
+func _fail(msg: String, link: String = "") -> void:
+	last_error = msg
+	_set_phase(Phase.ERROR, msg, link)
+
+
+func _err_msg(res: Dictionary) -> String:
+	var d = res.get("data")
+	if d is Dictionary:
+		var m: String = str(d.get("message", ""))
+		if m != "":
+			return m
+		var reason: String = str(d.get("reason", d.get("error", "")))
+		var table := {
+			"unreachable": "那里走不到。",
+			"no_route": "找不到过去的路。",
+			"too_far": "离得太远了，先走到它旁边。",
+			"control_lost": "这个页面现在没有控制权。",
+			"rate_limited": "操作太频繁了，稍等一下。",
+			"already_here": "你已经在这里了。",
+			"no_access": "没有进去的权限。",
+			"not_here": "那个地方不在这里。",
+			"unauthenticated": "需要重新登录。",
+			"recovering": "小镇正在恢复，请稍后再试。",
+		}
+		if table.has(reason):
+			return table[reason]
+	if int(res.get("status", 0)) == 0:
+		return "网络不通，请稍后再试。"
+	return "出错了（%d）。" % int(res.get("status", 0))
+
+
+func _run_flow() -> void:
+	if flow_running:
+		return
+	flow_running = true
+	var ok: bool = await _flow_body()
+	flow_running = false
+	if ok:
+		_after_ready()
+
+
+func _flow_body() -> bool:
+	_set_phase(Phase.BUSY, "正在确认登录状态…")
+	var sess: Dictionary = await bridge.http("GET", API + "/session")
+	if int(sess["status"]) != 200 or not (sess["data"] is Dictionary):
+		_fail("连不上小镇服务。" + _err_msg(sess))
+		return false
+	var cfg: Dictionary = await bridge.http("GET", API + "/config")
+	if int(cfg["status"]) == 200 and cfg["data"] is Dictionary:
+		dev_login = bool(cfg["data"].get("devLogin", false))
+		heartbeat_ms = int(cfg["data"].get("heartbeatMs", 20000))
+	var logged_in: bool = bool((sess["data"] as Dictionary).get("loggedIn", false))
+	if logged_in:
+		user_name = str((sess["data"] as Dictionary).get("name", ""))
+	for attempt in range(4):
+		if not logged_in:
+			if not dev_login:
+				_fail("请从登录链接进入小镇（登录票据在旧页面兑换），然后回到这里。", "/town/")
+				return false
+			login_title = "取一个名字，进入栖灯镇"
+			login_error = ""
+			while not logged_in:
+				_set_phase(Phase.LOGIN)
+				var nm: String = await login_submitted
+				nm = nm.strip_edges()
+				if nm == "":
+					login_error = "名字不能为空。"
+					continue
+				_set_phase(Phase.BUSY, "正在登录…")
+				var lr: Dictionary = await bridge.http("POST", API + "/auth/dev", {"name": nm})
+				if int(lr["status"]) == 200 and lr["data"] is Dictionary and bool(lr["data"].get("ok", false)):
+					logged_in = true
+					user_name = nm
+					login_error = ""
+				else:
+					login_error = _err_msg(lr)
+		_set_phase(Phase.BUSY, "正在进入小镇…")
+		var body := {"clientId": client_id}
+		var er: Dictionary = await bridge.http("POST", API + "/enter", body)
+		if int(er["status"]) == 200 and er["data"] is Dictionary and bool(er["data"].get("ok", false)):
+			var d: Dictionary = er["data"]
+			presence_epoch = int(d.get("presenceEpoch", 0))
+			_apply_me(d.get("view", {}))
+			var ctl: Dictionary = d.get("control", {})
+			control_epoch = int(ctl.get("epoch", control_epoch))
+			control_mine = bool(ctl.get("mine", true))
+			break
+		var edata = er["data"]
+		var ecode: String = str(edata.get("error", "")) if edata is Dictionary else ""
+		if int(er["status"]) == 401 or ecode == "unauthenticated":
+			logged_in = false
+			continue
+		if ecode == "profile_required" or (edata is Dictionary and str(edata.get("reason", "")) == "profile_required"):
+			login_title = "第一次来：给自己取个名字"
+			login_error = ""
+			var named: bool = false
+			while not named:
+				_set_phase(Phase.LOGIN)
+				var nm2: String = (await login_submitted).strip_edges()
+				if nm2 == "":
+					login_error = "名字不能为空。"
+					continue
+				_set_phase(Phase.BUSY, "正在进入小镇…")
+				var er2: Dictionary = await bridge.http("POST", API + "/enter", {"clientId": client_id, "profile": {"name": nm2}})
+				if int(er2["status"]) == 200 and er2["data"] is Dictionary and bool(er2["data"].get("ok", false)):
+					var d2: Dictionary = er2["data"]
+					presence_epoch = int(d2.get("presenceEpoch", 0))
+					_apply_me(d2.get("view", {}))
+					var ctl2: Dictionary = d2.get("control", {})
+					control_epoch = int(ctl2.get("epoch", control_epoch))
+					control_mine = bool(ctl2.get("mine", true))
+					named = true
+				else:
+					login_error = _err_msg(er2)
+			break
+		_fail(_err_msg(er))
+		return false
+	if self_id == "":
+		_fail("进入小镇失败，请重试。")
+		return false
+	_set_phase(Phase.BUSY, "正在加载地图…")
+	if not await _load_map():
+		return false
+	return true
+
+
+func _after_ready() -> void:
+	var loc: Dictionary = _me_loc
+	cur_scene = str(loc.get("scene", "town"))
+	world.show_scene(cur_scene)
+	if loc.has("x"):
+		rig.snap(Vector3(float(loc["x"]), 0.0, float(loc["z"])))
+	_set_phase(Phase.PLAYING)
+	_toast("欢迎来到栖灯镇。点地面走过去，点物件走近它。", "ok")
+	want_net = true
+	reconnect_at = 0.0
+	backoff_ms = 1000.0
+	next_heartbeat = clock.ticks_ms() + float(heartbeat_ms)
+	_dirty = true
+
+
+var _me_loc: Dictionary = {}
+
+
+func _apply_me(view: Dictionary) -> void:
+	if view.is_empty():
+		return
+	action_window = str(view.get("actionWindow", action_window))
+	var ctx: Dictionary = view.get("context", {})
+	ctx_version = int(ctx.get("version", ctx_version))
+	ctx_activity = ctx.get("activityId")
+	var ctl: Dictionary = view.get("control", {})
+	if not ctl.is_empty():
+		control_epoch = int(ctl.get("epoch", control_epoch))
+		control_mine = bool(ctl.get("mine", control_mine))
+	var me: Dictionary = view.get("me", {})
+	if me.has("id"):
+		self_id = str(me["id"])
+		user_name = str(me.get("name", user_name))
+	var h = view.get("here")
+	here = h if h is Dictionary else {}
+	my_exits = here.get("exits", []) if here.has("exits") else []
+	my_interaction = view.get("interaction")
+	var loc = view.get("location")
+	if loc is Dictionary:
+		_me_loc = loc
+		cur_space = str(loc.get("space", cur_space))
+		cur_space_name = str(loc.get("name", cur_space_name))
+	near_valid = true
+	_dirty = true
+
+
+func _refresh_me() -> bool:
+	if me_busy:
+		me_again = true  # 正在读的这一份可能已经旧了：读完再读一次
+		return false
+	me_busy = true
+	me_again = false
+	var r: Dictionary = await bridge.http("GET", API + "/me?clientId=" + client_id.uri_encode())
+	me_busy = false
+	if me_again:
+		me_again = false
+		arrival_refresh_at = clock.ticks_ms() + 30.0
+	if int(r["status"]) == 200 and r["data"] is Dictionary:
+		_apply_me(r["data"])
+		return true
+	if int(r["status"]) == 401:
+		_relogin()
+	return false
+
+
+func _relogin() -> void:
+	want_net = false
+	ws_ready = false
+	net.close_now()
+	_clear_actors()
+	if not flow_running:
+		_run_flow()
+
+
+func _load_map() -> bool:
+	if map_loading:
+		return false
+	map_loading = true
+	var r: Dictionary = await bridge.http("GET", API + "/map")
+	map_loading = false
+	if int(r["status"]) != 200 or not (r["data"] is Dictionary):
+		_fail("加载地图失败。" + _err_msg(r))
+		return false
+	manifest = r["data"]
+	var src: Dictionary = manifest.get("source", {})
+	speed = float(src.get("speed", 2.4))
+	world.build(manifest)
+	if cur_scene != "":
+		world.show_scene(cur_scene)
+	return true
+
+
+## 地图校验值对不上：停掉新的空间动作，重新取地图、重建场景。
+func _reload_map_after_mismatch() -> void:
+	_toast("地图更新了，正在重新加载…", "warn")
+	var ok: bool = await _load_map()
+	if ok:
+		_clear_actors()
+		if net.is_open():
+			net.send({"t": "ping", "n": clock.ticks_ms()})
+		_dirty = true
+
+
+# ───────────────────────── 网络：WebSocket ─────────────────────────
+
+
+func _start_ws_attempt() -> void:
+	if ticket_pending or net.state != "idle":
+		return
+	ticket_pending = true
+	var r: Dictionary = await bridge.http("POST", API + "/ws-ticket", {"clientId": client_id})
+	ticket_pending = false
+	if int(r["status"]) == 200 and r["data"] is Dictionary and bool(r["data"].get("ok", false)):
+		ws_ticket = str(r["data"].get("ticket", ""))
+		var err: int = net.connect_to(bridge.ws_origin() + "/town/ws")
+		if err != OK:
+			ws_ticket = ""
+			_schedule_reconnect()
+	elif int(r["status"]) == 401:
+		_relogin()
+	else:
+		_schedule_reconnect()
+
+
+func _schedule_reconnect() -> void:
+	var jitter: float = randf() * 400.0
+	reconnect_at = clock.ticks_ms() + backoff_ms + jitter
+	backoff_ms = minf(backoff_ms * 2.0, 15000.0)
+	_dirty = true
+
+
+func _on_ws_open() -> void:
+	net.send({"t": "hello", "v": 1, "ticket": ws_ticket} if ev_cursor == "" else {"t": "hello", "v": 1, "ticket": ws_ticket, "cursor": ev_cursor})
+	ws_ticket = ""
+
+
+func _on_ws_closed(code: int, _reason: String) -> void:
+	ws_ready = false
+	_dirty = true
+	if not want_net:
+		return
+	if code == 4403:
+		_relogin()
+		return
+	_schedule_reconnect()
+
+
+func _on_ws_message(msg: Dictionary) -> void:
+	var t: String = str(msg.get("t", ""))
+	match t:
+		"hello":
+			ws_ready = true
+			backoff_ms = 1000.0
+			clock.rough(float(msg.get("serverTime", 0.0)))
+			renew_every_ms = maxf(1000.0, float(msg.get("renewEveryMs", 3000.0)))
+			ev_cursor = str(msg.get("cursor", ev_cursor))
+			next_ping = 0.0
+			var m = msg.get("map")
+			if m is Dictionary and manifest.has("checksum") and str(m.get("checksum", "")) != str(manifest["checksum"]):
+				_reload_map_after_mismatch()
+			_dirty = true
+		"scene":
+			_on_scene(msg)
+		"events":
+			ev_cursor = str(msg.get("cursor", ev_cursor))
+			for ev in msg.get("events", []):
+				if ev is Dictionary:
+					_on_event(ev)
+		"resync":
+			ev_cursor = str(msg.get("cursor", ev_cursor))
+			_refresh_me()
+		"pong":
+			var n = msg.get("n")
+			var sent: float = float(n) if n != null else 0.0
+			clock.sample(sent, clock.ticks_ms(), float(msg.get("serverTime", 0.0)))
+			last_pong_ms = clock.ticks_ms()
+		"renewed":
+			_on_renewed(msg)
+		"error":
+			var code: String = str(msg.get("code", ""))
+			if code == "revoked":
+				_relogin()
+			elif code != "rate_limited":
+				last_error = code + ": " + str(msg.get("message", ""))
+
+
+func _on_event(ev: Dictionary) -> void:
+	var t: String = str(ev.get("type", ""))
+	var data: Dictionary = ev.get("data", {}) if ev.get("data") is Dictionary else {}
+	match t:
+		"you_arrived":
+			arrival_refresh_at = clock.ticks_ms() + 80.0
+		"nav_stopped":
+			var reason: String = str(data.get("reason", ""))
+			var table := {"lease": "路上没有续上，停下了。", "control": "控制权换了人，停下了。", "blocked": "前面走不过去，停下了。", "activity": "进入了一局游戏，停下了。", "eject": "你被请出了门。"}
+			_toast(str(table.get(reason, "停下了。")), "warn")
+			_hide_marker()
+			arrival_refresh_at = clock.ticks_ms() + 80.0
+		"control":
+			if int(data.get("epoch", 0)) != control_epoch:
+				control_mine = false
+				control_epoch = int(data.get("epoch", control_epoch))
+				_toast("另一处接管了你的居民，这里变成只读。", "warn")
+				_dirty = true
+		"notice":
+			_toast(str(data.get("text", "")), "info")
+		"interaction_done":
+			_toast("%s：%s" % [str(data.get("name", "做完了")), str(data.get("text", ""))], "ok")
+			audio.confirm()
+			arrival_refresh_at = clock.ticks_ms() + 50.0
+		"interaction":
+			arrival_refresh_at = clock.ticks_ms() + 50.0
+
+
+func _on_renewed(msg: Dictionary) -> void:
+	var sa: TActor = actors.get(self_id)
+	if bool(msg.get("ok", false)):
+		if sa != null and sa.has_nav and msg.get("leaseUntil") != null:
+			sa.nav_until = maxf(sa.nav_until, float(msg["leaseUntil"]))
+	else:
+		var nav = msg.get("navigation")
+		if nav is Dictionary:
+			# 续的不是现在这一段：照新的接着续
+			renew_id = str(nav.get("navigationId", ""))
+			renew_rev = int(nav.get("revision", 0))
+			next_renew = 0.0
+	var sp: String = str(msg.get("space", cur_space))
+	if sp != "" and sp != cur_space:
+		cur_space = sp
+		cur_space_name = world.space_name(cur_scene, sp)
+		_dirty = true
+		arrival_refresh_at = clock.ticks_ms() + 50.0
+
+
+# ───────────────────────── 场景同步 ─────────────────────────
+
+
+func _on_scene(msg: Dictionary) -> void:
+	if phase != Phase.PLAYING and phase != Phase.BUSY:
+		return
+	var cs: String = str(msg.get("checksum", ""))
+	if cs != "" and manifest.has("checksum") and cs != str(manifest["checksum"]):
+		if not map_loading:
+			_reload_map_after_mismatch()
+		return
+	var sid: String = str(msg.get("scene", cur_scene))
+	if msg.has("serverTime"):
+		clock.rough(float(msg["serverTime"]))
+	var switched: bool = sid != cur_scene
+	if switched:
+		cur_scene = sid
+		world.show_scene(sid)
+		_clear_actors()
+		selected_obj = ""
+		near_valid = false
+		_hide_marker()
+	var sp: String = str(msg.get("space", cur_space))
+	if sp != cur_space or switched:
+		cur_space = sp
+		cur_space_name = world.space_name(sid, sp)
+		arrival_refresh_at = clock.ticks_ms() + 50.0
+	var now: float = clock.server_now()
+	if msg.has("self"):
+		self_id = str(msg["self"])
+	var seen: Dictionary = {}
+	for a in msg.get("actors", []):
+		if not (a is Dictionary):
+			continue
+		var id: String = str(a.get("id", ""))
+		if id == "":
+			continue
+		seen[id] = true
+		var act: TActor = actors.get(id)
+		if act == null:
+			act = TActor.new()
+			actors_root.add_child(act)
+			act.setup(id, str(a.get("name", "")), str(a.get("kind", "")), id == self_id)
+			actors[id] = act
+		act.apply(a, now)
+		if id == self_id:
+			if act.has_nav:
+				if act.nav_id != renew_id or act.nav_rev != renew_rev:
+					renew_id = act.nav_id
+					renew_rev = act.nav_rev
+					if next_renew <= 0.0 or switched:
+						next_renew = clock.ticks_ms() + renew_every_ms
+			if switched or not rig_ready:
+				rig.snap(Vector3(act.disp.x, 0.0, act.disp.y))
+				rig_ready = true
+	for id in actors.keys():
+		if not seen.has(id):
+			(actors[id] as TActor).queue_free()
+			actors.erase(id)
+	_dirty = true
+
+
+var rig_ready: bool = false
+
+
+func _clear_actors() -> void:
+	for id in actors.keys():
+		(actors[id] as TActor).queue_free()
+	actors.clear()
+	rig_ready = false
+	renew_id = ""
+
+
+func _poll_scene() -> void:
+	var r: Dictionary = await bridge.http("GET", API + "/scene")
+	if int(r["status"]) == 200 and r["data"] is Dictionary:
+		_on_scene(r["data"])
+	elif int(r["status"]) == 401:
+		_relogin()
+
+
+# ───────────────────────── 动作 ─────────────────────────
+
+
+func _new_req_id() -> String:
+	req_counter += 1
+	return "q-%s-%d-%d" % [client_id.substr(0, 12), int(Time.get_unix_time_from_system()) % 1000000, req_counter]
+
+
+## 提交一个动作。返回 {ok, data, error, reason, message}。失败时已经按需要处理了控制权、过期等状态。
+func _act(action: Dictionary) -> Dictionary:
+	pending += 1
+	_dirty = true
+	var out: Dictionary = {"ok": false, "message": "没有完成。"}
+	var rid: String = _new_req_id()
+	for attempt in range(3):
+		var body := {
+			"clientId": client_id,
+			"requestId": rid,
+			"actionWindow": action_window,
+			"expected": {"contextVersion": ctx_version, "controlEpoch": control_epoch, "activityId": ctx_activity},
+			"action": action,
+		}
+		var res: Dictionary = await bridge.http("POST", API + "/actions", body)
+		var d = res["data"]
+		if int(res["status"]) == 200 and d is Dictionary and bool(d.get("ok", false)):
+			ctx_version = int(d.get("contextVersion", ctx_version))
+			out = {"ok": true, "data": d, "message": ""}
+			break
+		var code: String = str(d.get("error", "")) if d is Dictionary else ""
+		var reason: String = str(d.get("reason", "")) if d is Dictionary else ""
+		out = {"ok": false, "data": d, "error": code, "reason": reason, "message": _err_msg(res)}
+		if code == "control_lost":
+			control_mine = false
+			_dirty = true
+			break
+		if code == "context_stale" or code == "request_expired":
+			await _refresh_me()
+			rid = _new_req_id()
+			continue
+		if code == "rate_limited" or code == "recovering":
+			var wait_ms: float = 600.0
+			if d is Dictionary and d.has("retryAfterMs"):
+				wait_ms = clampf(float(d["retryAfterMs"]), 200.0, 3000.0)
+			await get_tree().create_timer(wait_ms / 1000.0).timeout
+			continue
+		if code == "unauthenticated":
+			_relogin()
+		break
+	pending -= 1
+	_dirty = true
+	return out
+
+
+func _can_control() -> bool:
+	if phase != Phase.PLAYING:
+		return false
+	if not control_mine:
+		_toast("现在是只读：另一处握着控制权。点上方「接管」拿回来。", "warn")
+		return false
+	return true
+
+
+func _show_marker(p: Vector3, confirmed: bool) -> void:
+	marker.position = Vector3(p.x, 0.04, p.z)
+	marker_mat.albedo_color = Color(1.0, 0.75, 0.15, 0.85) if confirmed else Color(0.8, 0.8, 0.8, 0.5)
+	marker.visible = true
+
+
+func _hide_marker() -> void:
+	marker.visible = false
+
+
+## 走过去。target_pos 是点击在地面上的位置（用来先画「等待确认」的标记）。
+func _do_navigate(to: Dictionary, label: String, mark = null) -> void:
+	if not _can_control():
+		return
+	nav_generation += 1
+	var gen: int = nav_generation
+	near_valid = false
+	if mark is Vector3:
+		_show_marker(mark, false)
+	var r: Dictionary = await _act({"type": "navigate"}.merged(to))
+	if gen != nav_generation:
+		return  # 之后又点了别处，这个回答不再代表现状
+	if not r["ok"]:
+		_hide_marker()
+		_toast(str(r["message"]), "err")
+		arrival_refresh_at = clock.ticks_ms() + 50.0
+		return
+	var d: Dictionary = r["data"]
+	audio.confirm()
+	if str(d.get("status", "")) == "completed":
+		_hide_marker()
+		arrival_refresh_at = clock.ticks_ms() + 50.0
+		return
+	var nav = d.get("navigation")
+	if nav is Dictionary:
+		renew_id = str(nav.get("navigationId", ""))
+		renew_rev = int(nav.get("revision", 0))
+		next_renew = clock.ticks_ms() + float(nav.get("renewEveryMs", renew_every_ms))
+		if mark is Vector3:
+			_show_marker(mark, true)
+		if not ws_ready:
+			_poll_scene()
+
+
+func _do_stop() -> void:
+	if not _can_control():
+		return
+	nav_generation += 1
+	var r: Dictionary = await _act({"type": "stop_navigation"})
+	_hide_marker()
+	if r["ok"]:
+		audio.confirm()
+		if not ws_ready:
+			_poll_scene()
+	else:
+		_toast(str(r["message"]), "err")
+	arrival_refresh_at = clock.ticks_ms() + 80.0
+
+
+func _do_claim() -> void:
+	var r: Dictionary = await bridge.http("POST", API + "/claim", {"clientId": client_id})
+	if int(r["status"]) == 200 and r["data"] is Dictionary and bool(r["data"].get("ok", true)):
+		var ctl = r["data"].get("control")
+		if ctl is Dictionary:
+			control_epoch = int(ctl.get("epoch", control_epoch))
+			control_mine = bool(ctl.get("mine", true))
+		else:
+			control_mine = true
+		await _refresh_me()
+		audio.confirm()
+		_toast("已接管，可以操作了。", "ok")
+	else:
+		_toast(_err_msg(r), "err")
+	_dirty = true
+
+
+func _on_act_button(arg: String) -> void:
+	var parts: PackedStringArray = arg.split(":", true, 1)
+	if parts.size() < 2:
+		return
+	var oid: String = parts[1]
+	if parts[0] == "go":
+		selected_obj = oid
+		_do_navigate({"to": oid}, "")
+		return
+	if parts[0] == "do":
+		if not _can_control():
+			return
+		var r: Dictionary = await _act({"type": "start_interaction", "objectId": oid})
+		if r["ok"]:
+			audio.confirm()
+			var inter = r["data"].get("interaction")
+			var nm: String = str(inter.get("name", "")) if inter is Dictionary else ""
+			_toast("开始了：%s" % nm if nm != "" else "开始了。", "ok")
+			await _refresh_me()
+		else:
+			_toast(str(r["message"]), "err")
+			if str(r.get("reason", "")) == "too_far":
+				near_valid = false
+				_dirty = true
+
+
+# ───────────────────────── 输入 ─────────────────────────
+
+
+func _input(event: InputEvent) -> void:
+	if phase != Phase.PLAYING:
+		return
+	if event is InputEventMouseButton:
+		var mb := event as InputEventMouseButton
+		if mb.button_index == MOUSE_BUTTON_LEFT:
+			if mb.pressed:
+				_tap_begin(mb.position)
+			else:
+				_tap_finish(mb.position)
+		elif mb.pressed and mb.button_index == MOUSE_BUTTON_WHEEL_UP:
+			rig.zoom_mul(0.9)
+		elif mb.pressed and mb.button_index == MOUSE_BUTTON_WHEEL_DOWN:
+			rig.zoom_mul(1.1)
+	elif event is InputEventMouseMotion:
+		_tap_move((event as InputEventMouseMotion).position)
+	elif event is InputEventScreenTouch:
+		var st := event as InputEventScreenTouch
+		if st.pressed:
+			_taps[st.index] = st.position
+			if _taps.size() == 1:
+				_tap_begin(st.position)
+			else:
+				_tap_start.clear()
+				_pinch_prev = _pinch_dist()
+		else:
+			_taps.erase(st.index)
+			if _taps.is_empty():
+				_tap_finish(st.position)
+				_pinch_prev = 0.0
+			elif _taps.size() == 1:
+				_pinch_prev = 0.0
+	elif event is InputEventScreenDrag:
+		var sd := event as InputEventScreenDrag
+		_taps[sd.index] = sd.position
+		if _taps.size() >= 2:
+			var d: float = _pinch_dist()
+			if _pinch_prev > 1.0 and d > 1.0:
+				rig.zoom_mul(_pinch_prev / d)
+			_pinch_prev = d
+		else:
+			_tap_move(sd.position)
+
+
+func _pinch_dist() -> float:
+	var ks: Array = _taps.keys()
+	if ks.size() < 2:
+		return 0.0
+	return (_taps[ks[0]] as Vector2).distance_to(_taps[ks[1]] as Vector2)
+
+
+func _tap_begin(p: Vector2) -> void:
+	_tap_start = {"pos": p, "t": clock.ticks_ms()}
+
+
+func _tap_move(p: Vector2) -> void:
+	if _tap_start.is_empty():
+		return
+	if p.distance_to(_tap_start["pos"]) > TAP_MAX_MOVE:
+		_tap_start.clear()
+
+
+func _tap_finish(p: Vector2) -> void:
+	if _tap_start.is_empty():
+		return
+	var ok: bool = p.distance_to(_tap_start["pos"]) <= TAP_MAX_MOVE and clock.ticks_ms() - float(_tap_start["t"]) <= TAP_MAX_MS
+	_tap_start.clear()
+	if ok:
+		_on_tap(p)
+
+
+func _on_tap(p: Vector2) -> void:
+	if not _can_control():
+		return
+	var o: Vector3 = rig.cam.project_ray_origin(p)
+	var n: Vector3 = rig.cam.project_ray_normal(p)
+	var best_t: float = INF
+	var best_kind: String = ""
+	var best_id: String = ""
+	for id in actors:
+		if id == self_id:
+			continue
+		var a: TActor = actors[id]
+		var box := AABB(Vector3(a.disp.x - 0.5, 0.0, a.disp.y - 0.5), Vector3(1.0, 1.9, 1.0))
+		var hit = box.intersects_ray(o, n)
+		if hit is Vector3:
+			var t: float = o.distance_to(hit)
+			if t < best_t:
+				best_t = t
+				best_kind = "actor"
+				best_id = id
+	for ob in world.scene_objects(cur_scene):
+		var hit2 = (ob["aabb"] as AABB).intersects_ray(o, n)
+		if hit2 is Vector3:
+			var t2: float = o.distance_to(hit2)
+			if t2 < best_t:
+				best_t = t2
+				best_kind = "obj"
+				best_id = str(ob["id"])
+	if best_kind == "actor":
+		selected_obj = ""
+		var a2: TActor = actors[best_id]
+		_do_navigate({"approach": best_id}, a2.actor_name, Vector3(a2.disp.x, 0.0, a2.disp.y))
+		return
+	if best_kind == "obj":
+		selected_obj = best_id
+		_dirty = true
+		var ob2: Dictionary = world.find_object(cur_scene, best_id)
+		if near_valid and _is_near(best_id):
+			return  # 已经够得着：直接给动作按钮
+		_do_navigate({"to": best_id}, str(ob2.get("name", "")), Vector3(float(ob2["x"]), 0.0, float(ob2["z"])))
+		return
+	var g = rig.ground_hit(p)
+	if g == null:
+		return
+	selected_obj = ""
+	_do_navigate({"to": {"x": snappedf(g.x, 0.01), "z": snappedf(g.z, 0.01)}}, "", Vector3(g.x, 0.0, g.z))
+
+
+func _is_near(oid: String) -> bool:
+	for o in here.get("objects", []):
+		if str(o.get("id", "")) == oid:
+			return bool(o.get("near", false))
+	return false
+
+
+# ───────────────────────── 每帧 ─────────────────────────
+
+
+func _process(dt: float) -> void:
+	net.poll()
+	if phase != Phase.PLAYING:
+		if _dirty:
+			_push_state()
+		return
+	var now_t: float = clock.ticks_ms()
+	var now_s: float = clock.server_now()
+	var vs: Vector2 = get_viewport().get_visible_rect().size
+	if vs.y > 1.0:
+		rig.set_aspect(vs.x / vs.y)
+		_adapt_resolution(vs)
+
+	# 连接维护
+	if want_net:
+		if net.state == "idle" and not ticket_pending and now_t >= reconnect_at:
+			_start_ws_attempt()
+		if not ws_ready and now_t >= next_poll:
+			next_poll = now_t + 1500.0
+			if net.state != "open":
+				_poll_scene()
+		if ws_ready and now_t >= next_safety_poll:
+			next_safety_poll = now_t + SAFETY_POLL_MS
+			_poll_scene()
+		if ws_ready and now_t >= next_ping:
+			next_ping = now_t + 5000.0
+			net.send({"t": "ping", "n": now_t})
+	if now_t >= next_heartbeat and presence_epoch >= 0:
+		next_heartbeat = now_t + float(heartbeat_ms)
+		_heartbeat()
+
+	# 角色
+	for id in actors:
+		(actors[id] as TActor).tick(dt, now_s)
+	var sa: TActor = actors.get(self_id)
+	if sa != null:
+		rig.follow(Vector3(sa.disp.x, 0.0, sa.disp.y), dt)
+		if sa.moving:
+			step_timer -= dt
+			if step_timer <= 0.0:
+				audio.step()
+				step_timer = 0.33 / clampf(sa.nav_speed / 2.0, 0.6, 1.8)
+			_was_moving = true
+			if control_mine and sa.has_nav and now_t >= next_renew and renew_id != "":
+				next_renew = now_t + renew_every_ms
+				_send_renew()
+		else:
+			step_timer = 0.05
+			if _was_moving:
+				_was_moving = false
+				_hide_marker()
+				arrival_refresh_at = now_t + 120.0
+	if arrival_refresh_at > 0.0 and now_t >= arrival_refresh_at:
+		arrival_refresh_at = -1.0
+		_refresh_me()
+
+	_update_tags()
+	_state_timer += dt
+	if _dirty or _state_timer >= 0.5:
+		_state_timer = 0.0
+		_push_state()
+	if bridge.debug:
+		_debug_timer += dt
+		if _debug_timer >= 0.1:
+			_debug_timer = 0.0
+			_push_debug()
+
+
+## 画面像素太多（高分屏手机）时降低 3D 渲染分辨率，保证帧率；界面是 DOM，不受影响。
+func _adapt_resolution(vs: Vector2) -> void:
+	var px: float = vs.x * vs.y
+	var scale: float = 1.0 if px <= 2500000.0 else sqrt(2500000.0 / px)
+	if absf(get_viewport().scaling_3d_scale - scale) > 0.01:
+		get_viewport().scaling_3d_scale = scale
+
+
+func _heartbeat() -> void:
+	var r: Dictionary = await bridge.http("POST", API + "/heartbeat", {"clientId": client_id, "presenceEpoch": presence_epoch})
+	if int(r["status"]) == 200 and r["data"] is Dictionary:
+		var d: Dictionary = r["data"]
+		heartbeat_ms = int(d.get("nextHeartbeatMs", heartbeat_ms))
+		var ctl = d.get("control")
+		if ctl is Dictionary:
+			var was_mine: bool = control_mine
+			control_epoch = int(ctl.get("epoch", control_epoch))
+			control_mine = bool(ctl.get("mine", control_mine))
+			if control_mine != was_mine:
+				_dirty = true
+				_refresh_me()
+		var cv: int = int(d.get("contextVersion", ctx_version))
+		if cv != ctx_version:
+			_refresh_me()
+	elif int(r["status"]) == 401 or (r["data"] is Dictionary and str(r["data"].get("error", "")) == "unauthenticated"):
+		_relogin()
+	elif r["data"] is Dictionary and int(r["status"]) >= 400:
+		# 在场租约丢了（比如睡了很久）：重新进入
+		var er: Dictionary = await bridge.http("POST", API + "/enter", {"clientId": client_id})
+		if int(er["status"]) == 200 and er["data"] is Dictionary:
+			presence_epoch = int(er["data"].get("presenceEpoch", presence_epoch))
+			_apply_me(er["data"].get("view", {}))
+
+
+func _send_renew() -> void:
+	if net.is_open() and ws_ready:
+		net.send({"t": "renew", "navigationId": renew_id, "revision": renew_rev})
+		return
+	var r: Dictionary = await bridge.http("POST", API + "/nav/renew", {"clientId": client_id, "navigationId": renew_id, "revision": renew_rev})
+	if int(r["status"]) == 200 and r["data"] is Dictionary:
+		_on_renewed(r["data"])
+	elif r["data"] is Dictionary and str(r["data"].get("error", "")) == "control_lost":
+		control_mine = false
+		_dirty = true
+
+
+# ───────────────────────── 界面状态 ─────────────────────────
+
+
+func _build_actions() -> Array:
+	var out: Array = []
+	var sa: TActor = actors.get(self_id)
+	var walking: bool = sa != null and sa.moving
+	var listed: Dictionary = {}
+	for o in here.get("objects", []):
+		var oid: String = str(o.get("id", ""))
+		var act = o.get("action")
+		var near: bool = bool(o.get("near", false)) and near_valid and not walking
+		if near and act is Dictionary and int(act.get("min", 2)) <= 1:
+			listed[oid] = true
+			if o.get("active") != null:
+				out.append({"id": "busy:" + oid, "label": "使用中", "sub": str(o.get("label", "")), "mode": "busy"})
+			else:
+				out.append({"id": "do:" + oid, "label": str(act.get("name", "做")), "sub": str(o.get("label", "")), "mode": "do"})
+	if selected_obj != "" and not listed.has(selected_obj):
+		var wo: Dictionary = world.find_object(cur_scene, selected_obj)
+		if not wo.is_empty():
+			out.append({"id": "go:" + selected_obj, "label": "走过去", "sub": str(wo.get("name", "")), "mode": "go"})
+	return out
+
+
+func _conn_state() -> String:
+	if ws_ready:
+		return "ok"
+	if want_net:
+		return "reconnecting"
+	return "offline"
+
+
+func _push_state() -> void:
+	_dirty = false
+	var sa: TActor = actors.get(self_id)
+	var d := {
+		"phase": ["boot", "ready", "busy", "login", "error", "playing"][phase],
+		"msg": phase_msg,
+		"link": phase_link,
+		"loginTitle": login_title,
+		"loginError": login_error,
+		"name": user_name,
+		"space": cur_space_name,
+		"scene": cur_scene,
+		"sceneName": str(world.scene_names.get(cur_scene, "")),
+		"conn": _conn_state(),
+		"mine": control_mine,
+		"pending": pending,
+		"walking": sa != null and sa.moving,
+		"actions": _build_actions() if phase == Phase.PLAYING else [],
+		"dest": my_exits,
+		"inHome": cur_scene == "home",
+	}
+	if my_interaction is Dictionary:
+		var ends = my_interaction.get("endsAt")
+		var rem: float = -1.0
+		if ends != null:
+			rem = maxf(0.0, float(ends) - clock.server_now())
+		d["activity"] = {"name": str(my_interaction.get("name", "")), "status": str(my_interaction.get("status", "")), "remainMs": rem}
+	bridge.hud_state(d)
+
+
+func _update_tags() -> void:
+	var size: Vector2 = get_viewport().get_visible_rect().size
+	if size.x < 2.0 or size.y < 2.0:
+		return
+	var cam: Camera3D = rig.cam
+	var tags: Array = []
+	for id in actors:
+		var a: TActor = actors[id]
+		var wp := Vector3(a.disp.x, 2.05, a.disp.y)
+		if cam.is_position_behind(wp):
+			continue
+		var sp: Vector2 = cam.unproject_position(wp)
+		tags.append({"i": id, "n": a.actor_name, "x": snappedf(sp.x / size.x, 0.0005), "y": snappedf(sp.y / size.y, 0.0005), "k": "s" if id == self_id else "a", "m": a.moving})
+	var sa: TActor = actors.get(self_id)
+	for ob in world.scene_objects(cur_scene):
+		var wp2: Vector3 = ob["pos"]
+		var near_self: bool = sa != null and Vector2(sa.disp.x, sa.disp.y).distance_to(Vector2(wp2.x, wp2.z)) < SELECT_NEAR
+		if not near_self and selected_obj != str(ob["id"]):
+			continue
+		if cam.is_position_behind(wp2):
+			continue
+		var sp2: Vector2 = cam.unproject_position(wp2)
+		tags.append({"i": "o:" + str(ob["id"]), "n": str(ob["name"]), "x": snappedf(sp2.x / size.x, 0.0005), "y": snappedf(sp2.y / size.y, 0.0005), "k": "o", "sel": selected_obj == str(ob["id"])})
+	for zl in world.zone_labels.get(cur_scene, []):
+		var wp3: Vector3 = zl["pos"]
+		if cam.is_position_behind(wp3):
+			continue
+		var sp3: Vector2 = cam.unproject_position(wp3)
+		tags.append({"i": "z:" + str(zl["name"]), "n": str(zl["name"]), "x": snappedf(sp3.x / size.x, 0.0005), "y": snappedf(sp3.y / size.y, 0.0005), "k": "z"})
+	for pl in world.portals.get(cur_scene, []):
+		var wp4: Vector3 = pl["pos"]
+		if cam.is_position_behind(wp4):
+			continue
+		var sp4: Vector2 = cam.unproject_position(wp4)
+		tags.append({"i": "p:" + str(pl["id"]), "n": str(pl["name"]), "x": snappedf(sp4.x / size.x, 0.0005), "y": snappedf(sp4.y / size.y, 0.0005), "k": "p"})
+	var s: String = JSON.stringify(tags)
+	if s != _last_tags:
+		_last_tags = s
+		bridge.hud_tags(s)
+
+
+func _push_debug() -> void:
+	var size: Vector2 = get_viewport().get_visible_rect().size
+	var cam: Camera3D = rig.cam
+	var al: Array = []
+	for id in actors:
+		var a: TActor = actors[id]
+		var sp: Vector2 = cam.unproject_position(Vector3(a.disp.x, 1.0, a.disp.y))
+		al.append({"id": id, "name": a.actor_name, "x": a.disp.x, "z": a.disp.y, "moving": a.moving, "nx": sp.x / size.x, "ny": sp.y / size.y})
+	var ol: Array = []
+	for ob in world.scene_objects(cur_scene):
+		var wp: Vector3 = ob["pos"]
+		var sp2: Vector2 = cam.unproject_position(Vector3(wp.x, 0.5, wp.z))
+		ol.append({"id": ob["id"], "name": ob["name"], "x": ob["x"], "z": ob["z"], "nx": sp2.x / size.x, "ny": sp2.y / size.y, "near": _is_near(str(ob["id"])) and near_valid})
+	var proj := Projection(cam.get_camera_projection())
+	var view := Projection(cam.global_transform.affine_inverse())
+	var vp: Projection = proj * view
+	var m: Array = []
+	for c in range(4):
+		var col: Vector4 = vp[c]
+		m.append_array([col.x, col.y, col.z, col.w])
+	var d := {
+		"self": self_id,
+		"scene": cur_scene,
+		"space": cur_space,
+		"spaceName": cur_space_name,
+		"serverTimeOffset": clock.offset_ms,
+		"rttMs": clock.rtt_ms,
+		"connection": _conn_state(),
+		"phase": phase,
+		"mine": control_mine,
+		"pending": pending,
+		"selected": selected_obj,
+		"nearValid": near_valid,
+		"actors": al,
+		"objects": ol,
+		"vp": m,
+		"zoom": rig.dist,
+		"serverNow": clock.server_now(),
+		"fps": Engine.get_frames_per_second(),
+		"checksum": str(manifest.get("checksum", "")),
+		"lastError": last_error,
+		"markerVisible": marker.visible,
+	}
+	bridge.hud_debug(JSON.stringify(d))

@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#1b2430">
+<title>栖灯镇</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="hud.css">
+<!-- Godot 的启动配置放进数据块，由 boot.js 读取；整个页面没有内联脚本、没有内联事件处理器 -->
+<script type="application/json" id="godot-config">$GODOT_CONFIG</script>
+</head>
+<body>
+<canvas id="canvas" tabindex="-1"></canvas>
+
+<div id="hud" aria-live="polite">
+  <div id="tags"></div>
+
+  <div id="topbar">
+    <div class="chip" id="where"><span id="conn" class="dot" title="连接状态"></span><span id="connText" class="conn-text" hidden></span><span id="space">栖灯镇</span></div>
+    <div class="spacer"></div>
+    <button class="chip btn" id="soundBtn" type="button" aria-label="声音开关">声音：开</button>
+    <a class="chip btn" id="oldLink" href="/town/">旧页面</a>
+  </div>
+
+  <div id="readonly" class="banner" hidden>
+    <span>另一处正握着你的居民，这里现在只读。</span>
+    <button id="claimBtn" type="button" class="primary">接管</button>
+  </div>
+
+  <div id="toasts"></div>
+
+  <div id="pendingChip" class="chip" hidden><span class="spin"></span><span>正在确认…</span></div>
+
+  <div id="activityChip" class="chip" hidden>
+    <span id="activityText"></span>
+    <button id="leaveActBtn" type="button">停下手上的事</button>
+  </div>
+
+  <div id="bottombar">
+    <div id="destMenu" hidden></div>
+    <div id="actions"></div>
+    <div id="controls">
+      <button id="stopBtn" type="button" class="danger" disabled>停下</button>
+      <button id="homeBtn" type="button">回家</button>
+      <button id="destBtn" type="button">地点</button>
+    </div>
+  </div>
+
+  <div id="panel" class="overlay">
+    <div class="card">
+      <h1>栖灯镇</h1>
+      <p id="panelText" class="sub"></p>
+      <div id="panelLoading" class="progress" hidden><div id="progressBar"></div></div>
+      <form id="loginForm" hidden autocomplete="off">
+        <label id="loginLabel" for="nameInput">取一个名字</label>
+        <input id="nameInput" type="text" maxlength="20" placeholder="你的名字" autocomplete="off" spellcheck="false">
+        <p id="loginError" class="err" hidden></p>
+        <button type="submit" class="primary" id="loginBtn">进入</button>
+      </form>
+      <button id="enterBtn" type="button" class="primary big" hidden>进入小镇</button>
+      <button id="retryBtn" type="button" class="primary" hidden>重试</button>
+      <a id="panelLink" href="/town/" hidden>去旧页面</a>
+    </div>
+  </div>
+</div>
+
+<script src="$GODOT_URL"></script>
+<script src="hud.js"></script>
+<script src="boot.js"></script>
+</body>
+</html>
