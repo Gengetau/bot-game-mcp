@@ -15,13 +15,13 @@ import { GameError, badRequest, forbidden, invalidState, notFound } from './erro
 import type { AssetStore } from './assets.js';
 import type { GameRegistry, GameDefinition } from './registry.js';
 import { CryptoRng, pick, shortCode, shuffle, type Rng } from './rng.js';
+import { gateOpen, normalizeActionInput, phaseHeaderOf, pumpGame, todoOf, type TodoView } from './runner.js';
+export type { TodoView } from './runner.js';
 import type { ClaimRecord, PersistedState, StateStore } from './store.js';
 import {
   extractCqAts,
   formatDuration,
   normalizeText,
-  parseIntLoose,
-  resolveSeat,
   sanitizeName,
   sanitizeUserText,
   cqToSpeech,
@@ -38,7 +38,6 @@ import type {
   LobbyEntry,
   LogEntry,
   PendingRequest,
-  PhaseState,
   Player,
   RefereeDraw,
   Seat,
@@ -116,13 +115,6 @@ export interface EventView {
   private?: true;
 }
 
-export interface TodoView {
-  prompt: string;
-  kind: 'speech' | 'action';
-  actions: PendingRequest['actions'];
-  seconds_left: number | null;
-}
-
 export interface RefereeStepResult {
   game_id: string;
   group_id: string;
@@ -157,7 +149,6 @@ export interface RelayResult {
 
 type Waiter = () => void;
 
-const MAX_PUMP = 200;
 /** 观众席：每条最多几个字、每人每个时间窗最多几条、每局最多留多少条 */
 const SPECTATOR_MAX_CHARS = 200;
 const SPECTATOR_WINDOW_MS = 30_000;
@@ -221,7 +212,8 @@ export class GameManager {
   }
 
   private restore(state: PersistedState): void {
-    for (const g of state.games) this.games.set(g.id, g);
+    // 嵌入持续世界的小游戏只归世界服务读写：就算存档里混进了这种记录，普通 Manager 也不接手
+    for (const g of state.games) if (!g.embed) this.games.set(g.id, g);
     for (const c of state.claims ?? []) this.claims.set(c.id, c);
   }
 
@@ -852,55 +844,12 @@ export class GameManager {
 
   // ═══════════════════════════ 推进循环 ═══════════════════════════
 
-  private gateOpen(rec: GameRecord, ph: PhaseState): boolean {
-    if (rec.autoReferee) return true;
-    const cursor = rec.referee?.cursor ?? 0;
-    if (cursor >= ph.gateSeq) return true;
-    // 网页舞台的群镜像不门控：只等还没交付的门控消息
-    return !rec.outbox.some((d) => d.seq > cursor && d.seq <= ph.gateSeq && !d.noGate);
-  }
-
   /**
    * 推进：开放已到达的阶段、结算已完成的阶段；processTimeouts 时还会处理超时（托管）。
-   * 返回是否有变化。
+   * 逻辑在 runner.ts（持续世界的小游戏用同一套），这里只是替普通对局调用它。
    */
   private pump(rec: GameRecord, inst: BaseGame, processTimeouts: boolean): boolean {
-    let changed = false;
-    for (let i = 0; i < MAX_PUMP; i++) {
-      const ph = rec.phase;
-      if (rec.status !== 'running' || !ph) break;
-      if (ph.gateSeq === -1) ph.gateSeq = rec.outboxSeq;
-      const now = this.now();
-      if (ph.openedAt === null) {
-        if (!this.gateOpen(rec, ph)) break;
-        ph.openedAt = now;
-        ph.deadline = now + ph.timeoutMs;
-        changed = true;
-      }
-      if (inst.isPhaseComplete()) {
-        if (ph.minDurationMs > 0 && now < ph.openedAt + ph.minDurationMs) break;
-        const before = ph.id;
-        inst.advance();
-        changed = true;
-        if (rec.status === 'running' && rec.phase?.id === before && inst.isPhaseComplete()) {
-          throw new Error(`[${rec.type}] advance() 未推进阶段 ${ph.key}`);
-        }
-        continue;
-      }
-      if (processTimeouts && ph.deadline !== null && now >= ph.deadline) {
-        inst.onTimeout();
-        changed = true;
-        if (rec.phase === ph && !inst.isPhaseComplete()) {
-          // onTimeout 未能补齐所有待办（不应发生），强制标记
-          for (const r of Object.values(ph.pending)) r.done = true;
-        }
-        continue;
-      }
-      if (processTimeouts && inst.remindPending()) changed = true;
-      break;
-    }
-    if (rec.phase && rec.phase.gateSeq === -1) rec.phase.gateSeq = rec.outboxSeq;
-    return changed;
+    return pumpGame(rec, inst, this.now, processTimeouts);
   }
 
   /** 后台计时：自动主持的对局处理超时；清理过期大厅与长期无人推进的对局。 */
@@ -970,39 +919,7 @@ export class GameManager {
   // ═══════════════════════════ 玩家 ═══════════════════════════
 
   private normalizeInput(rec: GameRecord, raw: ActionInput & Record<string, unknown>): ActionInput {
-    const action = String(raw.action ?? '').trim();
-    if (!action) throw badRequest('需要 action。');
-    const out: ActionInput = { action };
-    const toInt = (v: unknown): number | undefined => {
-      if (v === undefined || v === null || v === '') return undefined;
-      if (typeof v === 'number' && Number.isFinite(v)) return Math.trunc(v);
-      const n = parseIntLoose(stripTrailing(String(v)).replace(/号$/u, ''));
-      if (n === null) throw badRequest(`无法识别的数字：${String(v)}`);
-      return n;
-    };
-    const rawTarget: unknown = raw.target;
-    if (rawTarget !== undefined && rawTarget !== null && rawTarget !== '') {
-      if (typeof rawTarget === 'number') out.target = Math.trunc(rawTarget);
-      else {
-        const seat = resolveSeat(String(rawTarget), rec.players);
-        if (seat === null) throw badRequest(`无法识别的目标：${String(rawTarget)}（请填座位号数字）`);
-        out.target = seat;
-      }
-    }
-    const q = toInt(raw.quantity);
-    if (q !== undefined) out.quantity = q;
-    const f = toInt(raw.face);
-    if (f !== undefined) out.face = f;
-    const num = toInt(raw.number);
-    if (num !== undefined) out.number = num;
-    if (typeof raw.text === 'string') out.text = sanitizeUserText(raw.text);
-    if (typeof raw.card === 'string') out.card = sanitizeUserText(raw.card).slice(0, 40);
-    if (typeof raw.color === 'string') out.color = sanitizeUserText(raw.color).slice(0, 20);
-    if (raw.call !== undefined && raw.call !== null) {
-      if (typeof raw.call !== 'boolean') throw badRequest('call 必须是 true 或 false。');
-      out.call = raw.call;
-    }
-    return out;
+    return normalizeActionInput(rec, raw);
   }
 
   /** bot 玩家执行动作。 */
@@ -1047,36 +964,13 @@ export class GameManager {
   }
 
   private todoFor(rec: GameRecord, inst: BaseGame, seat: Seat): TodoView | null {
-    const ph = rec.phase;
-    if (rec.status !== 'running' || !ph || ph.openedAt === null) return null;
-    const req = ph.pending[String(seat)];
-    if (!req || req.done) return null;
     void inst;
-    return {
-      prompt: req.prompt,
-      kind: req.kind,
-      actions: req.actions,
-      seconds_left: ph.deadline === null ? null : Math.max(0, Math.round((ph.deadline - this.now()) / 1000)),
-    };
+    return todoOf(rec, seat, this.now());
   }
 
   phaseHeader(rec: GameRecord, inst?: BaseGame) {
-    const ph = rec.phase;
-    if (!ph) return null;
     void inst;
-    return {
-      key: ph.key,
-      title: ph.title,
-      round: ph.round,
-      open: ph.openedAt !== null,
-      seconds_left: ph.deadline === null ? null : Math.max(0, Math.round((ph.deadline - this.now()) / 1000)),
-      waiting_for: ph.secret
-        ? '（秘密阶段，不公开等待对象）'
-        : Object.values(ph.pending)
-            .filter((r) => !r.done)
-            .map((r) => `${r.seat}号`)
-            .join('、') || '无',
-    };
+    return phaseHeaderOf(rec, this.now());
   }
 
   /** 正常结束（ended）后完整复盘对所有人公开；中止的对局不公开私密记录，防止「中止后偷看」。 */
@@ -1563,7 +1457,7 @@ export class GameManager {
     if (rec.status !== 'running') return true;
     const ph = rec.phase;
     if (!ph) return true;
-    if (ph.openedAt === null) return this.gateOpen(rec, ph);
+    if (ph.openedAt === null) return gateOpen(rec, ph);
     if (ph.deadline !== null && now >= ph.deadline) return true;
     const inst = this.inst(rec);
     if (inst.isPhaseComplete() && now >= ph.openedAt + ph.minDurationMs) return true;

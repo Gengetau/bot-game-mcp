@@ -117,15 +117,75 @@ export interface RefereeOptions {
   wheelImage?: boolean;
   /** 转盘图的字体：GNU Unifont .hex / .hex.gz 路径；不给则中文画成方块 */
   wheelFont?: string;
+  /**
+   * 栖灯镇（持续世界）接入，默认不开：不给这一项，裁判的行为和以前完全一样。
+   * 开了之后：真人在群里或私聊发「小镇」之类的关键词，裁判用 town_issue_ticket 给他本人签发一次性登录链接，
+   * 只私聊发给他；还可以（outbox）把小镇的稀疏公告转发到群里。
+   */
+  town?: TownOptions;
   /** 外部停止信号 */
   signal?: AbortSignal;
   log?: (line: string) => void;
 }
 
+/** 栖灯镇接入的配置。给了这个对象就算开启（除非 enabled 为 false）。 */
+export interface TownOptions {
+  enabled?: boolean;
+  /** 触发登录链接的关键词（整条消息就是这个词才算，去掉 @、指令前缀和句尾标点）。默认「小镇」「进小镇」「栖灯镇」 */
+  keywords?: string[];
+  /** 同一个人两次领取登录链接的最短间隔（秒），默认 60 */
+  ticketCooldownSeconds?: number;
+  /** 引擎没开小镇（没有 town_issue_ticket 工具）时：reply = 回一句「小镇没开」（默认），silent = 不响应 */
+  whenOff?: 'reply' | 'silent';
+  /** 私聊领取时要求对方在本群里（管理员不限），默认 true：免得陌生人私聊机器人就能拿到登录链接 */
+  requireGroupMember?: boolean;
+  /** 公告转发（town_outbox → 群），默认关 */
+  outbox?: TownOutboxOptions;
+}
+
+export interface TownOutboxOptions {
+  /** 给了 outbox 对象就算开启，除非 enabled 为 false */
+  enabled?: boolean;
+  /** 发到哪个群，默认 groupId */
+  groupId?: string;
+  /** 每隔多少秒取一次待发公告，默认 300（很稀疏：公告本来一天只有几条） */
+  intervalSeconds?: number;
+  /** 每次最多取几条（1~20），默认 5 */
+  limit?: number;
+}
+
+export const DEFAULT_TOWN_KEYWORDS = ['小镇', '进小镇', '栖灯镇'];
+
+/**
+ * 这条消息（已去掉 CQ 码的纯文本）是不是「要小镇登录链接」的指令。
+ * 整条消息必须就是关键词：可以带指令前缀（/桌游 小镇）、前导斜杠和句尾标点，其余内容一律不算，
+ * 所以「小镇好玩吗」「小镇 12345」都不会触发——号码也从来不从消息文字里取，只认消息事件里的发送者。
+ */
+export function isTownCommand(plain: string, keywords: readonly string[] = DEFAULT_TOWN_KEYWORDS, prefix = '/桌游'): boolean {
+  const norm = (s: string) =>
+    s
+      .trim()
+      .replace(/^[/／]+/u, '')
+      .replace(/[\s。.!！?？~～、，,]+$/u, '')
+      .trim()
+      .toLowerCase();
+  let t = plain.trim();
+  if (prefix && t.startsWith(prefix)) t = t.slice(prefix.length);
+  const body = norm(t);
+  return body.length > 0 && keywords.some((k) => norm(k) === body);
+}
+
 type Log = (line: string) => void;
 type Json = Record<string, any>;
 
-export class ToolError extends Error {}
+export class ToolError extends Error {
+  /** 引擎给的错误码（如 FORBIDDEN）；调用的工具不存在时是 TOOL_NOT_FOUND */
+  readonly code: string | undefined;
+  constructor(message: string, code?: string) {
+    super(message);
+    this.code = code;
+  }
+}
 export class TransportError extends Error {}
 
 const errMsg = (e: unknown) => (e instanceof Error ? e.message : String(e));
@@ -243,13 +303,17 @@ class Engine {
     } catch (e) {
       if (ac.signal.aborted) throw new TransportError(`${name}：已中断`);
       if (e instanceof McpError && e.code !== ErrorCode.ConnectionClosed && e.code !== ErrorCode.RequestTimeout) {
-        throw new ToolError(`${name}：${errMsg(e)}`);
+        throw new ToolError(`${name}：${errMsg(e)}`, /not found|unknown tool|未找到/i.test(errMsg(e)) ? 'TOOL_NOT_FOUND' : undefined);
       }
       await this.drop();
       throw new TransportError(`${name}：${errMsg(e)}`);
     }
     const text: string = res?.content?.[0]?.text ?? '';
-    if (res?.isError) throw new ToolError(text.replace(/^❌\s*/, '').split('\n')[0] ?? text);
+    if (res?.isError) {
+      const code = text.match(/\(code: ([A-Z_]+)\)/)?.[1];
+      // 引擎没开某组工具时，SDK 有的版本把「工具不存在」当普通错误结果返回
+      throw new ToolError(text.replace(/^❌\s*/, '').split('\n')[0] ?? text, code ?? (/not found|unknown tool/i.test(text.slice(0, 200)) ? 'TOOL_NOT_FOUND' : undefined));
+    }
     try {
       return JSON.parse(text);
     } catch {
@@ -494,8 +558,20 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
   const keyIssuer = (opts.keyIssuer ?? '').trim();
   const publicUrl = opts.publicUrl ?? opts.url;
   const maxKeys = Math.max(1, opts.maxKeysPerOwner ?? 3);
+  // 栖灯镇接入（不配置则整块不生效）。跟随模式不响应任何指令，所以也不领取登录链接
+  const townOn = !follower && Boolean(opts.town) && opts.town?.enabled !== false;
+  const town = opts.town ?? {};
+  const townKeywords = town.keywords?.length ? town.keywords : DEFAULT_TOWN_KEYWORDS;
+  const townCooldownMs = Math.max(0, town.ticketCooldownSeconds ?? 60) * 1000;
+  const townWhenOff = town.whenOff ?? 'reply';
+  const townNeedMember = town.requireGroupMember ?? true;
+  const outboxCfg = townOn && town.outbox && town.outbox.enabled !== false ? town.outbox : null;
+  /** 每个人最近一次领取登录链接的时间（限频）和是否已经提示过「刚发过」 */
+  const townAsked = new Map<string, { at: number; noticed: boolean }>();
+  const isTownText = (plain: string) => townOn && isTownCommand(plain, townKeywords, prefix);
 
   let stopped = false;
+  let outboxDoneRef: Promise<void> = Promise.resolve();
   // 放在对象里：闭包里会改它们，用裸 let 的话 TypeScript 的类型收窄会出错
   const st: {
     game: CurrentGame | null;
@@ -671,7 +747,8 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
     (mainPlays ? `\n${main.name} 也会报名当玩家；抽不出别的裁判时它坐庄。` : '') +
     (autoStart > 0 ? `\n报名够人后 ${autoStart} 秒没有新人加入就自动开局；开房时写人数（如「${prefix} 狼人杀 7」）则凑满立刻开局。` : '') +
     (lobbyTimeout > 0 ? `\n人数不够时 ${fmtDuration(lobbyTimeout)} 没有新人报名，房间自动取消。` : '') +
-    (keyIssuer ? `\n想接入自己的 bot：私聊 ${voiceOf(keyIssuer)?.name ?? keyIssuer} 发「申请密钥 <bot的QQ号> <bot的昵称>」。` : '');
+    (keyIssuer ? `\n想接入自己的 bot：私聊 ${voiceOf(keyIssuer)?.name ?? keyIssuer} 发「申请密钥 <bot的QQ号> <bot的昵称>」。` : '') +
+    (townOn ? `\n想进栖灯镇：发「${townKeywords[0]}」，登录链接会私聊给你（只能用一次，别转给别人）。` : '');
 
   function fmtDuration(sec: number): string {
     if (sec % 60 === 0) return `${sec / 60} 分钟`;
@@ -1139,6 +1216,163 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
     if (r?.recognized) log(`[referee] 私聊指令 ${uid}：${r.accepted ? '已接受' : '未生效'}`);
   }
 
+  // ───────── 栖灯镇：登录链接与公告 ─────────
+
+  /**
+   * 严格版私聊：好友发不出去就带群号走临时会话，仍然失败返回 false。
+   * 登录链接是凭证，不能像身份牌那样存起来以后补发（等发出去时票据早过期了），所以不进 undelivered。
+   */
+  async function sendPrivateStrict(v: Voice, userId: string, text: string): Promise<boolean> {
+    let ok = false;
+    await enqueue(async () => {
+      const via = sendable(v);
+      const message = [{ type: 'text', data: { text } }];
+      try {
+        try {
+          await via.onebot.call('send_private_msg', { user_id: Number(userId), message });
+        } catch {
+          await via.onebot.call('send_private_msg', { user_id: Number(userId), group_id: Number(opts.groupId), message });
+        }
+        ok = true;
+      } catch (e) {
+        // 只记失败原因，不记消息内容（里面有登录链接）
+        log(`[town] 私聊 ${userId} 发送失败：${errMsg(e)}`);
+      }
+      await pause(sendGap);
+    });
+    return ok;
+  }
+
+  async function sendGroupStrict(v: Voice, groupId: string, message: unknown): Promise<boolean> {
+    let ok = false;
+    await enqueue(async () => {
+      try {
+        await sendable(v).onebot.call('send_group_msg', { group_id: Number(groupId), message });
+        ok = true;
+      } catch (e) {
+        log(`[town] 群 ${groupId} 公告发送失败：${errMsg(e)}`);
+      }
+      await pause(sendGap);
+    });
+    return ok;
+  }
+
+  /**
+   * 真人要小镇登录链接。号码和昵称只来自这条消息事件（uid / nick），从不读消息文字里的号码；
+   * 链接只私聊给本人，群里只回一句提示。
+   */
+  async function handleTown(v: Voice, uid: string, nick: string, channel: 'group' | 'private'): Promise<void> {
+    const reply = (t: string): Promise<void> => (channel === 'group' ? sayTo(uid, t) : sendPrivateAs(v, uid, t));
+    const now = Date.now();
+    const last = townAsked.get(uid);
+    if (last && now - last.at < townCooldownMs) {
+      if (!last.noticed) {
+        last.noticed = true;
+        await reply(`刚给你发过登录链接了，${Math.max(1, Math.ceil((townCooldownMs - (now - last.at)) / 1000))} 秒后再来要。`);
+      }
+      return;
+    }
+    if (townAsked.size > 2000) for (const [k, x] of townAsked) if (now - x.at >= townCooldownMs) townAsked.delete(k);
+    townAsked.set(uid, { at: now, noticed: false });
+    try {
+      if (channel === 'private' && townNeedMember && !admins.has(uid) && !(await inGroup(v, uid))) {
+        return void (await reply(`你不在群 ${opts.groupId} 里，不能领取小镇的登录链接。`));
+      }
+      const name = sanitizeNick(nick) || uid;
+      const r = await main.engine.call('town_issue_ticket', { user_id: uid, name });
+      const link = String(r.url ?? r.ticket ?? '');
+      if (!link) throw new ToolError('引擎没有返回登录链接');
+      const body = r.url
+        ? `🏮 栖灯镇登录链接（几分钟内有效，只能用一次，别转发给别人）：\n${link}`
+        : `🏮 栖灯镇登录票据（几分钟内有效，只能用一次，别转发给别人；服务器没配置小镇网址，到小镇页面上粘贴这串票据登录）：\n${link}`;
+      const sent = await sendPrivateStrict(channel === 'private' ? v : main, uid, body);
+      if (sent) {
+        log(`[town] 已给 ${nick}(${uid}) 私聊登录链接`);
+        if (channel === 'group') await sayTo(uid, '登录链接已私聊给你，几分钟内有效、只能用一次。');
+      } else {
+        // 没送达：缩短冷却，让对方加好友 / 发起临时会话之后能很快再来要
+        townAsked.set(uid, { at: now - Math.max(0, townCooldownMs - 10_000), noticed: false });
+        if (channel === 'group') {
+          await sayTo(uid, '私聊没发过去：请先加我为好友，或点我头像发起一次临时会话、随便发一句话，再发一次「' + townKeywords[0] + '」。链接不会发在群里。');
+        }
+      }
+    } catch (e) {
+      if (e instanceof ToolError && e.code === 'TOOL_NOT_FOUND') {
+        townAsked.delete(uid);
+        log('[town] 引擎没有开小镇（没有 town_issue_ticket 工具）');
+        if (townWhenOff === 'reply') await reply('小镇没开。');
+      } else if (e instanceof ToolError) {
+        log(`[town] 签发登录链接被引擎拒绝（${e.code ?? '?'}）：${e.message}`);
+        await reply(`⚠️ ${e.message.replace(/^town_issue_ticket：/, '')}`);
+      } else {
+        townAsked.delete(uid);
+        log(`[town] 签发登录链接失败：${errMsg(e)}`);
+        await reply('引擎暂时联系不上，稍后再试。');
+      }
+    }
+  }
+
+  /** 小镇公告转发：取待发公告 → 发到群 → 发成功才确认（至少一次：发送失败或确认失败都会下次再来）。 */
+  const townCtl: { wake: (() => void) | null } = { wake: null };
+  const townSleep = (ms: number) =>
+    new Promise<void>((res) => {
+      const t = setTimeout(() => {
+        townCtl.wake = null;
+        res();
+      }, ms);
+      townCtl.wake = () => {
+        clearTimeout(t);
+        townCtl.wake = null;
+        res();
+      };
+    });
+  const formatAnnouncement = (item: Json): string => {
+    const p = (item.payload ?? {}) as Json;
+    const clean = (x: unknown) => String(x ?? '').replace(/[^\S\n]+/g, ' ').replace(/\p{C}/gu, (c) => (c === '\n' ? c : '')).trim();
+    const title = clean(p.title);
+    const text = clean(p.text);
+    return `${title ? `🏮 ${title}\n` : '🏮 '}${text}`.slice(0, 800);
+  };
+  async function outboxLoop(cfg: TownOutboxOptions): Promise<void> {
+    const groupId = cfg.groupId ?? opts.groupId;
+    const everyMs = Math.max(0.05, cfg.intervalSeconds ?? 300) * 1000;
+    const limit = Math.max(1, Math.min(20, cfg.limit ?? 5));
+    /** 已经发到群里、但确认还没成功的公告：重试确认，不重发 */
+    const unacked = new Set<number>();
+    let lastErr = '';
+    while (!stopped) {
+      try {
+        if (unacked.size) {
+          await main.engine.call('town_outbox', { ack: [...unacked], limit: 1 });
+          unacked.clear();
+        }
+        const r = await main.engine.call('town_outbox', { limit });
+        for (const item of (r.pending ?? []) as Json[]) {
+          const id = Number(item.id);
+          if (unacked.has(id)) continue;
+          if (stopped) break;
+          if (!(await sendGroupStrict(main, groupId, [{ type: 'text', data: { text: formatAnnouncement(item) } }]))) break; // 保持顺序：这条没发出去，后面的也等下次
+          unacked.add(id);
+        }
+        if (unacked.size) {
+          await main.engine.call('town_outbox', { ack: [...unacked], limit: 1 });
+          unacked.clear();
+        }
+        lastErr = '';
+      } catch (e) {
+        if (stopped) break;
+        if (e instanceof ToolError && e.code === 'TOOL_NOT_FOUND') {
+          log('[town] 引擎没有开小镇（没有 town_outbox 工具），公告转发停止');
+          return;
+        }
+        const msg = errMsg(e);
+        if (msg !== lastErr) log(`[town] 公告转发出错（下个周期重试）：${msg}`);
+        lastErr = msg;
+      }
+      if (!stopped) await townSleep(everyMs);
+    }
+  }
+
   // 收到的消息按先后顺序处理，避免乱序转交
   let inbound: Promise<void> = Promise.resolve();
   function onEvent(v: Voice, ev: Json): void {
@@ -1153,7 +1387,7 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
     if (ev.message_type === 'group' && String(ev.group_id) === opts.groupId && st.active && web.ids.has(uid) && !admins.has(uid)) {
       // 网页舞台：参赛 bot 在群里说话（可能把私密信息说给别的参赛 bot 听）→ 撤回 + 提醒。指令和镜像发言不算
       const plain = cqToPlain(segmentsToCq(ev.message ?? ev.raw_message ?? ''));
-      if (!plain.startsWith(prefix) && !isMirrorEcho(uid, plain)) {
+      if (!plain.startsWith(prefix) && !isMirrorEcho(uid, plain) && !isTownText(plain)) {
         if (dedupe(`${ev.group_id}:${ev.message_id ?? `${uid}:${Date.now()}`}`)) return;
         const via = st.active;
         const job = () => punishWebTalk(via, uid, nick, ev.message_id);
@@ -1185,7 +1419,8 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
       !admins.has(uid) &&
       !spect.ids.has(uid) &&
       !myIds().has(uid) &&
-      !cqToPlain(cq).startsWith(prefix)
+      !cqToPlain(cq).startsWith(prefix) &&
+      !isTownText(cqToPlain(cq))
     ) {
       if (dedupe(`${ev.group_id}:${ev.message_id ?? `${uid}:${Date.now()}`}`)) return;
       const via = st.active;
@@ -1196,8 +1431,20 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
     if (ev.message_type === 'private' && undelivered.has(uid)) flushUndelivered(uid);
     let job: () => Promise<void>;
     const keyBody = keyIssuer && ev.message_type === 'private' && v.id === keyIssuer && !myIds().has(uid) ? stripPrefix(cqToPlain(cq)) : null;
+    const townAsk =
+      townOn &&
+      /^\d{1,20}$/.test(uid) &&
+      !bots.has(uid) &&
+      !myIds().has(uid) &&
+      ((ev.message_type === 'group' && String(ev.group_id) === opts.groupId) || ev.message_type === 'private') &&
+      isTownText(cqToPlain(cq));
     if (keyBody !== null && KEY_CMD_RE.test(keyBody)) {
       job = () => handleKeyCommand(v, uid, nick, keyBody);
+    } else if (townAsk) {
+      // 号码只来自消息事件的 user_id（上面的 uid），昵称来自事件里的群名片 / 昵称
+      if (ev.message_type === 'group' && dedupe(`${ev.group_id}:${ev.message_id ?? `${uid}:${cq}`}`)) return;
+      const channel = ev.message_type === 'group' ? 'group' : 'private';
+      job = () => handleTown(v, uid, nick, channel);
     } else if (bots.has(uid)) {
       // bot 账号的话从不转交；开了 --bot-commands 才认它们的「/桌游」指令（跟随模式不响应任何指令）。
       // 先于「自己的账号」判断：玩家 bot 往往同时是本进程的嗓子账号，它们自己说的话也要能当指令
@@ -1439,6 +1686,7 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
   const stop = () => {
     stopped = true;
     wake?.();
+    townCtl.wake?.();
     for (const v of voices) {
       v.engine.abortAll();
       v.onebot.close();
@@ -1468,6 +1716,8 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
         (voices.length > 1 ? `，嗓子账号：${voices.filter((v) => !v.main).map((v) => `${v.name}(${v.id})`).join('、')}` : ''),
     );
 
+    const outboxDone = outboxCfg ? outboxLoop(outboxCfg).catch((e) => log(`[town] 公告转发退出：${errMsg(e)}`)) : Promise.resolve();
+    outboxDoneRef = outboxDone;
     let recovering = false;
     while (!stopped) {
       try {
@@ -1552,7 +1802,10 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
     }
   } finally {
     opts.signal?.removeEventListener('abort', stop);
+    stopped = true;
+    townCtl.wake?.();
     for (const v of voices) v.onebot.close();
+    await outboxDoneRef;
     await sendChain;
     await Promise.all([...voices.map((v) => v.engine.drop()), adminEngine?.drop()]);
   }

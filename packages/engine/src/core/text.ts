@@ -218,6 +218,8 @@ export function cleanSpeech(text: string, maxLen = 600): string {
 export function sanitizeUserText(input: string): string {
   return String(input ?? '')
     .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, '')
+    // 双向文字的嵌入、覆盖和隔离控制符：能让后面的文字倒着显示，用来伪造名字或打乱程序拼出的消息
+    .replace(/[\u202a-\u202e\u2066-\u2069]/g, '')
     .replace(/\{@/g, '{＠')
     .replace(/\[CQ:/gi, '［CQ:');
 }

@@ -8,7 +8,7 @@
 import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
-import { runReferee, type VoiceSpec } from './index.js';
+import { runReferee, type TownOptions, type VoiceSpec } from './index.js';
 import { VERSION } from './version.js';
 
 const HELP = `bot-game-referee ${VERSION} —— bot-game-mcp 的代码裁判（OneBot v11）
@@ -19,6 +19,8 @@ const HELP = `bot-game-referee ${VERSION} —— bot-game-mcp 的代码裁判（
                    [--prefix /桌游] [--wait 25] [--auto-start 60] [--lobby-timeout 600]
                    [--voices voices.json] [--host-id 标识] [--no-self-in-pool] [--wheel-font unifont.hex.gz] [--no-wheel] [--follower] [--no-night-mute] [--no-spectator-mute]
                    [--key-issuer QQ --issuer-key-file 管理员密钥文件 --public-url https://主机/mcp [--max-keys 3]]
+                   [--town [--town-keywords 小镇,进小镇] [--town-cooldown 60] [--town-silent] [--town-open-private]
+                    [--town-outbox [--town-outbox-group 群号] [--town-outbox-interval 300] [--town-outbox-limit 5]]]
 
   用一个或多个 OneBot v11 账号（正向 WebSocket）把引擎的消息发到群里和私聊里，转交真人消息，响应「/桌游」指令。
   它只用裁判能用的那几个工具，没有任何能影响结果的接口。
@@ -37,9 +39,16 @@ const HELP = `bot-game-referee ${VERSION} —— bot-game-mcp 的代码裁判（
   --key-issuer QQ：这个账号（主账号或嗓子账号）负责发密钥：群成员私聊它「申请密钥 <bot的QQ号> <昵称>」就给那个 bot 发一把，
     「撤销密钥 <QQ号>」作废；已发放的 bot 自动算进 --bots。要配 --issuer-key-file（引擎的管理员密钥）和 --public-url（告诉对方的地址）。
   --issuer-key-file 也用于管理员「/桌游 中止」：有了它，bot 自己开的房、程序自动主持的局也能中止（否则只能中止主账号当房主或裁判的局）。
+  --town：接入栖灯镇（持续世界，引擎要开 town 且本账号在 refereeIds 里）。真人在群里或私聊发关键词（默认「小镇」「进小镇」「栖灯镇」，
+    整条消息就是关键词才算），裁判给他本人签发一次性登录链接，只私聊发给他，群里只回一句提示；私聊发不出去就在群里提示先加好友，不贴链接。
+    号码只取自消息事件，不读消息文字。--town-keywords 自定义关键词；--town-cooldown 同一人两次领取的最短间隔秒数（默认 60）；
+    --town-silent 引擎没开小镇时不回话（默认回「小镇没开」）；--town-open-private 私聊领取不要求对方在群里（默认要求，管理员不限）。
+  --town-outbox：把小镇的稀疏公告（公共活动开场、每日小报）转发到群里（默认关）。发成功才向引擎确认，发送失败下个周期重发（至少一次）。
+    --town-outbox-group 目标群（默认 --group）；--town-outbox-interval 取公告的间隔秒数（默认 300）；--town-outbox-limit 每次最多几条（默认 5）。
 
 环境变量：BOTGAME_URL BOTGAME_KEY BOTGAME_ONEBOT_URL BOTGAME_ONEBOT_TOKEN BOTGAME_GROUP BOTGAME_ADMINS BOTGAME_BOTS
-          BOTGAME_VOICES BOTGAME_HOST_ID BOTGAME_WHEEL_FONT BOTGAME_KEY_ISSUER BOTGAME_ISSUER_KEY BOTGAME_PUBLIC_URL`;
+          BOTGAME_VOICES BOTGAME_HOST_ID BOTGAME_WHEEL_FONT BOTGAME_KEY_ISSUER BOTGAME_ISSUER_KEY BOTGAME_PUBLIC_URL
+          BOTGAME_REFEREE_TOWN=1（等同 --town） BOTGAME_REFEREE_TOWN_OUTBOX=1（等同 --town-outbox）`;
 
 /** --voices 文件：[{ "keyFile": "...", "onebot": "ws://...", "onebotTokenFile": "..." }, …]，路径相对文件所在目录。 */
 function loadVoices(file: string): VoiceSpec[] {
@@ -90,6 +99,15 @@ async function main(argv: string[]): Promise<void> {
       'issuer-key-file': { type: 'string' },
       'public-url': { type: 'string' },
       'max-keys': { type: 'string' },
+      town: { type: 'boolean' },
+      'town-keywords': { type: 'string' },
+      'town-cooldown': { type: 'string' },
+      'town-silent': { type: 'boolean' },
+      'town-open-private': { type: 'boolean' },
+      'town-outbox': { type: 'boolean' },
+      'town-outbox-group': { type: 'string' },
+      'town-outbox-interval': { type: 'string' },
+      'town-outbox-limit': { type: 'string' },
       help: { type: 'boolean', short: 'h' },
       version: { type: 'boolean', short: 'v' },
     },
@@ -109,6 +127,20 @@ async function main(argv: string[]): Promise<void> {
   const list = (s?: string) => (s ?? '').split(',').map((x) => x.trim()).filter(Boolean);
   const voicesFile = str('voices') ?? process.env.BOTGAME_VOICES;
   const voices = voicesFile ? loadVoices(voicesFile) : [];
+  const flag = (v: unknown, env: string) => Boolean(v) || process.env[env] === '1' || process.env[env] === 'true';
+  const townOn = flag(values.town, 'BOTGAME_REFEREE_TOWN');
+  const outboxOn = flag(values['town-outbox'], 'BOTGAME_REFEREE_TOWN_OUTBOX');
+  if (outboxOn && !townOn) throw new Error('--town-outbox 要和 --town 一起用');
+  const num = (k: string) => (str(k) !== undefined ? Number(str(k)) : undefined);
+  const town: TownOptions | undefined = townOn
+    ? {
+        keywords: str('town-keywords') || process.env.BOTGAME_TOWN_KEYWORDS ? list(str('town-keywords') ?? process.env.BOTGAME_TOWN_KEYWORDS) : undefined,
+        ticketCooldownSeconds: num('town-cooldown'),
+        whenOff: values['town-silent'] ? 'silent' : 'reply',
+        requireGroupMember: !values['town-open-private'],
+        ...(outboxOn ? { outbox: { groupId: str('town-outbox-group'), intervalSeconds: num('town-outbox-interval'), limit: num('town-outbox-limit') } } : {}),
+      }
+    : undefined;
   const ac = new AbortController();
   // 兜底：正常收尾超过 10 秒就强制退出，部署时不用 kill -9
   ac.signal.addEventListener(
@@ -150,6 +182,7 @@ async function main(argv: string[]): Promise<void> {
     issuerKey: str('issuer-key-file') ? readFileSync(str('issuer-key-file')!, 'utf8').trim() : process.env.BOTGAME_ISSUER_KEY,
     publicUrl: str('public-url') ?? process.env.BOTGAME_PUBLIC_URL,
     maxKeysPerOwner: str('max-keys') ? Number(str('max-keys')) : undefined,
+    ...(town ? { town } : {}),
     signal: ac.signal,
   });
 }

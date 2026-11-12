@@ -185,6 +185,11 @@ export class NumberBombGame extends BaseGame<NumberBombState, NumberBombOptions>
     this.openTurn();
   }
 
+  /** 淘汰制里出局的人不再轮到（轮转只走存活座位）；一次定胜负的模式里出局即终局。 */
+  override seatFinished(seat: Seat): boolean {
+    return !this.isAlive(seat);
+  }
+
   privateView(_seat: Seat): Record<string, unknown> {
     return { identity: '普通玩家', note: '数字炸弹没有私密信息：没有任何人（包括裁判）知道炸弹数字。' };
   }
@@ -238,5 +243,6 @@ export const numberBombDefinition: GameDefinition<NumberBombOptions> = {
     mode: 'single=一次爆炸结束（默认）；elimination=淘汰制直到剩一人',
     turn_timeout_s: '每次猜数限时（秒，默认 60）',
   },
+  embeddable: true,
   create: (rec, env) => new NumberBombGame(rec, env),
 };

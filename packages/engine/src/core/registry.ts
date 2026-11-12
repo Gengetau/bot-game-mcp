@@ -26,6 +26,12 @@ export interface GameDefinition<O = any> {
    * 支持的舞台（默认只有 group）。支持 web 的游戏要在选项里提供 stage 字段，开房时选。
    */
   stages?: readonly Stage[];
+  /**
+   * 能力声明：可以作为持续世界（栖灯镇）公共场所里的小游戏。
+   * 只有通过接入检查的游戏才写：没有自由发言通道、公开规则信息与秘密状态分得开、有超时托管路径。
+   * 这是内部活动创建路径的授权依据，和 stages（外部开房能选的舞台）互不影响。
+   */
+  embeddable?: boolean;
   /** 选项 schema（zod object，所有字段都应有默认值） */
   optionsSchema: z.ZodType<O>;
   /** 选项说明：字段名 → 中文说明 */
