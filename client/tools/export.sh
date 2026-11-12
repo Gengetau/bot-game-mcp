@@ -21,6 +21,8 @@ fi
 echo "[export] Godot: $("$GODOT" --version)"
 rm -rf "$OUT"
 mkdir -p "$OUT"
+# build/ 在 Godot 工程目录里：不挡住的话，上一次导出留下的 build/web/*.png 会被当成工程资源导入，再打进这一次的资源包。
+: >"$PROJ/build/.gdignore"
 cleanup() { rm -rf "$OUT"; }
 trap cleanup EXIT
 
@@ -85,9 +87,13 @@ for f in "$OUT"/*; do
   [ -f "$f.br" ] && br="$(wc -c <"$f.br" | tr -d ' ')"
   printf '%-34s %12s %12s %12s\n' "$b" "$raw" "$gz" "$br"
 done
-# 换到位：旧目录先挪开再换新的，最后删旧的（两步 mv 之间的窗口极短，且都在同一个文件系统内）
+# 换到位：旧目录先挪开再换新的，最后删旧的（都在同一个文件系统内）。
+# 两步 mv 之间有一瞬间 build/web 不存在；在那里被打断（出错、Ctrl-C）时把旧的挪回去，不会留下半份或空目录。
 rm -rf "$FINAL.old"
-[ -d "$FINAL" ] && mv "$FINAL" "$FINAL.old"
+swap_back() { if [ ! -d "$FINAL" ] && [ -d "$FINAL.old" ]; then mv "$FINAL.old" "$FINAL"; fi; cleanup; }
+trap swap_back EXIT
+if [ -d "$FINAL" ]; then mv "$FINAL" "$FINAL.old"; fi
 mv "$OUT" "$FINAL"
+trap - EXIT
 rm -rf "$FINAL.old"
 echo "[export] 完成：$FINAL"

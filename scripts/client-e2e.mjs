@@ -6,6 +6,7 @@
  *   npm run client:e2e      # 起引擎（子进程、开发登录、临时库、随机端口）+ 两个浏览器上下文 + 一个 AI 居民
  *
  * 选项：--no-shots 不写截图；--only=3,4 只跑指定步骤（步骤之间有先后依赖，只用于调试）；--keep-engine-log 失败时不删临时目录。
+ * 反向验证：E2E_AI_NO_RENEW=1 npx tsx scripts/client-e2e.mjs --only=1,8 --no-shots（步骤 8 里让 AI 的端口没有续租方法，运行器不续租，这一步应当失败）。
  * 退出码：全部通过为 0；任何步骤失败、控制台错误、页面错误、CSP 违规、请求失败都算失败（非零）。
  * 结果写到 client/demo/results.json，截图写到 client/demo/NN-说明.png（手机 deviceScaleFactor 2，桌面 1）。
  * 只有全部通过（退出码 0）且没有 --only 时才覆盖这两样；失败的运行把结果写到 client/demo/results.failed.json（已 gitignore），
@@ -33,6 +34,7 @@ const DEMO_DIR = join(ROOT, 'client', 'demo');
 const ARGS = process.argv.slice(2);
 const NO_SHOTS = ARGS.includes('--no-shots');
 const KEEP = ARGS.includes('--keep-engine-log');
+const AI_NO_RENEW = process.env.E2E_AI_NO_RENEW === '1'; // 反向验证用：步骤 8 里让端口没有 renewNavigation，运行器就不续租，这一步应当失败
 const ONLY = (ARGS.find((a) => a.startsWith('--only=')) ?? '').slice(7).split(',').filter(Boolean).map(Number);
 const T_POS = 0.6; // 页面里的位置 与 服务器折线现算位置 的容差（米）
 // 页面的服务器时间估计与服务器真实时间的容差（毫秒）。页面的 serverNow 一秒内只在 Godot 帧里写进 __town（软件渲染约 3~7 帧每秒，
@@ -333,6 +335,8 @@ async function login(p, name, { shotEnter } = {}) {
   await p.page.waitForSelector('#enterBtn:not([hidden])', { timeout: 120_000 });
   const tButton = Date.now() - t0;
   if (shotEnter) await shot(p.page, shotEnter);
+  // 点「进入小镇」之前：Godot 建出来的 AudioContext 的状态（TownHost.audioState 只返回状态字符串，不暴露对象）
+  const audioBefore = await p.page.evaluate(() => window.TownHost.audioState());
   const t1 = Date.now();
   await p.page.click('#enterBtn');
   await p.page.waitForSelector('#nameInput', { state: 'visible', timeout: 30_000 });
@@ -344,7 +348,15 @@ async function login(p, name, { shotEnter } = {}) {
     { timeout: 60_000 },
   );
   p.name = name;
-  return { toButtonMs: tButton, toPlayingMs: Date.now() - t1 };
+  const toPlayingMs = Date.now() - t1;
+  // 点进入是真实的用户手势（Playwright 发的是受信任输入），之后至少有一个 AudioContext 应处于 running（最多等 5 秒，等 resume 的 Promise 落定）
+  let audioAfter = await p.page.evaluate(() => window.TownHost.audioState());
+  const ta = Date.now();
+  while (!audioAfter.includes('running') && Date.now() - ta < 5000) {
+    await sleep(200);
+    audioAfter = await p.page.evaluate(() => window.TownHost.audioState());
+  }
+  return { toButtonMs: tButton, toPlayingMs, audioBefore, audioAfter };
 }
 
 const snap = (page) =>
@@ -484,6 +496,7 @@ const seen = async (page, id) => (await snap(page)).actors.find((a) => a.id === 
 
 let A, B, A2, A3;
 let aiClient = null;
+let runner = null;
 let aiId = null;
 const metrics = { versions: {}, bundle: [], load: {} };
 
@@ -492,8 +505,8 @@ async function main() {
   await startEngine();
   console.log(`引擎已就绪：${BASE}（开发登录、keys 认证、临时库）`);
 
-  const chromiumBrowserA = await chromium.launch();
-  const chromiumBrowserB = await chromium.launch();
+  const chromiumBrowserA = await chromium.launch({ handleSIGINT: false, handleSIGTERM: false, handleSIGHUP: false }); // 信号交给本脚本自己的处理函数（Playwright 默认处理会抢先 process.exit，临时目录就删不掉）
+  const chromiumBrowserB = await chromium.launch({ handleSIGINT: false, handleSIGTERM: false, handleSIGHUP: false }); // 信号交给本脚本自己的处理函数（Playwright 默认处理会抢先 process.exit，临时目录就删不掉）
   browsers.push(chromiumBrowserA, chromiumBrowserB);
   metrics.versions.chromium = chromiumBrowserA.version();
   metrics.versions.node = process.version;
@@ -519,6 +532,10 @@ async function main() {
     const [la, lb] = await Promise.all([login(A, nameA, { shotEnter: '01-desktop-enter' }), login(B, nameB)]);
     metrics.load.desktop = la;
     metrics.load.mobile = lb;
+    metrics.audio = { desktop: { before: la.audioBefore, after: la.audioAfter }, mobile: { before: lb.audioBefore, after: lb.audioAfter } };
+    note(`音频：点「进入小镇」之前 AudioContext 状态 桌面 [${la.audioBefore}]，手机 [${lb.audioBefore}]；点之后 桌面 [${la.audioAfter}]，手机 [${lb.audioAfter}]`);
+    check(la.audioAfter.includes('running'), `点「进入小镇」之后桌面页至少应有一个 AudioContext 处于 running，实际 [${la.audioAfter}]`);
+    check(lb.audioAfter.includes('running'), `点「进入小镇」之后手机页至少应有一个 AudioContext 处于 running，实际 [${lb.audioAfter}]`);
     note(`桌面：到「进入」按钮 ${la.toButtonMs} ms，点进入到可操作 ${la.toPlayingMs} ms；手机：${lb.toButtonMs} ms / ${lb.toPlayingMs} ms（两个浏览器同时在软件渲染，仅供参考）`);
     const sa = await snap(A.page);
     const sb = await snap(B.page);
@@ -810,43 +827,88 @@ async function main() {
   });
 
   // ── 8 ──
-  await step(8, 'AI 居民（agent-kit 的 TownClient）navigate 到檐下书屋，两个页面都看见它走过去', async () => {
-    const { TownClient } = await import(new URL('../packages/agent-kit/src/index.ts', import.meta.url).href);
+  await step(8, 'AI 居民（agent-kit 的 ResidentRunner，决策函数写死）navigate 到茶馆：路比导航租约长，续租由运行器自动做，两个页面都看见它走过去', async () => {
+    const { TownClient, ResidentRunner } = await import(new URL('../packages/agent-kit/src/index.ts', import.meta.url).href);
     aiClient = await TownClient.connect({ url: `${BASE}/mcp`, key: AI_KEY, clientId: `e2e-ai-${rnd()}` });
-    const entered = await aiClient.enter({ name: '灯灯' });
-    aiId = entered.resident_id ?? aiClient.state.residentId;
+    // 在端口上只做计数（不改行为）：脚本自己从不调用 renewNavigation，renews 里记下的全是运行器的调用
+    const renews = [];
+    const acts = [];
+    if (AI_NO_RENEW) {
+      // 反向验证：让端口没有 renewNavigation，运行器就不续租（见文件头）。这一步应当失败：AI 走到约一个租约（10 秒）处就停下
+      aiClient.renewNavigation = undefined;
+    } else {
+      const origRenew = aiClient.renewNavigation.bind(aiClient);
+      aiClient.renewNavigation = async (n, o) => {
+        renews.push(Date.now());
+        return origRenew(n, o);
+      };
+    }
+    const origAct = aiClient.act.bind(aiClient);
+    aiClient.act = async (action, o) => {
+      acts.push({ type: action.type, at: Date.now() });
+      return origAct(action, o);
+    };
+    // 决策函数不调用任何模型：第一次被问到时（等脚本放行）返回一条 navigate，之后一律什么都不做
+    const decisions = [];
+    let openGate;
+    const gate = new Promise((r) => (openGate = r));
+    let sent = false;
+    const decide = async (ctx) => {
+      decisions.push({ at: Date.now(), triggers: [...ctx.triggers] });
+      if (sent) return null;
+      sent = true;
+      await gate;
+      return { actions: [{ type: 'navigate', to: 'tea_house' }] };
+    };
+    const runnerLog = [];
+    runner = new ResidentRunner({ log: (l) => runnerLog.push(l) });
+    const handle = runner.add({ label: '灯灯', town: aiClient, profile: { name: '灯灯' }, decide });
+    await until(async () => aiClient.state.residentId, 20_000, '运行器让 AI 进镇');
+    aiId = aiClient.state.residentId;
     check(aiId, '拿不到 AI 居民编号');
     await until(async () => (await seen(A.page, aiId)) && (await seen(B.page, aiId)), 15_000, '两个页面都看见 AI 进镇');
     const start = await seen(B.page, aiId);
-    note(`AI ${aiId} 进镇，起点 (${start.x.toFixed(1)}, ${start.z.toFixed(1)})，两个页面都看见`);
+    note(`AI ${aiId} 由运行器带进镇，起点 (${start.x.toFixed(1)}, ${start.z.toFixed(1)})，两个页面都看见`);
     // AI 走路期间两个页面的位置也是按页面自己的服务器时间现算的：先核对时钟对准了服务器
     await assertClock(A, '步骤 8 A 页');
     await assertClock(B, '步骤 8 B 页');
-    const r = await aiClient.act({ type: 'navigate', to: 'bookshop' });
-    check(r.navigation, 'navigate 应返回导航信息');
-    let nav = r.navigation;
+    await until(async () => decisions.length >= 1, 10_000, '运行器第一次问决策函数（start）');
+    openGate();
+    const anchor = { x: 11, z: 10.25 }; // 地图里 tea_house 的落脚点；从广场出发，折线约 30.8 米，按 2.4 米每秒要走 12.8 秒，比 10 秒的导航租约长
+    const first = await until(async () => (await serverScene(A)).actors.find((a) => a.id === aiId)?.nav, 15_000, '服务器里 AI 开始走');
+    const submitAt = Date.now();
+    const ptsLen = (() => {
+      const pts = normPts(first.points);
+      let L = 0;
+      for (let i = 1; i < pts.length; i++) L += dist(pts[i], pts[i - 1]);
+      return L;
+    })();
+    const walkMs = (ptsLen / first.speed) * 1000;
+    const leaseMs = first.until - first.startedAt;
+    note(`第一条导航：折线 ${ptsLen.toFixed(1)} 米，速度 ${first.speed} 米每秒，走完要 ${(walkMs / 1000).toFixed(1)} 秒；第一次租约 ${(leaseMs / 1000).toFixed(1)} 秒`);
+    check(ptsLen >= 30, `目的地要够远：折线应 >= 30 米，实际 ${ptsLen.toFixed(1)} 米`);
+    check(walkMs > leaseMs + 1500, `走完的时间 ${walkMs.toFixed(0)} ms 应比第一次租约 ${leaseMs} ms 至少长 1.5 秒，否则证明不了续租`);
     let sawA = false;
     let sawB = false;
     let maxDiff = 0;
+    let movingPastLease = 0;
+    const untils = new Set([first.until]);
     const diag = [];
     const t0 = Date.now();
-    let lastRenew = 0;
-    // AI 自己每 3 秒续租（ResidentRunner 会自动做；这里只用 TownClient，手动续）
+    // 脚本这里只观察，不续租
     for (;;) {
       if (Date.now() - t0 > 90_000) throw new Error('AI 90 秒内没走到');
-      if (Date.now() - lastRenew >= (nav.renewEveryMs ?? 3000) - 200) {
-        lastRenew = Date.now();
-        const rn = await aiClient.renewNavigation({ navigationId: nav.navigationId, revision: nav.revision });
-        if (rn.navigation) nav = { ...nav, ...rn.navigation };
-        if (!rn.ok && !rn.navigation) break; // 没有在走的路了：到了
-      }
       const [sa, sb, sc] = await Promise.all([snap(A.page), snap(B.page), serverScene(A)]);
       const pa = sa.actors.find((a) => a.id === aiId);
       const pb = sb.actors.find((a) => a.id === aiId);
       const ai = sc.actors.find((a) => a.id === aiId);
+      if (!ai?.nav) break; // 服务器里没有在走的路了：到了（或者租约到期被停下）
+      untils.add(ai.nav.until);
       if (pa?.moving) sawA = true;
       if (pb?.moving) sawB = true;
-      if (ai?.nav && pa && pb) {
+      // 服务器时间已经过了第一次租约的截止时刻，AI 还在走（服务器里有导航，页面里也在动）
+      if (sc.serverTime > first.until + 500 && pa?.moving && pb?.moving) movingPastLease++;
+      if (pa && pb) {
         const ea = dist(pa, polyAt(ai.nav, sa.serverNow));
         const eb = dist(pb, polyAt(ai.nav, sb.serverNow));
         if (Math.max(ea, eb) > 0.5) diag.push(`A ${ea.toFixed(2)} (fps ${sa.fps?.toFixed?.(1)}, rtt ${sa.rtt}) B ${eb.toFixed(2)} (fps ${sb.fps?.toFixed?.(1)}, rtt ${sb.rtt}) rev ${ai.nav.revision} 服务器此刻-A页时间 ${sc.serverTime - sa.serverNow} ms`);
@@ -854,10 +916,19 @@ async function main() {
       }
       await sleep(400);
     }
+    const endAt = Date.now();
     for (const d of diag) note(`偏差较大的采样：${d}`);
     check(sawA && sawB, `两个页面都应看见 AI 在走：A ${sawA}，B ${sawB}`);
+    // 续租是运行器的普通程序做的，模型（决策函数）没有参与沿路控制
+    check(movingPastLease >= 2, `过了第一次租约的截止时刻（${leaseMs} ms）AI 应还在走（采样到 ${movingPastLease} 次），没有续上`);
+    check(untils.size >= 2, `导航租约截止时刻应被续过，只看到 ${untils.size} 个不同的值`);
+    check(renews.length >= 2, `运行器应自动续租至少 2 次，实际 ${renews.length} 次`);
+    const navActs = acts.filter((x) => x.type === 'navigate');
+    check(navActs.length === 1, `整段路只应提交 1 条 navigate，实际 ${navActs.length} 条（${acts.map((x) => x.type)}）`);
+    const walkingCalls = decisions.filter((d) => d.at > submitAt && d.at < endAt);
+    check(walkingCalls.length === 0, `走路期间决策函数不应被再次调用，实际 ${walkingCalls.length} 次（触发：${walkingCalls.map((d) => d.triggers)}）`);
+    note(`运行器自动续租 ${renews.length} 次（间隔 ${renews.slice(1).map((t, i) => ((t - renews[i]) / 1000).toFixed(1)).join('/')} 秒），租约截止时刻前进了 ${untils.size} 个值；走路期间（${((endAt - submitAt) / 1000).toFixed(1)} 秒）决策函数调用 0 次，navigate 只提交 1 条；过了第一次租约截止时刻后又采样到 ${movingPastLease} 次两个页面里都在走`);
     const sc = await serverScene(A);
-    const anchor = { x: 28, z: 10.25 }; // 地图里 bookshop 的落脚点
     await until(async () => {
       const pa = await seen(A.page, aiId);
       const pb = await seen(B.page, aiId);
@@ -868,11 +939,13 @@ async function main() {
     const pa = await seen(A.page, aiId);
     const pb = await seen(B.page, aiId);
     check(sa, '服务器场景里应有 AI');
-    note(`AI 停在 (${sa.x.toFixed(2)}, ${sa.z.toFixed(2)})，离书屋落脚点 ${dist(sa, anchor).toFixed(2)} 米；A 页偏差 ${dist(sa, pa).toFixed(2)}，B 页偏差 ${dist(sa, pb).toFixed(2)}；走路时两个页面与服务器折线现算位置最多相差 ${maxDiff.toFixed(2)} 米`);
-    check(dist(sa, anchor) < 2.0, `AI 应停在书屋落脚点旁边，实际离 ${dist(sa, anchor).toFixed(2)} 米`);
+    note(`AI 停在 (${sa.x.toFixed(2)}, ${sa.z.toFixed(2)})，离茶馆落脚点 ${dist(sa, anchor).toFixed(2)} 米；A 页偏差 ${dist(sa, pa).toFixed(2)}，B 页偏差 ${dist(sa, pb).toFixed(2)}；走路时两个页面与服务器折线现算位置最多相差 ${maxDiff.toFixed(2)} 米`);
+    check(dist(sa, anchor) < 2.0, `AI 应走到茶馆落脚点旁边，实际离 ${dist(sa, anchor).toFixed(2)} 米`);
     check(dist(sa, pa) < 0.4 && dist(sa, pb) < 0.4, 'AI 停下后两个页面与服务器应一致');
     check(maxDiff < T_POS, `AI 走路时页面位置与服务器折线现算位置最多相差 ${maxDiff.toFixed(2)} 米，超过 ${T_POS}`);
-    await shot(A.page, '09-desktop-ai-arrived');
+    check(handle.stats.actions === 1, `运行器统计的成功动作数应为 1，实际 ${handle.stats.actions}`);
+    note(`运行器统计：决策调用 ${handle.stats.decisions} 次、动作 ${handle.stats.actions} 个、什么都不做 ${handle.stats.noops} 次`);
+    metrics.aiRunner = { pathMeters: Number(ptsLen.toFixed(1)), walkSeconds: Number((walkMs / 1000).toFixed(1)), leaseSeconds: leaseMs / 1000, renews: renews.length, navigateActs: navActs.length, decisionCallsWhileWalking: walkingCalls.length };
   });
 
   // ── 9 ──
@@ -1014,6 +1087,8 @@ async function main() {
 
   // ── 14 ──
   await step(14, '主动离开小镇后：界面停在「已离开」面板，不自动重新进入', async () => {
+    // 离开的瞬间如果恰有一次心跳在路上，它会得到 422 presence_lost，这是正常的（客户端随后必须仍然停在「已离开」，下面核对）；两个页面各 0~1 次
+    for (const p of [A, A2]) allowFailure(p.w, 'POST', /\/town\/api\/heartbeat$/, { min: 0, max: 1, why: '步骤 14：离开瞬间在途的心跳可能 presence_lost' });
     const r = await A2.ctx.request.post(`${BASE}/town/api/leave`, { data: {} });
     check(r.ok(), `POST /leave 返回 ${r.status()}`);
     for (const [pg, tag] of [[A2.page, 'A2'], [A.page, 'A']]) {
@@ -1071,8 +1146,11 @@ try {
   console.error('\n脚本出错：', e);
   results.push({ n: 0, title: '脚本自身', ok: false, ms: 0, error: String(e?.stack ?? e), notes: [] });
 } finally {
+  // 被信号打断：清理由信号处理函数负责（它会 process.exit），这里不能抢先退出，否则临时目录删不掉
+  if (interrupted) await new Promise(() => {});
   for (const p of [A, B, A2, A3].filter(Boolean)) p.w.closing = true;
   try {
+    await runner?.stop();
     await aiClient?.close();
   } catch {
     /* 忽略 */
@@ -1088,9 +1166,10 @@ try {
   } else if (!results.length) {
     exitCode = 1;
   } else console.log(`\n全部 ${results.length} 项通过。`);
-  const report = { date: new Date().toISOString().slice(0, 10), versions: metrics.versions, bundle: metrics.bundle, load: metrics.load, steps: results, shots };
+  const report = { date: new Date().toISOString().slice(0, 10), versions: metrics.versions, bundle: metrics.bundle, load: metrics.load, audio: metrics.audio, aiRunner: metrics.aiRunner, steps: results, shots };
   try {
-    if (!ONLY.length && !interrupted) {
+    // 只有完整的一遍（没有 --only、没有 --no-shots）才算验收记录：否则 results.json 会和已提交的截图对不上
+    if (!ONLY.length && !NO_SHOTS && !interrupted) {
       mkdirSync(DEMO_DIR, { recursive: true });
       if (exitCode === 0) {
         // 全部通过：截图和 results.json 一起换成这一遍的（截图是先写在临时目录里的）

@@ -83,6 +83,8 @@ const WS_PROBE_MS := 3000.0
 var last_rx_ms: float = 0.0
 var probe_sent_ms: float = 0.0
 var probe_until_ms: float = 0.0  # >0：回到前台后的探测期限，期限前没收到任何东西就按断线处理
+const FRAME_GAP_MS := 3000.0  # 两帧之间隔了这么久，说明主循环停过
+var last_frame_ms: float = 0.0
 
 var claiming: bool = false  # 自己正在点「接管」：这期间的 control 事件是自己引起的
 var poll_busy: bool = false
@@ -219,15 +221,20 @@ func _on_visibility(vis: bool) -> void:
 	clock.reset()
 	if ws_ready:
 		# 立刻探测一次：3 秒内什么都没收到就是死连接（手机锁屏后常见）
-		var t: float = clock.ticks_ms()
-		next_ping = t + 5000.0
-		probe_sent_ms = t
-		probe_until_ms = t + WS_PROBE_MS
-		net.send({"t": "ping", "n": t})
+		_start_probe(clock.ticks_ms())
 	else:
 		next_ping = 0.0
 		reconnect_at = 0.0
 	_poll_scene()
+
+
+## 发一次 ping 并定下期限：期限前什么都没收到就按断线处理。
+## 探测期间只看这个期限，不看「静默了多久」——页面在后台时主循环是停的，那段时间收不到东西不说明连接坏了。
+func _start_probe(t: float) -> void:
+	next_ping = t + 5000.0
+	probe_sent_ms = t
+	probe_until_ms = t + WS_PROBE_MS
+	net.send({"t": "ping", "n": t})
 
 
 func _set_phase(p: int, msg: String = "", link: String = "") -> void:
@@ -1111,14 +1118,21 @@ func _process(dt: float) -> void:
 			net.send({"t": "ping", "n": now_t})
 		# 死连接检测：ping 每 5 秒一次，服务器每次都会回，静默超过 12 秒就是半开连接
 		if net.state == "open":
-			var dead: bool = now_t - last_rx_ms > WS_SILENT_MS
+			# 主循环停过（后台标签页、锁屏）：停掉的时间不算静默，改成探测一次。
+			# 回前台的通知先到时已经发过探测，这里从这一帧重新计：上面刚读出来的可能是停之前就缓冲着的消息，不能当成连接还活着的证据。
+			if ws_ready and now_t - last_frame_ms > FRAME_GAP_MS and (probe_until_ms <= 0.0 or probe_sent_ms > last_frame_ms):
+				_start_probe(now_t)
+			var dead: bool = false
 			if probe_until_ms > 0.0:
-				if last_rx_ms >= probe_sent_ms:
+				if last_rx_ms > probe_sent_ms:
 					probe_until_ms = 0.0
 				elif now_t >= probe_until_ms:
 					dead = true
+			else:
+				dead = now_t - last_rx_ms > WS_SILENT_MS
 			if dead:
 				_drop_dead_ws()
+	last_frame_ms = now_t
 	if now_t >= next_heartbeat and presence_epoch >= 0:
 		next_heartbeat = now_t + float(heartbeat_ms)
 		_heartbeat()
@@ -1186,8 +1200,13 @@ func _heartbeat() -> void:
 			_refresh_me()
 	elif int(r["status"]) == 401 or (r["data"] is Dictionary and str(r["data"].get("error", "")) == "unauthenticated"):
 		_relogin()
-	elif r["data"] is Dictionary and int(r["status"]) >= 400:
-		# 在场租约丢了（比如睡了很久）：重新进入
+	elif r["data"] is Dictionary and str(r["data"].get("reason", "")) == "presence_lost":
+		# 在场租约丢了（比如睡了很久）：重新进入。别的失败（限流、恢复中）不动，下一次心跳再说。
+		# 但主动离开小镇（在别处点了离开）时，心跳也会得到同样的 presence_lost，而「已被撤销」的通知经 WebSocket 稍后才到：
+		# 抢在它前面重新进入就违背了「离开后不自动重进」。所以先等一会儿，期间收到撤销（revoke_checking / 离开状态）就放弃。
+		await get_tree().create_timer(2.0).timeout
+		if revoke_checking or not want_net or phase != Phase.PLAYING:
+			return
 		var er: Dictionary = await bridge.http("POST", API + "/enter", {"clientId": client_id})
 		if int(er["status"]) == 200 and er["data"] is Dictionary:
 			presence_epoch = int(er["data"].get("presenceEpoch", presence_epoch))

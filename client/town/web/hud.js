@@ -424,6 +424,7 @@
 
   /* ── 加载进度 / 致命错误（引擎起来之前）── */
   function setLoading(frac, text) {
+    if (dead) return; // 出了致命错误：加载进度不能把错误面板盖回去
     if (state.phase && state.phase !== 'boot') return;
     renderPanel({ phase: 'boot', msg: text });
     $('progressBar').style.width = Math.round(Math.max(0, Math.min(1, frac)) * 100) + '%';

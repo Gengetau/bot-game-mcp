@@ -13,7 +13,7 @@ npm run docs        # 改了规则、选项或工具描述后，重新生成 doc
 npm run simulate -- werewolf --players 9 --humans 2 --seed 1   # 离线跑一局
 npm run world:simulate -- --days 1 --residents 12 --seed 1    # 栖灯镇：固定种子跑逻辑时间并检查不变量
 npm run world:recovery                                         # 栖灯镇：故障注入
-npm run client:export && npm run client:e2e                    # 三维客户端：导出并跑浏览器端到端（需要 Godot 4.7，不在 CI 里；约 8 分钟）
+npm run client:export && npm run client:e2e                    # 三维客户端：导出并跑浏览器端到端（需要 Godot 4.7，不在 CI 里；导出约 2 分钟，端到端约 4.5 分钟）
 ```
 
 ## 必须遵守的不变量
