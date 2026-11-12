@@ -352,6 +352,11 @@ export class LiarsDiceGame extends BaseGame<LiarsDiceState, LiarsDiceOptions> {
 
   // ───────────────────────── 视角 ─────────────────────────
 
+  /** 命数归零的人不再参与叫牌和开牌（轮转只走存活座位）。 */
+  override seatFinished(seat: Seat): boolean {
+    return !this.isAlive(seat);
+  }
+
   privateView(seat: Seat): Record<string, unknown> {
     return {
       dice: this.state.dice[String(seat)] ?? [],
@@ -452,5 +457,6 @@ export const liarsDiceDefinition: GameDefinition<LiarsDiceOptions> = {
     min_open_quantity: '第一个叫牌至少叫几个（0=自动，等于存活人数；默认 0）',
     turn_timeout_s: '每次叫牌/开牌限时（秒，默认 45）',
   },
+  embeddable: true,
   create: (rec, env) => new LiarsDiceGame(rec, env),
 };

@@ -16,7 +16,7 @@ export async function startStdioServer(rt: Runtime, env: NodeJS.ProcessEnv = pro
     fixed: Boolean(id),
     transport: 'stdio',
   };
-  const server = createMcpServer({ manager: rt.manager, auth: rt.auth, version: rt.version }, ctx);
+  const server = createMcpServer({ manager: rt.manager, auth: rt.auth, version: rt.version, ...(rt.world ? { town: { world: rt.world, auth: rt.auth, trustedIds: rt.config.refereeIds } } : {}) }, ctx);
   const transport = new StdioServerTransport();
   transport.onclose = () => rt.close();
   await server.connect(transport);

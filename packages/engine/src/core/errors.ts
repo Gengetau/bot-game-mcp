@@ -9,7 +9,19 @@ export type GameErrorCode =
   | 'INVALID_STATE'
   | 'NOT_YOUR_TURN'
   | 'INVALID_ACTION'
-  | 'CONFLICT';
+  | 'CONFLICT'
+  // 持续世界（栖灯镇）的失败码：见 src/world/errors.ts
+  | 'UNAUTHENTICATED'
+  | 'CONTROL_LOST'
+  | 'CONTEXT_STALE'
+  | 'PHASE_STALE'
+  | 'PRECONDITION_FAILED'
+  | 'REQUEST_CONFLICT'
+  | 'REQUEST_EXPIRED'
+  | 'RATE_LIMITED'
+  | 'RESYNC_REQUIRED'
+  | 'RECOVERING'
+  | 'NOT_AVAILABLE';
 
 export class GameError extends Error {
   readonly code: GameErrorCode;

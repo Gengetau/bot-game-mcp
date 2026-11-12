@@ -130,6 +130,27 @@ export abstract class BaseGame<S = any, O = any> {
     }
   }
 
+  /**
+   * 弃权托管：这个座位的人已经主动离席，轮到他时立刻按超时规则处理（和等到超时的结果一样，只是不让别人干等）。
+   * 返回是否处理了一个待办。
+   */
+  forfeitSeat(seat: Seat): boolean {
+    const ph = this.rec.phase;
+    const req = ph?.pending[String(seat)];
+    if (!ph || ph.openedAt === null || !req || req.done) return false;
+    this.timeoutDefault(seat, req);
+    if (this.rec.phase === ph) req.done = true;
+    return true;
+  }
+
+  /**
+   * 这个座位之后是否确定不会再有任何行动（例如已被淘汰且规则里淘汰者不再行动）。
+   * 只有游戏明确能证明时才返回 true；默认 false（通用的 alive 标记不够，有的游戏出局后还有行动）。
+   */
+  seatFinished(_seat: Seat): boolean {
+    return false;
+  }
+
   /** 当前阶段是否所有待办都已完成。 */
   isPhaseComplete(): boolean {
     const ph = this.rec.phase;
@@ -273,6 +294,8 @@ export abstract class BaseGame<S = any, O = any> {
     image?: ImageRef,
     extra: { mirror?: boolean; keepAt?: boolean; voice?: { qq: string; text: string } } = {},
   ): Delivery | null {
+    // 统一出口：嵌入持续世界的小游戏不产生任何 QQ 消息（群消息、私聊、镜像、提醒一律不进 outbox）
+    if (this.rec.delivery === 'embedded_web') return null;
     if (this.webStage && target.type === 'group') {
       if (!extra.mirror) return null;
       image = undefined;

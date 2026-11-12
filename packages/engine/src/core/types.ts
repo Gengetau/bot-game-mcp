@@ -254,7 +254,19 @@ export interface GameRecord<S = any, O = any> {
   /** 观众席：网页观众和没参加本局的 bot 的闲聊。参与者（玩家、裁判、候补裁判）看不到，也不进群。旧存档没有。 */
   spectatorChat?: SpectatorChatEntry[];
   spectatorChatSeq?: number;
+  /**
+   * 嵌入活动：这局是持续世界（栖灯镇）里一次活动的小游戏。有它的记录只归世界服务读写，
+   * 普通 Manager 不保存、不推进、不对外提供视图。旧存档没有这个字段（= 普通独立对局）。
+   */
+  embed?: { worldId: string; activityId: string };
+  /**
+   * 投递策略：qq = 群消息和私聊交给裁判发（默认，旧存档没有这个字段）；
+   * embedded_web = 一条 QQ 消息都不产生，公告、身份、手牌、提醒只进日志，由网页或 MCP 的受权视图展示。
+   */
+  delivery?: DeliveryPolicy;
 }
+
+export type DeliveryPolicy = 'qq' | 'embedded_web';
 
 export type Stage = 'group' | 'web';
 

@@ -14,6 +14,7 @@ import { driveAssets, localAssets, type AssetStore, type ServiceAccount } from '
 import { directoryLibrary, type ScriptLibrary } from '../games/jubensha/index.js';
 import { Authenticator } from '../mcp/auth.js';
 import { VERSION } from '../version.js';
+import { createWorld, type WorldService } from '../world/index.js';
 import { stderrLog } from './log.js';
 
 export interface Runtime {
@@ -24,6 +25,8 @@ export interface Runtime {
   settings: Settings;
   /** 剧本杀的剧本库（没配 scriptsDir 时为空） */
   scripts?: ScriptLibrary;
+  /** 持续世界「栖灯镇」（配置里 town.enabled 才有） */
+  world?: WorldService;
   version: string;
   startedAt: number;
   /** 停止计时器并写盘 */
@@ -60,6 +63,25 @@ export function createRuntime(config: BotGameConfig, log: (msg: string) => void 
     defaultOptions: config.defaultOptions,
     ...(config.webUrl ? { webUrl: config.webUrl } : {}),
   });
+  const world = config.town.enabled
+    ? createWorld({
+        dbPath: config.town.dbFile,
+        registry: manager.registry,
+        params: config.town.params,
+        publicUrl: config.town.publicUrl,
+        devLogin: config.town.devLogin,
+        log,
+        ...(config.seed ? { seed: config.seed } : {}),
+      })
+    : undefined;
+  if (world) {
+    if (config.town.devLogin) log('⚠️  栖灯镇开了本机试玩登录（town.devLogin）：任何人输入名字就能进入，只应用于本机或可信内网！');
+    // 启动恢复：按停机前的检查点追赶到期事务；完成前小镇的写接口返回 recovering
+    void world.start().then(
+      () => log(`栖灯镇已就绪：${config.town.dbFile}`),
+      (e) => log(`[town] 启动恢复失败：${e instanceof Error ? e.stack : String(e)}`),
+    );
+  }
   const auth = new Authenticator(resolveAuth(config), manager, log);
   manager.isKeyedAgent = (id) => auth.hasKeyFor(id);
   const timer = setInterval(() => {
@@ -68,6 +90,8 @@ export function createRuntime(config: BotGameConfig, log: (msg: string) => void 
     } catch (e) {
       log(`[tick] ${e instanceof Error ? e.stack : String(e)}`);
     }
+    // 小镇的调度和桌游的计时各走各的：一边出错不影响另一边
+    world?.tick();
   }, 1000);
   timer.unref();
   // 清理已结束对局的云盘图片副本
@@ -87,12 +111,14 @@ export function createRuntime(config: BotGameConfig, log: (msg: string) => void 
     auth,
     settings,
     ...(scripts ? { scripts } : {}),
+    ...(world ? { world } : {}),
     version: VERSION,
     startedAt: Date.now(),
     close() {
       clearInterval(timer);
       if (sweeper) clearInterval(sweeper);
       manager.flush();
+      world?.close();
     },
   };
 }

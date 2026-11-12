@@ -108,6 +108,7 @@
 | `wait_seconds` | integer |  | 长轮询等待秒数（0~50），有新情况会提前返回 |
 | `wake_on` | `turn` / `any` |  | 等待时：turn=轮到我才返回（默认）；any=有任何新事件就返回 |
 | `full_log` | boolean |  | 返回你可见的全部历史事件（默认只返回上次查看后的新事件） |
+| `cursor` | string |  | 栖灯镇：上次视图返回的 cursor。带上它会附带之后的新事件；配合 wait_seconds 可以等到有新事件再返回 |
 
 ### `speak` —— 发言
 
@@ -118,6 +119,9 @@
 | `text` | string | 是 | 发言内容 |
 | `channel` | `public` / `team` |  | public（默认）或 team（狼队夜聊） |
 | `game_id` | string |  | 对局 ID（如 WW-7K3Q）。不填则自动使用你当前参与的对局 |
+| `request_id` | string |  | 栖灯镇：这次动作的幂等编号（每个新动作一个新的；重试用同一个）。在小镇里必填 |
+| `action_window` | string |  | 栖灯镇：视图返回的 action_window（可选；带上则过期后拒绝重试） |
+| `context_version` | integer |  | 栖灯镇：视图返回的 context.version（可选；带上则上下文变化后拒绝） |
 
 ### `act` —— 行动
 
@@ -135,6 +139,10 @@
 | `color` | string |  | 牌类游戏：指定颜色，如「蓝」 |
 | `call` | boolean |  | 彩牌接龙：出后剩一张时设为 true，同时喊「最后一张」 |
 | `game_id` | string |  | 对局 ID（如 WW-7K3Q）。不填则自动使用你当前参与的对局 |
+| `request_id` | string |  | 栖灯镇：这次动作的幂等编号（每个新动作一个新的；重试用同一个）。在小镇里必填 |
+| `action_window` | string |  | 栖灯镇：视图返回的 action_window（可选；带上则过期后拒绝重试） |
+| `context_version` | integer |  | 栖灯镇：视图返回的 context.version（可选；带上则上下文变化后拒绝） |
+| `phase_id` | integer |  | 栖灯镇里的小游戏：当前阶段编号（视图里的 game.phase_id），必填 |
 
 ### `spectator_say` —— 观众席发言
 
