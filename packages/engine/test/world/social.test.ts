@@ -186,7 +186,7 @@ describe('关系：结构化事实驱动', () => {
   // 期望：a1、b1、a2、a3 之中，a3 紧跟在自己的 a2 之后，b 没有新话，不应再产生交谈事实（共 2 次）。
   // 建议补丁：replied 的查询再加一个条件——对方那条消息要晚于我在这个空间说的上一条
   //   AND m.sent_at > COALESCE((SELECT MAX(sent_at) FROM chat_messages WHERE sender_id = ? AND space_id = ?), 0)。
-  it.skip('交谈要来回：自己连说几句、对方没有新话，后面的不算（BUG：life.ts:257 只看"对方说过"，不看谁说在后）', () => {
+  it('交谈要来回：自己连说几句、对方没有新话，后面的不算', () => {
     const t = quietTown();
     const a = t.join('阿灯');
     const b = t.join('小岚', 'agent');
@@ -199,9 +199,8 @@ describe('关系：结构化事实驱动', () => {
     expect(t.w.db.scalar("SELECT COUNT(*) FROM world_events WHERE type = 'conversation'")).toBe(2);
   });
 
-  // 设计偏差（social.ts bumpRelation）：设计文档第 5 节"亲近程度允许双方不同，不因为一方送礼就强制另一方喜欢她"，
-  // 实现里送礼让收礼的和送礼的亲近都 +2（双向对称）。这里没有直接改，因为 docs/TOWN.md 和别的测试可能依赖现状，交给主程决定。
-  it.skip('送礼只提高送礼人对收礼人的亲近，收礼人这一边不被强制提高（设计偏差：双向对称 +2）', () => {
+  // 设计文档第 5 节：亲近程度允许双方不同，不因为一方送礼就强制另一方喜欢她
+  it('送礼只提高送礼人对收礼人的亲近，收礼人这一边不被强制提高', () => {
     const t = quietTown();
     const a = t.join('阿灯');
     const b = t.join('小岚', 'agent');
@@ -219,7 +218,7 @@ describe('关系：结构化事实驱动', () => {
     expect(rel(t, a, b)).toBeNull(); // 只是提议
     b.act('accept_offer', { offerId: o.offer.id });
     expect(rel(t, a, b)).toEqual({ familiarity: 1, closeness: 2 });
-    expect(rel(t, b, a)).toEqual({ familiarity: 1, closeness: 2 });
+    expect(rel(t, b, a)).toEqual({ familiarity: 1, closeness: 0 });
     expect(relationsOf(t.w, b.residentId)[0]!.memories.map((m) => m.text)).toEqual(['送礼：1 份花种']);
     const o2 = a.act('offer', { kind: 'gift', to: b.residentId, give: { coins: 3 } });
     b.act('decline_offer', { offerId: o2.offer.id });
@@ -266,7 +265,9 @@ describe('关系：结构化事实驱动', () => {
     expect(rel(t, a, b)).toEqual({ familiarity: 1, closeness: 2 });
     // 回送另一种东西，是新的往来
     give(b, a, [{ type: 'seeds', qty: 1 }]);
-    expect(rel(t, a, b)).toEqual({ familiarity: 2, closeness: 4 });
+    // 亲近只记在送礼的人这边：这次是小岚送的，所以涨的是小岚对阿灯的亲近
+    expect(rel(t, a, b)).toEqual({ familiarity: 2, closeness: 2 });
+    expect(rel(t, b, a)).toEqual({ familiarity: 2, closeness: 2 });
     // 礼物都真实转了手
     expect([a.qty('cookie'), b.qty('cookie')]).toEqual([2, 2]);
     // 硬币来回也一样

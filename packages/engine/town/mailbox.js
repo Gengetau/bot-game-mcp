@@ -1,7 +1,7 @@
 // 「信箱」面板：收件、已发、邀请。没读过的信要回家才能拆。
 import { dateTimeOf, h, icon, toast } from './dom.js';
 import { moveTo, openLetter, openLetterComposer } from './sheets.js';
-import { act, http, serverNow, state } from './store.js';
+import { act, http, state } from './store.js';
 import { btn, chip, empty, row, section, segmented } from './ui.js';
 
 /** @typedef {import('./types.js').Letter} Letter */
@@ -165,4 +165,3 @@ export function createMailbox() {
   };
 }
 
-export { serverNow as _sn };

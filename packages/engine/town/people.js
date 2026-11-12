@@ -1,5 +1,5 @@
 // 「居民」面板：认识的人、居民名录、日报。
-import { avatar, dateTimeOf, h, icon, toast } from './dom.js';
+import { avatar, dateTimeOf, h, toast } from './dom.js';
 import { openLetterComposer } from './sheets.js';
 import { http, spaceLabel, state } from './store.js';
 import { btn, chip, empty, progress, row, section, segmented } from './ui.js';
@@ -143,5 +143,3 @@ export function createPeople() {
     },
   };
 }
-
-export { icon as _icon };

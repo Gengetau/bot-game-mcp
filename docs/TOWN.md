@@ -104,14 +104,14 @@ packages/engine/town/             网页前端（静态文件）
 | `POST /auth/dev` `{name}` | 本机试玩登录（`devLogin` 打开时） |
 | `POST /auth/logout` | 撤销会话 |
 | `GET /session` | `{loggedIn, name, kind, resident}` |
-| `POST /enter` `{clientId, profile?}` | 注册或恢复居民并登记在场。第一次要 `profile.name`；返回 `{residentId, created, wasAway, presenceEpoch, control, contextVersion, view}` |
+| `POST /enter` `{clientId, profile?}` | 注册或恢复居民并登记在场。第一次进入时名字取 `profile.name`，没给就用登录身份带来的昵称（两者都为空时返回 `profile_required`）；返回 `{residentId, created, wasAway, presenceEpoch, control, contextVersion, view}` |
 | `GET /me?clientId=` | 本人视图（`MeView`），里面有 `actionWindow`、`context.version`、`control.epoch`、`cursor` |
 | `POST /actions` | 提交动作（见下） |
 | `POST /heartbeat` `{clientId, presenceEpoch}` | 续在场租约。返回里有 `control`、`contextVersion`、`activityId`、`nextHeartbeatMs` |
 | `POST /claim` `{clientId}` | 接管控制权 |
 | `POST /leave` | 主动离开小镇 |
 | `GET /events?clientId=&cursor=&pcursor=` | SSE：本人的事件和公开事件 |
-| `GET /letters?box=inbox\|sent&before=&limit=` | 信件分页。没读过的来信不带正文 |
+| `GET /letters?box=inbox\|sent&before=&limit=` | 信件分页（`before` 用上一页返回的 `next`）。没读过的来信不带正文 |
 | `GET /history?before=&limit=` | 我听到过的现场发言 |
 | `GET /residents` | 居民名录（公开资料） |
 | `GET /relations` | 我认识的人、熟悉度、共同经历 |
@@ -175,12 +175,12 @@ packages/engine/town/             网页前端（静态文件）
 | type | 字段 | 说明 |
 |---|---|---|
 | `move` | `to` | 地点 id、`home`（自己家）或 `home:<id>`。相邻一段 10 秒，进出门 3 秒，自动走最短路。在途不能做现场动作。别人家要有当前有效的邀请，到门口时还会再查一次 |
-| `speak` | `text` | 现场发言，最多 120 字。受众在提交那一刻固定：同一空间、在场、不在途、不在小游戏里 |
+| `speak` | `text` | 现场发言，最多 120 字（超出的截掉）。受众在提交那一刻固定：同一空间、在场、不在途、不在小游戏里 |
 | `ask_hobby` | `target` | 当面问对方的爱好（对方可以在设置里关掉） |
 | `update_profile` | `name? bio? traits? interests? showMood? allowAskHobby? mood?` | 改资料和展示设置。`mood` 是真人自己设的情绪展示，`null` 交回程序 |
 | `buy` | `shop, sku, qty?` | 在商店所在的地点买。库存按世界日补 |
-| `use_item` | `type` | 用掉一件消耗品（汤、饼干恢复精力） |
-| `display_item` | `itemId` 或 `type, qty?`；`on?` | 在自己家把装饰摆出来 / 收起来 |
+| `use_item` | `itemType` | 用掉一件消耗品（汤、饼干恢复精力） |
+| `display_item` | `itemId` 或 `itemType, qty?`；`on?` | 在自己家把装饰摆出来 / 收起来 |
 | `place_furniture` | `itemId` | 在自己家把买来的家具（花箱、小灶台）摆成可互动的物件 |
 | `offer` | `kind: gift\|trade\|loan, to, give, want?` | 当面发起。`give`/`want` 是 `{coins?, items?: [{type, qty} \| {itemId}]}`；`want` 只能按种类写。发起时预留发起方的东西。出借一次一件 |
 | `accept_offer` / `decline_offer` / `cancel_offer` | `offerId` | 接受时双向转移在同一事务里完成。任何一方离开、离线或进入小游戏，报价自动撤销、预留退回 |
@@ -274,7 +274,7 @@ packages/engine/town/             网页前端（静态文件）
 
 ## 规则要点
 
-**地图**：六个公共地点加两条住宅街，广场是枢纽。公开层面位置只到「住宅区」：在哪条巷子、进了谁家、屋里有几个人都不公开；完全发生在住宅区内部的走动不进公开事件流。
+**地图**：六个公共地点加两条住宅街，广场是枢纽。公开层面位置只到「住宅区」：在哪条巷子、进了谁家、屋里有几个人都不公开；完全发生在住宅区内部的走动不进公开事件流。进出住宅区的路上，公开层面一直算「在住宅区」（去的人出发那一刻就算到了，出来的人到了目的地才现身），不给出发和到达时间，免得从路程长短看出巷子和门。
 
 **需要**：精力、社交、兴趣三项，0~100。都是软的：数值低不禁止任何动作，只影响建议和效果大小。社交、兴趣按有效在场时间下降（每小时 5 / 3），离线不掉；精力只随活动变化。
 
@@ -282,7 +282,7 @@ packages/engine/town/             网页前端（静态文件）
 
 **财物**：硬币只走复式账本，每笔有唯一原因键。物品区分所有者和持有者（借出的书所有者不变）。报价不可修改，预留期间的东西不能再花。
 
-**关系**：只读程序记录的结构化事实，不读聊天文字。同一对居民每天每类往来只有前 3 次带来变化；来回送同一种东西不加分。交谈要「有来有往」才算。
+**关系**：只读程序记录的结构化事实，不读聊天文字。同一对居民每天每类往来只有前 3 次带来变化；来回送同一种东西不加分。交谈要「有来有往」才算（对方在我上一句之后说过话）。熟悉度是双方共有的；亲近可以两边不同：送礼只增加送礼人对收礼人的亲近。
 
 **愿望**：一个长期、两个短期。保存创建时的定义副本；进度只来自事实；完成只结算一次。短期愿望每天可换一个。
 
@@ -342,7 +342,7 @@ npm run world:recovery                                       # 故障注入：�
 
 - 公开投影里没有：信件、背包、硬币、屋内的人和物、聊天内容、具体的巷子和门牌归属。
 - 现场发言只对提交那一刻在场的人可见，之后进来的人看不到；历史查询只返回当时自己在受众里的消息。
-- 没读过的信不带正文，在外面连寄信人都不知道。
+- 没读过的信不带正文。「有新信」的提示、事件流和视图里都没有寄信人；信箱列表（`/letters`）能看到信封上的寄信人和时间，正文要回到自己家才能读。
 - 别人的需要、愿望、关系、背包对任何其他居民不可见。
 - 小游戏的私密信息只进本座位的视图；事件流里只有「有新进展」。
 - 日报、回顾、观战、MCP 视图和网页走同一套投影函数，没有第二套权限。

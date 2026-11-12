@@ -438,7 +438,7 @@ describe('HTTP：登录票据与会话 Cookie', () => {
     expect(r.json.name.length).toBeLessThanOrEqual(16);
   });
 
-  it.skip('居民名里的双向文字控制符（U+202E）被去掉（BUG：core/text.ts sanitizeUserText 只去 ASCII 控制字符，能做出倒序显示的假名字；建议在正则里加 \\u200b-\\u200f\\u202a-\\u202e\\u2066-\\u2069）', async () => {
+  it('居民名里的双向文字控制符（U+202E）被去掉', async () => {
     const { app } = await serveTown();
     const r = await new Web(app.base).post('/town/api/auth/dev', { name: '甲\u202e乙' });
     expect(r.json.name).not.toMatch(/[\u202a-\u202e\u2066-\u2069]/);

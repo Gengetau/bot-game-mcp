@@ -191,7 +191,8 @@ export function installGames(w: WorldService): void {
       const rid = String(p.resident_id);
       returnToWorld(act.activity_id, rid, at);
       const seat = Number(p.game_seat);
-      w.emitTo([rid], 'game_ended', { activityId: act.activity_id, gameId: g.rec.id, ...summary, won: winners.has(seat), reward: rewards.get(rid) ?? 0 }, at);
+      // 中途退出的人没有这局的记录：座位后来被托管打赢了也不算她赢
+      w.emitTo([rid], 'game_ended', { activityId: act.activity_id, gameId: g.rec.id, ...summary, won: p.quit_at === null && winners.has(seat), reward: rewards.get(rid) ?? 0 }, at);
     }
     const fresh = w.db.get('SELECT * FROM activities WHERE activity_id = ?', act.activity_id)!;
     notifyVenue(fresh, at, { ended: summary });

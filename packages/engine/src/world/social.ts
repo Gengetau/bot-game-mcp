@@ -19,11 +19,16 @@ interface Gain {
   familiarity: number;
   closeness: number;
   category: string;
+  /**
+   * 亲近只记在这个角色的人身上（比如送礼：只有送的人对收的人更亲近，不替收礼的人决定她喜不喜欢）。
+   * 不写就是双方都加。
+   */
+  closenessFor?: string;
   /** 给双方各留一条共同经历的摘要（程序模板，不含聊天原文） */
   memory?: string;
 }
 
-function bumpRelation(w: WorldService, a: string, b: string, g: Gain, now: number): void {
+function bumpRelation(w: WorldService, a: string, b: string, g: Gain, now: number, closeOwner: string | null = null): void {
   for (const [x, y] of [
     [a, b],
     [b, a],
@@ -35,7 +40,7 @@ function bumpRelation(w: WorldService, a: string, b: string, g: Gain, now: numbe
       x,
       y,
       Math.min(100, g.familiarity),
-      Math.min(100, g.closeness),
+      closeOwner === null || closeOwner === x ? Math.min(100, g.closeness) : 0,
       now,
     );
   }
@@ -103,7 +108,7 @@ function gainFor(f: FactRecord): Gain | null {
     case 'game_completed':
       return { familiarity: 2, closeness: 0, category: 'game', memory: `一起玩了一局${String(d.name ?? '游戏')}` };
     case 'gift_accepted':
-      return { familiarity: 1, closeness: 2, category: 'gift', memory: `送礼：${String(d.give ?? '')}` };
+      return { familiarity: 1, closeness: 2, closenessFor: 'giver', category: 'gift', memory: `送礼：${String(d.give ?? '')}` };
     case 'trade_completed':
       return { familiarity: 1, closeness: 0, category: 'trade', memory: `交换了东西` };
     case 'loan_returned':
@@ -147,7 +152,8 @@ function applyRelations(w: WorldService, f: FactRecord): void {
       }
       // 每对居民每天每类往来只有前几次带来主要收益
       if (bumpCounter(w, scope, g.category, date) >= w.params.relationshipRewardEvents) continue;
-      bumpRelation(w, a, b, g, f.occurredAt);
+      const closeOwner = g.closenessFor ? (f.parties.find((p) => p.role === g.closenessFor)?.id ?? null) : null;
+      bumpRelation(w, a, b, g, f.occurredAt, closeOwner);
       if (g.memory) {
         remember(w, a, b, f, g.memory);
         remember(w, b, a, f, g.memory);

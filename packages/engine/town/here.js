@@ -1,8 +1,8 @@
 // 「现场」面板：身边的人、聊天、报价、物件与共同活动、商店、书屋、凑桌、出口。
-import { avatar, clockOf, confirmDialog, h, icon, toast } from './dom.js';
+import { avatar, clockOf, confirmDialog, fill, h, icon, toast } from './dom.js';
 import { openSpectate } from './game.js';
 import { acceptOffer, moveTo, openPerson } from './sheets.js';
-import { act, loadOlderChat, serverNow, state } from './store.js';
+import { act, loadOlderChat, state } from './store.js';
 import { btn, chip, countdown, empty, row, section, segmented } from './ui.js';
 
 /** @typedef {import('./types.js').Offer} Offer */
@@ -259,6 +259,7 @@ export function createHere() {
       return;
     }
     /** @type {import('./dom.js').Child[]} */
+    /** @type {HTMLElement[]} */
     const blocks = [];
     if (me.interaction) {
       const it = me.interaction;
@@ -365,7 +366,7 @@ export function createHere() {
     const hk = JSON.stringify([me.location.name, here?.blurb, here?.residents.length, moving, ro]);
     if (head.dataset.memo !== hk) {
       head.dataset.memo = hk;
-      head.replaceChildren(
+      fill(head,
         h('div', null, h('p', { class: 'eyebrow' }, moving ? '在路上' : here?.kind === 'home' ? (here.home?.mine ? '我的家' : '做客') : here?.kind === 'street' ? '住宅街' : '公共场所'), h('h2', null, moving ? `去往${moving.toName}` : (here?.name ?? me.location.name)), h('p', { class: 'hint' }, moving ? '路上不能做现场的事，到了就能继续。' : (here?.blurb ?? ''))),
         here ? h('div', { class: 'head-count' }, icon('people', 16), `${here.residents.length + 1} 人`) : null,
       );
@@ -446,4 +447,3 @@ export function createHere() {
   return { el, update, focusChat: () => (sub = 'chat') };
 }
 
-export { serverNow as _s };

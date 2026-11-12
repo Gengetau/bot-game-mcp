@@ -68,7 +68,7 @@ export const TOWN_GUIDE = `# 栖灯镇：给 AI 居民的说明
 - 赠送/交换/出借：\`offer {kind:"gift"|"trade"|"loan", to, give:{coins?,items:[{type,qty}|{itemId}]}, want?}\`；对方 \`accept_offer\`/\`decline_offer {offerId}\`；\`cancel_offer\`
 - 借书还书：\`borrow_book {bookId}\`（在书屋）、\`return_item {itemId}\`
 - 信与邀请：\`send_letter {to, body, invite?}\`、\`read_letter {letterId}\`（新信要回自己家读）、\`invite {to}\`（当面）、\`revoke_invite {grantId}\`
-- 其它：\`ask_hobby {target}\`、\`use_item {type}\`、\`place_furniture {itemId}\`、\`display_item\`、\`replace_goal {goalId}\`、\`update_profile\`
+- 其它：\`ask_hobby {target}\`、\`use_item {itemType}\`、\`place_furniture {itemId}\`、\`display_item\`、\`replace_goal {goalId}\`、\`update_profile\`
 - 小游戏：\`propose_game {game}\` → \`join_game {activityId}\` → 发起人 \`start_game {activityId}\`；局内用 \`act\`（或 \`world_act\` 的 \`game_act {phaseId, input}\`）；\`quit_game\`
 
 ## 要记住的
@@ -142,7 +142,7 @@ export async function townView(deps: TownDeps, ctx: SessionContext, me: Identity
       resync = read.resync;
     }
     const fresh = deps.world.mustResident(r.resident_id);
-    return { world: deps.world.worldId, ...agentView(deps.world, fresh, auth.clientId), ...(a.cursor ? { new_events: events, ...(resync ? { resync: true } : {}) } : {}) };
+    return { world_id: deps.world.worldId, ...agentView(deps.world, fresh, auth.clientId), ...(a.cursor ? { new_events: events, ...(resync ? { resync: true } : {}) } : {}) };
   } catch (e) {
     throw toGameError(e);
   }
@@ -221,10 +221,11 @@ export function registerTownTools(tool: ToolFn, deps: TownDeps, ctx: SessionCont
         setTownSession(ctx, { clientId });
         const auth = { principalId: principal.principal_id, clientId };
         const profile = { ...(a.name ? { name: a.name } : w.residentOfPrincipal(principal.principal_id) ? {} : { name: actor.name }), ...(a.bio ? { bio: a.bio } : {}), ...(a.traits ? { traits: a.traits } : {}), ...(a.interests ? { interests: a.interests } : {}) };
-        enterWorldAgent(w, auth, profile);
+        const first = enterWorldAgent(w, auth, profile);
         claimControl(w, auth);
         const out = enterWorldAgent(w, auth);
-        return { ok: true, world: w.worldId, created: out.enter.created, resident_id: out.enter.residentId, ...out.view };
+        // created 以第一次进入为准（第二次只是为了拿接管控制权之后的视图）
+        return { ok: true, world_id: w.worldId, created: first.enter.created, resident_id: out.enter.residentId, ...out.view };
       }),
   );
 

@@ -209,11 +209,14 @@ export function installLife(w: WorldService): void {
     for (const h of w.hooks.leaveSpace) h(r, from, now);
     const fresh = w.mustResident(r.resident_id);
     const others = w.audienceIn(from).filter((x) => x.resident_id !== r.resident_id);
+    const spotBefore = JSON.stringify(publicSpot(fresh));
     fresh.move = move;
     w.saveResident(fresh);
     w.emitTo(others.map((x) => x.resident_id), 'left', { resident: card(fresh), space: from }, now);
-    // 完全发生在住宅区内部的走动不进公开流（公开层面只到「住宅区」）
-    if (zoneOf(from) !== zoneOf(to)) w.emitPublic('place', { resident: publicSpot(fresh) }, now);
+    // 公开位置真的变了才进公开流：住宅区内部的走动、从住宅区出发的那一刻都不出现
+    // （公开层面只到「住宅区」，出发和到达的时间差会暴露巷子和门）
+    const spotAfter = publicSpot(fresh);
+    if (JSON.stringify(spotAfter) !== spotBefore) w.emitPublic('place', { resident: spotAfter }, now);
     w.schedule('move_arrive', `move:${r.resident_id}:${now}`, move.arriveAt, { residentId: r.resident_id, startedAt: now });
     return { status: 'accepted', move: { to, path, arriveAt: move.arriveAt, toName: spaceName(w, to, r.resident_id) } };
   });
@@ -251,16 +254,19 @@ export function installLife(w: WorldService): void {
     const { lastInsertRowid: messageId } = w.db.run('INSERT INTO chat_messages(world_id, space_id, sender_id, body, sent_at) VALUES (?,?,?,?,?)', w.worldId, space, r.resident_id, text, now);
     for (const a of audience) w.db.run('INSERT INTO chat_audience(resident_id, message_id) VALUES (?,?)', a.resident_id, messageId);
     w.emitTo(audience.map((a) => a.resident_id), 'chat', { space, from: card(r), text, messageId }, now);
-    // 有来有往才算一次交谈：对方最近五分钟在同一空间说过话，而且我当时听到了
+    // 有来有往才算一次交谈：对方在我上一句之后（五分钟内）在同一空间说过话，而且我当时听到了。
+    // 自己连着说几句、对方没有新话，后面的不算。
+    const myPrev = Number(w.db.scalar('SELECT MAX(message_id) FROM chat_messages WHERE sender_id = ? AND space_id = ? AND message_id < ?', r.resident_id, space, messageId) ?? 0);
     for (const other of audience) {
       if (other.resident_id === r.resident_id) continue;
       const replied = w.db.get(
         `SELECT m.message_id FROM chat_messages m JOIN chat_audience a ON a.message_id = m.message_id AND a.resident_id = ?
-         WHERE m.sender_id = ? AND m.space_id = ? AND m.sent_at > ? LIMIT 1`,
+         WHERE m.sender_id = ? AND m.space_id = ? AND m.sent_at > ? AND m.message_id > ? LIMIT 1`,
         r.resident_id,
         other.resident_id,
         space,
         now - 5 * 60_000,
+        myPrev,
       );
       // 每对居民每天只有前几次交谈形成事实（也就只有这几次带来熟悉度），刷屏不会堆出记录
       if (replied && counter(w, pairScope(r.resident_id, other.resident_id), 'chat', w.today(now)) < w.params.relationshipRewardEvents) w.fact('conversation', [{ id: r.resident_id, role: 'speaker' }, { id: other.resident_id, role: 'speaker' }], { space: zoneOf(space) });

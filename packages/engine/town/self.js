@@ -1,5 +1,5 @@
 // 「我」面板：资料、硬币、三项需要、愿望、背包、设置。
-import { avatar, confirmDialog, dateTimeOf, h, icon, toast } from './dom.js';
+import { avatar, confirmDialog, dateTimeOf, fill, h, icon } from './dom.js';
 import { openMoodEditor, openProfileEditor } from './sheets.js';
 import { act, leaveTown, logout, state } from './store.js';
 import { cycleTheme, getTheme, themeName } from './theme.js';
@@ -58,7 +58,7 @@ export function createSelf() {
       ['装饰', inv.items.filter((i) => i.category === 'decor')],
       ['家具', inv.items.filter((i) => i.category === 'furniture')],
     ];
-    el.replaceChildren(
+    fill(el,
       h(
         'header',
         { class: 'panel-head' },
@@ -156,7 +156,6 @@ export function createSelf() {
         ),
       ),
     );
-    void toast;
   }
 
   return { el, update };

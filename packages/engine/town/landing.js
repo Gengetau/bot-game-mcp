@@ -1,20 +1,20 @@
 // 入口页：没登录也能看公开的小镇；有票据就兑换；本机试玩；第一次进来建居民；离开后回来。
-import { dateTimeOf, h, icon, toast } from './dom.js';
-import { openGameResult as _unused } from './game.js';
+import { dateTimeOf, fill, h, hourMinute, icon, toast } from './dom.js';
 import { createMap } from './map.js';
 import { openPlace } from './sheets.js';
-import { devLogin, enter, http, logout, refreshPub, serverNow, state } from './store.js';
+import { devLogin, enter, http, logout, serverNow, state } from './store.js';
 import { openSpectate } from './game.js';
 import { btn, chip, empty, field, section } from './ui.js';
 import { cycleTheme, getTheme, themeName } from './theme.js';
-import { hourMinute } from './dom.js';
 
 /** @typedef {import('./types.js').Report} Report */
 
 const tz = () => state.config?.world.timezone ?? 'Asia/Tokyo';
 
-export function weatherIcon(id) {
-  return { clear: 'sun', cloudy: 'cloud', breeze: 'breeze', rain: 'rain' }[id] ?? 'sun';
+export function weatherIcon(/** @type {string} */ id) {
+  /** @type {Record<string, string>} */
+  const m = { clear: 'sun', cloudy: 'cloud', breeze: 'breeze', rain: 'rain' };
+  return m[id] ?? 'sun';
 }
 
 /** 注册表单 */
@@ -149,7 +149,7 @@ export function createLanding() {
     const pub = state.pub;
     if (!pub) return;
     const running = pub.places.flatMap((p) => p.activities.filter((a) => a.status === 'running').map((a) => ({ ...a, place: p.name })));
-    el.querySelector('.landing-extra')?.replaceChildren(
+    fill(extra,
       section(
         '今天的公共事件',
         pub.events.length
@@ -210,5 +210,3 @@ export function createLanding() {
   return { el, update, tick: (/** @type {number} */ now) => map.tick(now), map };
 }
 
-void refreshPub;
-void _unused;

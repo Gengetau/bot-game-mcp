@@ -221,7 +221,7 @@ export class TownError extends Error {
     init: TownErrorInit,
   ) {
     super(message, init.cause !== undefined ? { cause: init.cause } : undefined);
-    this.name = 'TownError';
+    this.name = new.target.name;
     this.tool = init.tool;
     this.reason = init.reason;
     this.data = init.data ?? {};
@@ -321,6 +321,10 @@ export function toTownError(e: unknown, tool: string, requestId?: string): unkno
     return e;
   }
   if (e instanceof ToolError) {
+    // 引擎没开小镇时，MCP 层回「Tool enter_world not found」，没有错误码
+    if (!e.code && /Tool \S+ not found/i.test(e.raw ?? e.message)) {
+      return new TownDisabledError('town_disabled', '引擎没有开小镇（town.enabled）。', { tool, ...(requestId ? { requestId } : {}), cause: e });
+    }
     const parsed = parseToolErrorText(e.raw ?? e.message);
     const rawCode = (e.code ?? parsed.code ?? '').toLowerCase();
     const code: TownErrorCode = KNOWN_CODES.has(rawCode) ? (rawCode as TownErrorCode) : 'unknown';

@@ -38,7 +38,7 @@ const PALETTE = ['#d98b3a', '#6f9a63', '#5f8fb0', '#b9605a', '#8b6bb0', '#c4a23c
 /** @param {string} str */
 function hashColor(str) {
   let hsh = 0;
-  for (const ch of str) hsh = (hsh * 31 + ch.codePointAt(0)) >>> 0;
+  for (const ch of str) hsh = (hsh * 31 + (ch.codePointAt(0) ?? 0)) >>> 0;
   return PALETTE[hsh % PALETTE.length] ?? '#d98b3a';
 }
 
@@ -72,7 +72,6 @@ export function tintFor(hour) {
   return { color: 'rgb(26,39,85)', opacity: 0.38, night: 1 };
 }
 
-const reduceMotion = () => window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
 /**
  * @typedef {{ pub: PublicView | null, me: MeView | null, now: number, hour: number }} MapInput
@@ -289,7 +288,6 @@ export function createMap(opts) {
       const n = NODES[/** @type {keyof typeof NODES} */ (pid)];
       if (!n) continue;
       const shown = list.slice(0, 12);
-      const cols = Math.min(6, shown.length);
       shown.forEach((r, k) => {
         const col = k % 6;
         const row = Math.floor(k / 6);
@@ -302,7 +300,6 @@ export function createMap(opts) {
         place(g, x, y, first);
         seen.add(r.id);
       });
-      void cols;
       const bits = placeBits.get(pid);
       if (bits) {
         const total = list.length;
@@ -422,7 +419,7 @@ function diceGlyph() {
 /** 背景的小景：树、池塘、草丛。 */
 function decor() {
   const g = s('g', { class: 'decor', 'pointer-events': 'none' });
-  const tree = (x, y, k = 1) => g.appendChild(s('g', { transform: `translate(${x} ${y}) scale(${k})` }, s('ellipse', { cx: 0, cy: 14, rx: 13, ry: 4, class: 'tree-shadow' }), s('rect', { x: -2, y: 2, width: 4, height: 13, class: 'tree-trunk' }), s('circle', { cx: 0, cy: -4, r: 13, class: 'tree-a' }), s('circle', { cx: -8, cy: 3, r: 9, class: 'tree-b' }), s('circle', { cx: 8, cy: 2, r: 9, class: 'tree-b' })));
+  const tree = (/** @type {number} */ x, /** @type {number} */ y, k = 1) => g.appendChild(s('g', { transform: `translate(${x} ${y}) scale(${k})` }, s('ellipse', { cx: 0, cy: 14, rx: 13, ry: 4, class: 'tree-shadow' }), s('rect', { x: -2, y: 2, width: 4, height: 13, class: 'tree-trunk' }), s('circle', { cx: 0, cy: -4, r: 13, class: 'tree-a' }), s('circle', { cx: -8, cy: 3, r: 9, class: 'tree-b' }), s('circle', { cx: 8, cy: 2, r: 9, class: 'tree-b' })));
   [
     [30, 60, 1],
     [58, 84, 0.8],
@@ -459,7 +456,7 @@ function decor() {
 function building(id) {
   const g = s('g', { class: `bld bld-${id}` });
   const add = (/** @type {SVGElement} */ el) => g.appendChild(el);
-  const win = (x, y, w = 11, h = 12) => add(s('rect', { x, y, width: w, height: h, rx: 2, class: 'b-win' }));
+  const win = (/** @type {number} */ x, /** @type {number} */ y, w = 11, h = 12) => add(s('rect', { x, y, width: w, height: h, rx: 2, class: 'b-win' }));
   switch (id) {
     case 'tea_house':
       add(s('ellipse', { cx: 0, cy: 34, rx: 46, ry: 6, class: 'b-shadow' }));
@@ -598,7 +595,7 @@ function drawSky(g, weatherId, night) {
  */
 function drawWeather(g, weatherId) {
   g.replaceChildren();
-  const cloud = (x, y, k, delay) => g.appendChild(s('g', { class: 'cloud', style: `animation-delay:${delay}s`, transform: `translate(${x} ${y}) scale(${k})` }, s('path', { d: 'M-30 8 a14 14 0 0 1 4 -27 a20 20 0 0 1 38 -4 a15 15 0 0 1 14 31z' })));
+  const cloud = (/** @type {number} */ x, /** @type {number} */ y, /** @type {number} */ k, /** @type {number} */ delay) => g.appendChild(s('g', { class: 'cloud', style: `animation-delay:${delay}s`, transform: `translate(${x} ${y}) scale(${k})` }, s('path', { d: 'M-30 8 a14 14 0 0 1 4 -27 a20 20 0 0 1 38 -4 a15 15 0 0 1 14 31z' })));
   if (weatherId === 'rain') {
     cloud(120, 40, 1.4, 0);
     cloud(360, 30, 1.7, -4);

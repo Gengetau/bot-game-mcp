@@ -22,7 +22,7 @@ export interface PublicSpot {
   kind: 'human' | 'agent';
   /** 公共地点编号、'residential'，或 null（不在场） */
   at: string | null;
-  /** 在两个公开区域之间移动时才有；住宅区内部的走动不出现 */
+  /** 在两个公共地点之间移动时才有；住宅区内部的走动、进出住宅区的路程都不出现 */
   moving?: { from: string; to: string; path: string[]; startedAt: number; arriveAt: number };
   /** 正在公共场所的一局小游戏里 */
   playing?: boolean;
@@ -36,6 +36,9 @@ export function publicSpot(r: ResidentRow): PublicSpot {
     const from = zoneOf(r.move.from);
     const to = zoneOf(r.move.to);
     if (from === to) return { ...base, at: from };
+    // 进出住宅区的路上，公开层面一直算「在住宅区」：路程长短会暴露是哪条巷子、进没进门，
+    // 所以不给出发和到达时间。出发去住宅区的那一刻就算到了；从住宅区出来的，到了目的地才现身。
+    if (from === RESIDENTIAL || to === RESIDENTIAL) return { ...base, at: RESIDENTIAL };
     const path: string[] = [];
     for (const node of r.move.path) {
       const z = zoneOf(node);

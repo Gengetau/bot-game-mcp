@@ -1,5 +1,5 @@
 // 入口：外壳、导航、顶栏、横幅、秒表。具体面板在各自的模块里。
-import { clockOf, closeAllSheets, h, hourMinute, icon, leftText } from './dom.js';
+import { clockOf, closeAllSheets, fill, h, hourMinute, icon, leftText } from './dom.js';
 import { createGameScreen, openGameResult } from './game.js';
 import { createHere } from './here.js';
 import { createLanding, weatherIcon } from './landing.js';
@@ -250,7 +250,7 @@ function renderTown() {
   const hk = JSON.stringify([pub?.events, pub?.places.map((p) => [p.id, p.residents.length, p.activities.length]), me.suggestions, me.location.space, tab]);
   if (sh.brief.dataset.memo !== hk && pub) {
     sh.brief.dataset.memo = hk;
-    sh.brief.replaceChildren(
+    fill(sh.brief,
       me.location.moving ? h('div', { class: 'hint' }, `正在去${me.location.moving.toName}……`) : h('div', { class: 'where' }, icon('walk', 16), h('b', null, me.location.name), h('span', { class: 'hint' }, '点地图上的地点可以前往')),
       pub.events.length ? section('今天的公共事件', h('div', { class: 'stack' }, pub.events.map((e) => h('div', { class: `ev ${e.status}` }, h('div', { class: 'ev-top' }, h('b', null, e.title), chip(e.status === 'open' ? '进行中' : e.status === 'scheduled' ? '待开始' : e.status === 'missed' ? '错过了' : '已结束', e.status === 'open' ? 'moss' : 'dim')), h('p', { class: 'hint' }, `${pub.places.find((p) => p.id === e.place)?.name ?? ''} · ${clockOf(e.opensAt, tz())}~${clockOf(e.closesAt, tz())}${e.target ? ` · 共同进度 ${e.progress ?? 0}/${e.target}` : ''}`))))) : null,
       me.suggestions.length ? section('小建议', h('ul', { class: 'bullets' }, me.suggestions.map((t) => h('li', null, t)))) : null,
@@ -307,10 +307,8 @@ function tickSecond() {
 
 setInterval(tickSecond, 1000);
 setInterval(() => {
-  const reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
   const m = shell?.map ?? landing?.map;
   if (m && m.hasMovers()) m.tick(serverNow());
-  void reduce;
 }, 400);
 setInterval(() => {
   // 昼夜色调随世界时间缓慢变化

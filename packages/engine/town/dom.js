@@ -2,7 +2,7 @@
 const SVG_NS = 'http://www.w3.org/2000/svg';
 
 /**
- * @typedef {string | number | boolean | null | undefined | Node | Child[]} Child
+ * @typedef {string | number | boolean | null | undefined | Node | unknown[]} Child
  */
 
 /**
@@ -12,7 +12,7 @@ const SVG_NS = 'http://www.w3.org/2000/svg';
 function append(parent, kid) {
   if (kid === null || kid === undefined || kid === false || kid === true) return;
   if (Array.isArray(kid)) {
-    for (const k of kid) append(parent, k);
+    for (const k of kid) append(parent, /** @type {Child} */ (k));
     return;
   }
   parent.appendChild(kid instanceof Node ? kid : document.createTextNode(String(kid)));
@@ -35,10 +35,11 @@ export function h(tag, props, ...kids) {
 
 /**
  * 创建 SVG 元素。
- * @param {string} tag
+ * @template {keyof SVGElementTagNameMap} K
+ * @param {K} tag
  * @param {Record<string, any> | null} [attrs]
  * @param {...Child} kids
- * @returns {SVGElement}
+ * @returns {SVGElementTagNameMap[K]}
  */
 export function s(tag, attrs, ...kids) {
   const el = document.createElementNS(SVG_NS, tag);
@@ -314,7 +315,7 @@ export function closeAllSheets() {
 export function confirmDialog(opts) {
   return new Promise((resolve) => {
     let answered = false;
-    const done = (v) => {
+    const done = (/** @type {boolean} */ v) => {
       if (answered) return;
       answered = true;
       sh.close();
@@ -344,8 +345,9 @@ export function avatar(name, kind, mine = false) {
 /**
  * 简单的数字格式（千分位不需要，这里只是保护 NaN）。
  * @param {unknown} v
+ * @param {number} [fb]
  */
-export function num(v) {
+export function num(v, fb = 0) {
   const n = Number(v);
-  return Number.isFinite(n) ? n : 0;
+  return Number.isFinite(n) ? n : fb;
 }

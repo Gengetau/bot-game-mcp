@@ -419,22 +419,53 @@ describe('栖灯镇隐私：住宅区内部的走动、公开层只到「住宅�
     expectClean('被请出后的小岚', JSON.stringify(v) + JSON.stringify(agentView(s.t.w, s.b.row(), s.b.clientId)), [DECOR, HOME_A]);
   });
 
-  it.skip('公开路径上的到达时间不应暴露目的巷子（BUG：publicSpot 的 moving.arriveAt 带着真实路程）', () => {
-    // 阿灯住东灯巷、小岚住西灯巷，两人同时从茶馆回家：到西灯巷的家 13 秒，到东灯巷的家 23 秒（要绕广场）。
-    // 公开地图的 moving 带着真实的出发/到达时间，旁观者据此能分出两个人住在不同的巷子。
+  it('公开路径上的时间不暴露目的巷子和是否进门', () => {
+    // 阿灯住东灯巷、小岚住西灯巷：从茶馆回家的路程长短不同，从家里出来也一样。
+    // 公开层面进出住宅区的路上一直算「在住宅区」，不给出发和到达时间。
     const t = makeTown();
     const a = t.join('阿灯');
     const b = t.join('小岚', 'agent');
     a.go('tea_house');
     b.go('tea_house');
     pulse([a, b]);
+    const placeEvents = () =>
+      (t.w.db.all('SELECT occurred_at, projection FROM public_events WHERE type = ? ORDER BY cursor', 'place') as { occurred_at: number; projection: string }[]).map((e) => ({
+        at: e.occurred_at,
+        resident: (JSON.parse(e.projection) as { resident: { id: string; at: string | null; moving?: unknown } }).resident,
+      }));
+
+    // 回家：出发那一刻公开位置就变成住宅区，之后（真正到达时）不再有公开事件
+    let before = placeEvents().length;
+    const leftAt = t.clock.t;
     a.act('move', { to: 'home' });
     b.act('move', { to: 'home' });
-    const spots = publicView(t.w).moving;
-    expect(spots).toHaveLength(2);
-    const durations = spots.map((s) => s.moving!.arriveAt - s.moving!.startedAt);
-    // 期望：公开投影里两种目的地不可区分
-    expect(new Set(durations).size).toBe(1);
+    let view = publicView(t.w);
+    expect(view.moving).toHaveLength(0);
+    expect(view.residential.residents.map((x) => x.id).sort()).toEqual([a.residentId, b.residentId].sort());
+    let fresh = placeEvents().slice(before);
+    expect(fresh.map((e) => [e.at, e.resident.at, e.resident.moving])).toEqual([
+      [leftAt, 'residential', undefined],
+      [leftAt, 'residential', undefined],
+    ]);
+    before = placeEvents().length;
+    stay(t, 40_000, [a, b]);
+    expect(a.row().location_id).toBe(`home:${a.residentId}`);
+    expect(b.row().location_id).toBe(`home:${b.residentId}`);
+    expect(placeEvents().slice(before)).toHaveLength(0);
+
+    // 出门：出发时没有公开事件，到了目的地才现身；公开地图上路上的人不带时间
+    before = placeEvents().length;
+    a.act('move', { to: 'tea_house' });
+    b.act('move', { to: 'tea_house' });
+    view = publicView(t.w);
+    expect(view.moving).toHaveLength(0);
+    expect(view.residential.residents).toHaveLength(2);
+    expect(placeEvents().slice(before)).toHaveLength(0);
+    expect(JSON.stringify(view)).not.toContain('arriveAt');
+    stay(t, 40_000, [a, b]);
+    fresh = placeEvents().slice(before);
+    expect(fresh.map((e) => e.resident.at)).toEqual(['tea_house', 'tea_house']);
+    expect(fresh.every((e) => e.resident.moving === undefined)).toBe(true);
   });
 });
 

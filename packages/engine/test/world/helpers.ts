@@ -116,6 +116,7 @@ export class Town {
   readonly clock: FakeClock;
   readonly logs: string[] = [];
   private n = 0;
+  private opens = 0;
   constructor(readonly opts: TownOpts = {}) {
     this.clock = opts.clock ?? new FakeClock();
     this.w = this.open();
@@ -126,7 +127,8 @@ export class Town {
       dbPath: this.opts.dbPath ?? ':memory:',
       registry: createRegistry({}),
       now: this.clock.now,
-      rng: new SeededRng(this.opts.seed ?? 'town-test'),
+      // 编号用的随机流每次重开换一段：同一个种子从头再来会生成和库里已有的一样的编号
+      rng: new SeededRng(`${this.opts.seed ?? 'town-test'}${this.opens++ ? `#${this.opens}` : ''}`),
       seed: this.opts.seed ?? 'town-test',
       params: this.opts.params ?? {},
       log: (m) => this.logs.push(m),

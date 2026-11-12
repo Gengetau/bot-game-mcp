@@ -1,8 +1,8 @@
 // 弹层：居民资料、报价、地点、写信、读信、改资料、回顾。
-import { avatar, confirmDialog, dateTimeOf, h, icon, openSheet, relTime, toast } from './dom.js';
+import { avatar, confirmDialog, dateTimeOf, fill, h, icon, openSheet, relTime, toast } from './dom.js';
 import { openSpectate } from './game.js';
 import { act, http, refreshMe, serverNow, spaceLabel, state } from './store.js';
-import { btn, chip, empty, field, row, section, toggle } from './ui.js';
+import { btn, chip, empty, field, row, section } from './ui.js';
 
 /** @typedef {import('./types.js').Card} Card */
 /** @typedef {import('./types.js').Neighbor} Neighbor */
@@ -157,7 +157,7 @@ export function openOfferComposer(kind, target) {
 
   function refresh() {
     const { parts, wparts } = collect();
-    summary.replaceChildren(
+    fill(summary,
       h('p', null, h('b', null, '你将交出：'), parts.length ? parts.join('、') : '（还没选）'),
       kind === 'trade' ? h('p', null, h('b', null, `换回${target.name}的：`), wparts.length ? wparts.join('、') : '（还没选）') : null,
       h('p', { class: 'hint' }, kind === 'loan' ? `书借出后所有权不变，3 天内要还；${target.name}接受时才会真的转到 TA 手上。` : `发出时会先预留你要交出的东西，${target.name}接受后才转移。`),

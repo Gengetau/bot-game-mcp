@@ -358,7 +358,6 @@ export function refreshMe(now = false) {
       }
     }
   })();
-  void now;
   return meInflight;
 }
 

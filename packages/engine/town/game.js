@@ -1,7 +1,7 @@
 // 小游戏界面：数字炸弹、密封竞拍、大话骰各有专门的界面，其他游戏用通用兜底渲染（按 todo.actions 生成表单）。
 import { avatar, confirmDialog, h, icon, num, openSheet, s, toast } from './dom.js';
-import { act, http, serverNow, state } from './store.js';
-import { btn, chip, empty, field, row, section } from './ui.js';
+import { act, http, state } from './store.js';
+import { btn, chip, empty, field, section } from './ui.js';
 
 /** @typedef {import('./types.js').GameView} GameView */
 /** @typedef {import('./types.js').GamePlayer} GamePlayer */
@@ -698,4 +698,3 @@ export function openSpectate(activityId, title) {
   return sh;
 }
 
-export { row as _row, serverNow as _serverNow };

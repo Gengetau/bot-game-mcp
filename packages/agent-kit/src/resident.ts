@@ -1040,9 +1040,10 @@ class Resident implements ResidentHandle {
     let view = first;
     let outcome: MemorySaveEntry['outcome'] = 'executed';
     let error: string | undefined;
+    const first0 = pending.done;
     for (let i = pending.done; i < pending.actions.length; i++) {
       if (this.stopped) return { outcome: 'partial', error: 'stopped' };
-      if (i > pending.done) {
+      if (i > first0) {
         try {
           view = await this.town.view({ signal: this.ac.signal });
           this.adopt(view);
@@ -1146,14 +1147,19 @@ class Resident implements ResidentHandle {
     await this.inflight;
   }
 
-  /** 用运行器的时钟计时：超时就取消 ctx.signal 并抛 DecideTimeout，之后决策函数迟到的结果被忽略。 */
+  /** 用运行器的时钟计时：超时就取消 ctx.signal 并抛 DecideTimeout，之后决策函数迟到的结果被忽略；停止时立刻放弃等待。 */
   private withTimeout<T>(p: Promise<T> | T, ms: number, ctrl: AbortController): Promise<T> {
     const timerAc = new AbortController();
     const timeout = this.clock.sleep(ms, timerAc.signal).then<never>(() => {
       ctrl.abort();
       throw new DecideTimeout(`决策函数超过 ${ms} 毫秒没有返回`);
     });
-    return Promise.race([Promise.resolve(p), timeout]).finally(() => timerAc.abort());
+    const stopped = new Promise<never>((_, reject) => {
+      const onStop = () => reject(new DOMException('aborted', 'AbortError'));
+      if (this.ac.signal.aborted) onStop();
+      else this.ac.signal.addEventListener('abort', onStop, { once: true });
+    });
+    return Promise.race([Promise.resolve(p), timeout, stopped]).finally(() => timerAc.abort());
   }
 }
 
