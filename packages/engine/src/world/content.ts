@@ -212,6 +212,16 @@ export const PUBLIC_OBJECTS: readonly { id: string; place: string; type: string;
   { id: 'garden:planter3', place: 'garden', type: 'planter', label: '向阳的花箱' },
 ];
 
+/**
+ * 公共场所里的游戏桌（小游戏按桌入局）。id 与地图（spatial/town-map.ts，kind = game_table）里的可交互物件一一对应，
+ * 有测试核对。propose_game / join_game 的 objectId 只认这张白名单。
+ */
+export const GAME_TABLES: readonly { id: string; place: string; label: string }[] = [
+  { id: 'arcade:table1', place: 'arcade', label: '靠门的游戏桌' },
+  { id: 'arcade:table2', place: 'arcade', label: '里侧的游戏桌' },
+];
+export const gameTable = (id: string): { id: string; place: string; label: string } | undefined => GAME_TABLES.find((t) => t.id === id);
+
 /** 新住宅自带的物件。花箱和灶台要另外买来摆。 */
 export const HOME_STARTER_OBJECTS: readonly string[] = ['tea_table', 'bookshelf', 'rest_nook'];
 
@@ -670,9 +680,9 @@ export interface EmbeddedGameDef {
 
 /** 已通过接入检查并接入的游戏。计划接入但还没核查的不写在这里（见 docs/TOWN.md）。 */
 export const EMBEDDED_GAMES: readonly EmbeddedGameDef[] = [
-  { type: 'number_bomb', venues: ['arcade', 'plaza'], minPlayers: 2, maxPlayers: 8, options: { mode: 'single', turn_timeout_s: 45 } },
+  { type: 'number_bomb', venues: ['arcade'], minPlayers: 2, maxPlayers: 8, options: { mode: 'single', turn_timeout_s: 45 } },
   { type: 'sealed_auction', venues: ['arcade'], minPlayers: 3, maxPlayers: 6, options: { rounds: 4, bid_timeout_s: 45 } },
-  { type: 'liars_dice', venues: ['arcade', 'tea_house'], minPlayers: 2, maxPlayers: 6, options: { lives: 2, turn_timeout_s: 40 } },
+  { type: 'liars_dice', venues: ['arcade'], minPlayers: 2, maxPlayers: 6, options: { lives: 2, turn_timeout_s: 40 } },
 ];
 
 export const embeddedGameDef = (type: string): EmbeddedGameDef | undefined => EMBEDDED_GAMES.find((g) => g.type === type);

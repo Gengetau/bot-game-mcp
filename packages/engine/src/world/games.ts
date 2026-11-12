@@ -10,14 +10,14 @@
 import type { Rng } from '../core/rng.js';
 import type { GameRecord, Seat } from '../core/types.js';
 import type { EmbeddedSeatView } from '../core/runner.js';
-import { EMBEDDED_GAMES, embeddedGameDef, placeDef } from './content.js';
+import { EMBEDDED_GAMES, GAME_TABLES, embeddedGameDef, gameTable, placeDef } from './content.js';
 import { type Row, parseJson } from './db.js';
 import { WorldError, badRequest, precondition } from './errors.js';
 import { addMood, applyNeeds, bumpCounter } from './life.js';
 import { card } from './project.js';
 import { mint } from './property.js';
 import { sha256, type WorldService } from './service.js';
-import { stopNav, touchScene } from './space.js';
+import { objectReach, requireReach, stopNav, touchScene } from './space.js';
 import type { ResidentRow } from './types.js';
 
 interface Loaded {
@@ -66,6 +66,8 @@ export interface ActivityView {
   game: string;
   name: string;
   venue: string;
+  /** 这一桌占着哪张游戏桌（地图物件编号）；旧版留下的记录没有 */
+  tableId: string | null;
   status: string;
   host: ReturnType<typeof card>;
   players: ReturnType<typeof card>[];
@@ -85,6 +87,7 @@ export function activityView(w: WorldService, row: Row): ActivityView {
     game: String(row.game_type),
     name: w.runner.def(row.game_type).name,
     venue: String(row.venue_id),
+    tableId: row.table_id ?? null,
     status: String(row.status),
     host: card(w.mustResident(row.host_id)),
     players,
@@ -98,6 +101,15 @@ export function activityView(w: WorldService, row: Row): ActivityView {
 /** 某个场所里正在凑桌或进行中的小游戏（公开信息）。 */
 export function activitiesAt(w: WorldService, venueId: string): ActivityView[] {
   return w.db.all("SELECT * FROM activities WHERE venue_id = ? AND status IN ('forming','running') ORDER BY created_at", venueId).map((row) => activityView(w, row));
+}
+
+/** 这个场所里的游戏桌，和占着它的那一局（公共场所里谁在凑桌是公开信息）。 */
+export function tablesAt(w: WorldService, venueId: string): { id: string; name: string; activityId: string | null }[] {
+  return GAME_TABLES.filter((t) => t.place === venueId).map((t) => ({
+    id: t.id,
+    name: t.label,
+    activityId: (w.db.get("SELECT activity_id FROM activities WHERE table_id = ? AND status IN ('forming','ready','running','settling')", t.id)?.activity_id as string | undefined) ?? null,
+  }));
 }
 
 /** 这个场所能发起哪些小游戏。 */
@@ -296,20 +308,36 @@ export function installGames(w: WorldService): void {
   });
 
   // ── 凑桌 ──
+  /** objectId 必须是游戏桌白名单里、当前场所的桌子：写错或伪造的编号明确拒绝，不能落到 requireReach 的「查不到就放行」。 */
+  const tableOf = (venue: string, raw: unknown): { id: string; place: string; label: string } => {
+    if (typeof raw !== 'string' || raw === '') throw badRequest('需要 objectId：要在哪张游戏桌凑桌（视图 here.tables 里的桌子编号）。');
+    const t = gameTable(raw);
+    if (!t || t.place !== venue) throw precondition('这里没有这张游戏桌。', 'not_a_table');
+    return t;
+  };
+
+  /** 站在桌边才算数：够不着就 too_far（附带 navigateTo），够得着而且正在走就先站住。 */
+  const reachTable = (r: ResidentRow, tableId: string, now: number) => requireReach(w, r, tableId, now);
+
   w.handlers.set('propose_game', ({ r, action, now, requestId }) => {
     const venue = w.spaceOf(r);
     const def = embeddedGameDef(String(action.game ?? ''));
     if (!def) throw badRequest('这种游戏还没有接入小镇。');
     if (!venue || !def.venues.includes(venue)) throw precondition(`这里不能玩这个。可以去：${def.venues.map((v) => placeDef(v)?.name ?? v).join('、')}。`, 'wrong_venue');
     if (w.db.get('SELECT 1 AS x FROM activity_participants WHERE resident_id = ? AND active = 1', r.resident_id)) throw precondition('你已经在一桌里了。', 'already_in_activity');
-    if (w.db.scalar("SELECT COUNT(*) FROM activities WHERE venue_id = ? AND status = 'forming'", venue) >= 3) throw precondition('这里已经有好几桌在等人了，先加入一桌吧。', 'too_many_lobbies');
+    const table = tableOf(venue, action.objectId);
+    if (w.db.get("SELECT 1 AS x FROM activities WHERE table_id = ? AND status IN ('forming','ready','running','settling')", table.id)) {
+      throw precondition(`${table.label}已经有一局在凑人或在打了，换一张桌，或者等它结束。`, 'table_busy');
+    }
+    reachTable(r, table.id, now);
     const activityId = w.id('a');
     const expires = now + w.params.activityLobbyTtlMs;
     w.db.run(
-      "INSERT INTO activities(activity_id, world_id, venue_id, game_type, status, host_id, options_json, origin_request_id, created_at, lobby_expires_at) VALUES (?,?,?,?,'forming',?,?,?,?,?)",
+      "INSERT INTO activities(activity_id, world_id, venue_id, table_id, game_type, status, host_id, options_json, origin_request_id, created_at, lobby_expires_at) VALUES (?,?,?,?,?,'forming',?,?,?,?,?)",
       activityId,
       w.worldId,
       venue,
+      table.id,
       def.type,
       r.resident_id,
       JSON.stringify(def.options),
@@ -328,9 +356,16 @@ export function installGames(w: WorldService): void {
     const act = w.db.get('SELECT * FROM activities WHERE activity_id = ?', String(action.activityId ?? ''));
     if (!act || act.venue_id !== w.spaceOf(r)) throw precondition('这一桌不在你身边。', 'not_here');
     if (act.status !== 'forming') throw precondition(act.status === 'running' ? '这一桌已经开局了。' : '这一桌已经散了。', 'not_open');
+    if (!act.table_id) throw precondition('这一桌是旧版本留下的，已经失效了，请另凑一桌。', 'not_open');
+    // 带了 objectId 就必须是这一桌所在的那张游戏桌
+    if (action.objectId !== undefined && action.objectId !== null) {
+      const t = tableOf(String(act.venue_id), action.objectId);
+      if (t.id !== act.table_id) throw precondition('这不是那一桌所在的游戏桌。', 'wrong_table');
+    }
     if (w.db.get('SELECT 1 AS x FROM activity_participants WHERE resident_id = ? AND active = 1', r.resident_id)) throw precondition('你已经在一桌里了。', 'already_in_activity');
     const def = embeddedGameDef(act.game_type)!;
     if (w.db.scalar('SELECT COUNT(*) FROM activity_participants WHERE activity_id = ?', act.activity_id) >= def.maxPlayers) throw precondition('这一桌满了。', 'full');
+    reachTable(r, String(act.table_id), now);
     w.db.run('INSERT INTO activity_participants(activity_id, resident_id, confirmed, active, joined_at) VALUES (?,?,1,1,?)', act.activity_id, r.resident_id, now);
     notifyVenue(act, now);
     return { status: 'accepted', activity: activityView(w, act) };
@@ -346,13 +381,26 @@ export function installGames(w: WorldService): void {
     const act = w.db.get("SELECT * FROM activities WHERE activity_id = ? AND status = 'forming'", String(action.activityId ?? ''));
     if (!act || act.host_id !== r.resident_id) throw precondition('只有发起人能开局，而且要还没开。', 'not_host');
     const def = embeddedGameDef(act.game_type)!;
+    // 发起人自己也得在桌边（够得着就在这里站住）；旧版没有桌子的记录开不了
+    if (!act.table_id) throw precondition('这一桌是旧版本留下的，已经失效了，请另凑一桌。', 'not_open');
+    const tableId = String(act.table_id);
+    reachTable(r, tableId, now);
+    // 开局时重新确认每位成员：在这个场所、还在桌边（此刻的权威位置）。不在的剔除
     const members: ResidentRow[] = [];
+    const dropped: ResidentRow[] = [];
     for (const p of w.db.all('SELECT resident_id FROM activity_participants WHERE activity_id = ? ORDER BY joined_at, resident_id', act.activity_id)) {
       const m = w.mustResident(String(p.resident_id));
-      if (w.interactive(m) && w.spaceOf(m) === act.venue_id) members.push(m);
-      else w.db.run('DELETE FROM activity_participants WHERE activity_id = ? AND resident_id = ?', act.activity_id, m.resident_id);
+      const near = m.resident_id === r.resident_id || objectReach(w, m.resident_id, tableId, now)?.near === true;
+      if (w.interactive(m) && w.spaceOf(m) === act.venue_id && near) members.push(m);
+      else {
+        dropped.push(m);
+        w.db.run('DELETE FROM activity_participants WHERE activity_id = ? AND resident_id = ?', act.activity_id, m.resident_id);
+      }
     }
-    if (members.length < def.minPlayers) throw precondition(`${w.runner.def(def.type).name}至少要 ${def.minPlayers} 个人，现在在场的只有 ${members.length} 个。`, 'not_enough');
+    if (members.length < def.minPlayers) {
+      const away = dropped.length ? `（${dropped.map((m) => m.name).join('、')}不在桌边）` : '';
+      throw precondition(`${w.runner.def(def.type).name}至少要 ${def.minPlayers} 个人，现在在桌边的只有 ${members.length} 个${away}。`, 'not_enough');
+    }
     if (w.db.scalar("SELECT COUNT(*) FROM activities WHERE world_id = ? AND status = 'running'", w.worldId) >= w.params.concurrentGames) {
       throw precondition('镇上同时进行的游戏已经到上限了，等一桌打完再开。', 'games_busy');
     }
@@ -381,11 +429,11 @@ export function installGames(w: WorldService): void {
       w.emitTo([m.resident_id], 'game_started', { activityId: act.activity_id, gameId, name: w.runner.def(def.type).name, seat }, now);
     }
     const running = w.db.get('SELECT * FROM activities WHERE activity_id = ?', act.activity_id)!;
-    notifyVenue(running, now);
+    notifyVenue(running, now, dropped.length ? { dropped: dropped.map((m) => m.resident_id) } : {});
     w.emitPublic('activity', { activity: { id: act.activity_id, name: w.runner.def(def.type).name, venue: act.venue_id, status: 'running', players: members.length } }, now);
     const g: Loaded = { rec, rng, save, revision: 0 };
     persist(running, g, now, 0);
-    return { status: 'accepted', gameId };
+    return { status: 'accepted', gameId, ...(dropped.length ? { dropped: dropped.map((m) => m.name) } : {}) };
   });
 
   // ── 局内动作 ──

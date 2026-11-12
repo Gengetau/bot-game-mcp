@@ -81,7 +81,12 @@ describe('审计 8：townGameAct 把 game_id 带进动作', () => {
       const v = await call(c, 'get_my_view');
       return call(c, 'world_act', { request_id: rid(), action_window: v.action_window, context_version: v.context.version, action });
     };
-    const p = await w(a.client, { type: 'propose_game', game: 'number_bomb' });
+    for (const x of [a, b]) {
+      await w(x.client, { type: 'navigate', to: 'arcade:table1' });
+      env.t.clock.advance(8_000); // 到桌边（路程约 6 秒，在导航租约内）
+      await call(x.client, 'heartbeat');
+    }
+    const p = await w(a.client, { type: 'propose_game', game: 'number_bomb', objectId: 'arcade:table1' });
     await w(b.client, { type: 'join_game', activityId: p.activity.id });
     await w(a.client, { type: 'start_game', activityId: p.activity.id });
     const who = [a, b];

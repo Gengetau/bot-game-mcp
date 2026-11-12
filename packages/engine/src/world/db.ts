@@ -42,7 +42,7 @@ export function loadSqlite(): SqliteModule {
 export type Row = Record<string, any>;
 export type Param = SQLInputValue;
 
-export const SCHEMA_VERSION = 3;
+export const SCHEMA_VERSION = 4;
 
 const MIGRATIONS: readonly string[] = [
   // ───── v1 ─────
@@ -598,6 +598,14 @@ const MIGRATIONS: readonly string[] = [
   -- 旧的到达任务全部作废；在途的旧移动由程序按截止规则结清一次（space.ts 的 settleLegacyMoves）
   UPDATE scheduled_jobs SET status = 'cancelled', processed_at = CAST(strftime('%s','now') AS INTEGER) * 1000
     WHERE kind = 'move_arrive' AND status = 'pending';
+  `,
+  // ───── v4 ─────
+  // 小游戏按桌入局（地图 town-p1.0）：活动记在哪张游戏桌上。旧记录没有桌子（NULL），照常读、照常结算。
+  // 同一张桌同时只能有一个凑桌中或进行中的局，由部分唯一索引兜底。
+  `
+  ALTER TABLE activities ADD COLUMN table_id TEXT;
+  CREATE UNIQUE INDEX IF NOT EXISTS activities_table_open ON activities(table_id)
+    WHERE table_id IS NOT NULL AND status IN ('forming','ready','running','settling');
   `,
 ];
 

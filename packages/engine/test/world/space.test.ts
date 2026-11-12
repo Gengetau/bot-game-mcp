@@ -755,11 +755,11 @@ describe('场景快照', () => {
     const a = t.join('阿灯');
     const b = t.join('小岚');
     const c = t.join('阿树');
-    for (const x of [a, b]) x.go('arcade');
+    for (const x of [a, b]) x.go('arcade:table1');
     const keys: string[][] = [];
     t.w.onSpace((k) => keys.push(k));
     const seen = () => keys.splice(0).flat();
-    const p = a.act('propose_game', { game: 'number_bomb' });
+    const p = a.act('propose_game', { game: 'number_bomb', objectId: 'arcade:table1' });
     b.act('join_game', { activityId: p.activity.id });
     seen();
     a.act('start_game', { activityId: p.activity.id });

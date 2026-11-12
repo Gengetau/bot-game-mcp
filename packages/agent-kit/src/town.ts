@@ -118,7 +118,9 @@ export interface TownView {
     objects?: { id: string; label: string; far?: true; can?: string; active?: unknown }[];
     /** 所有可去的目的地（navigate 的 to） */
     exits: { to: string; name: string }[];
-    activities: { id: string; name: string; status: string; players: string[]; need: number }[];
+    activities: { id: string; name: string; status: string; players: string[]; need: number; table?: string | null }[];
+    /** 游戏桌：far:true 表示够不着（先 navigate 到桌子 id）；activity 是占着它的那一局 */
+    tables?: { id: string; name: string; far?: true; activity?: string }[];
     games: { type: string; name: string; players: string }[];
     recent_chat: { from: string; text: string }[];
     [k: string]: unknown;
@@ -655,11 +657,14 @@ export class TownClient {
 
   // ── 小游戏 ──
 
-  proposeGame(game: string, o?: ActOptions) {
-    return this.act({ type: 'propose_game', game }, o);
+  /** 在某张游戏桌凑一桌。objectId 是视图 here.tables[].id；人要先走到桌边，否则得到 too_far（reason 'too_far'，附带 navigateTo）。 */
+  proposeGame(game: string, objectId: string, o?: ActOptions) {
+    return this.act({ type: 'propose_game', game, objectId }, o);
   }
-  joinGame(activityId: string, o?: ActOptions) {
-    return this.act({ type: 'join_game', activityId }, o);
+  /** 加入凑桌中的一桌。同样要站在那张桌子旁边；objectId 可省略（服务器按这一桌所在的桌子判断），写了就必须对得上。 */
+  joinGame(activityId: string, o?: ActOptions & { objectId?: string }) {
+    const { objectId, ...opts } = o ?? {};
+    return this.act({ type: 'join_game', activityId, ...(objectId !== undefined ? { objectId } : {}) }, opts);
   }
   leaveGameLobby(activityId: string, o?: ActOptions) {
     return this.act({ type: 'leave_game_lobby', activityId }, o);

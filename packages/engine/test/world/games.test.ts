@@ -13,12 +13,15 @@ import { gameViewFor, publicGameView } from '../../src/world/games.js';
 import type { WorldError } from '../../src/world/errors.js';
 import type { MeView } from '../../src/world/views.js';
 import { FakeClock, REF, bot, startGame } from '../helpers.js';
+import { isWalkable, zoneAt } from '../../src/world/spatial/index.js';
 import { Actor, makeTown, tempDb, type Town } from './helpers.js';
 
 type GameType = 'number_bomb' | 'sealed_auction' | 'liars_dice';
 const GAMES: GameType[] = ['number_bomb', 'sealed_auction', 'liars_dice'];
 const NAMES = ['甲', '乙', '丙', '丁', '戊', '己', '庚', '辛'];
 const MIN = 60_000;
+const TABLE1 = 'arcade:table1';
+const TABLE2 = 'arcade:table2';
 
 // ───────────────────────── 测试辅助（只在本文件里用） ─────────────────────────
 
@@ -28,9 +31,11 @@ function residents(t: Town, n: number): Actor[] {
 }
 
 /** 把一批人走到某个场所（全程保持心跳）。 */
-function gather(t: Town, actors: Actor[], venue: string): void {
+function gather(t: Town, actors: Actor[], venue: string, table: string | null = venue === 'arcade' ? TABLE1 : null): void {
   for (const a of actors) a.enter(); // 先（重新）登记在场：enter 是幂等的，掉线过的也能回来
   for (const a of actors) if (a.view().here?.space !== venue) a.go(venue);
+  // 小游戏按桌入局：走到桌边才能凑桌 / 加入
+  if (table) for (const a of actors) a.go(table);
   t.advanceAlive(1_000, actors);
   for (const a of actors) expect(a.view().here?.space).toBe(venue);
 }
@@ -39,7 +44,7 @@ function gather(t: Town, actors: Actor[], venue: string): void {
 function openTable(t: Town, game: GameType, actors: Actor[], venue = 'arcade'): string {
   gather(t, actors, venue);
   const [host, ...guests] = actors;
-  const p = host!.act('propose_game', { game });
+  const p = host!.act('propose_game', { game, objectId: 'arcade:table1' });
   const id = p.activity.id as string;
   for (const g of guests) g.act('join_game', { activityId: id });
   host!.act('start_game', { activityId: id });
@@ -124,7 +129,7 @@ describe('小游戏：从凑桌到结算（真实规则动作）', () => {
     const coins0 = [a, b, c].map((x) => x.coins());
     const cv0 = a.view().context.version;
 
-    const p = a.act('propose_game', { game: 'number_bomb' });
+    const p = a.act('propose_game', { game: 'number_bomb', objectId: 'arcade:table1' });
     expect(p.status).toBe('accepted');
     expect(p.activity).toMatchObject({ game: 'number_bomb', venue: 'arcade', status: 'forming', min: 2, max: 8 });
     // 同场所的其他人在视图里看得到这一桌
@@ -247,19 +252,19 @@ describe('小游戏：场所、人数与凑桌规则', () => {
     const t = makeTown();
     const [a] = residents(t, 1) as [Actor];
     // 广场：数字炸弹可以，密封竞拍和大话骰不行
-    expect(a.fail('propose_game', { game: 'sealed_auction' }).reason).toBe('wrong_venue');
+    expect(a.fail('propose_game', { game: 'sealed_auction', objectId: 'arcade:table1' }).reason).toBe('wrong_venue');
     expect(a.fail('propose_game', { game: 'liars_dice' }).reason).toBe('wrong_venue');
     expect(a.fail('propose_game', { game: 'werewolf' }).code).toBe('bad_request');
     expect(a.fail('propose_game', { game: 'texas_holdem' }).code).toBe('bad_request');
     expect(a.fail('propose_game', {}).code).toBe('bad_request');
-    // 茶馆：只有大话骰
+    // 茶馆没有游戏桌：所有游戏都只能在游戏馆
     a.go('tea_house');
-    expect(a.fail('propose_game', { game: 'number_bomb' }).reason).toBe('wrong_venue');
-    expect(a.act('propose_game', { game: 'liars_dice' }).activity.venue).toBe('tea_house');
+    expect(a.fail('propose_game', { game: 'number_bomb', objectId: 'arcade:table1' }).reason).toBe('wrong_venue');
+    expect(a.fail('propose_game', { game: 'liars_dice', objectId: 'arcade:table1' }).reason).toBe('wrong_venue');
     // 没有凑桌资格的地方（书屋）
     const [b] = [t.join('另一位', 'agent')];
     b.go('bookshop');
-    expect(b.fail('propose_game', { game: 'number_bomb' }).reason).toBe('wrong_venue');
+    expect(b.fail('propose_game', { game: 'number_bomb', objectId: 'arcade:table1' }).reason).toBe('wrong_venue');
   });
 
   it('走在路上（还不在游戏馆的区域里）不能凑桌；已经在一桌里不能再发起或加入别桌', () => {
@@ -269,14 +274,15 @@ describe('小游戏：场所、人数与凑桌规则', () => {
     // 走出广场、还没到游戏馆：脚下是灯笼路，不是游戏馆
     for (let i = 0; i < 40 && a.view().location.space === 'plaza'; i++) t.advanceAlive(1_000, [a, b]);
     expect(a.view().location.space).toBe('road');
-    expect(a.fail('propose_game', { game: 'number_bomb' }).reason).toBe('wrong_venue');
+    expect(a.fail('propose_game', { game: 'number_bomb', objectId: 'arcade:table1' }).reason).toBe('wrong_venue');
     a.walk();
     expect(a.view().location.space).toBe('arcade');
-    gather(t, [b], 'arcade');
-    const p = a.act('propose_game', { game: 'number_bomb' });
-    expect(a.fail('propose_game', { game: 'liars_dice' }).reason).toBe('already_in_activity');
+    a.go(TABLE1);
+    gather(t, [b], 'arcade', TABLE2);
+    const p = a.act('propose_game', { game: 'number_bomb', objectId: TABLE1 });
+    expect(a.fail('propose_game', { game: 'liars_dice', objectId: TABLE1 }).reason).toBe('already_in_activity');
     expect(a.fail('join_game', { activityId: p.activity.id }).reason).toBe('already_in_activity');
-    const q = b.act('propose_game', { game: 'liars_dice' });
+    const q = b.act('propose_game', { game: 'liars_dice', objectId: TABLE2 });
     expect(b.fail('join_game', { activityId: p.activity.id }).reason).toBe('already_in_activity');
     expect(q.activity.id).not.toBe(p.activity.id);
   });
@@ -286,7 +292,7 @@ describe('小游戏：场所、人数与凑桌规则', () => {
     const crowd = residents(t, 9);
     gather(t, crowd, 'arcade');
     const [host, g1, g2] = crowd as [Actor, Actor, Actor];
-    const p = host.act('propose_game', { game: 'sealed_auction' }); // 3~6 人
+    const p = host.act('propose_game', { game: 'sealed_auction', objectId: 'arcade:table1' }); // 3~6 人
     const id = p.activity.id as string;
     g1.act('join_game', { activityId: id });
     const e = host.fail('start_game', { activityId: id });
@@ -302,7 +308,8 @@ describe('小游戏：场所、人数与凑桌规则', () => {
     // 已经开局的桌不能再加入
     expect(crowd[6]!.fail('join_game', { activityId: id }).reason).toBe('not_open');
     // 数字炸弹单人不行
-    const solo = crowd[6]!.act('propose_game', { game: 'number_bomb' });
+    crowd[6]!.go(TABLE2);
+    const solo = crowd[6]!.act('propose_game', { game: 'number_bomb', objectId: TABLE2 });
     expect(crowd[6]!.fail('start_game', { activityId: solo.activity.id }).reason).toBe('not_enough');
   });
 
@@ -310,7 +317,7 @@ describe('小游戏：场所、人数与凑桌规则', () => {
     const t = makeTown();
     const [a, b] = residents(t, 2) as [Actor, Actor];
     gather(t, [a], 'arcade');
-    const p = a.act('propose_game', { game: 'number_bomb' });
+    const p = a.act('propose_game', { game: 'number_bomb', objectId: 'arcade:table1' });
     expect(b.view().here?.space).toBe('plaza');
     expect(b.view().here!.activities).toHaveLength(0);
     expect(b.fail('join_game', { activityId: p.activity.id }).reason).toBe('not_here');
@@ -321,7 +328,7 @@ describe('小游戏：场所、人数与凑桌规则', () => {
     const t = makeTown();
     const [a, b, c] = residents(t, 3) as [Actor, Actor, Actor];
     gather(t, [a, b, c], 'arcade');
-    const p = a.act('propose_game', { game: 'sealed_auction' });
+    const p = a.act('propose_game', { game: 'sealed_auction', objectId: 'arcade:table1' });
     const id = p.activity.id as string;
     b.act('join_game', { activityId: id });
     c.act('join_game', { activityId: id });
@@ -342,7 +349,7 @@ describe('小游戏：场所、人数与凑桌规则', () => {
     const t = makeTown();
     const [a, b, c] = residents(t, 3) as [Actor, Actor, Actor];
     gather(t, [a, b, c], 'arcade');
-    const p = a.act('propose_game', { game: 'number_bomb' });
+    const p = a.act('propose_game', { game: 'number_bomb', objectId: 'arcade:table1' });
     const id = p.activity.id as string;
     b.act('join_game', { activityId: id });
     c.act('join_game', { activityId: id });
@@ -359,7 +366,7 @@ describe('小游戏：场所、人数与凑桌规则', () => {
     const t = makeTown();
     const [a, b, c] = residents(t, 3) as [Actor, Actor, Actor];
     gather(t, [a, b, c], 'arcade');
-    const id = a.act('propose_game', { game: 'number_bomb' }).activity.id as string;
+    const id = a.act('propose_game', { game: 'number_bomb', objectId: 'arcade:table1' }).activity.id as string;
     b.act('join_game', { activityId: id });
     c.act('join_game', { activityId: id });
     // 绕过钩子制造「名单里有人其实已经不在场所」：直接把 c 的位置改到别处
@@ -371,53 +378,61 @@ describe('小游戏：场所、人数与凑桌规则', () => {
     expect(c.row().activity_id).toBeNull();
   });
 
-  it('同时进行的局数有上限（默认 3）：第 4 局 games_busy，别人打完后可以开', () => {
-    const t = makeTown();
-    const crowd = residents(t, 8);
-    gather(t, crowd, 'arcade');
-    const ids: string[] = [];
-    for (let i = 0; i < 4; i++) {
-      const host = crowd[i * 2]!;
-      const guest = crowd[i * 2 + 1]!;
-      const p = host.act('propose_game', { game: 'number_bomb' });
-      guest.act('join_game', { activityId: p.activity.id });
-      ids.push(p.activity.id);
-      if (i < 3) host.act('start_game', { activityId: p.activity.id });
-    }
-    expect(crowd[6]!.fail('start_game', { activityId: ids[3] }).reason).toBe('games_busy');
-    // 第四桌仍在凑桌，没有被破坏
-    expect(actStatus(t, ids[3]!)).toBe('forming');
-    // 打完第一局后可以开
-    playOut(t, 'number_bomb', crowd.slice(0, 2), ids[0]!, new SeededRng('busy'));
-    crowd[6]!.act('start_game', { activityId: ids[3] });
-    expect(actStatus(t, ids[3]!)).toBe('running');
-  });
-
-  it('同时进行的局数上限可由参数调整', () => {
+  it('同时进行的局数有上限：超了 games_busy，别人打完后可以开（游戏馆只有两张桌，所以用参数压到 1）', () => {
     const t = makeTown({ params: { concurrentGames: 1 } });
     const crowd = residents(t, 4);
-    gather(t, crowd, 'arcade');
-    const p1 = crowd[0]!.act('propose_game', { game: 'number_bomb' });
+    gather(t, crowd.slice(0, 2), 'arcade', TABLE1);
+    gather(t, crowd.slice(2), 'arcade', TABLE2);
+    const p1 = crowd[0]!.act('propose_game', { game: 'number_bomb', objectId: TABLE1 });
     crowd[1]!.act('join_game', { activityId: p1.activity.id });
-    const p2 = crowd[2]!.act('propose_game', { game: 'number_bomb' });
+    const p2 = crowd[2]!.act('propose_game', { game: 'number_bomb', objectId: TABLE2 });
     crowd[3]!.act('join_game', { activityId: p2.activity.id });
     crowd[0]!.act('start_game', { activityId: p1.activity.id });
     expect(crowd[2]!.fail('start_game', { activityId: p2.activity.id }).reason).toBe('games_busy');
+    expect(actStatus(t, p2.activity.id)).toBe('forming');
+    playOut(t, 'number_bomb', crowd.slice(0, 2), p1.activity.id, new SeededRng('busy'));
+    crowd[2]!.act('start_game', { activityId: p2.activity.id });
+    expect(actStatus(t, p2.activity.id)).toBe('running');
   });
 
-  it('同一场所最多 3 桌同时在等人', () => {
+  it('同一张桌同时只有一局（凑桌中或进行中）；另一张桌可以同时开；打完后这张桌空出来', () => {
     const t = makeTown();
-    const crowd = residents(t, 4);
-    gather(t, crowd, 'arcade');
-    for (let i = 0; i < 3; i++) crowd[i]!.act('propose_game', { game: 'number_bomb' });
-    expect(crowd[3]!.fail('propose_game', { game: 'number_bomb' }).reason).toBe('too_many_lobbies');
+    const crowd = residents(t, 6);
+    gather(t, crowd.slice(0, 3), 'arcade', TABLE1);
+    gather(t, crowd.slice(3), 'arcade', TABLE2);
+    const p1 = crowd[0]!.act('propose_game', { game: 'number_bomb', objectId: TABLE1 });
+    expect(p1.activity.tableId).toBe(TABLE1);
+    // 凑桌中：同桌的第二个局被拒
+    expect(crowd[1]!.fail('propose_game', { game: 'number_bomb', objectId: TABLE1 }).reason).toBe('table_busy');
+    // 另一张桌可以同时开
+    const p2 = crowd[3]!.act('propose_game', { game: 'number_bomb', objectId: TABLE2 });
+    expect(p2.activity.tableId).toBe(TABLE2);
+    expect(crowd[4]!.fail('propose_game', { game: 'liars_dice', objectId: TABLE2 }).reason).toBe('table_busy');
+    // 视图里每张桌带着占用它的那一局
+    const tables = crowd[2]!.view().here!.tables;
+    expect(tables.map((x) => [x.id, x.activityId])).toEqual([[TABLE1, p1.activity.id], [TABLE2, p2.activity.id]]);
+    expect(tables.find((x) => x.id === TABLE1)!.near).toBe(true);
+    expect(tables.find((x) => x.id === TABLE2)!.near).toBe(false);
+    expect(crowd[2]!.view().here!.activities.map((x) => x.tableId).sort()).toEqual([TABLE1, TABLE2]);
+    // 进行中：同样占着
+    crowd[1]!.act('join_game', { activityId: p1.activity.id });
+    crowd[0]!.act('start_game', { activityId: p1.activity.id });
+    expect(crowd[2]!.fail('propose_game', { game: 'number_bomb', objectId: TABLE1 }).reason).toBe('table_busy');
+    // 打完之后桌子空出来，可以再凑一局
+    playOut(t, 'number_bomb', crowd.slice(0, 2), p1.activity.id, new SeededRng('table'));
+    expect(crowd[2]!.view().here!.tables.find((x) => x.id === TABLE1)!.activityId).toBeNull();
+    expect(crowd[2]!.act('propose_game', { game: 'number_bomb', objectId: TABLE1 }).activity.tableId).toBe(TABLE1);
+    // 数据库兜底：同一张桌不能有两条未结束的活动
+    expect(() =>
+      t.w.db.run("INSERT INTO activities(activity_id, world_id, venue_id, table_id, game_type, status, host_id, options_json, origin_request_id, created_at, lobby_expires_at) VALUES ('a_dup', ?, 'arcade', ?, 'number_bomb', 'forming', ?, '{}', 'dup-req-0001', 0, 0)", t.w.worldId, TABLE2, crowd[5]!.residentId),
+    ).toThrow();
   });
 
   it('大厅超时（activity_lobby_expire）：到点解散，参与者可以重新凑桌', () => {
     const t = makeTown();
     const [a, b] = residents(t, 2) as [Actor, Actor];
     gather(t, [a, b], 'arcade');
-    const p = a.act('propose_game', { game: 'number_bomb' });
+    const p = a.act('propose_game', { game: 'number_bomb', objectId: 'arcade:table1' });
     const id = p.activity.id as string;
     b.act('join_game', { activityId: id });
     t.advanceAlive(9 * MIN, [a, b]);
@@ -430,7 +445,7 @@ describe('小游戏：场所、人数与凑桌规则', () => {
     expect(a.fail('start_game', { activityId: id }).reason).toBe('not_host');
     expect(b.fail('join_game', { activityId: id }).reason).toBe('not_open');
     // 双方已经自由：可以重新发起
-    const q = b.act('propose_game', { game: 'number_bomb' });
+    const q = b.act('propose_game', { game: 'number_bomb', objectId: 'arcade:table1' });
     a.act('join_game', { activityId: q.activity.id });
     b.act('start_game', { activityId: q.activity.id });
     expect(actStatus(t, q.activity.id)).toBe('running');
@@ -440,7 +455,7 @@ describe('小游戏：场所、人数与凑桌规则', () => {
     const t = makeTown();
     const [a, b, c] = residents(t, 3) as [Actor, Actor, Actor];
     gather(t, [a, b, c], 'arcade');
-    const p = a.act('propose_game', { game: 'number_bomb' });
+    const p = a.act('propose_game', { game: 'number_bomb', objectId: 'arcade:table1' });
     const id = p.activity.id as string;
     b.act('join_game', { activityId: id });
     c.act('join_game', { activityId: id });
@@ -452,18 +467,18 @@ describe('小游戏：场所、人数与凑桌规则', () => {
     expect(c.view().here!.activities).toHaveLength(0);
     expect(c.fail('start_game', { activityId: id }).reason).toBe('not_host');
     // c 也自由了
-    c.act('propose_game', { game: 'number_bomb' });
+    c.act('propose_game', { game: 'number_bomb', objectId: 'arcade:table1' });
   });
 
   it('发起人走开 / 离线 = 退出大厅，这桌解散', () => {
     const t = makeTown();
     const [a, b, c] = residents(t, 3) as [Actor, Actor, Actor];
     gather(t, [a, b, c], 'arcade');
-    const id1 = a.act('propose_game', { game: 'number_bomb' }).activity.id as string;
+    const id1 = a.act('propose_game', { game: 'number_bomb', objectId: 'arcade:table1' }).activity.id as string;
     b.act('join_game', { activityId: id1 });
     a.go('plaza');
     expect(actStatus(t, id1)).toBe('aborted');
-    const id2 = c.act('propose_game', { game: 'number_bomb' }).activity.id as string;
+    const id2 = c.act('propose_game', { game: 'number_bomb', objectId: 'arcade:table1' }).activity.id as string;
     t.advanceAlive(100_000, [a, b]); // c 不再心跳
     expect(c.row().present_since).toBeNull();
     expect(actStatus(t, id2)).toBe('aborted');
@@ -473,11 +488,11 @@ describe('小游戏：场所、人数与凑桌规则', () => {
     const t = makeTown();
     const [a, b] = residents(t, 2) as [Actor, Actor];
     gather(t, [a, b], 'arcade');
-    const id = a.act('propose_game', { game: 'number_bomb' }).activity.id as string;
+    const id = a.act('propose_game', { game: 'number_bomb', objectId: 'arcade:table1' }).activity.id as string;
     b.act('join_game', { activityId: id });
     // b 在游戏馆里朝角落走（没走出这片区域，所以还在报名名单里）
-    b.act('navigate', { to: { x: 38, z: 45.5 } });
-    t.advanceAlive(1_000, [a, b]);
+    b.act('navigate', { to: { x: 29.25, z: 43.25 } });
+    t.advanceAlive(200, [a, b]);
     expect(b.pos().moving).toBe(true);
     expect(b.view().location.space).toBe('arcade');
     a.act('start_game', { activityId: id });
@@ -500,7 +515,7 @@ describe('小游戏：场所、人数与凑桌规则', () => {
     const t = makeTown();
     const [a, b, c] = residents(t, 3) as [Actor, Actor, Actor];
     gather(t, [a, b, c], 'arcade');
-    const id = a.act('propose_game', { game: 'sealed_auction' }).activity.id as string;
+    const id = a.act('propose_game', { game: 'sealed_auction', objectId: 'arcade:table1' }).activity.id as string;
     b.act('join_game', { activityId: id });
     c.act('join_game', { activityId: id });
     b.act('navigate', { to: 'plaza' });
@@ -537,7 +552,7 @@ describe('小游戏：上下文版本、阶段编号与幂等', () => {
     const [a, b] = residents(t, 2) as [Actor, Actor];
     gather(t, [a, b], 'arcade');
     const before = a.view();
-    const id = a.act('propose_game', { game: 'number_bomb' }).activity.id as string;
+    const id = a.act('propose_game', { game: 'number_bomb', objectId: 'arcade:table1' }).activity.id as string;
     b.act('join_game', { activityId: id });
     expect(a.view().context.version).toBe(before.context.version); // 凑桌不算进入
     a.act('start_game', { activityId: id });
@@ -554,7 +569,7 @@ describe('小游戏：上下文版本、阶段编号与幂等', () => {
       ['navigate', { to: 'plaza' }],
       ['move', { to: 'plaza' }], // 旧名别名也一样被拒
       ['buy', { shop: 'tea_counter', sku: 'tea_leaves', qty: 1 }],
-      ['propose_game', { game: 'number_bomb' }],
+      ['propose_game', { game: 'number_bomb', objectId: 'arcade:table1' }],
     ] as const) {
       const e = a.fail(type, fields);
       expect(e.code, type).toBe('precondition_failed');
@@ -690,8 +705,8 @@ describe('小游戏：上下文版本、阶段编号与幂等', () => {
     const t = makeTown();
     const [a, b] = residents(t, 2) as [Actor, Actor];
     gather(t, [a, b], 'arcade');
-    const p = a.act('propose_game', { game: 'number_bomb' }, { requestId: 'propose-req-0001' });
-    const p2 = a.act('propose_game', { game: 'number_bomb' }, { requestId: 'propose-req-0001' });
+    const p = a.act('propose_game', { game: 'number_bomb', objectId: 'arcade:table1' }, { requestId: 'propose-req-0001' });
+    const p2 = a.act('propose_game', { game: 'number_bomb', objectId: 'arcade:table1' }, { requestId: 'propose-req-0001' });
     expect(p2.replayed).toBe(true);
     expect(p2.activity.id).toBe(p.activity.id);
     expect(t.w.db.scalar('SELECT COUNT(*) FROM activities')).toBe(1);
@@ -728,7 +743,7 @@ describe('小游戏：局中的人不在场所现场', () => {
     const t = makeTown();
     const [a, b, c] = residents(t, 3) as [Actor, Actor, Actor];
     gather(t, [a, b, c], 'arcade');
-    const id = a.act('propose_game', { game: 'number_bomb' }).activity.id as string;
+    const id = a.act('propose_game', { game: 'number_bomb', objectId: 'arcade:table1' }).activity.id as string;
     b.act('join_game', { activityId: id });
     a.act('start_game', { activityId: id });
     const aCursor = a.view().cursor;
@@ -767,7 +782,7 @@ describe('小游戏：局中的人不在场所现场', () => {
     gather(t, [a, b, c], 'arcade');
     const offer = a.act('offer', { kind: 'gift', to: c.residentId, give: { coins: 5 } });
     expect(offer.offer.id).toBeTruthy();
-    const id = a.act('propose_game', { game: 'number_bomb' }).activity.id as string;
+    const id = a.act('propose_game', { game: 'number_bomb', objectId: 'arcade:table1' }).activity.id as string;
     b.act('join_game', { activityId: id });
     a.act('start_game', { activityId: id });
     // 报价自动撤销：c 不能再接受，a 的硬币没有被占着
@@ -864,7 +879,7 @@ describe('小游戏：中途退出、意外断线与提前出局', () => {
       expect(ended[0]!.data).toMatchObject({ outcome: 'aborted', won: false, reward: 0 });
     }
     // 该场所又能凑桌
-    players[0]!.act('propose_game', { game: 'number_bomb' });
+    players[0]!.act('propose_game', { game: 'number_bomb', objectId: 'arcade:table1' });
   });
 
   it('主动离开小镇（leave）= 退出这一局', () => {
@@ -1010,7 +1025,7 @@ describe('小游戏：结算只发生一次', () => {
     const gains: number[] = [];
     const play = (game: GameType, x: Actor, y: Actor, seed: string) => {
       const before = gameRewardTotal(t);
-      const id = x.act('propose_game', { game }).activity.id as string;
+      const id = x.act('propose_game', { game, objectId: 'arcade:table1' }).activity.id as string;
       y.act('join_game', { activityId: id });
       x.act('start_game', { activityId: id });
       playOut(t, game, [x, y], id, new SeededRng(seed));
@@ -1163,7 +1178,7 @@ describe('小游戏：最长时限与重启恢复', () => {
       expect(rewardTx(t, id)).toHaveLength(0);
       expect(outcomeOf(t, id)).toBe('aborted');
       // 再凑桌没问题
-      const p = players[0]!.act('propose_game', { game: 'number_bomb' });
+      const p = players[0]!.act('propose_game', { game: 'number_bomb', objectId: 'arcade:table1' });
       expect(p.activity.status).toBe('forming');
       t.w.close();
     } finally {
@@ -1218,7 +1233,7 @@ describe('小游戏：最长时限与重启恢复', () => {
       const t = makeTown({ dbPath: db.path });
       const [a, b] = residents(t, 2) as [Actor, Actor];
       gather(t, [a, b], 'arcade');
-      const id = a.act('propose_game', { game: 'number_bomb' }).activity.id as string;
+      const id = a.act('propose_game', { game: 'number_bomb', objectId: 'arcade:table1' }).activity.id as string;
       b.act('join_game', { activityId: id });
       crashAndRestart(t, 11 * MIN);
       expect(actStatus(t, id)).toBe('aborted');
@@ -1458,7 +1473,7 @@ describe('小游戏：视图与事件流不泄露座位的私密信息', () => {
     const t = makeTown();
     const [a, b] = residents(t, 2) as [Actor, Actor];
     gather(t, [a, b], 'arcade');
-    const id = a.act('propose_game', { game: 'number_bomb' }).activity.id as string;
+    const id = a.act('propose_game', { game: 'number_bomb', objectId: 'arcade:table1' }).activity.id as string;
     expect(publicGameView(t.w, id)).toBeNull();
     expect(publicGameView(t.w, 'a_nope')).toBeNull();
     b.act('join_game', { activityId: id });
@@ -1516,5 +1531,162 @@ describe('小游戏：和公共 GameManager 互不干扰', () => {
       expect(rec.embed).toBeUndefined();
       expect(rec.delivery).not.toBe('embedded_web');
     }
+  });
+});
+
+// ───────────────────────── 按桌入局 ─────────────────────────
+
+describe('小游戏：按桌入局（town-p1.0）', () => {
+  const nearTable = (a: Actor, tableId: string): boolean => a.view().here!.tables.find((x) => x.id === tableId)!.near;
+
+  it('不在桌边凑桌 / 加入 / 开局：too_far 并带可以走过去的桌子；走过去就行', () => {
+    const t = makeTown();
+    const [a, b] = residents(t, 2) as [Actor, Actor];
+    gather(t, [a, b], 'arcade', null); // 在游戏馆门口，还没到桌边
+    expect(nearTable(a, TABLE1)).toBe(false);
+    const far = a.fail('propose_game', { game: 'number_bomb', objectId: TABLE1 });
+    expect(far.reason).toBe('too_far');
+    expect(far.data).toMatchObject({ navigateTo: TABLE1 });
+    expect(t.w.db.scalar('SELECT COUNT(*) FROM activities')).toBe(0);
+    a.go(far.data!.navigateTo as string);
+    expect(nearTable(a, TABLE1)).toBe(true);
+    const id = a.act('propose_game', { game: 'number_bomb', objectId: TABLE1 }).activity.id as string;
+    // 加入同样要在桌边
+    const farJoin = b.fail('join_game', { activityId: id });
+    expect(farJoin.reason).toBe('too_far');
+    expect(farJoin.data).toMatchObject({ navigateTo: TABLE1 });
+    b.go(TABLE1);
+    b.act('join_game', { activityId: id });
+    // 发起人开局时也得在桌边：走开一段（仍在游戏馆里）再开 → too_far
+    a.go({ x: 38.5, z: 42.25 });
+    expect(a.view().here!.space).toBe('arcade');
+    expect(a.fail('start_game', { activityId: id }).reason).toBe('too_far');
+    expect(actStatus(t, id)).toBe('forming');
+    a.go(TABLE1);
+    a.act('start_game', { activityId: id });
+    expect(actStatus(t, id)).toBe('running');
+  });
+
+  it('伪造 / 写错 / 缺失的 objectId 被明确拒绝，不会落到「查不到就放行」', () => {
+    const t = makeTown();
+    const [a, b] = residents(t, 2) as [Actor, Actor];
+    gather(t, [a, b], 'arcade'); // 都在 table1 旁边
+    expect(a.fail('propose_game', { game: 'number_bomb' }).code).toBe('bad_request');
+    expect(a.fail('propose_game', { game: 'number_bomb', objectId: '' }).code).toBe('bad_request');
+    expect(a.fail('propose_game', { game: 'number_bomb', objectId: 'arcade:table9' }).reason).toBe('not_a_table');
+    expect(a.fail('propose_game', { game: 'number_bomb', objectId: 'nowhere' }).reason).toBe('not_a_table');
+    // 别的物件（茶桌）也不行
+    expect(a.fail('propose_game', { game: 'number_bomb', objectId: 'tea_house:table1' }).reason).toBe('not_a_table');
+    expect(a.fail('propose_game', { game: 'number_bomb', objectId: 42 }).code).toBe('bad_request');
+    expect(t.w.db.scalar('SELECT COUNT(*) FROM activities')).toBe(0);
+    // 加入时带的 objectId 也要对得上这一桌所在的桌子
+    const id = a.act('propose_game', { game: 'number_bomb', objectId: TABLE1 }).activity.id as string;
+    expect(b.fail('join_game', { activityId: id, objectId: 'bogus' }).reason).toBe('not_a_table');
+    expect(b.fail('join_game', { activityId: id, objectId: TABLE2 }).reason).toBe('wrong_table');
+    b.act('join_game', { activityId: id, objectId: TABLE1 });
+  });
+
+  it('凑桌 / 加入 / 开局通过距离校验时，会让正在走的人站住', () => {
+    const t = makeTown();
+    const [a, b] = residents(t, 2) as [Actor, Actor];
+    gather(t, [a, b], 'arcade'); // 都在 table1 东侧
+    const id = a.act('propose_game', { game: 'number_bomb', objectId: TABLE1 }).activity.id as string;
+    // b 朝桌旁的空地走一小段（始终在 reach 内），走到一半 join：站住
+    b.act('navigate', { to: { x: 29.25, z: 43.25 } });
+    t.advanceAlive(200, [a, b]);
+    expect(b.pos().moving).toBe(true);
+    b.act('join_game', { activityId: id });
+    expect(b.pos().moving).toBe(false);
+    expect(b.view().location.navigation).toBeFalsy();
+    // 发起人开局同理
+    a.act('navigate', { to: { x: 29.25, z: 45.75 } });
+    t.advanceAlive(200, [a, b]);
+    expect(a.pos().moving).toBe(true);
+    a.act('start_game', { activityId: id });
+    expect(a.pos().moving).toBe(false);
+    // 凑桌（另一张桌）也一样
+    const c = t.join('丙', 'agent');
+    c.enter();
+    c.go(TABLE2);
+    c.act('navigate', { to: { x: 36.5, z: 46.25 } });
+    t.advanceAlive(200, [a, b, c]);
+    expect(c.pos().moving).toBe(true);
+    c.act('propose_game', { game: 'number_bomb', objectId: TABLE2 });
+    expect(c.pos().moving).toBe(false);
+  });
+
+  it('开局时成员走开了（仍在游戏馆里）：被剔除，剩下的人够就照常开；不够则不开并说明谁不在桌边', () => {
+    const t = makeTown();
+    const [a, b, c] = residents(t, 3) as [Actor, Actor, Actor];
+    gather(t, [a, b, c], 'arcade');
+    const id = a.act('propose_game', { game: 'number_bomb', objectId: TABLE1 }).activity.id as string;
+    b.act('join_game', { activityId: id });
+    c.act('join_game', { activityId: id });
+    c.go({ x: 38.5, z: 42.25 }); // 走到另一头，没出游戏馆，所以还挂在名单里
+    expect(c.view().here!.space).toBe('arcade');
+    expect(t.w.db.scalar('SELECT COUNT(*) FROM activity_participants WHERE activity_id = ?', id)).toBe(3);
+    const started = a.act('start_game', { activityId: id });
+    expect(started.dropped).toEqual([c.name]);
+    expect(dbRecord(t, id).players.map((x) => x.id).sort()).toEqual([a.residentId, b.residentId].sort());
+    expect(c.row().activity_id).toBeNull();
+    // 人数不够：不开，原因里写明谁不在桌边
+    const t2 = makeTown();
+    const [x, y] = residents(t2, 2) as [Actor, Actor];
+    gather(t2, [x, y], 'arcade');
+    const id2 = x.act('propose_game', { game: 'number_bomb', objectId: TABLE1 }).activity.id as string;
+    y.act('join_game', { activityId: id2 });
+    y.go({ x: 38.5, z: 42.25 });
+    const e = x.fail('start_game', { activityId: id2 });
+    expect(e.reason).toBe('not_enough');
+    expect(e.message).toContain(y.name);
+    expect(e.message).toContain('不在桌边');
+    expect(actStatus(t2, id2)).toBe('forming');
+    // y 走回来就能开
+    y.go(TABLE1);
+    x.act('start_game', { activityId: id2 });
+    expect(actStatus(t2, id2)).toBe('running');
+  });
+
+  it('打完后居民留在桌边的原位（合法位置），区域标签不变，可以继续走；奖励只结算一次', () => {
+    const t = makeTown();
+    const [a, b] = residents(t, 2) as [Actor, Actor];
+    gather(t, [a, b], 'arcade');
+    const id = a.act('propose_game', { game: 'number_bomb', objectId: TABLE1 }).activity.id as string;
+    b.act('join_game', { activityId: id });
+    a.act('start_game', { activityId: id });
+    const pa = a.pos();
+    const pb = b.pos();
+    playOut(t, 'number_bomb', [a, b], id, new SeededRng('after'));
+    expect(a.pos()).toMatchObject({ x: pa.x, z: pa.z, moving: false });
+    expect(b.pos()).toMatchObject({ x: pb.x, z: pb.z, moving: false });
+    const town = t.w.map.scenes.get('town')!;
+    for (const p of [a.pos(), b.pos()]) {
+      expect(isWalkable(town, p.x, p.z)).toBe(true);
+      expect(zoneAt(town, p.x, p.z).id).toBe('arcade');
+    }
+    expect(a.view().here!.space).toBe('arcade');
+    expect(a.view().here!.tables.find((x) => x.id === TABLE1)!.activityId).toBeNull();
+    // 奖励只发一次：每位参与者恰好一笔，结算一行
+    for (const x of [a, b]) {
+      expect(t.w.db.scalar('SELECT COUNT(*) FROM ledger_transactions WHERE cause_key = ?', `game:${id}:${x.residentId}`)).toBe(1);
+    }
+    expect(t.w.db.scalar('SELECT COUNT(*) FROM settlements WHERE activity_id = ?', id)).toBe(1);
+    // 可以继续走
+    a.go('plaza');
+    expect(a.view().here!.space).toBe('plaza');
+    expect(t.w.db.scalar('SELECT COUNT(*) FROM ledger_transactions WHERE cause_key = ?', `game:${id}:${a.residentId}`)).toBe(1);
+  });
+
+  it('开局后拿旧上下文发的动作被拒（context_stale）', () => {
+    const t = makeTown();
+    const [a, b] = residents(t, 2) as [Actor, Actor];
+    gather(t, [a, b], 'arcade');
+    const before = a.view().context;
+    const epoch = a.view().control.epoch;
+    const id = a.act('propose_game', { game: 'number_bomb', objectId: TABLE1 }).activity.id as string;
+    b.act('join_game', { activityId: id });
+    a.act('start_game', { activityId: id });
+    const stale = a.fail('speak', { text: '旧上下文' }, { expected: { contextVersion: before.version, controlEpoch: epoch, activityId: null } });
+    expect(stale.code).toBe('context_stale');
   });
 });

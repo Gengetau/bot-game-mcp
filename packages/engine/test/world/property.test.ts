@@ -565,7 +565,7 @@ describe('财物：报价（送礼与交换）', () => {
     const { t, a, b } = twoAtPlaza();
     const c = t.join('阿木');
     const o = c.act('offer', { kind: 'gift', to: a.residentId, give: { coins: 4 } });
-    const p = a.act('propose_game', { game: 'number_bomb' });
+    const p = a.act('propose_game', { game: 'number_bomb', objectId: 'arcade:table1' });
     b.act('join_game', { activityId: p.activity.id });
     a.act('start_game', { activityId: p.activity.id });
     expect(t.w.db.get('SELECT status FROM offers WHERE offer_id = ?', o.offer.id)!.status).toBe('cancelled');

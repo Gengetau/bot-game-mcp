@@ -80,7 +80,7 @@ const goalCoins = (t: Town, a: Actor) =>
   t.w.db.scalar("SELECT COALESCE(SUM(e.delta),0) FROM ledger_entries e JOIN ledger_transactions x ON x.transaction_id = e.transaction_id WHERE x.kind = 'goal_reward' AND e.account_id = ?", `acct:${a.residentId}`);
 
 function playBomb(t: Town, a: Actor, b: Actor): void {
-  const p = a.act('propose_game', { game: 'number_bomb' });
+  const p = a.act('propose_game', { game: 'number_bomb', objectId: 'arcade:table1' });
   b.act('join_game', { activityId: p.activity.id });
   a.act('start_game', { activityId: p.activity.id });
   for (let i = 0; i < 200; i++) {
@@ -384,7 +384,7 @@ describe('关系：结构化事实驱动', () => {
     const t = quietTown();
     const a = t.join('阿灯');
     const b = t.join('小岚', 'agent');
-    gather('arcade', a, b);
+    gather('arcade:table1', a, b);
     playBomb(t, a, b);
     expect(a.view().context.activityId).toBeNull();
     expect(rel(t, a, b)).toEqual({ familiarity: 2, closeness: 0 });
@@ -806,7 +806,7 @@ describe('愿望：进度只来自结构化事实，完成只结算一次', () =
     const b = t.join('小岚', 'agent');
     const ga = giveGoal(t, a, 'play_game');
     const gb = giveGoal(t, b, 'play_game');
-    gather('arcade', a, b);
+    gather('arcade:table1', a, b);
     playBomb(t, a, b);
     expect(goalRow(t, ga).status).toBe('completed');
     expect(goalRow(t, gb).status).toBe('completed');

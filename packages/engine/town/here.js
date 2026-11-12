@@ -120,13 +120,17 @@ function lobbyCard(l, me) {
   const inIt = l.players.some((p) => p.id === me.me.id);
   const host = l.host.id === me.me.id;
   const inAny = Boolean(me.here?.activities.some((x) => x.status === 'forming' && x.players.some((p) => p.id === me.me.id)));
+  // 凑桌 / 加入 / 开局都要站在那张游戏桌旁边：太远就先走过去
+  const table = me.here?.tables?.find((t) => t.id === l.tableId);
+  const far = Boolean(table && !table.near);
   /** @type {import('./dom.js').Child[]} */
   const btns = [];
+  if (l.status === 'forming' && far && table && (inIt || !inAny)) btns.push(btn('先走到桌边', () => moveTo(table.id, table.name), { variant: 'primary', small: true, icon: 'walk', disabled: Boolean(me.game) }));
   if (l.status === 'running') btns.push(btn('观战', () => openSpectate(l.id, l.name), { small: true, icon: 'eye', always: true }));
   else if (inIt) {
-    if (host) btns.push(btn('开局', () => act({ type: 'start_game', activityId: l.id }), { variant: 'primary', small: true, disabled: l.players.length < l.min, why: `${l.name}至少要 ${l.min} 个人，现在 ${l.players.length} 个。` }));
+    if (host && !far) btns.push(btn('开局', () => act({ type: 'start_game', activityId: l.id }), { variant: 'primary', small: true, disabled: l.players.length < l.min, why: `${l.name}至少要 ${l.min} 个人，现在 ${l.players.length} 个。` }));
     btns.push(btn(host ? '解散这桌' : '退出', () => act({ type: 'leave_game_lobby' }), { variant: 'ghost', small: true }));
-  } else btns.push(btn('加入', () => act({ type: 'join_game', activityId: l.id }), { variant: 'primary', small: true, disabled: inAny || l.players.length >= l.max, why: inAny ? '你已经在一桌里了。' : '这一桌满了。' }));
+  } else btns.push(btn('加入', () => act({ type: 'join_game', activityId: l.id, ...(l.tableId ? { objectId: l.tableId } : {}) }), { variant: 'primary', small: true, disabled: far || inAny || l.players.length >= l.max, why: inAny ? '你已经在一桌里了。' : '这一桌满了。' }));
   return h(
     'div',
     { class: `obj${l.status === 'running' ? ' live' : ''}` },
@@ -296,14 +300,20 @@ export function createHere() {
             'div',
             { class: 'stack' },
             here.activities.map((l) => lobbyCard(l, me)),
-            here.games.map((g) =>
-              row({
+            here.games.map((g) => {
+              const nearFree = here.tables.find((t) => t.near && !t.activityId);
+              const free = here.tables.find((t) => !t.activityId);
+              return row({
                 lead: icon('dice', 20),
                 title: g.name,
                 sub: `${g.min}~${g.max} 人 · ${g.summary}`,
-                aside: btn('凑一桌', () => act({ type: 'propose_game', game: g.type }), { small: true, variant: 'soft', disabled: inLobby, why: '你已经在一桌里了。' }),
-              }),
-            ),
+                aside: nearFree
+                  ? btn('凑一桌', () => act({ type: 'propose_game', game: g.type, objectId: nearFree.id }), { small: true, variant: 'soft', disabled: inLobby, why: '你已经在一桌里了。' })
+                  : free
+                    ? btn('先走到桌边', () => moveTo(free.id, free.name), { small: true, variant: 'soft', icon: 'walk', disabled: inLobby || Boolean(me.game), why: '你已经在一桌里了。' })
+                    : btn('桌子都有人了', () => {}, { small: true, variant: 'ghost', disabled: true, why: '游戏桌都被占着，等一桌打完。' }),
+              });
+            }),
           ),
           { hint: '人齐了由发起人开局。开局后你会进入游戏界面；游戏里不能做别的事，可以随时退出这局。' },
         ),

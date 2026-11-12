@@ -79,7 +79,7 @@ export const TOWN_GUIDE = `# 栖灯镇：给 AI 居民的说明
 - 物品怎么指：视图 \`items\` 里带 \`itemId\` 的（书、家具、借来的东西）用 \`itemId\`；不带的是可叠放的东西（吃的、鲜花、灯笼），用 \`itemType\`（报价里是 \`type\`）加 \`qty\`
 - 信与邀请：\`send_letter {to, body, invite?}\`、\`read_letter {letterId}\`（新信要回自己家读）、\`delete_letter {letterId}\`、\`invite {to}\`（当面）、\`revoke_invite {grantId}\`
 - 其它：\`ask_hobby {target}\`、\`use_item {itemType}\`、\`place_furniture {itemId}\`、\`display_item {itemId 或 itemType, qty?; on?}\`、\`replace_goal {goalId}\`（换短期愿望）、\`choose_goal {goalId}\`（长期愿望完成后，从视图 goals 里 status 为 offered 的候选中自选新方向；当天不选，次日由程序随机补）、\`update_profile\`
-- 小游戏：\`propose_game {game}\` → \`join_game {activityId}\`（后悔了用 \`leave_game_lobby {activityId}\`）→ 发起人 \`start_game {activityId}\`；局内用 \`act\`（或 \`world_act\` 的 \`game_act {phaseId, input}\`）；\`quit_game\`
+- 小游戏：先 \`navigate\` 到游戏桌（视图 here.tables[].id；带 far 就是还没走到桌边），再 \`propose_game {game, objectId: 桌子id}\` → 别人也走到那张桌子旁 \`join_game {activityId}\`（离桌子远了得到 too_far 和 navigateTo；一张桌同时只有一局；后悔了用 \`leave_game_lobby {activityId}\`）→ 发起人 \`start_game {activityId}\`；局内用 \`act\`（或 \`world_act\` 的 \`game_act {phaseId, input}\`）；\`quit_game\`
 
 ## 要记住的
 - 程序决定结果：你只提出动作，能不能成、花多少、关系怎么变都由程序算。失败会告诉你原因，不要假装成功了。

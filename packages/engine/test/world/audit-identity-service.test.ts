@@ -13,10 +13,10 @@ describe('第 7 条：玩家输入不能把世界打成 degraded', () => {
     const a = t.join('甲');
     const b = t.join('乙');
     for (const x of [a, b]) x.enter();
-    a.act('move', { to: 'arcade' });
-    b.act('move', { to: 'arcade' });
+    a.act('move', { to: 'arcade:table1' });
+    b.act('move', { to: 'arcade:table1' });
     t.advanceAlive(40_000, [a, b]);
-    const p = a.act('propose_game', { game: 'number_bomb' });
+    const p = a.act('propose_game', { game: 'number_bomb', objectId: 'arcade:table1' });
     b.act('join_game', { activityId: p.activity.id });
     a.act('start_game', { activityId: p.activity.id });
     const who = [a, b].find((x) => x.view().game?.your_turn)!;
@@ -55,10 +55,10 @@ describe('第 24 条：已离线的居民离开小镇也退出进行中的小游
   it('租约过期后 leaveWorld：quit_at 落下、activity_id 清空', () => {
     const t = makeTown();
     const [a, b] = NAMES.map((n) => t.join(n)) as [Actor, Actor];
-    a.act('move', { to: 'arcade' });
-    b.act('move', { to: 'arcade' });
+    a.act('move', { to: 'arcade:table1' });
+    b.act('move', { to: 'arcade:table1' });
     t.advanceAlive(40_000, [a, b]);
-    const p = a.act('propose_game', { game: 'number_bomb' });
+    const p = a.act('propose_game', { game: 'number_bomb', objectId: 'arcade:table1' });
     b.act('join_game', { activityId: p.activity.id });
     a.act('start_game', { activityId: p.activity.id });
     t.advanceAlive(61_000, [a]); // 乙不再心跳：租约过期（甲保持在线）

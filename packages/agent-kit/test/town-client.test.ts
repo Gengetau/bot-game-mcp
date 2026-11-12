@@ -135,7 +135,7 @@ describe('TownClient：真引擎', () => {
     expect(hb.control.mine).toBe(true);
 
     // 一局小游戏：凑桌 → 加入 → 开局 → 轮流出牌 → 结束
-    const prop = await a.proposeGame('number_bomb');
+    const prop = await a.proposeGame('number_bomb', 'arcade:table1');
     expect(prop.ok).toBe(true);
     const va = await a.view();
     const act = va.here!.activities.find((x) => x.name.includes('数字炸弹'))!;

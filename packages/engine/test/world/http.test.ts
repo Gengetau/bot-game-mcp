@@ -681,7 +681,7 @@ describe('HTTP：enter / me / actions', () => {
     const { t, app } = await serveTown();
     const a = await new Web(app.base).login('甲');
     const b = await new Web(app.base).login('乙');
-    const p = await a.act({ type: 'propose_game', game: 'number_bomb' });
+    const p = await a.act({ type: 'propose_game', game: 'number_bomb', objectId: 'arcade:table1' });
     expect(p.status).toBe(200);
     const id = p.json.activity.id;
     expect((await b.act({ type: 'join_game', activityId: id })).status).toBe(200);
@@ -823,7 +823,7 @@ describe('HTTP：enter / me / actions', () => {
     errShape(g, 409, 'context_stale');
     expect(g.json).toMatchObject({ contextVersion: expect.any(Number), activityId: null });
     // 凑一桌：game 与 public/game
-    const p = await a.act({ type: 'propose_game', game: 'number_bomb' });
+    const p = await a.act({ type: 'propose_game', game: 'number_bomb', objectId: 'arcade:table1' });
     expect(p.status, p.text).toBe(200);
     bAct.act('join_game', { activityId: p.json.activity.id });
     await a.act({ type: 'start_game', activityId: p.json.activity.id });
@@ -1177,7 +1177,7 @@ describe('HTTP：SSE 事件流', () => {
     const { t, app, a, b } = await pair();
     const sse = await stream(app, a);
     await sse.waitFor((e) => e.event === 'hello');
-    const p = await a.act({ type: 'propose_game', game: 'number_bomb' });
+    const p = await a.act({ type: 'propose_game', game: 'number_bomb', objectId: 'arcade:table1' });
     b.act('join_game', { activityId: p.json.activity.id });
     await a.act({ type: 'start_game', activityId: p.json.activity.id });
     await sse.waitFor((e) => e.event === 'private' && e.data.type === 'game_started');
