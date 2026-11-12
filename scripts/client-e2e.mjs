@@ -730,6 +730,12 @@ async function main() {
       await until(async () => !(await navNow()), ms, what, 100);
       return Date.now() - t0;
     };
+    // 起点固定在广场东口的路中间（z≈26.5 这一条向东一直通到 x=62）：不依赖前面的步骤把 A 留在哪里。
+    // 只用 --only 跑这一步时 A 可能停在别处（比如步骤 2 的终点离 x=44 的障碍只有 2 米，按住 D 两秒就贴上去了）。
+    const start = await clearSpot(A, [{ x: 36, z: 26.5 }, { x: 34, z: 26.5 }, { x: 38, z: 26.5 }, { x: 32, z: 26.5 }]);
+    await walkTo(A, start.x, start.z);
+    await until(async () => !selfActor(await serverScene(A))?.nav, 20_000, 'A 走到起点后空闲');
+    await sleep(300);
     A.gate.dirFrames.length = 0;
     const p0 = selfActor(await serverScene(A));
 
