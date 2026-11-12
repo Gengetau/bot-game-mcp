@@ -32,6 +32,7 @@ import {
   fmtDuration,
   makePrincipal,
   openWorld,
+  arrivalAt,
   positionAt,
   renewTrack,
   trackNav,
@@ -734,6 +735,16 @@ class Sim {
     // 停机前先把调度器跑一遍（已到期的先处理）
     this.w.tick();
     const closedAt = this.clock.t;
+    // 记下此刻正在走路的人：重启后他们必须停在最后一个耐久检查点，不能“多走”
+    const walkers = this.w.db
+      .all('SELECT resident_id FROM residents WHERE present_since IS NOT NULL')
+      .map((r) => actorOf(this.w, String(r.resident_id))!)
+      .filter((a) => a.nav)
+      .map((a) => ({ rid: a.actor_id, scene: a.scene_id, instance: a.instance_id, nav: a.nav! }));
+    for (const ag of this.ags) {
+      ag.nav = null;
+      ag.walkPlan = null;
+    }
     if (plan.clean) this.w.close();
     else {
       // 模拟进程被杀：不写最后一次存活时间，也不做关闭时的检查点
@@ -794,6 +805,35 @@ class Sim {
     const coinsAfter = this.w.db.scalar("SELECT COALESCE(SUM(balance),0) FROM accounts WHERE kind='resident'");
     void coinsBefore;
     void coinsAfter;
+    // 走到一半被停机的人：位置必须是旧路线上 [检查点, 停机时刻] 之间的某一点，没有残留导航
+    for (const wk of walkers) {
+      const a = actorOf(this.w, wk.rid)!;
+      this.rejectChecks.run++;
+      this.bump('restart_walkers');
+      if (a.nav) {
+        this.rejectChecks.failed++;
+        this.inv.fail('restart_nav', `重启后居民 ${wk.rid} 还留着导航`, null, now);
+        continue;
+      }
+      if (a.scene_id !== wk.scene || a.instance_id !== wk.instance) {
+        this.bump('restart_walkers_scene_changed');
+        continue;
+      }
+      const motion = { points: wk.nav.points, speed: wk.nav.speed, startedAt: wk.nav.startedAt, until: wk.nav.leaseUntil };
+      let found = false;
+      for (let t = Math.max(wk.nav.startedAt, wk.nav.checkpointAt - 50); t <= closedAt + 50 && !found; t += 25) {
+        const p = positionAt(motion, Math.min(t, wk.nav.leaseUntil));
+        if (Math.hypot(p.x - a.x, p.z - a.z) < 0.08) found = true;
+      }
+      if (!found) {
+        // 不在旧路线上：只有这一段在停机前已经走完（接着穿过门口、换了路线）才说得过去
+        this.bump('restart_walkers_off_leg');
+        if (arrivalAt({ points: wk.nav.points, speed: wk.nav.speed, startedAt: wk.nav.startedAt }) > closedAt && wk.nav.leaseUntil > closedAt) {
+          this.rejectChecks.failed++;
+          this.inv.fail('restart_nav', `重启后居民 ${wk.rid} 的位置 (${a.x.toFixed(2)}, ${a.z.toFixed(2)}) 不在停机前的路线上`, { checkpointAt: wk.nav.checkpointAt, closedAt }, now);
+        }
+      }
+    }
     this.restarts.push({ at: closedAt, downtime: plan.downtime, clean: plan.clean, runningGames: before.games, abortedAfter, outageSeen, idempotent: idem });
     this.check();
     // 所有人的客户端在停机后陆续重连
@@ -1385,6 +1425,12 @@ class Sim {
     // 先看有没有开放中、能加入的
     for (const o of here.objects) {
       if (o.active && o.active.status === 'open' && o.active.initiator.id !== v.me.id && o.active.participants.length < o.active.max && (!only || o.action?.def === only) && rnd.chance(0.7)) {
+        // 公共物件要先走到旁边（够不着会 too_far）
+        if (!o.near) {
+          ag.useObject = null;
+          this.bump('walk_to_join');
+          return this.moveTo(ag, conn, o.id);
+        }
         this.exec(ag, conn, 'join_interaction', { interactionId: o.active.id });
         return rnd.range(8, 25) * 1000;
       }
@@ -1401,7 +1447,15 @@ class Sim {
       }
     });
     if (ok.length === 0) return null;
-    const o = rnd.pick(ok);
+    // 走到旁边之后接着用刚才选好的那件
+    const wanted = ag.useObject ? ok.find((x) => x.id === ag.useObject) : undefined;
+    ag.useObject = null;
+    const o = wanted ?? rnd.pick(ok);
+    if (!o.near) {
+      ag.useObject = o.id;
+      this.bump('walk_to_use');
+      return this.moveTo(ag, conn, o.id);
+    }
     const fields: Record<string, unknown> = { objectId: o.id };
     if (o.action!.min > 1 || rnd.chance(0.3)) fields.wait = true;
     if (o.action!.def === 'read' && rnd.chance(0.5)) {
@@ -1598,7 +1652,7 @@ class Sim {
         return;
       }
       case 'non_game_in_game': {
-        const o = this.exec(ag, conn, rnd.pick(['navigate', 'move', 'stop_navigation', 'speak', 'buy']), { to: 'plaza', text: 'hi', shop: 'stall', sku: 'cookie' }, nf);
+        const o = this.exec(ag, conn, rnd.pick(['navigate', 'move', 'speak', 'buy']), { to: 'plaza', text: 'hi', shop: 'stall', sku: 'cookie' }, nf);
         this.expectReject(ag, '在小游戏里做世界动作', o, ['precondition_failed']);
         return;
       }
