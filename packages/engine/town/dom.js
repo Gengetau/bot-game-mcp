@@ -255,7 +255,7 @@ const sheets = [];
  * @returns {{ el: HTMLElement, close: () => void, body: HTMLElement }}
  */
 export function openSheet(opts) {
-  const prevFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  const prevFocus = document.activeElement instanceof HTMLElement || document.activeElement instanceof SVGElement ? document.activeElement : null;
   const bodyBox = h('div', { class: 'sheet-body' }, opts.body);
   const titleId = `sheet-t-${Math.random().toString(36).slice(2, 8)}`;
   const closeBtn = h('button', { class: 'icon-btn', type: 'button', 'aria-label': '关闭', onclick: () => api.close() }, icon('close', 20));

@@ -1478,6 +1478,9 @@ table.tbl {
   .tab[data-tab="map"] {
     display: none;
   }
+  .tab-ic {
+    margin-right: 8px;
+  }
   .tabbar {
     grid-template-columns: repeat(4, 1fr);
   }
