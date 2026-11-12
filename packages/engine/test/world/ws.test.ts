@@ -486,6 +486,34 @@ describe('WS：renew 与断开', () => {
     await until(() => walking() === null);
   });
 
+  it('同一个客户端重连：新旧两条连接并存时关掉旧的不停步，最后一条正常关闭才停', async () => {
+    const app = await serve();
+    const w = app.t.w;
+    const { u, c } = await connect(app, '阿灯');
+    const walking = () => whereabouts(w, w.mustResident(u.residentId), w.now()).navigation;
+    u.actor.act('navigate', { to: 'tea_house' });
+    const { c: c2 } = await attach(app, u); // 同一个 clientId 的第二条连接
+    c.ws.close(1000);
+    await c.waitClosed();
+    await new Promise((r) => setTimeout(r, 200)); // 等 close 事件传到服务器
+    expect(walking()).not.toBeNull();
+    c2.ws.close(1000);
+    await until(() => walking() === null);
+  });
+
+  it('服务器先关的连接（登出）不算客户端明确离开：路不会因此立刻停', async () => {
+    const app = await serve();
+    const w = app.t.w;
+    const { u, c } = await connect(app, '阿灯');
+    u.actor.act('navigate', { to: 'tea_house' });
+    // 客户端收到服务器的关闭帧后，照常用 1000 结束自己这一侧
+    c.ws.on('close', () => undefined);
+    expect((await u.post('/town/api/auth/logout', {})).status).toBe(200);
+    expect(await c.waitClosed()).toBe(4403);
+    await new Promise((r) => setTimeout(r, 100));
+    expect(whereabouts(w, w.mustResident(u.residentId), w.now()).navigation).not.toBeNull();
+  });
+
   it('不握着控制权的连接正常关闭，不影响别的页面在走的路', async () => {
     const app = await serve();
     const w = app.t.w;

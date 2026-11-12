@@ -170,10 +170,8 @@ describe('走路：运行器自动续导航租约', () => {
     const cd = new DeafClient(await BotGameClient.connect({ url: http.url, key: KEY_D }), { clientId: 'res-d' });
     const runner = new ResidentRunner(FAST);
     const seen: TownEvent[] = [];
-    let last: Awaited<ReturnType<TownClient['view']>> | null = null;
     const decide = async (ctx: DecisionContext): Promise<Decision | null> => {
       seen.push(...ctx.events);
-      last = ctx.view;
       return ctx.view.location.space === 'plaza' && !ctx.view.location.walking && !seen.some((e) => e.type === 'nav_stopped') ? { actions: [{ type: 'navigate', to: 'tea_house' }] } : null;
     };
     const h = runner.add({ town: cd, profile: { name: '丁' }, decide, ...FAST });
@@ -190,7 +188,6 @@ describe('走路：运行器自动续导航租约', () => {
     const v = await cd.view();
     expect(v.location.space).not.toBe('tea_house');
     expect(v.location.walking).toBeUndefined();
-    void last;
     await runner.stop({ leave: true });
     await cd.close();
   }, 40_000);

@@ -15,6 +15,7 @@ import { report } from '../../src/world/reports.js';
 import type { WorldService } from '../../src/world/service.js';
 import { localToUtc, nextDate } from '../../src/world/time.js';
 import { Actor, makeTown, tempDb, type Town } from './helpers.js';
+import { checkSpaceInvariants } from './invariants.js';
 
 const MIN = 60_000;
 const HOUR = 60 * MIN;
@@ -123,6 +124,7 @@ describe('启动恢复：停机期间到期的事务各结算一次，保留应�
     expect(a.row().location_id).toBe('plaza');
     a.go('tea_house');
     expect(a.row().location_id).toBe('tea_house');
+    checkSpaceInvariants(t);
   });
 
   it('登门邀请在停机期间过期：屋里的客人被送到门口，只收到一条固定模板通知', () => {

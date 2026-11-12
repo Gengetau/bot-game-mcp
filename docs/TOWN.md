@@ -143,7 +143,7 @@ packages/engine/town/             旧的网页前端（静态文件；会被 God
 | `POST /claim` `{clientId}` | 接管控制权（原来那个客户端安排的路线立即停下） |
 | `GET /scene` | 场景快照（`SceneView`）：我所在的场景实例里在场的人、坐标，正在走的人的折线、速度、出发时刻 |
 | `POST /nav/renew` `{clientId, navigationId, revision}` | 续导航控制租约。返回 `{ok, leaseUntil?, navigation}`；`ok: false` 表示这条路线已经结束或被换掉 |
-| `POST /ws-ticket` `{clientId}` | 取一张一次性的 WebSocket 连接票据（30 秒有效） |
+| `POST /ws-ticket` `{clientId}` | 取一张一次性的 WebSocket 连接票据，返回 `{ticket, expiresAt}`（30 秒有效，每个登录身份最多留 8 张没用过的）。票据是凭据，不要写进日志 |
 | `POST /leave` | 主动离开小镇 |
 | `GET /events?clientId=&cursor=&pcursor=` | SSE：本人的事件和公开事件 |
 | `GET /letters?box=inbox\|sent&before=&limit=` | 信件分页（`before` 用上一页返回的 `next`；`next` 只在连续翻页时有效，极少数情况下一页会重复上一页的信，按 `letterId` 去重）。没读过的来信不带正文。已发信箱（`box=sent`）不返回 `read`：读信必须在自己家，告诉寄信人「对方读了」等于告诉他对方此刻在家 |
@@ -296,7 +296,19 @@ packages/engine/town/             旧的网页前端（静态文件；会被 God
 | → 客户端 | `{t:"events", events, cursor}` / `{t:"resync", cursor}` | 耐久私有事件，同 SSE 的 `private` |
 | → 客户端 | `{t:"pong", n, serverTime}` / `{t:"renewed", ok, leaseUntil?, navigation}` / `{t:"error", code, message}` | |
 
-握着控制权的客户端**正常关闭**连接（关页面）会让正在走的居民立即停步；异常断开不会，由导航租约到期兜底（最多 10 秒），手机网络抖一下不至于立刻停。WebSocket 不代替在场心跳。
+没带 `cursor` 就从当前水位开始，不回放历史；游标无效或已被裁剪时收到 `resync`。坏消息（不是 JSON、不认识的类型、重复 hello）只回 `error`，不断开。
+
+握着控制权的客户端**正常关闭**连接（关闭码 1000 / 1001，比如关页面）会让正在走的居民立即停步；异常断开不会，由导航租约到期兜底（最多 10 秒），手机网络抖一下不至于立刻停。WebSocket 不代替在场心跳。
+
+限制和关闭码：单帧最多 4 KiB（超了 1009），只收文本帧（二进制 1003），每条连接每秒最多 30 条消息（超了 1008）。同一居民最多 4 条连接，同一 IP 和全镇总数沿用 SSE 的上限（握手时超了是 HTTP 429）。
+
+| 关闭码 | 含义 |
+|---|---|
+| 4401 | 票据无效、过期、用过了，或第一条消息不是 hello |
+| 4408 | 5 秒内没有 hello |
+| 4403 | 登录被撤销、登出，或居民离开了小镇（先收到 `error` `revoked`） |
+| 1013 | 客户端收得太慢（发送缓冲超过 1 MiB），或同一居民的连接太多 |
+| 1001 / 1011 | 服务关闭 / 服务端出错 |
 
 位置是可以用最新值覆盖的同步数据：断线重连后收到的第一份快照就是全部真相，不需要补历史。聊天、交易、信件这类不能丢的东西只走耐久事件和游标。
 

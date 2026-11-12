@@ -82,6 +82,8 @@ export interface NavigationRenewal {
   ok: boolean;
   leaseUntil?: number;
   navigation: NavigationBrief | null;
+  /** 此刻脚下的区域（走路途中会变） */
+  space?: string;
 }
 
 export interface TownEvent {
@@ -562,8 +564,8 @@ export class TownClient {
    * 续导航控制租约（走路时每 renewEveryMs 一次，普通程序做，不经过模型）。顺带续了在场。
    * 没有控制权抛 ControlLostError；结果见 NavigationRenewal。
    */
-  async renewNavigation(nav: { navigationId: string; revision?: number }, opts: { signal?: AbortSignal } = {}): Promise<NavigationRenewal> {
-    const r = await this.raw<{ navigation?: NavigationRenewal }>('heartbeat', { navigation_id: nav.navigationId, ...(nav.revision !== undefined ? { revision: nav.revision } : {}) }, { ...(opts.signal ? { signal: opts.signal } : {}) });
+  async renewNavigation(nav: { navigationId: string; revision: number }, opts: { signal?: AbortSignal } = {}): Promise<NavigationRenewal> {
+    const r = await this.raw<{ navigation?: NavigationRenewal }>('heartbeat', { navigation_id: nav.navigationId, revision: nav.revision }, { ...(opts.signal ? { signal: opts.signal } : {}) });
     return r.navigation ?? { ok: false, navigation: null };
   }
 

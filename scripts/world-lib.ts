@@ -30,13 +30,13 @@ import {
   type WorldService,
 } from '../packages/engine/src/index.js';
 import { BOOKS, PLACES } from '../packages/engine/src/world/content.js';
-import { renewNavigation, sceneView, whereabouts } from '../packages/engine/src/world/index.js';
+import { controlDisconnected, renewNavigation, sceneView, whereabouts } from '../packages/engine/src/world/index.js';
 import { actorOf, posOf, positionOfResident } from '../packages/engine/src/world/space.js';
 import { distance, isWalkable, zoneAt } from '../packages/engine/src/world/spatial/grid.js';
 import { arrivalAt, positionAt } from '../packages/engine/src/world/spatial/motion.js';
 import type { NavState } from '../packages/engine/src/world/types.js';
 
-export { WorldError, townMeView, townAgentView, townPublicView, renewNavigation, sceneView, whereabouts, actorOf, posOf, positionOfResident, positionAt, arrivalAt, distance, isWalkable, zoneAt };
+export { WorldError, townMeView, townAgentView, townPublicView, controlDisconnected, renewNavigation, sceneView, whereabouts, actorOf, posOf, positionOfResident, positionAt, arrivalAt, distance, isWalkable, zoneAt };
 export type { WorldService };
 
 // ───────────────────────── 时钟与随机 ─────────────────────────
@@ -732,7 +732,7 @@ export class Invariants {
   }
 
   /** 空间这一层：位置、区域标签、导航任务、租约截止。只读。 */
-  private space(w: WorldService, now: number): void {
+  space(w: WorldService, now: number, scanEvents = true): void {
     const db = w.db;
     const fail = (name: string, message: string, detail: unknown) => this.fail(name, message, detail, now);
     const actors = db.all('SELECT * FROM world_actors WHERE world_id = ?', w.worldId);
@@ -799,6 +799,7 @@ export class Invariants {
     const legacyJson = db.scalar('SELECT COUNT(*) FROM residents WHERE move_json IS NOT NULL');
     if (legacyJson > 0) fail('no_legacy_move', `${legacyJson} 位居民的 move_json 不是 NULL`, null);
     // 事件流里没有坐标 / 路线（所有人的私有事件也不带）
+    if (!scanEvents) return;
     this.pass('events_no_coords');
     const coordRe = /"x":|"z":|"points"|polyline|navigationId/;
     for (const e of db.all("SELECT resident_id, type, projection FROM recipient_events WHERE type IN ('nav_stopped','you_arrived','left','arrived','notice') ORDER BY cursor DESC LIMIT 1500")) {

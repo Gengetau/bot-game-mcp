@@ -672,12 +672,14 @@ export function sceneView(w: WorldService, viewer: ResidentRow, now: number): Sc
   const spot = me ?? { ...spotFor(w, viewer.location_id), scene_id: '', instance_id: '' };
   const sceneId = me ? me.scene_id : (spot as { scene: string }).scene;
   const instanceId = me ? me.instance_id : (spot as { instance: string }).instance;
+  // 不在场的人不在「现场」：只看得到自己停在哪里，看不到别人（否则离线的人能远程盯着整个场景）
   const rows = w.db.all(
     `SELECT a.*, r.name AS r_name, r.kind AS r_kind, r.activity_id AS r_activity FROM world_actors a JOIN residents r ON r.resident_id = a.resident_id
-     WHERE a.world_id = ? AND a.scene_id = ? AND a.instance_id = ? AND (r.present_since IS NOT NULL OR a.actor_id = ?) ORDER BY a.actor_id`,
+     WHERE a.world_id = ? AND a.scene_id = ? AND a.instance_id = ? AND ((? = 1 AND r.present_since IS NOT NULL) OR a.actor_id = ?) ORDER BY a.actor_id`,
     w.worldId,
     sceneId,
     instanceId,
+    viewer.present_since !== null ? 1 : 0,
     viewer.resident_id,
   );
   const actors: ActorView[] = rows.map((row) => {
@@ -705,7 +707,11 @@ export function sceneKeyOfResident(w: WorldService, residentId: string): string 
  * 续导航控制租约。只有握着控制权的客户端能续，而且只能续当前这一条（编号和版本都对得上）。
  * 不走回执管线：这是普通程序每几秒发一次的心跳，不是居民的动作。过期的路线续不回来。
  */
-export function renewNavigation(w: WorldService, auth: Auth, body: { navigationId?: unknown; revision?: unknown }): { ok: boolean; leaseUntil?: number; navigation: NavBrief | null } {
+export function renewNavigation(
+  w: WorldService,
+  auth: Auth,
+  body: { navigationId?: unknown; revision?: unknown },
+): { ok: boolean; leaseUntil?: number; navigation: NavBrief | null; space: string } {
   if (w.status !== 'running') throw new WorldError('recovering', '小镇正在恢复，请稍后再试。');
   w.runDue();
   return w.commit(() => {
@@ -715,20 +721,24 @@ export function renewNavigation(w: WorldService, auth: Auth, body: { navigationI
     if (r.present_since === null || r.controller_client !== auth.clientId || r.controller_until <= now) {
       throw new WorldError('control_lost', '这个页面（或运行器）现在没有这位居民的控制权。');
     }
+    // space：脚下的区域。走路的人自己跨区域时没有事件，客户端靠它知道该重读现场了
+    const space = (): string => w.mustResident(r.resident_id).location_id;
     let a = actorOf(w, r.resident_id);
-    if (!a?.nav) return { ok: false, navigation: null };
-    if (a.nav.navigationId !== String(body.navigationId ?? '') || (body.revision !== undefined && a.nav.revision !== Number(body.revision))) {
-      // 续的是一条已经换掉的路线：不动现在这条，把现在这条告诉对方
-      return { ok: false, navigation: navBrief(w, a.nav) };
+    if (!a?.nav) return { ok: false, navigation: null, space: space() };
+    if (a.nav.navigationId !== String(body.navigationId ?? '') || a.nav.revision !== Number(body.revision ?? NaN)) {
+      // 续的是一条已经换掉的路线（或者没说是哪一段）：不动现在这条，把现在这条告诉对方
+      return { ok: false, navigation: navBrief(w, a.nav), space: space() };
     }
     a = settle(w, a, now);
-    if (!a.nav) return { ok: false, navigation: null };
+    if (!a.nav) return { ok: false, navigation: null, space: space() };
+    const until = Math.min(a.nav.leaseUntil, legArrival(a.nav));
     a.nav.leaseUntil = now + w.params.navLeaseMs;
     a.nav.checkpointAt = now;
     saveActor(w, a);
     scheduleStep(w, a);
-    w.bumpSpace(sceneKeyOf(a));
-    return { ok: true, leaseUntil: a.nav.leaseUntil, navigation: navBrief(w, a.nav) };
+    // 场景快照里的折线只走到 until：它没变（剩下的路本来就在租约之内）就不用打扰同场景的人
+    if (Math.min(a.nav.leaseUntil, legArrival(a.nav)) !== until) w.bumpSpace(sceneKeyOf(a));
+    return { ok: true, leaseUntil: a.nav.leaseUntil, navigation: navBrief(w, a.nav), space: space() };
   });
 }
 
@@ -755,17 +765,24 @@ export function installSpace(w: WorldService): void {
     takeToken(w, r.resident_id, 'nav', w.params.navBurst, w.params.navPerMinute, now, '改路线');
     let a = ensureActor(w, r, now);
     let fromSpace = r.location_id;
+    let rerouted = false;
     if (a.nav) {
       // 改道：先算出这一刻的合法位置，旧路线作废，再从这里出发
       fromSpace = a.nav.fromSpace;
       a = settle(w, a, now);
-      if (a.nav) a = halt(w, a, now, 'reroute');
-      else fromSpace = w.mustResident(r.resident_id).location_id;
+      if (a.nav) {
+        a = halt(w, a, now, 'reroute');
+        rerouted = true;
+      } else fromSpace = w.mustResident(r.resident_id).location_id;
     }
     const me = w.mustResident(r.resident_id);
     const to = action.approach !== undefined ? String(action.approach) : (action.to ?? action.target);
     const p = plan(w, me, a, to, now);
-    if (p.already) return { status: 'completed', already: p.already, to: p.target };
+    if (p.already) {
+      // 要去的地方就在身边：原来那一趟到此为止（已经停下了），照常记一次「到过某处」
+      if (rerouted) noteArrival(w, r.resident_id, fromSpace, now);
+      return { status: 'completed', already: p.already, to: p.target };
+    }
     for (const h of w.hooks.walk) h(w.mustResident(r.resident_id), now);
     a = install(w, actorOf(w, r.resident_id)!, p.points, { target: p.target, after: p.after, fromSpace, startedAt: now, leaseUntil: now + w.params.navLeaseMs });
     // 人就站在门口时第一段路是零长度：当场穿过门口，接上下一段
@@ -844,7 +861,7 @@ function settleLegacyMoves(w: WorldService, cutoff: number): void {
   }
 }
 
-/** 地图换了版本：位置在新地图上不合法的人，挪到所在区域的落脚点。不拿新地图去猜旧路线。 */
+/** 地图换了版本：位置在新地图上不合法的人，挪到所在区域的落脚点；区域划分变了的，标签跟着脚下走。不拿新地图去猜旧路线。 */
 function revalidatePositions(w: WorldService, now: number): void {
   const stale = w.db.all('SELECT * FROM world_actors WHERE world_id = ? AND map_version <> ?', w.worldId, w.map.mapVersion).map(hydrate);
   for (const a of stale) {
@@ -870,5 +887,7 @@ function revalidatePositions(w: WorldService, now: number): void {
     }
     saveActor(w, a);
     w.cancelJob(jobKey(a.actor_id));
+    // 位置还合法，但新地图上这里可能已经划给了别的区域：标签以脚下为准
+    if (r) reconcileLabel(w, a, now);
   }
 }

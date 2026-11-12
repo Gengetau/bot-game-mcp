@@ -57,6 +57,19 @@ describe('TOWN_GUIDE / 居民提示词覆盖服务端注册的每个动作', () 
   });
 });
 
+describe('TOWN_GUIDE 是新的空间模型', () => {
+  it('讲 navigate / stop_navigation / 到达与被截住 / 够得着 / 会馆；不再有旧的在途说法；模型不自己续租', () => {
+    const prompt = read('../../../agent-kit/prompts/resident-zh.md');
+    for (const text of [TOWN_GUIDE, prompt]) {
+      for (const k of ['navigate', 'stop_navigation', 'you_arrived', 'nav_stopped', 'far:true', 'too_far', '灯巷会馆', 'home:<对方id>']) expect(text, k).toContain(k);
+      expect(text).toMatch(/续租由运行器自动完成/);
+      for (const old of ['在路上不能', '路上不能做', '到了再说', '巷子', 'street_east', 'street_west', 'exits 是相邻', '东灯巷', '西灯巷']) expect(text, old).not.toContain(old);
+    }
+    // world_wait 的描述提到会被 you_arrived / nav_stopped 唤醒（任何新事件都唤醒）
+    expect(TOWN_GUIDE).toMatch(/world_wait[^\n]*you_arrived/);
+  });
+});
+
 describe('请求号字符集', () => {
   it('正则只放行 8~80 个字母、数字、下划线和 . : -', () => {
     for (const ok of ['abcdefgh', 'a.b:c-d_e1', 'x'.repeat(80)]) expect(REQUEST_ID_RE.test(ok), ok).toBe(true);

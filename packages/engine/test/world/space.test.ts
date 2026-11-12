@@ -225,6 +225,36 @@ describe('停步与改道', () => {
     expect(t.w.db.scalar("SELECT COUNT(*) FROM scheduled_jobs WHERE kind = 'nav_step' AND status = 'pending'")).toBe(0);
   });
 
+  it('快走到时改成去找身边的人：已经在旁边，原来那一趟到此为止，照样记一次「到过某处」', () => {
+    const t = makeTown();
+    const a = t.join('阿灯');
+    const b = t.join('小岚');
+    b.go('tea_house');
+    expect(arrivedFacts(t)).toEqual(['tea_house']);
+    a.act('navigate', { to: 'tea_house' });
+    const gap = () => Math.hypot(a.pos().x - b.pos().x, a.pos().z - b.pos().z);
+    for (let i = 0; i < 400 && nav(a) && gap() > 1.2; i++) {
+      t.advance(100);
+      if (i % 20 === 19 && nav(a)) {
+        a.heartbeat();
+        b.heartbeat();
+        renew(a);
+      }
+    }
+    // 还差最后一米：人在茶馆里，路还没走完，也还没记过「到过」
+    expect(nav(a)).not.toBeNull();
+    expect(loc(a)).toBe('tea_house');
+    expect(arrivedFacts(t)).toEqual(['tea_house']);
+    const cur = a.events().cursor;
+    const out = a.act('navigate', { approach: b.residentId });
+    expect(out).toMatchObject({ status: 'completed', already: 'near' });
+    expect(nav(a)).toBeNull();
+    expect(t.w.db.scalar("SELECT COUNT(*) FROM scheduled_jobs WHERE kind = 'nav_step' AND status = 'pending'")).toBe(0);
+    expect(arrivedFacts(t)).toEqual(['tea_house', 'tea_house']);
+    // 是她自己改的主意：不另发「被截住」
+    expect(types(a, cur)).not.toContain('nav_stopped');
+  });
+
   it('改道失败（走不到、没权限）时原来的路线照旧', () => {
     const t = makeTown();
     const a = t.join('阿灯');
@@ -309,7 +339,71 @@ describe('导航控制租约', () => {
     expect(() => renewNavigation(t.w, { principalId: a.principalId, clientId: 'web:other-tab' }, { navigationId: out.navigation.navigationId, revision: out.navigation.revision })).toThrowError(WorldError);
     t.advance(t.w.params.navLeaseMs + 1);
     expect(nav(a)).toBeNull();
-    expect(renewNavigation(t.w, a.auth, { navigationId: out.navigation.navigationId, revision: out.navigation.revision })).toEqual({ ok: false, navigation: null });
+    expect(renewNavigation(t.w, a.auth, { navigationId: out.navigation.navigationId, revision: out.navigation.revision })).toEqual({ ok: false, navigation: null, space: loc(a) });
+  });
+
+  it('续租必须说清是哪一条的哪一段：不带版本号、版本号不对、编号不对都续不上，并拿到现在这条', () => {
+    const t = makeTown();
+    const a = t.join('阿灯');
+    a.go('tea_house');
+    const out = a.act('navigate', { to: 'garden' });
+    const { navigationId, revision } = out.navigation;
+    const lease = nav(a)!.leaseUntil;
+    t.advance(3000);
+    for (const body of [{ navigationId }, { navigationId, revision: revision - 1 }, { navigationId, revision: 'abc' }, { navigationId: 'nav_other', revision }, {}]) {
+      const r = renewNavigation(t.w, a.auth, body);
+      expect(r).toMatchObject({ ok: false, navigation: { navigationId, revision } });
+      expect(r.leaseUntil).toBeUndefined();
+    }
+    expect(nav(a)!.leaseUntil).toBe(lease);
+    expect(renew(a)).toMatchObject({ ok: true });
+  });
+
+  it('续租的回答里带着脚下的区域：走路的人自己跨区域没有事件，靠它知道现场换了', () => {
+    const t = makeTown();
+    const a = t.join('阿灯');
+    a.go('tea_house');
+    a.act('navigate', { to: 'garden' });
+    const seen: string[] = [];
+    for (let i = 0; i < 20 && nav(a); i++) {
+      t.advance(t.w.params.navRenewEveryMs);
+      a.heartbeat();
+      if (!nav(a)) break;
+      const r = renew(a);
+      expect(r.space).toBe(loc(a));
+      if (seen[seen.length - 1] !== r.space) seen.push(r.space);
+    }
+    expect(seen.length).toBeGreaterThan(1);
+    expect(seen).toContain('road');
+    // 整趟路上她自己没有收到任何「你进了某片区域」的事件
+    expect(loc(a)).toBe('garden');
+  });
+
+  it('续租只在折线的截止时刻变了的时候才通知同场景的人：剩下的路已经在租约之内就不打扰', () => {
+    const t = makeTown();
+    const a = t.join('阿灯');
+    a.go('tea_house');
+    a.act('navigate', { to: 'garden' }); // 二十秒上下的路，比租约长
+    const keys: string[][] = [];
+    t.w.onSpace((k) => keys.push(k));
+    t.advance(3000);
+    renew(a); // 截止时刻从租约到期往后推了：通知
+    expect(keys).toHaveLength(1);
+    const until = (viewer: Actor) => sceneView(t.w, viewer.row(), t.clock.t).actors.find((x) => x.id === a.residentId)!.nav!.until;
+    expect(until(a)).toBe(nav(a)!.leaseUntil);
+    // 走到只剩最后几秒：到达时刻已经在租约之内，再续租也不改变快照
+    while (nav(a) && nav(a)!.leaseUntil < a.t.w.now() + 1 + (whereabouts(t.w, a.row(), t.clock.t).navigation!.arriveAt - t.clock.t)) {
+      t.advance(3000);
+      a.heartbeat();
+      renew(a);
+    }
+    const arriveAt = whereabouts(t.w, a.row(), t.clock.t).navigation!.arriveAt;
+    expect(until(a)).toBe(arriveAt);
+    const n = keys.length;
+    t.advance(500);
+    expect(renew(a)).toMatchObject({ ok: true });
+    expect(keys).toHaveLength(n);
+    expect(until(a)).toBe(arriveAt);
   });
 
   it('控制连接断开：握着控制权的客户端断开就立即停步，别的页面断开不影响', () => {
@@ -534,6 +628,39 @@ describe('场景快照', () => {
     expect(Object.keys(m.grids).sort()).toEqual(['home', 'town']);
   });
 
+  it('不在场的人看不到现场：离线之后的快照里只有她自己停在哪里，没有别人的位置和路线', () => {
+    const t = makeTown();
+    const a = t.join('阿灯');
+    const b = t.join('小岚');
+    b.act('navigate', { to: 'tea_house' });
+    expect(sceneView(t.w, a.row(), t.clock.t).actors.map((x) => x.id).sort()).toEqual([a.residentId, b.residentId].sort());
+    a.leave();
+    const v = sceneView(t.w, a.row(), t.clock.t);
+    expect(v.actors.map((x) => x.id)).toEqual([a.residentId]);
+    expect(JSON.stringify(v)).not.toContain(b.residentId);
+    // 在场租约到期（没有明确离开）也一样
+    const c = t.join('阿树');
+    for (let i = 0; i < 8; i++) {
+      t.advance(20_000);
+      b.heartbeat();
+    }
+    expect(c.row().present_since).toBeNull();
+    expect(sceneView(t.w, c.row(), t.clock.t).actors.map((x) => x.id)).toEqual([c.residentId]);
+  });
+
+  it('客人在别人家里离线：再读快照只有自己，看不到屋里的人', () => {
+    const t = makeTown();
+    const host = t.join('阿灯');
+    const guest = t.join('小岚');
+    host.act('invite', { to: guest.residentId });
+    host.go('home');
+    guest.go(`home:${host.residentId}`);
+    expect(sceneView(t.w, guest.row(), t.clock.t).actors).toHaveLength(2);
+    guest.leave();
+    expect(loc(guest)).toBe(`home:${host.residentId}`);
+    expect(sceneView(t.w, guest.row(), t.clock.t).actors.map((x) => x.id)).toEqual([guest.residentId]);
+  });
+
   it('位置变化在提交之后才通知场景的订阅者；回滚的命令不通知', () => {
     const t = makeTown();
     const a = t.join('阿灯');
@@ -690,6 +817,22 @@ describe('重启与迁移', () => {
     expect(actorOf(t.w, b.residentId)).toMatchObject({ x: before.x, z: before.z, map_version: t.w.map.mapVersion });
     expect(a.row().location_id).toBe('plaza');
     expect(b.row().location_id).toBe('tea_house');
+  });
+
+  it('地图换了版本、区域的划分变了：位置还合法的人，区域标签跟着脚下走', () => {
+    const file = tempDb();
+    cleanups.push(file.cleanup);
+    const clock = new FakeClock();
+    const t = makeTown({ dbPath: file.path, clock });
+    const a = t.join('阿灯');
+    a.go('tea_house');
+    const plaza = town(t).anchors.get('plaza')!;
+    // 假装旧地图上这个点属于茶馆：位置合法，但新地图上它在广场
+    t.w.db.db.prepare("UPDATE world_actors SET map_version = 'old', x = ?, z = ? WHERE actor_id = ?").run(plaza.x, plaza.z, a.residentId);
+    expect(a.row().location_id).toBe('tea_house');
+    t.restart();
+    expect(actorOf(t.w, a.residentId)).toMatchObject({ x: plaza.x, z: plaza.z, map_version: t.w.map.mapVersion });
+    expect(a.row().location_id).toBe('plaza');
   });
 
   it('旧版留下的在途移动：截止前该到的按旧规则到达，没到的留在出发地；之后每个人都有合法位置', () => {

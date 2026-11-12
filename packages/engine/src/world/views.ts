@@ -124,7 +124,8 @@ function hereView(w: WorldService, r: ResidentRow, space: string, now: number): 
     chat: hereChat(w, r.resident_id, space, now),
   };
   if (space === RESIDENTIAL_PLACE) {
-    // 只列够用的门：自己家、我手上有效邀请对应的家、此刻在场的邻居的家（不遍历全部注册居民）
+    // 只列够用的门：自己家、我手上有效邀请对应的家、此刻在场的居民的家（不遍历全部注册居民）。
+    // 门牌是公开地址，「在场」是公开信息；条目的形状固定，不表达这个人此刻在不在家
     const DOOR_CAP = 60;
     const ids = new Set<string>([r.resident_id]);
     for (const id of activeInviteOwners(w, r.resident_id, now, DOOR_CAP)) ids.add(id);

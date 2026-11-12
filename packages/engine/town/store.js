@@ -455,6 +455,8 @@ async function renewNavOnce() {
       cur.arriveAt = d.navigation.arriveAt ?? cur.arriveAt;
       navKey = `${cur.navigationId}:${cur.revision}`;
       scheduleNavRenew(cur.renewEveryMs || every);
+      // 走路的人自己跨区域时没有事件：续租的回答里带着脚下的区域，变了就重读现场
+      if (typeof d.space === 'string' && d.space !== state.me?.location.space) scheduleRefreshMe(0);
       return;
     }
     // 已经停了或到了：停掉定时器，重读视图

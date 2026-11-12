@@ -102,6 +102,7 @@ export function createTownWs(w: WorldService, log: (msg: string) => void, opts: 
     ws: WebSocket;
     ip: string;
     principalId: string | null;
+    clientId: string | null;
     residentId: string | null;
     closeWith(code: number, reason: string): void;
   }
@@ -196,13 +197,17 @@ export function createTownWs(w: WorldService, log: (msg: string) => void, opts: 
     let missedPongs = 0;
     let msgWindowStart = 0;
     let msgCount = 0;
+    /** 是服务器先关的（撤销、背压、限流……）：对端回什么关闭码都不算「客户端明确离开」 */
+    let serverClosed = false;
 
     const conn: Conn = {
       ws,
       ip,
       principalId: null,
+      clientId: null,
       residentId: null,
       closeWith(code, reason) {
+        serverClosed = true;
         if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
           try {
             ws.close(code, reason);
@@ -325,6 +330,7 @@ export function createTownWs(w: WorldService, log: (msg: string) => void, opts: 
       auth = { principalId: t.principalId, clientId: t.clientId };
       residentId = r.resident_id;
       conn.principalId = t.principalId;
+      conn.clientId = t.clientId;
       conn.residentId = r.resident_id;
       bump(perResident, residentId, 1);
       const given = typeof m.cursor === 'string' && m.cursor.length > 0 && m.cursor.length <= HELLO_KEYS_MAX ? m.cursor : undefined;
@@ -420,8 +426,10 @@ export function createTownWs(w: WorldService, log: (msg: string) => void, opts: 
     ws.on('close', (code: number) => {
       const a = auth;
       cleanup();
-      // 正常关闭（页面关了）才立即停步；异常断开让导航租约自己到期，手机网络抖一下不会立刻停
-      if (a && (code === 1000 || code === 1001)) {
+      // 客户端正常关闭（页面关了）才立即停步；异常断开让导航租约自己到期，手机网络抖一下不会立刻停。
+      // 同一个客户端还有别的连接开着（重连时新旧两条并存，再把旧的关掉）就不算离开。
+      const stillHere = a !== null && [...conns].some((c) => c.principalId === a.principalId && c.clientId === a.clientId);
+      if (a && !serverClosed && !stillHere && (code === 1000 || code === 1001)) {
         try {
           controlDisconnected(w, a);
         } catch (e) {

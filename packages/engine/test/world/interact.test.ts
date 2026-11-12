@@ -847,6 +847,7 @@ describe('共同活动：读书、做汤、照料花箱、在家休息', () => {
     const a = t.join('阿灯');
     const b = t.join('小岚', 'agent');
     setNeeds(t, a, { energy: 30 });
+    a.act('invite', { to: b.residentId }); // 两人开局都在广场：先当面邀请，后面 b 才进得了门
     a.go('home');
     const nook = a.view().here!.objects.find((o) => o.type === 'rest_nook')!;
     const out = a.act('start_interaction', { objectId: nook.id });
@@ -857,8 +858,9 @@ describe('共同活动：读书、做汤、照料花箱、在家休息', () => {
     expect(needs(a).energy).toBe(50);
     expect(needs(a).social).toBe(60); // 休息不动社交
     expect(a.view().me.mood?.id).toBe('relaxed');
-    // 在别人家里不行（直接把 b 挪到 a 家，绕过邀请流程，只测活动自己的权限）
-    t.w.db.run('UPDATE residents SET location_id = ? WHERE resident_id = ?', `home:${a.residentId}`, b.residentId);
+    // 在别人家里不行：b 受邀进了 a 的家，也不能用主人的休息角
+    b.go(`home:${a.residentId}`);
+    expect(b.row().location_id).toBe(`home:${a.residentId}`);
     expect(b.fail('start_interaction', { objectId: nook.id }).reason).toBe('not_home');
     checkInvariants(t);
   });

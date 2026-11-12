@@ -29,7 +29,7 @@ export interface TownPort {
   act(action: TownAction, opts?: ActOptions): Promise<ActResult>;
   heartbeat(): Promise<unknown>;
   /** 续导航控制租约（走路时运行器定时调，不经过模型）。没有这个方法的端口不续租 */
-  renewNavigation?(nav: { navigationId: string; revision?: number }, opts?: { signal?: AbortSignal }): Promise<NavigationRenewal>;
+  renewNavigation?(nav: { navigationId: string; revision: number }, opts?: { signal?: AbortSignal }): Promise<NavigationRenewal>;
   /** 停下正在走的路（运行器正常退出时用） */
   stopNavigation?(opts?: ActOptions): Promise<unknown>;
   claim(): Promise<unknown>;

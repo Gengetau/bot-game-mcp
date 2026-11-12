@@ -133,6 +133,20 @@ async function aliveFor(env: Env, ms: number, clients: Client[]): Promise<void> 
   }
 }
 
+/** 走路：像运行器那样每 3 秒用 heartbeat 的 navigation_id / revision 续导航租约，直到这一趟走完。 */
+async function walkMcp(env: Env, client: Client): Promise<void> {
+  for (let guard = 0; guard < 200; guard++) {
+    const v = await call(client, 'get_my_view');
+    const w = v.location.walking;
+    if (!w) return;
+    const now = env.t.w.now();
+    env.t.clock.advance(Math.max(1, Math.min(w.arrive_at - now, 3_000)));
+    env.t.w.tick();
+    await call(client, 'heartbeat', { navigation_id: w.navigation_id, revision: w.revision });
+  }
+  throw new Error('走了太久还没到');
+}
+
 /** 按视图轮流出手，直到这些客户端都不在游戏里。返回出手次数。 */
 async function driveGame(env: Env, clients: Client[]): Promise<number> {
   let turns = 0;
@@ -394,19 +408,121 @@ describe('MCP 小镇：get_my_view / speak / act 的路由', () => {
 // ───────────────────────── world_act ─────────────────────────
 
 describe('MCP 小镇：world_act', () => {
-  it('移动 → 到达；返回 accepted 与到达时间；视图随之变化', async () => {
+  it('navigate → 走到；返回 accepted 与导航信息；视图里有 location.walking；运行器式续租到 you_arrived', async () => {
     const env = makeEnv();
     const { client } = await enter(env, QING, { name: '青青' });
     const v0 = await call(client, 'get_my_view');
     expect(v0.location).toMatchObject({ space: 'plaza' });
-    const r = await wact(client, { type: 'move', to: 'tea_house' }, { view: v0 });
+    expect(v0.location.walking).toBeUndefined();
+    expect(v0.here.kind).toBe('public');
+    expect(v0.here.exits.map((e: any) => e.to)).toContain('tea_house');
+    const r = await wact(client, { type: 'navigate', to: 'tea_house' }, { view: v0 });
     expect(r.ok).toBe(true);
     expect(r.status).toBe('accepted');
-    expect(r.move.arriveAt).toBeGreaterThan(env.t.clock.now());
-    expect((await call(client, 'get_my_view')).location.moving_to).toBeTruthy();
-    env.t.advance(20_000);
+    expect(r.navigation).toMatchObject({ navigationId: expect.any(String), revision: expect.any(Number), to: { kind: 'place', name: '栖灯茶馆' }, renewEveryMs: expect.any(Number) });
+    expect(r.navigation.arriveAt).toBeGreaterThan(env.t.clock.now());
+    expect(r.navigation.leaseUntil).toBeGreaterThan(env.t.clock.now());
+    expect(r.move).toBeUndefined(); // 回执里没有旧的 move 状态，也没有路径
+    expect(JSON.stringify(r)).not.toMatch(/path|points|polyline/i);
+    // 路上：视图里是 walking，不再有 moving_to；人属于脚下的区域，here 不为空
+    const mid = await call(client, 'get_my_view');
+    expect(mid.location.moving_to).toBeUndefined();
+    expect(mid.location.walking).toMatchObject({ navigation_id: r.navigation.navigationId, revision: r.navigation.revision, to: '栖灯茶馆' });
+    expect(mid.here).not.toBeNull();
+    // 不带 navigation_id 的 heartbeat 只是在场心跳
+    expect((await call(client, 'heartbeat')).navigation).toBeUndefined();
+    // 带上就在同一次调用里续导航租约
+    env.t.clock.advance(3_000);
+    const hb = await call(client, 'heartbeat', { navigation_id: r.navigation.navigationId, revision: r.navigation.revision });
+    expect(hb.ok).toBe(true);
+    expect(hb.navigation.ok).toBe(true);
+    expect(hb.navigation.leaseUntil).toBeGreaterThan(r.navigation.leaseUntil);
+    expect(hb.navigation.navigation.navigationId).toBe(r.navigation.navigationId);
+    // 回答里带着此刻脚下的区域（走路的人自己跨区域没有事件）
+    expect(hb.navigation.space).toBe((await call(client, 'get_my_view')).location.space);
+    // 续的是别的编号：不动现在这条，ok:false 并告诉你现在这条
+    const other = await call(client, 'heartbeat', { navigation_id: 'nav_not_mine', revision: r.navigation.revision });
+    expect(other.navigation.ok).toBe(false);
+    expect(other.navigation.navigation.navigationId).toBe(r.navigation.navigationId);
+    // 只给编号、不给版本：同样续不上（必须说清是哪一段）
+    const noRev = await call(client, 'heartbeat', { navigation_id: r.navigation.navigationId });
+    expect(noRev.navigation.ok).toBe(false);
+    expect(noRev.navigation.leaseUntil).toBeUndefined();
+    expect(noRev.navigation.navigation).toMatchObject({ navigationId: r.navigation.navigationId, revision: r.navigation.revision });
+    await walkMcp(env, client);
     const v1 = await call(client, 'get_my_view');
     expect(v1.location).toMatchObject({ space: 'tea_house' });
+    expect(v1.location.walking).toBeUndefined();
+    const w = await call(client, 'world_wait', { cursor: v0.cursor, wait_seconds: 0 });
+    expect(w.events.some((e: any) => e.type === 'you_arrived' && e.space === 'tea_house')).toBe(true);
+    // 走完之后再续：没有在走的路了
+    const done = await call(client, 'heartbeat', { navigation_id: r.navigation.navigationId, revision: r.navigation.revision });
+    expect(done.navigation).toEqual({ ok: false, navigation: null, space: 'tea_house' });
+  });
+
+  it('move 是 navigate 的旧名；stop_navigation 停在原地', async () => {
+    const env = makeEnv();
+    const { client } = await enter(env, QING, { name: '青青' });
+    const r = await wact(client, { type: 'move', to: 'tea_house' });
+    expect(r.status).toBe('accepted');
+    expect(r.navigation.navigationId).toBeTruthy();
+    env.t.clock.advance(2_000);
+    const stop = await wact(client, { type: 'stop_navigation' });
+    expect(stop).toMatchObject({ status: 'completed', stopped: true, at: { space: expect.any(String) } });
+    const v = await call(client, 'get_my_view');
+    expect(v.location.walking).toBeUndefined();
+    expect(v.location.space).not.toBe('tea_house');
+  });
+
+  it('不续租：租约到期就停在半路，收到 nav_stopped（lease）；失败原因是 precondition_failed 的 reason', async () => {
+    const env = makeEnv();
+    const { client } = await enter(env, QING, { name: '青青' });
+    const v0 = await call(client, 'get_my_view');
+    const r = await wact(client, { type: 'navigate', to: 'tea_house' }, { view: v0 });
+    env.t.clock.advance(r.navigation.leaseUntil - env.t.w.now() + 500);
+    env.t.w.tick();
+    const v = await call(client, 'get_my_view');
+    expect(v.location.walking).toBeUndefined();
+    expect(v.location.space).not.toBe('tea_house');
+    const w = await call(client, 'world_wait', { cursor: v0.cursor, wait_seconds: 0 });
+    expect(w.events.find((e: any) => e.type === 'nav_stopped')).toMatchObject({ reason: 'lease' });
+    // 已经没有在走的路：续租 ok:false、navigation:null
+    expect((await call(client, 'heartbeat', { navigation_id: r.navigation.navigationId, revision: r.navigation.revision })).navigation).toMatchObject({ ok: false, navigation: null });
+    const bad = await wactFails(client, { type: 'navigate', to: 'no_such_place' });
+    expect(bad.code).toBe('PRECONDITION_FAILED');
+    expect(bad.reason).toBe('no_such_place');
+  });
+
+  it('续导航租约时没有控制权：明确报 CONTROL_LOST，而不是吞掉', async () => {
+    const env = makeEnv();
+    const { client: first } = await enter(env, QING, { name: '青青' });
+    const r = await wact(first, { type: 'navigate', to: 'tea_house' });
+    // 同一居民换一个会话接管（enter_world 默认接管控制权，原来的导航立刻停下）
+    const second = await env.connect(QING);
+    await call(second, 'enter_world', { client_id: 'run-5001-bbbb' });
+    const lost = await fails(first, 'heartbeat', { navigation_id: r.navigation.navigationId, revision: r.navigation.revision });
+    expect(lost.code).toBe('CONTROL_LOST');
+    // 新的控制方续不到旧的那条：导航已经因为换手停了
+    expect((await call(second, 'heartbeat', { navigation_id: r.navigation.navigationId, revision: r.navigation.revision })).navigation).toMatchObject({ ok: false, navigation: null });
+  });
+
+  it('公共物件按距离：视图里够不着的带 far:true；直接用得到 too_far 和 navigateTo，走到旁边就能用', async () => {
+    const env = makeEnv();
+    const { client } = await enter(env, QING, { name: '青青' });
+    await wact(client, { type: 'navigate', to: 'tea_house' });
+    await walkMcp(env, client);
+    const v = await call(client, 'get_my_view');
+    const table = v.here.objects.find((o: any) => o.id === 'tea_house:table1');
+    expect(table.far).toBe(true);
+    const far = await wactFails(client, { type: 'start_interaction', objectId: 'tea_house:table1' }, { view: v });
+    expect(far.reason).toBe('too_far');
+    expect(far.text).toContain('tea_house:table1'); // data.navigateTo
+    await wact(client, { type: 'navigate', to: 'tea_house:table1' });
+    await walkMcp(env, client);
+    const near = await call(client, 'get_my_view');
+    expect(near.here.objects.find((o: any) => o.id === 'tea_house:table1').far).toBeUndefined();
+    const ok = await wact(client, { type: 'start_interaction', objectId: 'tea_house:table1' });
+    expect(ok.ok).toBe(true);
   });
 
   it('每个错误码的映射：大写码、提示、reason 和附加数据都在文本里', async () => {
@@ -449,8 +565,8 @@ describe('MCP 小镇：world_act', () => {
     const id = rid();
     env.t.advance(15_000);
     await call(client, 'heartbeat');
-    await wact(client, { type: 'move', to: 'bookshop' }, { request_id: id });
-    expect((await wactFails(client, { type: 'move', to: 'garden' }, { request_id: id })).code).toBe('REQUEST_CONFLICT');
+    await wact(client, { type: 'navigate', to: 'bookshop' }, { request_id: id });
+    expect((await wactFails(client, { type: 'navigate', to: 'garden' }, { request_id: id })).code).toBe('REQUEST_CONFLICT');
 
     // UNAUTHENTICATED：没进入小镇的会话
     const stranger = await env.connect(MO);
@@ -483,8 +599,9 @@ describe('MCP 小镇：world_act', () => {
     const { client: a } = await enter(env, QING, { name: '青青' });
     const { client: b, entered } = await enter(env, MO, { name: '小墨' });
     // 去茶馆买茶叶
-    await wact(a, { type: 'move', to: 'tea_house' });
-    await aliveFor(env, 20_000, [a, b]);
+    await wact(a, { type: 'navigate', to: 'tea_house' });
+    await walkMcp(env, a);
+    await call(b, 'heartbeat');
     const before = (await call(a, 'get_my_view')).coins;
     const bought = await wact(a, { type: 'buy', shop: 'tea_counter', sku: 'tea_leaves', qty: 1 });
     expect(bought.ok).toBe(true);

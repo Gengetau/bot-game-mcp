@@ -117,7 +117,7 @@ describe('TownClient：真引擎', () => {
     expect(arrived.space).toBe('plaza');
     expect((await a.view()).location.space).toBe('plaza');
     // 已经没有在走的路：续租 ok:false、navigation:null
-    expect(await a.renewNavigation({ navigationId: mv.navigation!.navigationId })).toMatchObject({ ok: false, navigation: null });
+    expect(await a.renewNavigation({ navigationId: mv.navigation!.navigationId, revision: mv.navigation!.revision })).toMatchObject({ ok: false, navigation: null, space: 'plaza' });
     // 已经在这一片区域：already_here
     const here = await a.navigate('plaza').catch((e) => e);
     expect(here).toBeInstanceOf(PreconditionFailedError);

@@ -3,7 +3,9 @@
  *
  * 真实时钟、真实文件库（WAL + synchronous=FULL，每次提交真 fsync）、单进程。
  * 一批居民按“负载模型”持续发动作：AI 居民每 2~6 秒一步，真人居民每 1~4 秒一步，每 20 秒一次心跳；
+ * 居民持续 navigate（地点、物件旁、地图点、某个人身边，走路时偶尔改道），走路期间每个续租间隔续一次导航租约，边走边说话；
  * 同时始终维持 --games 局小游戏在进行（凑桌 → 开局 → 各人按 todo 出手 → 结算 → 下一桌）。
+ * 导航指标：每秒 navigate / 续租数、nav_step 任务延迟（实际处理时刻 − 应处理时刻）、sceneView 生成耗时。
  * 测量每条命令的耗时（p50/p95/p99/max）与吞吐，对照 WorldService.metricsSnapshot() 的提交耗时，
  * 并测 townMeView / townAgentView / townPublicView 的生成耗时与字节数，以及事件循环延迟。
  *
@@ -22,6 +24,9 @@ import {
   Conn,
   Rand,
   WorldError,
+  renewTrack,
+  sceneView,
+  trackNav,
   fmtBytes,
   fmtMs,
   makePrincipal,
@@ -39,7 +44,9 @@ import {
   type Outcome,
   type Person,
   type DistSummary,
+  type NavTrack,
 } from './world-lib.js';
+import { PUBLIC_OBJECTS } from '../packages/engine/src/world/content.js';
 
 const { values: args } = parseArgs({
   options: {
@@ -71,8 +78,8 @@ const w = openWorld({
   dbPath: DB,
   seed: `load${SEED}`,
   realTime: true,
-  // 容量上限随居民数放开（压力档 > 30）；移动用时缩短，免得凑桌时间占满整个测试
-  params: { activeResidentLimit: Math.max(30, N), concurrentGames: GAMES, moveDurationMs: 1500, doorDurationMs: 500 },
+  // 容量上限随居民数放开（压力档 > 30）；走路用真实速度（2.4 米/秒），续租按引擎参数
+  params: { activeResidentLimit: Math.max(30, N), concurrentGames: GAMES },
 });
 // 真实运行时由 mountTown 每秒调一次 tick
 const ticker = setInterval(() => w.tick(), 1000);
@@ -87,6 +94,8 @@ interface R {
   hbAt: number;
   table: Table | null;
   gameAt: number;
+  /** 手里这一趟导航（客户端视角） */
+  nav: NavTrack | null;
 }
 interface Table {
   id: number;
@@ -105,7 +114,7 @@ for (let i = 0; i < N; i++) {
   const principalId = makePrincipal(w, i, kind, name);
   const p: Person = { idx: i, name, kind, principalId, residentId: '' };
   const c = new Conn(w, p, `${kind === 'agent' ? 'mcp' : 'web'}:load-${i}`, kind === 'agent' ? 'mcp' : 'web');
-  people.push({ p, c, rnd: rnd.fork(`r${i}`), nextAt: 0, hbAt: 0, table: null, gameAt: 0 });
+  people.push({ p, c, rnd: rnd.fork(`r${i}`), nextAt: 0, hbAt: 0, table: null, gameAt: 0, nav: null });
 }
 
 // ───────────────────────── 测量 ─────────────────────────
@@ -119,6 +128,23 @@ const internalSamples: string[] = [];
 const viewMs = { me: [] as number[], agent: [] as number[], pub: [] as number[] };
 const viewBytes = { me: [] as number[], agent: [] as number[], pub: [] as number[] };
 const lagMs: number[] = [];
+const navM = {
+  navigate: 0,
+  accepted: 0,
+  completed: 0,
+  renewOk: 0,
+  renewDone: 0,
+  renewLost: 0,
+  renewAdopted: 0,
+  renewMs: [] as number[],
+  navMs: [] as number[],
+  lagMs: [] as number[],
+  steps: 0,
+  sceneMs: [] as number[],
+  sceneBytes: [] as number[],
+  sceneActors: [] as number[],
+  walkingSamples: 0,
+};
 let gamesStarted = 0;
 let gamesDone = 0;
 let gamesAborted = 0;
@@ -153,6 +179,49 @@ function act(r: R, type: string, fields: Record<string, unknown> = {}): Outcome 
   return o;
 }
 
+/** 发 navigate 并接管续租；返回是否在走。to 可以是地点 / 物件旁 / 地图点 / 居民编号（approach）。 */
+function navigate(r: R, to: unknown, mode: 'to' | 'approach' = 'to'): boolean {
+  navM.navigate++;
+  const o = act(r, 'navigate', mode === 'approach' ? { approach: to } : { to });
+  if (o.ok) navM.navMs.push(o.ms);
+  if (!o.ok) return false;
+  if (o.out.status !== 'accepted') {
+    navM.completed++;
+    r.nav = null;
+    return false;
+  }
+  navM.accepted++;
+  r.nav = trackNav(r.c, o.out.navigation, Date.now(), r.rnd.range(0, 300));
+  return true;
+}
+
+function renewDue(r: R): void {
+  if (!r.nav || r.nav.renewAt > Date.now()) return;
+  const res = renewTrack(w, r.nav, Date.now(), r.rnd.range(0, 300));
+  navM.renewMs.push(res.ms);
+  if (res.adopted) navM.renewAdopted++;
+  if (res.result === 'ok') navM.renewOk++;
+  else {
+    if (res.result === 'done') navM.renewDone++;
+    else navM.renewLost++;
+    r.nav = null;
+  }
+}
+
+function randomTarget(r: R, space: string): { to: unknown; mode: 'to' | 'approach' } {
+  const kind = r.rnd.weighted<'place' | 'object' | 'point' | 'person'>([['place', 5], ['object', 3], ['point', 2], ['person', 1.5]])!;
+  if (kind === 'object') return { to: r.rnd.pick(PUBLIC_OBJECTS).id, mode: 'to' };
+  if (kind === 'point') {
+    const town = w.map.scenes.get(w.map.spawn.scene)!;
+    return { to: { x: town.originX + r.rnd.float() * town.cols * town.cell, z: town.originZ + r.rnd.float() * town.rows * town.cell }, mode: 'to' };
+  }
+  if (kind === 'person') {
+    const t = r.rnd.pick(people.filter((x) => x !== r && x.p.residentId && w.mustResident(x.p.residentId).location_id === space));
+    if (t) return { to: t.p.residentId, mode: 'approach' };
+  }
+  return { to: r.rnd.pick(DESTS.filter((d) => d !== space)), mode: 'to' };
+}
+
 function timedView(r: R): ReturnType<typeof townMeView> {
   const res = w.mustResident(r.p.residentId);
   if (r.c.kindOfClient === 'mcp') {
@@ -179,12 +248,22 @@ function step(r: R, now: number): void {
   r.nextAt = now + think;
   if (r.table && r.table.stage !== 'done') return; // 在桌上的人由牌桌流程驱动
   const v = timedView(r);
-  if (v.location.moving || v.game) return;
+  if (v.game) return;
   const here = v.here;
   const space = v.location.space ?? '';
+  if (v.location.navigation) {
+    // 走在路上：多数时候继续走，偶尔边走边说，偶尔改道
+    const roll = r.rnd.float();
+    if (roll < 0.25) act(r, 'speak', { text: r.rnd.pick(PHRASES) });
+    else if (roll < 0.40) {
+      const t = randomTarget(r, space);
+      navigate(r, t.to, t.mode);
+    }
+    return;
+  }
   const choices: [string, number][] = [
     ['speak', here && here.residents.length > 0 ? 30 : 3],
-    ['move', 15],
+    ['move', 40],
     ['interact', here && here.objects.length > 0 ? 12 : 0],
     ['buy', here && here.shops.length > 0 ? 8 : 0],
     ['letter', 5],
@@ -196,10 +275,15 @@ function step(r: R, now: number): void {
   const pick = r.rnd.weighted(choices);
   switch (pick) {
     case 'speak': act(r, 'speak', { text: r.rnd.pick(PHRASES) }); break;
-    case 'move': act(r, 'move', { to: r.rnd.pick(DESTS.filter((d) => d !== space)) }); break;
+    case 'move': {
+      const t = randomTarget(r, space);
+      navigate(r, t.to, t.mode);
+      break;
+    }
     case 'interact': {
       const o = r.rnd.pick(here!.objects.filter((x) => x.action && !x.active));
-      if (o) act(r, 'start_interaction', { objectId: o.id });
+      if (o && !o.near) navigate(r, o.id); // 公共物件要先走到旁边
+      else if (o) act(r, 'start_interaction', { objectId: o.id });
       break;
     }
     case 'buy': {
@@ -216,7 +300,7 @@ function step(r: R, now: number): void {
     case 'read': {
       const l = w.db.get('SELECT letter_id FROM letters WHERE recipient_id = ? AND delivered_at IS NOT NULL AND read_at IS NULL LIMIT 1', r.p.residentId);
       if (l) {
-        if (v.location.space !== `home:${v.me.id}`) act(r, 'move', { to: 'home' });
+        if (v.location.space !== `home:${v.me.id}`) navigate(r, 'home');
         else act(r, 'read_letter', { letterId: l.letter_id });
       }
       break;
@@ -244,7 +328,7 @@ let tableSeq = 0;
 const GAME_ROT: Table['game'][] = ['number_bomb', 'liars_dice', 'number_bomb', 'liars_dice', 'sealed_auction'];
 
 function freeResident(): R[] {
-  return people.filter((r) => !r.table && w.mustResident(r.p.residentId).present_since !== null && !w.mustResident(r.p.residentId).move && !w.mustResident(r.p.residentId).activity_id);
+  return people.filter((r) => !r.table && w.mustResident(r.p.residentId).present_since !== null && !w.mustResident(r.p.residentId).activity_id);
 }
 
 function manageTables(now: number): void {
@@ -253,7 +337,7 @@ function manageTables(now: number): void {
     if (t.stage === 'gather') {
       const ready = t.members.every((m) => {
         const r = w.mustResident(m.p.residentId);
-        return r.location_id === 'arcade' && !r.move;
+        return r.location_id === 'arcade';
       });
       if (ready) {
         const host = t.members[0]!;
@@ -345,7 +429,7 @@ function ensureTables(now: number): void {
     for (const m of members) {
       m.table = t;
       const v = timedView(m);
-      if (v.location.space !== 'arcade') act(m, 'move', { to: 'arcade' });
+      if (v.location.space !== 'arcade') navigate(m, 'arcade');
     }
   }
 }
@@ -380,6 +464,14 @@ async function main(): Promise<void> {
     lagLast = n;
   }, 20);
   let manageAt = t0;
+  let sceneAt = t0;
+  let sceneIdx = 0;
+  const origStep = w.jobHandlers.get('nav_step')!;
+  w.jobHandlers.set('nav_step', (payload, job, nowMs) => {
+    navM.lagMs.push(Math.max(0, nowMs - job.due_at));
+    navM.steps++;
+    origStep(payload, job, nowMs);
+  });
   const end = t0 + SECONDS * 1000;
   const m0 = w.metricsSnapshot();
   let checkpoint = t0 + 1000;
@@ -404,6 +496,10 @@ async function main(): Promise<void> {
         }
         did = true;
       }
+      if (r.nav) {
+        navM.walkingSamples++;
+        renewDue(r);
+      }
       if (r.nextAt <= now) {
         try {
           step(r, now);
@@ -414,6 +510,16 @@ async function main(): Promise<void> {
         }
         did = true;
       }
+    }
+    if (now >= sceneAt) {
+      sceneAt = now + 40;
+      const r = people[sceneIdx++ % people.length]!;
+      const res = w.mustResident(r.p.residentId);
+      const t0 = performance.now();
+      const sv = sceneView(w, res, w.now());
+      navM.sceneMs.push(performance.now() - t0);
+      navM.sceneBytes.push(utf8Bytes(sv));
+      navM.sceneActors.push(sv.actors.length);
     }
     if (now >= checkpoint) {
       checkpoint = now + 5000;
@@ -441,7 +547,7 @@ function report(wallMs: number, enterMs: number[], m0: Record<string, unknown>, 
   console.log('\n================ 栖灯镇负载测试报告 ================');
   console.log(`机器：${platform()} ${release()} ${arch()}，${cpus().length} 核 ${cpus()[0]?.model ?? ''}，内存 ${(totalmem() / 1024 ** 3).toFixed(1)} GiB，Node ${process.version}`);
   console.log('说明：开发容器内的单进程测试，不是生产服务器；命令耗时只含服务内部管线（不含 HTTP / JSON 编解码）。');
-  console.log(`负载：${N} 位居民（${people.filter((p) => p.p.kind === 'agent').length} AI + ${people.filter((p) => p.p.kind === 'human').length} 真人），常驻 ${GAMES} 局小游戏，持续 ${secs.toFixed(1)} 秒；AI 每 2~6 秒一步、真人每 1~4 秒一步、每 20 秒一次心跳；移动用时缩短为 1.5 秒`);
+  console.log(`负载：${N} 位居民（${people.filter((p) => p.p.kind === 'agent').length} AI + ${people.filter((p) => p.p.kind === 'human').length} 真人），常驻 ${GAMES} 局小游戏，持续 ${secs.toFixed(1)} 秒；AI 每 2~6 秒一步、真人每 1~4 秒一步、每 20 秒一次心跳；走路用真实速度并按租约续租`);
   console.log(`吞吐：${cmdTotal} 条命令（含心跳），成功 ${okCount}，被拒绝 ${cmdTotal - okCount}，内部异常 ${internalErrors}；${(cmdTotal / secs).toFixed(1)} 条/秒`);
   console.log(`小游戏：开局 ${gamesStarted}，完成 ${gamesDone}，中止/放弃 ${gamesAborted}；凑桌尝试 ${tables.length} 次`);
   console.log(`进入世界（注册）：${N} 次，p50 ${fmtMs(summarize(enterMs).p50)} ms，max ${fmtMs(summarize(enterMs).max)} ms`);
@@ -482,6 +588,26 @@ function report(wallMs: number, enterMs: number[], m0: Record<string, unknown>, 
       ['townPublicView', String(vp.n), fmtMs(vp.p50), fmtMs(vp.p95), fmtMs(vp.p99), fmtMs(vp.max), fmtBytes(bp.p50), fmtBytes(bp.max), '—'],
     ]),
   );
+  const rn = summarize(navM.renewMs);
+  const nv = summarize(navM.navMs);
+  const nl = summarize(navM.lagMs);
+  const sm = summarize(navM.sceneMs);
+  const sb = summarize(navM.sceneBytes);
+  const sa = summarize(navM.sceneActors);
+  console.log('\n导航：');
+  console.log(
+    table([
+      ['指标', '数值'],
+      ['navigate 调用（含被拒绝 / 当场走完）', `${navM.navigate} 次，${(navM.navigate / secs).toFixed(1)} 次/秒；接受 ${navM.accepted}，当场走完 ${navM.completed}`],
+      ['续租 renewNavigation', `${navM.renewOk + navM.renewDone + navM.renewLost} 次，${((navM.renewOk + navM.renewDone + navM.renewLost) / secs).toFixed(1)} 次/秒；续上 ${navM.renewOk}，已结束 ${navM.renewDone}，失去控制权 ${navM.renewLost}，途中换版本重续 ${navM.renewAdopted}`],
+      ['续租耗时 ms（p50 / p95 / p99 / max）', `${fmtMs(rn.p50)} / ${fmtMs(rn.p95)} / ${fmtMs(rn.p99)} / ${fmtMs(rn.max)}`],
+      ['navigate 耗时 ms（p50 / p95 / p99 / max）', `${fmtMs(nv.p50)} / ${fmtMs(nv.p95)} / ${fmtMs(nv.p99)} / ${fmtMs(nv.max)}`],
+      ['nav_step 任务', `${navM.steps} 次，${(navM.steps / secs).toFixed(1)} 次/秒`],
+      ['nav_step 延迟 ms（实际处理 − 应处理；p50 / p95 / p99 / max）', `${fmtMs(nl.p50)} / ${fmtMs(nl.p95)} / ${fmtMs(nl.p99)} / ${fmtMs(nl.max)}`],
+      ['sceneView 生成耗时 ms（p50 / p95 / p99 / max）', `${fmtMs(sm.p50)} / ${fmtMs(sm.p95)} / ${fmtMs(sm.p99)} / ${fmtMs(sm.max)}（${sm.n} 次）`],
+      ['sceneView 字节 / 人数（p50 / max）', `${fmtBytes(sb.p50)} / ${fmtBytes(sb.max)}；场景里 ${sa.p50} / ${sa.max} 人`],
+    ]),
+  );
   const lag = summarize(lagMs);
   console.log(`\n事件循环延迟（20ms 定时器的超时量）：p50 ${fmtMs(lag.p50)} ms，p99 ${fmtMs(lag.p99)} ms，max ${fmtMs(lag.max)} ms`);
 
@@ -490,8 +616,8 @@ function report(wallMs: number, enterMs: number[], m0: Record<string, unknown>, 
   for (const s of internalSamples) console.log(`内部异常样例：${s}`);
 
   const present = w.presentCount();
-  const pass = all.p99 < GATE_MS && internalErrors === 0 && bm.max < 65536 && ba.max < 16384;
-  console.log(`\n门槛：命令 p99 < ${GATE_MS} ms（实测 ${fmtMs(all.p99)} ms，max ${fmtMs(all.max)} ms）；内部异常 0（实测 ${internalErrors}）；视图大小在门槛内；结束时在场 ${present} 人`);
+  const pass = all.p99 < GATE_MS && rn.p99 < GATE_MS && internalErrors === 0 && bm.max < 65536 && ba.max < 16384;
+  console.log(`\n门槛：命令 p99 < ${GATE_MS} ms（实测 ${fmtMs(all.p99)} ms，max ${fmtMs(all.max)} ms）；续租 p99 < ${GATE_MS} ms（实测 ${fmtMs(rn.p99)} ms）；内部异常 0（实测 ${internalErrors}）；视图大小在门槛内；结束时在场 ${present} 人`);
   console.log(`结论：${pass ? '通过' : '未通过'}（${N} 居民 / ${GAMES} 局；单进程、开发容器）`);
 
   if (args.json) {
@@ -511,6 +637,7 @@ function report(wallMs: number, enterMs: number[], m0: Record<string, unknown>, 
           metrics: m1,
           views: { meMs: vm, agentMs: va, pubMs: vp, meBytes: bm, agentBytes: ba, pubBytes: bp },
           eventLoopLag: lag,
+          navigation: { ...navM, renewMs: rn, navMs: nv, lagMs: nl, sceneMs: sm, sceneBytes: sb, sceneActors: sa, navigatePerSec: navM.navigate / secs, renewPerSec: (navM.renewOk + navM.renewDone + navM.renewLost) / secs },
           games: { started: gamesStarted, done: gamesDone, aborted: gamesAborted },
           errors: Object.fromEntries(errCodes),
           pass,

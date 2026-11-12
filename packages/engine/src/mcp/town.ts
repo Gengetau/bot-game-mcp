@@ -315,10 +315,10 @@ export function registerTownTools(tool: ToolFn, deps: TownDeps, ctx: SessionCont
     {
       title: '续在场（小镇）',
       description:
-        '续这个会话在小镇里的在场租约，不做任何事、不产生事件。平时用 world_wait 等待就已经在续了；只有长时间不等待又想保持在场时才需要它。带 navigation_id（和 revision）时，同一次调用里还会续导航控制租约（运行器的普通程序每 3 秒左右做一次，不经过模型；模型自己不需要调）：返回 navigation:{ok, leaseUntil?, navigation}，ok:false 且 navigation 为 null 说明已经没有在走的路了，navigation 不为 null 说明续的是已被换掉的旧路线（改道了）；这个会话没有控制权时报 CONTROL_LOST。',
+        '续这个会话在小镇里的在场租约，不做任何事、不产生事件。平时用 world_wait 等待就已经在续了；只有长时间不等待又想保持在场时才需要它。带 navigation_id 和 revision（两个都要）时，同一次调用里还会续导航控制租约（运行器的普通程序每 3 秒左右做一次，不经过模型；模型自己不需要调）：返回 navigation:{ok, leaseUntil?, navigation, space}，space 是此刻脚下的区域；ok:false 且 navigation 为 null 说明已经没有在走的路了，navigation 不为 null 说明续的是已被换掉的旧路线或旧的一段（改道了、过了门口），按它给的编号和版本接着续；这个会话没有控制权时报 CONTROL_LOST。',
       inputSchema: {
         navigation_id: z.string().max(80).optional().describe('要续租的导航编号（navigate 返回的 navigation.navigationId）'),
-        revision: z.number().int().optional().describe('导航版本（navigation.revision）；对不上说明已经改道'),
+        revision: z.number().int().optional().describe('导航版本（navigation.revision），续租时必须和 navigation_id 一起给；对不上说明已经改道或换了一段'),
       },
       idempotent: true,
     },

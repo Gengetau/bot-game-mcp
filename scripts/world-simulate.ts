@@ -33,7 +33,9 @@ import {
   makePrincipal,
   openWorld,
   arrivalAt,
+  controlDisconnected,
   positionAt,
+  positionOfResident,
   renewTrack,
   trackNav,
   personName,
@@ -183,6 +185,7 @@ class Sim {
   fileBytesByDay: number[] = [];
   nextDayMark = TOWN_START + DAY;
   steps = 0;
+  nextProbe = 0;
   lastTickT = -1;
   startWall = performance.now();
   concurrentGamesMax = 0;
@@ -632,6 +635,7 @@ class Sim {
       }
       for (const ag of this.ags) if (this.nextAgentEvent(ag) <= this.clock.t) this.runAgent(ag);
       this.sample();
+      this.spaceProbe();
       if (this.restartPlan.length > 0 && this.restartPlan[0]!.at <= this.clock.t) this.maybeRestart();
       if (this.clock.t >= this.nextCheck) {
         this.check();
@@ -650,6 +654,16 @@ class Sim {
     this.w.tick();
     this.check(true);
     if (this.daily.length < Math.ceil(DAYS)) this.dayMark();
+  }
+
+  /** 有人在走路时，每隔几秒（逻辑时间）单做一轮空间检查：不等半小时一次的整套检查。 */
+  private spaceProbe(): void {
+    if (this.clock.t < this.nextProbe) return;
+    if (!this.ags.some((a) => a.nav)) return;
+    this.nextProbe = this.clock.t + 5000;
+    this.w.tick();
+    this.inv.space(this.w, this.clock.t, false);
+    this.bump('space_probes');
   }
 
   private sample(): void {
@@ -1135,7 +1149,7 @@ class Sim {
     const half = now + Math.round(remaining / 2) + r.range(0, 500);
     if (ag.walk === 'fickle' && r.chance(0.6)) ag.walkPlan = { kind: 'reroute', at: half };
     else if (ag.walk === 'halter' && r.chance(0.6)) ag.walkPlan = { kind: 'halt', at: half };
-    else if (ag.walk === 'ghost' && r.chance(0.5)) ag.walkPlan = { kind: 'ghost', at: half };
+    else if (ag.walk === 'ghost' && r.chance(0.8)) ag.walkPlan = { kind: 'ghost', at: half };
     else if (ag.walk === 'steady' && r.chance(0.12)) ag.walkPlan = { kind: r.chance(0.7) ? 'chat' : 'reroute', at: half };
     if (ag.walkPlan) return Math.max(1000, ag.walkPlan.at - now);
     return Math.max(1000, remaining + r.range(0, 3000));
@@ -1744,10 +1758,181 @@ function scenarioChecks(inv: Invariants): { name: string; ok: boolean; note: str
   return out;
 }
 
+/**
+ * 导航的几个典型路径，用一个小世界逐条演一遍（和随机模拟互补：这里每条路径一定会走到，并且断言具体结果）：
+ * 门口被拦、不续租、控制权换手、中途离线、停下、物件够不着再走过去。每条之后都跑一轮空间不变量。
+ */
+function navScenarios(inv: Invariants): { name: string; ok: boolean; note: string }[] {
+  const out: { name: string; ok: boolean; note: string }[] = [];
+  const clock = new Clock(TOWN_START);
+  const w = openWorld({ dbPath: ':memory:', clock, seed: `nav${SEED}` });
+  const rnd = new Rand(`nav:${SEED}`);
+  const mk = (i: number, kind: Kind): { p: Person; c: Conn } => {
+    const p: Person = { idx: 100 + i, name: personName(i), kind, principalId: makePrincipal(w, 100 + i, kind, personName(i)), residentId: '' };
+    const c = new Conn(w, p, `${kind === 'agent' ? 'mcp' : 'web'}:nav-${i}`, kind === 'agent' ? 'mcp' : 'web');
+    p.residentId = c.enter(randomProfile(rnd, p.name)).residentId;
+    return { p, c };
+  };
+  const A = mk(0, 'agent');
+  const B = mk(1, 'human');
+  const C = mk(2, 'agent');
+  const advance = (ms: number) => {
+    clock.t += ms;
+    w.tick();
+  };
+  const hb = () => {
+    for (const x of [A, B, C]) {
+      try {
+        x.c.heartbeat();
+      } catch {
+        /* 已离线 */
+      }
+    }
+  };
+  const posOfRes = (x: { p: Person }) => positionOfResident(w, x.p.residentId, clock.t)!;
+  const where = (x: { p: Person }) => w.mustResident(x.p.residentId).location_id;
+  const nav = (x: { p: Person }) => actorOf(w, x.p.residentId)?.nav ?? null;
+  const events = (x: { p: Person }, type: string) => w.db.all('SELECT projection FROM recipient_events WHERE resident_id = ? AND type = ? ORDER BY cursor', x.p.residentId, type).map((e) => JSON.parse(e.projection as string) as Record<string, any>);
+  /** 像客户端一样走完一趟：每个续租间隔续一次，到了（navigation 为空）为止。 */
+  const walk = (x: { p: Person; c: Conn }, start: Parameters<typeof trackNav>[1]) => {
+    const t = trackNav(x.c, start, clock.t);
+    for (let guard = 0; guard < 300; guard++) {
+      advance(Math.max(1, Math.min(t.arriveAt, clock.t + w.params.navRenewEveryMs) - clock.t));
+      hb();
+      if (!nav(x)) return;
+      const r = renewTrack(w, t, clock.t);
+      if (r.result !== 'ok') return;
+    }
+  };
+  const go = (x: { p: Person; c: Conn }, to: unknown) => {
+    const o = x.c.send('navigate', { to });
+    if (o.ok && o.out.status === 'accepted') walk(x, o.out.navigation);
+    return o;
+  };
+  /** 离这位居民最远的一个地方（不是他现在所在的区域）：保证 navigate 一定要走路。 */
+  const farPlace = (x: { p: Person }, prefer: string): string => (where(x) === prefer ? (prefer === 'garden' ? 'arcade' : 'garden') : prefer);
+  const record = (name: string, ok: boolean, note: string) => {
+    out.push({ name: `导航：${name}`, ok, note });
+    inv.space(w, clock.t, true);
+  };
+
+  // 1. 走完：到了目的地区域，路过 road，只记一次“到过”
+  {
+    const o = go(A, 'tea_house');
+    const arrived = w.db.scalar("SELECT COUNT(*) FROM world_events WHERE type = 'arrived'");
+    record('走到茶馆', o.ok && where(A) === 'tea_house' && !nav(A) && arrived === 1 && events(A, 'you_arrived').length === 1, `${where(A)}，到过事实 ${arrived}`);
+  }
+  // 2. 物件够不着：too_far，带 navigateTo；走过去之后就够得着了
+  {
+    const far = A.c.send('start_interaction', { objectId: 'garden:planter1' });
+    const reason = !far.ok ? far.reason : '';
+    const toGarden = go(A, 'garden:planter1');
+    const near = A.c.send('start_interaction', { objectId: 'garden:planter1' });
+    record('物件够不着再走过去', !far.ok && reason === 'too_far' && (far as { data?: { navigateTo?: string } }).data?.navigateTo === 'garden:planter1' && toGarden.ok && where(A) === 'garden' && (near.ok || (!near.ok && near.reason !== 'too_far')), `先 ${reason}，走过去后 ${near.ok ? '成功' : near.reason}`);
+    if (near.ok) A.c.send('leave_interaction');
+  }
+  // 3. 不续租：停在租约截止那一刻的位置，收到 nav_stopped（lease）；时钟再往后拨位置不变
+  {
+    const o = A.c.send('navigate', { to: farPlace(A, 'bookshop') });
+    const brief = o.ok ? o.out.navigation : null;
+    advance(brief ? brief.leaseUntil - clock.t + 1500 : 1000);
+    hb();
+    const p1 = posOfRes(A);
+    advance(30_000);
+    hb();
+    const p2 = posOfRes(A);
+    const stops = events(A, 'nav_stopped').filter((e) => e.reason === 'lease').length;
+    record('不续租停在租约截止处', Boolean(brief) && !nav(A) && Math.hypot(p1.x - p2.x, p1.z - p2.z) < 1e-9 && stops === 1 && !p1.moving, `停下后位置不再前进，lease 事件 ${stops} 条`);
+  }
+  // 4. 控制权换手：旧客户端立刻停步、续不上；新客户端另起一趟
+  {
+    const o = A.c.send('navigate', { to: farPlace(A, 'arcade') });
+    const t = o.ok ? trackNav(A.c, o.out.navigation, clock.t) : null;
+    advance(2000);
+    const other = new Conn(w, A.p, 'web:nav-second', 'web');
+    other.enter();
+    other.claim();
+    const stopped = !nav(A);
+    const r = t ? renewTrack(w, t, clock.t) : null;
+    const ctrl = events(A, 'nav_stopped').filter((e) => e.reason === 'control').length;
+    record('控制权换手立即停步', stopped && r?.result === 'lost' && ctrl === 1, `停步 ${stopped}，旧客户端续租 ${r?.result}，control 事件 ${ctrl} 条`);
+    A.c.clientId = 'web:nav-second';
+    A.c.claim();
+    hb();
+  }
+  // 5. 控制连接明确断开：只有握着控制权的那个断开才停
+  {
+    const o = A.c.send('navigate', { to: farPlace(A, 'garden') });
+    advance(1500);
+    controlDisconnectedFor(w, A.p.principalId, 'web:some-other-tab');
+    const stillWalking = Boolean(nav(A));
+    controlDisconnectedFor(w, A.p.principalId, A.c.clientId);
+    record('控制连接断开', o.ok && stillWalking && !nav(A), `别的页面断开不影响（仍在走 ${stillWalking}），握控制权的断开后停步 ${!nav(A)}`);
+    hb();
+  }
+  // 6. 走到一半离线：停在当时的位置，没有残留导航和待办任务
+  {
+    const o = B.c.send('navigate', { to: 'kitchen' });
+    advance(3000);
+    const before = posOfRes(B);
+    B.c.leave();
+    const after = posOfRes(B);
+    const jobs = w.db.scalar("SELECT COUNT(*) FROM scheduled_jobs WHERE kind = 'nav_step' AND status = 'pending'");
+    record('走到一半离线', o.ok && !nav(B) && Math.hypot(before.x - after.x, before.z - after.z) < 0.5 && jobs === 0, `离线后无导航，剩余待办 nav_step ${jobs}`);
+    B.c.enter();
+    hb();
+  }
+  // 7. 停下：stop_navigation 回执里的区域等于当前区域
+  {
+    const o = B.c.send('navigate', { to: 'garden' });
+    advance(4000);
+    const s = B.c.send('stop_navigation');
+    record('主动停下', o.ok && s.ok && s.out.stopped === true && s.out.at.space === where(B) && !nav(B), `停在 ${s.ok ? s.out.at.space : '?'}`);
+  }
+  // 8. 邀请在路上被撤销：走到门口进不去，停在会馆门前
+  {
+    go(A, 'plaza');
+    go(B, 'plaza');
+    A.c.send('invite', { to: B.p.residentId });
+    const grant = w.db.get('SELECT grant_id FROM home_access_grants WHERE guest_id = ? AND revoked_at IS NULL', B.p.residentId);
+    go(A, 'home');
+    const o = B.c.send('navigate', { to: `home:${A.p.residentId}` });
+    advance(2000);
+    A.c.send('revoke_invite', { grantId: grant?.grant_id });
+    if (o.ok) walk(B, o.out.navigation);
+    const blocked = events(B, 'nav_stopped').filter((e) => e.reason === 'blocked').length;
+    record('邀请在路上被撤销', o.ok && where(B) === 'residential' && blocked === 1 && !nav(B), `停在 ${where(B)}，blocked 事件 ${blocked} 条`);
+    go(A, 'plaza');
+  }
+  // 9. 同区域的人走路时说话照样听得见（路过 road 的人属于 road，只有同在路上的人听得到）
+  {
+    go(B, 'plaza');
+    go(C, 'plaza');
+    const o = A.c.send('navigate', { to: 'tea_house' });
+    for (let i = 0; i < 40 && where(A) !== 'road'; i++) {
+      advance(500);
+      hb();
+      if (o.ok) renewTrack(w, trackNav(A.c, o.out.navigation, clock.t), clock.t);
+    }
+    const roadNow = where(A);
+    const cursor = w.db.scalar('SELECT COALESCE(MAX(cursor), 0) FROM recipient_events WHERE resident_id = ?', C.p.residentId);
+    const sp = A.c.send('speak', { text: '边走边说（编号C999999X）' });
+    const heardByC = w.db.scalar("SELECT COUNT(*) FROM recipient_events WHERE resident_id = ? AND cursor > ? AND projection LIKE '%C999999X%'", C.p.residentId, cursor);
+    record('走路时说话', o.ok && sp.ok && roadNow === 'road' && heardByC === 0, `说话者在 ${roadNow}，留在广场的人听到 ${heardByC} 次`);
+    if (o.ok) walk(A, o.out.navigation);
+  }
+  w.close();
+  return out;
+}
+
+function controlDisconnectedFor(w: WorldService, principalId: string, clientId: string): void {
+  controlDisconnected(w, { principalId, clientId });
+}
+
 // ───────────────────────── 主流程 ─────────────────────────
 
 const sim = new Sim();
-const scenarios = scenarioChecks(sim.inv);
+const scenarios = [...scenarioChecks(sim.inv), ...navScenarios(sim.inv)];
 sim.init();
 console.log(`栖灯镇逻辑模拟：${DAYS} 天、${N} 位居民、种子 ${SEED}、${FILE_MODE ? `文件库 ${DB_PATH}` : '内存库'}、停机重启 ${RESTARTS} 次、不变量每 ${CHECK_EVERY / MIN} 分钟一轮`);
 const wall0 = performance.now();
@@ -1780,6 +1965,10 @@ const loans = tableCounts('SELECT status, COUNT(*) FROM loans GROUP BY status');
 const grants = db.get('SELECT COUNT(*) total, SUM(revoked_at IS NOT NULL) revoked FROM home_access_grants')!;
 const jobsByStatus = tableCounts('SELECT status, COUNT(*) FROM scheduled_jobs GROUP BY status');
 const events = tableCounts('SELECT status, COUNT(*) FROM public_event_instances GROUP BY status');
+const navStops = tableCounts("SELECT json_extract(projection, '$.reason'), COUNT(*) FROM recipient_events WHERE type = 'nav_stopped' GROUP BY 1");
+const navEvents = tableCounts("SELECT type, COUNT(*) FROM recipient_events WHERE type IN ('you_arrived','left','arrived') GROUP BY type");
+const roadPlaceEvents = db.scalar("SELECT COUNT(*) FROM public_events WHERE type = 'place' AND json_extract(projection, '$.resident.at') = 'road'");
+const arrivedFacts = db.scalar("SELECT COUNT(*) FROM world_events WHERE type = 'arrived'");
 const m = w.metricsSnapshot();
 const agentSz = summarize(sim.sizes.agent.concat(sim.inv.agentViewBytes));
 const meSz = summarize(sim.sizes.me.concat(sim.inv.meViewBytes));
@@ -1836,6 +2025,10 @@ console.log(
 );
 console.log(`报价 ${JSON.stringify(offers)}；借还 ${JSON.stringify(loans)}；信件 ${letters.total}（已读 ${letters.read ?? 0}）；邀请 ${grants.total}（撤销 ${grants.revoked ?? 0}）；愿望 ${JSON.stringify(goals)}`);
 console.log(`公共事件 ${JSON.stringify(events)}；定时任务 ${JSON.stringify(jobsByStatus)}；重试 ${m.job_retries}，搁置 ${m.job_failures}`);
+console.log(
+  `导航：navigate 成功 ${sim.counters.get('nav_accepted') ?? 0} 次（当场走完 ${sim.counters.get('nav_completed') ?? 0}）；续租 成功 ${sim.counters.get('renew_ok') ?? 0} / 已结束 ${sim.counters.get('renew_done') ?? 0} / 失去控制权 ${sim.counters.get('renew_lost') ?? 0}（其中途中换了版本 ${sim.counters.get('renew_adopted') ?? 0}）；故意不续租 ${sim.counters.get('renew_abandoned') ?? 0}；走到一半 改道 ${sim.counters.get('walk_reroute') ?? 0} / 停下 ${sim.counters.get('walk_halt') ?? 0} / 离线 ${sim.counters.get('walk_ghost') ?? 0} / 说话 ${sim.counters.get('walk_chat') ?? 0}；先走到物件旁再用 ${sim.counters.get('walk_to_use') ?? 0}`,
+);
+console.log(`导航结果：nav_stopped 按原因 ${JSON.stringify(navStops)}；you_arrived/left/arrived ${JSON.stringify(navEvents)}；公开 road 位置事件 ${roadPlaceEvents}；arrived 事实 ${arrivedFacts}；整套检查里在走路的人次 ${sim.inv.navSamples}；空间专项检查 ${sim.counters.get('space_probes') ?? 0} 轮；重启时在走路的人 ${sim.counters.get('restart_walkers') ?? 0}（场景变了 ${sim.counters.get('restart_walkers_scene_changed') ?? 0}，已走完这一段 ${sim.counters.get('restart_walkers_off_leg') ?? 0}）`);
 console.log(`行为计数：${JSON.stringify(Object.fromEntries([...sim.counters].filter(([k]) => k !== 'check_ms')))}`);
 
 console.log('\n── 停机重启 ──');

@@ -8,6 +8,7 @@ import { claimControl, heartbeat, leaveWorld } from '../../src/world/identity.js
 import { renewNavigation, whereabouts } from '../../src/world/space.js';
 import { chatHistory, publicView } from '../../src/world/views.js';
 import { Actor, makeTown, tempDb, type Town } from './helpers.js';
+import { checkSpaceInvariants } from './invariants.js';
 
 function catchErr(fn: () => unknown): WorldError {
   try {
@@ -768,6 +769,7 @@ describe('栖灯镇导航：用时由路程决定，路上属于脚下的区域'
     expect(publicNames(t)).toContain('阿灯');
     a.go('tea_house');
     expect(a.row().location_id).toBe('tea_house');
+    checkSpaceInvariants(t);
   });
 
   it('离开时已经走出了广场、但区域变化还没被结算：先结算再离线，广场上的人看到的是 left，不是 presence', () => {
@@ -782,6 +784,7 @@ describe('栖灯镇导航：用时由路程决定，路上属于脚下的区域'
     a.leave();
     expect(a.row().location_id).toBe('road');
     expect(eventTypes(b, cb)).toEqual(['left']);
+    checkSpaceInvariants(t);
     // 公开层面：先出现「路上」，再离线
     const spots = t.w.readPublicEvents(pubCur).events.filter((e) => e.type === 'place').map((e) => (e.data as { resident: { id: string; at: string | null } }).resident).filter((r) => r.id === a.residentId);
     expect(spots.slice(-2).map((r) => r.at)).toEqual(['road', null]);
@@ -824,6 +827,7 @@ describe('栖灯镇导航：用时由路程决定，路上属于脚下的区域'
     // 回来时还停在那里
     a.enter();
     expect(a.row().location_id).toBe(stopped);
+    checkSpaceInvariants(t);
   });
 
   it('控制权被接管：正在走的路立即停步，本人收到 nav_stopped（control）；不丢位置', () => {

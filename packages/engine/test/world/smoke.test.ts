@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { publicView } from '../../src/world/views.js';
 import { makeTown } from './helpers.js';
+import { checkInvariants } from './invariants.js';
 
 describe('栖灯镇：主流程冒烟', () => {
   it('注册、移动、说话、买东西、送礼、一起喝茶', () => {
@@ -43,6 +44,7 @@ describe('栖灯镇：主流程冒烟', () => {
     expect(a.view().me.needs.social).toBeGreaterThan(60);
     const pub = publicView(t.w);
     expect(pub.places.find((p) => p.id === 'tea_house')!.residents.length).toBe(2);
+    checkInvariants(t);
   });
 
   it('凑一桌数字炸弹并打完', () => {
