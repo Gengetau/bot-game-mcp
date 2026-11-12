@@ -526,3 +526,159 @@ describe('方向输入：不变量', () => {
     }
   });
 });
+
+describe('方向输入：审查补充', () => {
+  const dbChanges = (t: Town) => Number(t.w.db.scalar('SELECT total_changes()'));
+
+  it('家里的家具互动：开始互动就停下当前的方向路线；之后再按方向键会走开（站起来）', () => {
+    const t = makeTown();
+    const a = t.join('阿灯');
+    a.go('home');
+    const k = new Keys(a);
+    const nook = a.view().here!.objects.find((o) => o.type === 'rest_nook')!;
+    k.press(1, 0);
+    t.advance(100);
+    expect(nav(a)?.target.kind).toBe('dir');
+    const out = a.act('start_interaction', { objectId: nook.id });
+    expect(out.status).toBe('accepted');
+    expect(nav(a)).toBeNull();
+    const at = a.pos();
+    t.advance(700);
+    expect(a.pos().x).toBeCloseTo(at.x, 6);
+    expect(t.w.db.scalar('SELECT COUNT(*) FROM interaction_participants WHERE resident_id = ? AND active = 1', a.residentId)).toBe(1);
+    // 站着不动时再按：每条非零方向帧都跑走开钩子，互动结束
+    k.press(1, 0);
+    expect(t.w.db.scalar('SELECT COUNT(*) FROM interaction_participants WHERE resident_id = ? AND active = 1', a.residentId)).toBe(0);
+  });
+
+  it('序号栅栏：点地先到、发在点地之前的方向帧后到 → 丢弃，点地路线保留；之后更大序号的新按键接手', () => {
+    const t = makeTown();
+    const a = t.join('阿灯');
+    const k = new Keys(a);
+    k.press(1, 0); // seq 1
+    t.advance(150);
+    k.press(1, 0); // seq 2
+    t.advance(50);
+    // 页面此刻已发出 seq 3（在途），随后点地，栅栏 = 3
+    const out = a.act('navigate', { to: 'tea_house', dirFence: { conn: k.source, seq: 3 } });
+    expect(out.status).toBe('accepted');
+    const clickNav = nav(a)!;
+    expect(clickNav.target.kind).not.toBe('dir');
+    // 迟到的 seq 3：丢弃
+    expect(k.press(1, 0, { seq: 3 })).toEqual({ ok: false, reason: 'stale' });
+    expect(nav(a)!.navigationId).toBe(clickNav.navigationId);
+    expect(nav(a)!.revision).toBe(clickNav.revision);
+    // 新的按下沿用更大的序号：接手
+    t.advance(100);
+    expect(k.press(1, 0, { seq: 4 })).toMatchObject({ ok: true, moving: true });
+    expect(nav(a)!.target.kind).toBe('dir');
+  });
+
+  it('序号栅栏：停下（stop_navigation）同样带栅栏；新连接、新 epoch 不受旧栅栏影响；没带或坏格式的栅栏被忽略', () => {
+    const t = makeTown();
+    const a = t.join('阿灯');
+    const k = new Keys(a);
+    k.press(1, 0);
+    a.act('stop_navigation', { dirFence: { conn: k.source, seq: 50 } });
+    expect(k.press(1, 0, { seq: 50 })).toEqual({ ok: false, reason: 'stale' });
+    expect(k.press(1, 0, { seq: 51 })).toMatchObject({ ok: true, moving: true });
+    // 新连接（连接序号更大）从 1 开始，不受旧连接栅栏影响
+    a.act('stop_navigation', { dirFence: { conn: 1, seq: 500 } });
+    expect(k.press(1, 0, { seq: 1, source: 2 })).toMatchObject({ ok: true });
+    // 栅栏里是更旧的连接：不动高水位
+    a.act('navigate', { to: 'tea_house', dirFence: { conn: 1, seq: 9999 } });
+    expect(k.press(1, 0, { seq: 2, source: 2 })).toMatchObject({ ok: true });
+    // 坏格式：忽略，不报错
+    for (const bad of ['x', 7, { conn: 'a', seq: 1 }, { conn: 2, seq: -1 }, { conn: 2 }, null]) {
+      a.act('stop_navigation', { dirFence: bad });
+    }
+    expect(k.press(1, 0, { seq: 3, source: 2 })).toMatchObject({ ok: true });
+    // 新 epoch（接管）：状态重建，栅栏作废
+    a.act('stop_navigation', { dirFence: { conn: 2, seq: 800 } });
+    const b = new Keys(a);
+    b.source = 3;
+    expect(b.press(1, 0, { seq: 1 })).toMatchObject({ ok: true });
+  });
+
+  it('stale、rate_limited 和「没有方向路线时的零向量」不进事务：数据库没有任何写入', () => {
+    const t = makeTown();
+    const a = t.join('阿灯');
+    const k = new Keys(a);
+    k.press(1, 0, { seq: 10 });
+    t.advance(60);
+    let before = dbChanges(t);
+    expect(k.press(1, 0, { seq: 10 })).toEqual({ ok: false, reason: 'stale' });
+    expect(k.press(1, 0, { seq: 9 })).toEqual({ ok: false, reason: 'stale' });
+    expect(dbChanges(t)).toBe(before);
+    // 耗尽令牌后的限频帧也不写
+    let seq = 11;
+    while ((k.press(1, 0, { seq: seq++ }) as any).ok) t.advance(1);
+    before = dbChanges(t);
+    expect(k.press(1, 0, { seq })).toEqual({ ok: false, reason: 'rate_limited' });
+    expect(dbChanges(t)).toBe(before);
+    // 没有方向路线时的零向量
+    t.advance(2000);
+    k.press(0, 0, { seq: 1000 });
+    before = dbChanges(t);
+    expect(k.press(0, 0, { seq: 1001 })).toMatchObject({ ok: true, moving: false });
+    expect(dbChanges(t)).toBe(before);
+    // 点地路线在走时的零向量也不写、不取消
+    a.act('navigate', { to: 'tea_house' });
+    before = dbChanges(t);
+    expect(k.press(0, 0, { seq: 1002 })).toMatchObject({ ok: true, moving: true });
+    expect(dbChanges(t)).toBe(before);
+  });
+
+  it('令牌桶持续速率：每 50 毫秒一帧持续 3 秒，成功数 ≈ 突发 + 3 秒 × 每秒补充', () => {
+    const t = makeTown();
+    const a = t.join('阿灯');
+    const k = new Keys(a);
+    let ok = 0;
+    let limited = 0;
+    for (let i = 0; i < 60; i++) {
+      const r = k.press(i % 2 ? 0.5 : 1, 0.2);
+      if (r.ok) ok++;
+      else if (r.reason === 'rate_limited') limited++;
+      t.advance(50);
+    }
+    const p = t.w.params;
+    const expected = p.dirBurst + 3 * p.dirPerSecond;
+    expect(ok).toBeGreaterThanOrEqual(expected - 2);
+    expect(ok).toBeLessThanOrEqual(expected + 1);
+    expect(ok + limited).toBe(60);
+  });
+
+  it('租约边界：499 毫秒时还在走，501 毫秒时已经停在租约截止点', () => {
+    const t = makeTown();
+    const a = t.join('阿灯');
+    const k = new Keys(a);
+    const x0 = a.pos().x;
+    const v = speed(t);
+    k.press(1, 0);
+    t.advance(499);
+    expect(a.pos().moving).toBe(true);
+    expect(a.pos().x - x0).toBeCloseTo((v * 499) / 1000, 3);
+    t.advance(2);
+    expect(a.pos().moving).toBe(false);
+    expect(a.pos().x - x0).toBeCloseTo((v * leaseMs(t)) / 1000, 3);
+    expect(nav(a)).toBeNull();
+    t.advance(1000);
+    expect(a.pos().x - x0).toBeCloseTo((v * leaseMs(t)) / 1000, 3);
+  });
+
+  it('每条非零方向帧都跑走开钩子（包括已经有方向路线时）；零向量不跑', () => {
+    const t = makeTown();
+    const a = t.join('阿灯');
+    const k = new Keys(a);
+    let n = 0;
+    t.w.hooks.walk.push(() => void n++);
+    k.press(1, 0);
+    t.advance(100);
+    k.press(1, 0);
+    t.advance(100);
+    k.press(0, 1);
+    expect(n).toBe(3);
+    k.release();
+    expect(n).toBe(3);
+  });
+});

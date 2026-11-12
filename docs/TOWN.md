@@ -118,12 +118,14 @@ packages/engine/town/             旧的网页前端（静态文件；会被 God
 
 - 消息：WebSocket 上 `{t:"dir", seq, epoch, x, z}`。`x`、`z` 是世界方向（x 向东、z 向南，绝对值不超过 4，服务器只取方向并归一化，速度永远是地图速度），`seq` 是整数输入序号，`epoch` 是 `controlEpoch`；全零向量表示「停」。没有坐标。成功没有回答（画面看 `scene`）；被丢弃回 `{t:"dir_dropped", seq, reason}`（`stale` 旧序号或旧连接，`rate_limited` 太频繁）；没有控制权 / 控制版本不对 / 不在场 / 正在游戏里等回 `{t:"error", code, reason?, message}`。
 - 服务器（`space.ts` 的 `directionInput`，写入在 `w.commit()` 里）：从这一刻的权威位置出发，沿方向直走，长度上限 = 速度 × `dirLeaseMs`（默认 500 毫秒，即 1.2 米），撞到不可走的格子就停在边缘；斜着撞墙则沿墙贴边滑一小段（只取一个轴向，速度按分量折算，所以贴墙比自由行走慢）。装上的是一条目的地为 `dir` 的导航，租约截止 = 现在 + `dirLeaseMs`，`revision` 照常加一，`nav_step` 任务照常必须对上编号和版本；位置仍然只由空间模块写，租约一到 `positionAt` 就截断。按住时客户端每 150 到 200 毫秒重发，每次都从当前位置起一条新的短路线，所以画面连续；松手发零向量立即停下，页面卡死或断网则最迟 `dirLeaseMs` 后停。这个 500 毫秒期限只属于方向输入，**不会**取消点地路线：零向量只停方向输入自己的路线。
+- **序号栅栏（点地与方向帧的跨通道乱序）**：点地 / 停下走 HTTP，方向帧走 WebSocket，两条通道到达顺序不定，晚到的非零方向帧会盖掉刚装好的点地路线。所以 hello 里带 `dirConn`（这条连接的序号），页面在 `navigate` / `stop_navigation`（及旧名 `move`）动作里带上 `dirFence: {conn: dirConn, seq: 发出点地时已经发出的最大方向序号}`。服务器把它记成该居民（按当前控制方 + epoch）的（连接序号，seq）高水位：同一连接上 `seq ≤ 栅栏` 的方向帧按 `stale` 丢弃；新连接（连接序号更大）、新 epoch 不受旧栅栏影响；新的按下沿用更大的序号，自然越过栅栏接手。AI / MCP 入口不带栅栏，行为不变；格式不对的栅栏被忽略。页面点地后直到出现新的按下沿之前不再发非零帧。
+- 家里的互动：方向输入每条非零帧都会触发"走开"钩子（幂等），所以坐着做的事一迈步就算退出；在家里开始互动（家里的物件不按距离）会停掉当前的导航，和公共物件一致，不会边走边"保持"。
 - 和点地导航互相打断：方向输入会打断正在走的路线（含点地路线，按改道处理），`navigate` 同样打断方向输入。方向输入的路线不能用 10 秒的续租撑长（`renew` 对它回 `ok: false`）。
 - 序号与控制版本：`epoch` 不等于当前 `controlEpoch`、或这个客户端不是控制方 → `control_lost`，不动路线。序号按（连接序号，`seq`）比较：同一条连接里必须严格递增，旧的、重复的、乱序的丢弃（`stale`）；重连后的新连接序号更大，它的输入盖过旧连接迟到的输入，所以客户端不必在重连时恢复序号。换了控制者（接管）后重新开始。
-- 频率：每位居民令牌桶，突发 `dirBurst`（10）、每秒补 `dirPerSecond`（10）；超出的丢弃（`rate_limited`）。零向量在有方向路线时不受限（它只会结束一条路线）。另外每条连接每秒最多 30 条消息的上限照旧。
+- 频率：每位居民令牌桶，突发 `dirBurst`（10）、每秒补 `dirPerSecond`（10）；超出的丢弃（`rate_limited`）。零向量不扣令牌，也不进事务：没有方向路线在走时的零向量什么都不写（直接回当前状态），有方向路线时才进事务停下。乱序（`stale`）和限频（`rate_limited`）的帧同样在进入事务和跑到期任务之前就返回，数据库没有任何写入。另外每条连接每秒最多 30 条消息的上限照旧。
 - 门禁：方向输入只在当前场景里直走，没有进出口——走到会馆门口不会进私宅，在家里怎么按也出不了门；进出私宅仍然只走 `navigate`（门口权限在那里查）。正在一局小游戏里 → `precondition_failed` / `in_activity`。需要坐着做的事（读书、喝茶）迈步走开就算退出，和 `navigate` 一样。
 - 隐私：方向输入不产生任何公开或私有事件（路线到期、松手都不发 `nav_stopped`，也没有 `you_arrived`）；走路时的区域变化照旧在同一场景的人那里是 `left` / `arrived`。快照里 `nav` 的内容和点地路线一样，只给同一场景实例里的人。
-- 压测：设计稿要求方向输入单独压测后启用，数字见 `docs/PROGRESS.md`（`npm run world:load -- --keys N`）。
+- 压测：设计稿要求方向输入单独压测后启用，数字见 `docs/PROGRESS.md`（`npx tsx scripts/world-load.ts --residents 30 --games 3 --keys 10 --seconds 30`；`--keys` 不能超过真人数，即居民数的三分之一）。脚本里的扇出合并间隔取自 `ws.ts` 的 `DEFAULT_MIN_SCENE_MS`，并断言每个连接任意 1 秒内收到的场景份数不超过 10。
 
 **区域**。地图把可走范围划成区域：六个公共地点、`road`（灯笼路，只是路过的地方）、`residential`（灯巷会馆：进出所有私宅的唯一公共接入点）。`residents.location_id` 是区域标签，只在跨区域那一刻由空间模块改写，同一事务里触发各模块的离开 / 到达处理（撤销没完成的交换、退出报名、记录登门）并通知两边在场的人。**走在路上的人属于脚下的区域**：能说话、能被听见、能做事。别的模块按区域判断「在不在一起」。走路的人自己跨区域时不收事件（模型不该为每一步路被叫醒）：续租的回答和场景快照里都带着此刻的 `space`，客户端看到它变了就重读现场。
 
@@ -331,7 +333,7 @@ packages/engine/town/             旧的网页前端（静态文件；会被 God
 | 客户端 → | `{t:"ping", n}` | 探活、对时 |
 | 客户端 → | `{t:"renew", navigationId, revision}` | 续导航控制租约 |
 | 客户端 → | `{t:"dir", seq, epoch, x, z}` | 键盘方向输入，见「空间与导航」的「键盘方向输入」。成功没有回答 |
-| → 客户端 | `{t:"hello", v:1, serverTime, resident, map:{mapVersion, checksum}, renewEveryMs, dirLeaseMs, cursor}` | |
+| → 客户端 | `{t:"hello", v:1, serverTime, resident, map:{mapVersion, checksum}, renewEveryMs, dirLeaseMs, dirConn, cursor}` | |
 | → 客户端 | `{t:"scene", …SceneView}` | 完整快照：`scene`、`space`、`serverTime`、`self`、`actors[]`（`id, name, kind, x, z, heading, busy?, nav?`）。`nav: {id, revision, points, speed, startedAt, until}`：客户端按这条折线和服务器时间插值，走到 `until` 为止。所在场景里快照的内容变了就重发：有人起步、改道、停下、进出场景，有人上线、离线（包括在场租约到期）、改名、进出一局小游戏，或者自己换了场景。同一条连接每秒最多 10 次 |
 | → 客户端 | `{t:"events", events, cursor}` / `{t:"resync", cursor}` | 耐久私有事件，同 SSE 的 `private` |
 | → 客户端 | `{t:"pong", n, serverTime}` / `{t:"renewed", ok, leaseUntil?, navigation, space}` / `{t:"dir_dropped", seq, reason}` / `{t:"error", code, reason?, message}` | |

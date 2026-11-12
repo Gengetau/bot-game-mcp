@@ -12,7 +12,7 @@
  *                                              被丢弃（旧序号、太频繁）→ {t:'dir_dropped', seq, reason}；
  *                                              没有控制权、不在场、在游戏里等 → {t:'error', code, message}。不带坐标
  * 服务器 → 客户端：
- *   {t:'hello', v:1, serverTime, resident, map:{mapVersion,checksum}, renewEveryMs, dirLeaseMs, cursor}
+ *   {t:'hello', v:1, serverTime, resident, map:{mapVersion,checksum}, renewEveryMs, dirLeaseMs, dirConn, cursor}
  *   {t:'scene', …SceneView}                    完整快照（合并发送，每秒最多 10 次）
  *   {t:'events', events, cursor} / {t:'resync', cursor}   耐久私有事件（与 SSE 同一套投影）
  *   {t:'error', code, message}
@@ -31,6 +31,8 @@ export const WS_PATH = '/town/ws';
 
 /** 连接序号：重连的新连接序号更大，它的方向输入盖过旧连接迟到的输入 */
 let connectionSerial = 0;
+/** 两次 scene 快照之间的最短间隔的默认值（毫秒）；压测脚本用它模拟扇出 */
+export const DEFAULT_MIN_SCENE_MS = 100;
 
 export interface TownWsOptions {
   /** 同一 IP 同时开着的 WebSocket 上限，默认 8 */
@@ -88,7 +90,7 @@ export function createTownWs(w: WorldService, log: (msg: string) => void, opts: 
   const maxPerIp = opts.maxPerIp ?? 8;
   const maxPerResident = opts.maxPerResident ?? 4;
   const helloTimeoutMs = opts.helloTimeoutMs ?? 5000;
-  const minSceneMs = opts.minSceneIntervalMs ?? 100;
+  const minSceneMs = opts.minSceneIntervalMs ?? DEFAULT_MIN_SCENE_MS;
   const pingMs = opts.pingMs ?? 30_000;
   const ticketTtlMs = opts.ticketTtlMs ?? 30_000;
   const maxTickets = opts.maxTicketsPerPrincipal ?? 8;
@@ -411,6 +413,7 @@ export function createTownWs(w: WorldService, log: (msg: string) => void, opts: 
         map: { mapVersion: w.map.mapVersion, checksum: w.map.checksum },
         renewEveryMs: w.params.navRenewEveryMs,
         dirLeaseMs: w.params.dirLeaseMs,
+        dirConn: serial,
         // 坏游标不回显：随后的 resync 会给出新的
         cursor: usable ? given : w.cursorOf(r.resident_id),
       });

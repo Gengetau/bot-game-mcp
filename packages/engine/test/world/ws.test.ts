@@ -496,6 +496,58 @@ describe('WS：键盘方向输入', () => {
   });
 });
 
+describe('WS：方向输入的推送范围与栅栏', () => {
+  it('同场景的 B 收到含 A 导航的 scene；私宅里的 C 不收到、C 的方向输入也不推给公共场景的连接', async () => {
+    const app = await serve();
+    const a = await connect(app, '阿灯');
+    const b = await connect(app, '小岚');
+    const c = await connect(app, '阿树');
+    c.u.actor.go('home');
+    await c.c.waitFor((m) => m.t === 'scene' && m.scene === 'home', 3000);
+    // 让 A、B 先收完 C 进家引起的变化
+    for (const x of [a, b]) x.c.send({ t: 'ping', n: 1 });
+    await a.c.type('pong');
+    await b.c.type('pong');
+    const epochA = a.u.actor.row().control_epoch;
+    const fromB = b.c.msgs.length;
+    const fromC = c.c.msgs.length;
+    a.c.send({ t: 'dir', seq: 1, epoch: epochA, x: 1, z: 0 });
+    const seen = await b.c.waitFor((m) => m.t === 'scene' && m.actors.some((x: any) => x.id === a.u.residentId && x.nav), 3000, fromB);
+    expect(seen.actors.find((x: any) => x.id === a.u.residentId).nav.points.length).toBeGreaterThanOrEqual(2);
+    c.c.send({ t: 'ping', n: 2 });
+    await c.c.type('pong', 3000, fromC);
+    expect(c.c.count('scene', fromC)).toBe(0);
+    // C 在私宅里按方向：只有 C 自己收到，A、B 的 scene 数不增加
+    const nA = a.c.count('scene');
+    const nB = b.c.count('scene');
+    const epochC = c.u.actor.row().control_epoch;
+    c.c.send({ t: 'dir', seq: 1, epoch: epochC, x: 0, z: 1 });
+    await c.c.waitFor((m) => m.t === 'scene' && m.actors.some((x: any) => x.id === c.u.residentId && x.nav), 3000, fromC);
+    for (const x of [a, b]) x.c.send({ t: 'ping', n: 3 });
+    await new Promise((r) => setTimeout(r, 250));
+    expect(a.c.count('scene')).toBe(nA);
+    expect(b.c.count('scene')).toBe(nB);
+  });
+
+  it('hello 带连接序号；点地带栅栏后，在途的旧方向帧收到 stale，新序号的按键接手', async () => {
+    const app = await serve();
+    const { u, c, hello } = await connect(app, '阿灯');
+    expect(typeof hello.dirConn).toBe('number');
+    const epoch = u.actor.row().control_epoch;
+    c.send({ t: 'dir', seq: 1, epoch, x: 1, z: 0 });
+    await c.type('scene', 3000, 2);
+    const out = u.actor.act('navigate', { to: 'tea_house', dirFence: { conn: hello.dirConn, seq: 2 } });
+    expect(out.status).toBe('accepted');
+    const from = c.msgs.length;
+    c.send({ t: 'dir', seq: 2, epoch, x: 1, z: 0 });
+    expect(await c.waitFor((m) => m.t === 'dir_dropped', 3000, from)).toMatchObject({ seq: 2, reason: 'stale' });
+    expect(whereabouts(app.t.w, app.t.w.mustResident(u.residentId), app.t.w.now()).navigation!.to.kind).not.toBe('dir');
+    c.send({ t: 'dir', seq: 3, epoch, x: 1, z: 0 });
+    await c.waitFor((m) => m.t === 'scene' && m.actors.some((x: any) => x.id === u.residentId && x.nav && x.nav.until - x.nav.startedAt <= app.t.w.params.dirLeaseMs), 3000, from);
+    expect(whereabouts(app.t.w, app.t.w.mustResident(u.residentId), app.t.w.now()).navigation!.to.kind).toBe('dir');
+  });
+});
+
 describe('WS：renew 与断开', () => {
   it('renew：成功 / 旧版本号 ok:false / 没有导航 ok:false / 非控制者 control_lost（连接不关）', async () => {
     const app = await serve();

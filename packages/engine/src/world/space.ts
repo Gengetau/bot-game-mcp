@@ -579,7 +579,12 @@ function plan(w: WorldService, r: ResidentRow, a: ActorRow, to: unknown, now: nu
 export function requireReach(w: WorldService, r: ResidentRow, objectId: string, now: number): void {
   const L = layout(w);
   const it = L.town.interactables.get(objectId);
-  if (!it) return;
+  if (!it) {
+    // 家里的物件不按距离，但开始互动就该站住（和公共物件一致），否则边走边「保持」
+    const mine = actorOf(w, r.resident_id);
+    if (mine?.nav) stopNav(w, r.resident_id, now, 'interaction');
+    return;
+  }
   const a = ensureActor(w, r, now);
   const p = posOf(a, now);
   if (a.scene_id !== L.town.id || distance(p, it) > (it.reach ?? w.map.interactDistance) + 0.01) {
@@ -803,6 +808,46 @@ interface DirState {
 }
 const dirStates = new WeakMap<WorldService, Map<string, DirState>>();
 
+/** 事务外的只读检查：在场、控制权、epoch。 */
+function checkDirControl(w: WorldService, auth: Auth, epoch: number, now: number): ResidentRow {
+  const r = w.residentOfPrincipal(auth.principalId);
+  if (!r) throw new WorldError('unauthenticated', '还没有居民身份，请先进入小镇。', 'no_resident');
+  if (r.present_since === null) throw precondition('你现在不在小镇里，请先进入。', 'not_present');
+  if (r.controller_client !== auth.clientId || r.controller_until <= now || epoch !== r.control_epoch) {
+    throw new WorldError('control_lost', '这个页面（或运行器）现在没有这位居民的控制权。');
+  }
+  return r;
+}
+
+function dirStateOf(w: WorldService, r: ResidentRow, clientId: string, epoch: number, source: number): DirState {
+  let states = dirStates.get(w);
+  if (!states) dirStates.set(w, (states = new Map()));
+  let st = states.get(r.resident_id);
+  if (!st || st.clientId !== clientId || st.epoch !== epoch) {
+    // 换了控制者（接管、换页面）：旧的序号作废，重新开始
+    st = { clientId, epoch, source, seq: -1, tokens: w.params.dirBurst, at: w.now() };
+    states.set(r.resident_id, st);
+  }
+  return st;
+}
+
+/**
+ * 点地 / 停下带来的序号栅栏 dirFence {conn, seq}：页面在发出这条动作时已经发出的最大方向序号（conn 是 hello 里的连接序号 dirConn）。
+ * 点地走 HTTP、方向帧走 WebSocket，两条通道到达顺序不定；栅栏让「发在点地之前的方向帧」确定地作废，之后更大序号的新按键照常接手。
+ * 只推进 (连接序号, seq) 的高水位，和乱序判断是同一把尺；没带或格式不对就忽略（AI / MCP 入口不带）。
+ */
+function applyDirFence(w: WorldService, r: ResidentRow, fence: unknown): void {
+  if (!fence || typeof fence !== 'object') return;
+  const { conn, seq } = fence as { conn?: unknown; seq?: unknown };
+  if (typeof conn !== 'number' || typeof seq !== 'number' || !Number.isSafeInteger(conn) || !Number.isSafeInteger(seq) || seq < 0 || conn < 0) return;
+  if (!r.controller_client) return;
+  const st = dirStateOf(w, r, r.controller_client, r.control_epoch, conn);
+  if (conn > st.source) {
+    st.source = conn;
+    st.seq = seq;
+  } else if (conn === st.source) st.seq = Math.max(st.seq, seq);
+}
+
 export type DirInputResult =
   | { ok: true; moving: boolean; blocked?: boolean; navigation: NavBrief | null; space: string }
   | { ok: false; reason: 'stale' | 'rate_limited' };
@@ -831,51 +876,46 @@ export function directionInput(
   if (typeof x !== 'number' || typeof z !== 'number' || !Number.isFinite(x) || !Number.isFinite(z) || Math.abs(x) > 4 || Math.abs(z) > 4) {
     throw new WorldError('bad_request', '方向需要两个有限的数字 x、z（绝对值不超过 4）。');
   }
+  // 先在事务外做只读检查和内存里的序号、令牌桶：乱序 / 限频的帧，以及没有方向路线时的零向量，不进事务、不跑到期任务、不写库
+  const now0 = w.now();
+  const r0 = checkDirControl(w, auth, epoch, now0);
+  const source = body.source ?? 0;
+  const st = dirStateOf(w, r0, auth.clientId, epoch, source);
+  if (source < st.source || (source === st.source && seq <= st.seq)) return { ok: false as const, reason: 'stale' as const };
+  st.source = source;
+  st.seq = seq;
+  const len = Math.hypot(x, z);
+  const stopping = len < 0.01;
+  if (stopping) {
+    const a0 = actorOf(w, r0.resident_id);
+    if (!a0?.nav || a0.nav.target.kind !== 'dir') {
+      return { ok: true as const, moving: Boolean(a0?.nav), navigation: a0?.nav ? navBrief(w, a0.nav) : null, space: r0.location_id };
+    }
+  } else {
+    st.tokens = Math.min(w.params.dirBurst, st.tokens + ((now0 - st.at) / 1000) * w.params.dirPerSecond);
+    st.at = now0;
+    if (st.tokens < 1) return { ok: false as const, reason: 'rate_limited' as const };
+    st.tokens -= 1;
+  }
   w.runDue();
   return w.commit(() => {
     const now = w.now();
-    const r = w.residentOfPrincipal(auth.principalId);
-    if (!r) throw new WorldError('unauthenticated', '还没有居民身份，请先进入小镇。', 'no_resident');
-    if (r.present_since === null) throw precondition('你现在不在小镇里，请先进入。', 'not_present');
-    if (r.controller_client !== auth.clientId || r.controller_until <= now || epoch !== r.control_epoch) {
-      throw new WorldError('control_lost', '这个页面（或运行器）现在没有这位居民的控制权。');
-    }
-    let states = dirStates.get(w);
-    if (!states) dirStates.set(w, (states = new Map()));
-    let st = states.get(r.resident_id);
-    const source = body.source ?? 0;
-    if (!st || st.clientId !== auth.clientId || st.epoch !== epoch) {
-      // 换了控制者（接管、换页面）：旧的序号作废，重新开始
-      st = { clientId: auth.clientId, epoch, source, seq: -1, tokens: w.params.dirBurst, at: now };
-      states.set(r.resident_id, st);
-    }
-    // 乱序、重放、旧连接迟到的输入：丢弃，不动任何状态
-    if (source < st.source || (source === st.source && seq <= st.seq)) return { ok: false as const, reason: 'stale' as const };
-    st.source = source;
-    st.seq = seq;
-
-    const len = Math.hypot(x, z);
-    const stopping = len < 0.01;
+    const r = checkDirControl(w, auth, epoch, now);
     let a = ensureActor(w, r, now);
     const dirNav = a.nav?.target.kind === 'dir';
     const space = (): string => w.mustResident(r.resident_id).location_id;
 
     if (stopping) {
-      // 零向量只停方向输入自己的路线；点地路线要按它自己的规则停。有路线在走时的停止不受频率限制（它只会结束一条路线）
+      // 零向量只停方向输入自己的路线；点地路线要按它自己的规则停
       if (!dirNav) return { ok: true as const, moving: Boolean(a.nav), navigation: a.nav ? navBrief(w, a.nav) : null, space: space() };
       stopNav(w, r.resident_id, now, 'stop');
       return { ok: true as const, moving: false, navigation: null, space: space() };
     }
 
-    st.tokens = Math.min(w.params.dirBurst, st.tokens + ((now - st.at) / 1000) * w.params.dirPerSecond);
-    st.at = now;
-    if (st.tokens < 1) return { ok: false as const, reason: 'rate_limited' as const };
-    st.tokens -= 1;
-
     if (r.activity_id) throw precondition('你正在一局游戏里，这个动作要等游戏结束或退出后才能做。', 'in_activity');
     const first = interruptForNewRoute(w, r, a, now);
     a = first.a;
-    if (!dirNav) for (const h of w.hooks.walk) h(w.mustResident(r.resident_id), now);
+    for (const h of w.hooks.walk) h(w.mustResident(r.resident_id), now); // 离开是幂等的：每条非零方向帧都跑，家里的互动也会被站起来
     const scene = w.map.scenes.get(a.scene_id)!;
     const points = sweepDirection(scene, { x: a.x, z: a.z }, { x: x / len, z: z / len }, (w.map.speed * w.params.dirLeaseMs) / 1000);
     if (points.length < 2) {
@@ -898,6 +938,7 @@ export function installSpace(w: WorldService): void {
   });
 
   const navigate: ActionHandler = ({ r, action, now }) => {
+    applyDirFence(w, r, action.dirFence);
     takeToken(w, r.resident_id, 'nav', w.params.navBurst, w.params.navPerMinute, now, '改路线');
     const first = interruptForNewRoute(w, r, ensureActor(w, r, now), now);
     let a = first.a;
@@ -921,7 +962,8 @@ export function installSpace(w: WorldService): void {
   // 旧名字：move {to} 就是 navigate {to}
   w.handlers.set('move', navigate);
 
-  w.handlers.set('stop_navigation', ({ r, now }) => {
+  w.handlers.set('stop_navigation', ({ r, action, now }) => {
+    applyDirFence(w, r, action.dirFence);
     const stopped = stopNav(w, r.resident_id, now, 'stop');
     const here = whereabouts(w, w.mustResident(r.resident_id), now);
     return { status: 'completed', stopped, at: { space: here.space, x: here.x, z: here.z } };
