@@ -8,6 +8,7 @@ Godot 4.7.2（GDScript，Compatibility 渲染，单线程网页导出）。Godot
 - Godot 4.7.2 稳定版，装好网页导出模板（本机 `/opt/godot/godot`；别处用环境变量 `GODOT=/path/to/godot`）。
 - Node 22（跑引擎和导出脚本里的预压缩）。
 - 不需要 Blender：角色和音频素材已经在 `client/town/assets/`（再生成见 `client/ASSETS.md`）。
+- 在别的机器上导出（比如 aarch64 的服务器，实测可用）：官方有 `linux.arm64` 的编辑器包；网页导出只用到模板包里的 `web_nothreads_release.zip` 和 `version.txt`，放进 `<数据目录>/godot/export_templates/4.7.2.stable/` 就行，不用把 1.3 GB 的模板包全解开。`HOME` 不是真正的主目录时（比如经远程执行工具跑命令），用 `XDG_DATA_HOME` 指定数据目录，否则 Godot 找不到模板。
 
 ## 导出
 
@@ -104,6 +105,10 @@ client/art_source/, client/ASSETS.md   素材来源与台账
 | index.wasm | 39,514,754 | 10,153,810 | 6,902,599 |
 | index.pck | 113,072 | 107,364 | 105,610 |
 | index.js | 279,815 | 68,917 | 59,854 |
+
+对账：同一个 Godot 版本下，`index.wasm` 和 `index.js` 在不同机器上导出是逐字节相同的（x86_64 和 aarch64 实测一致）。`index.pck` 大小相同，但每次重新导入资源哈希都会变（导入时的随机编号），不能拿它的哈希对账。
+
+线上（经 Tailscale Funnel）：br 的 wasm 下载一次用了 22 秒，gzip 的一次用了 8 秒。入口带宽有限而且不稳定，首次打开要等十几到二十几秒，之后走缓存（ETag / 304）。
 
 本机回环、brotli：到出现「进入小镇」按钮约 1.9 秒（桌面 1938 毫秒、手机 2028 毫秒）；点进入、输入名字到可操作（含网络往返）约 3.9 秒（桌面 3891 毫秒、手机 3971 毫秒）（两个浏览器同时软件渲染，见 `client/demo/results.json`）。真实网络下主要看 wasm 的 6.9 MB。
 
