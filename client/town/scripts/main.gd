@@ -105,6 +105,21 @@ var _tap_start: Dictionary = {}
 var _pinch_prev: float = 0.0
 var last_error: String = ""
 
+# 键盘方向输入（WASD / 方向键）。键位由网页层 hud.js 盯着（输入框里、窗口失焦、切后台都由它处理），这里只收「现在按着哪几个」。
+# 只发方向、序号、控制版本，不发坐标；服务器把它变成一段约 500 毫秒租约的短直线，所以按住时要定时重发，松手发零向量。
+const DIR_RESEND_MS := 175.0  # 按住时重发的间隔
+const DIR_MIN_GAP_MS := 60.0  # 方向变了也至少隔这么久才发（服务器限频：突发 10、每秒 10）
+const INTERACT_RANGE := 8.0
+var key_up: bool = false
+var key_down: bool = false
+var key_left: bool = false
+var key_right: bool = false
+var dir_seq: int = 0  # 只增不减，重连也不重置（服务器按连接序号区分新旧连接）
+var dir_last: Vector2 = Vector2.ZERO
+var dir_sent_ms: float = -1.0e9
+var dir_active: bool = false  # 已经发过非零方向、还没发零
+var dir_suppressed: bool = false  # 按着键时点了地面或物件：这次按住不再发方向，等全部松开
+var dir_toast_ms: float = -1.0e9
 var _dirty: bool = true
 var _state_timer: float = 0.0
 var _debug_timer: float = 0.0
@@ -186,6 +201,10 @@ func _on_ui(ev: String, arg: String) -> void:
 			audio.set_enabled(arg == "1")
 		"stop":
 			_do_stop()
+		"keys":
+			_on_keys(arg)
+		"interact":
+			_do_interact()
 		"claim":
 			_do_claim()
 		"home":
@@ -239,6 +258,8 @@ func _start_probe(t: float) -> void:
 
 func _set_phase(p: int, msg: String = "", link: String = "") -> void:
 	phase = p
+	if p != Phase.PLAYING:
+		_dir_reset()
 	phase_msg = msg
 	phase_link = link
 	_dirty = true
@@ -529,6 +550,7 @@ func _on_ws_open() -> void:
 
 func _on_ws_closed(code: int, _reason: String) -> void:
 	ws_ready = false
+	dir_active = false  # 发不出零向量了；服务器最迟 500 毫秒后自己停
 	_dirty = true
 	if not want_net:
 		return
@@ -624,6 +646,8 @@ func _on_ws_message(msg: Dictionary) -> void:
 			last_pong_ms = clock.ticks_ms()
 		"renewed":
 			_on_renewed(msg)
+		"dir_dropped":
+			pass  # 旧序号或太频繁，丢了就丢了：下一次重发会补上
 		"error":
 			var code: String = str(msg.get("code", ""))
 			if code == "revoked":
@@ -636,7 +660,9 @@ func _on_ws_message(msg: Dictionary) -> void:
 				_refresh_me()
 			elif code == "unauthenticated":
 				_relogin()
-			elif code != "rate_limited":
+			elif code == "precondition_failed" and str(msg.get("reason", "")) == "in_activity":
+				_dir_hint(str(msg.get("message", "")))
+			elif code != "rate_limited" and not (code == "precondition_failed" and str(msg.get("reason", "")) == "not_present"):
 				last_error = code + ": " + str(msg.get("message", ""))
 
 
@@ -742,7 +768,9 @@ func _on_scene(msg: Dictionary) -> void:
 			actors[id] = act
 		act.apply(a, now)
 		if id == self_id:
-			if act.has_nav:
+			if act.has_nav and _dir_recent(clock.ticks_ms()):
+				renew_id = ""  # 方向输入的短租约只由方向输入续，不走 10 秒的续租
+			elif act.has_nav:
 				if act.nav_id != renew_id or act.nav_rev != renew_rev:
 					renew_id = act.nav_id
 					renew_rev = act.nav_rev
@@ -859,6 +887,7 @@ func _hide_marker() -> void:
 func _do_navigate(to: Dictionary, label: String, mark = null) -> void:
 	if not _can_control():
 		return
+	_dir_cancel()
 	nav_generation += 1
 	var gen: int = nav_generation
 	near_valid = false
@@ -892,6 +921,7 @@ func _do_navigate(to: Dictionary, label: String, mark = null) -> void:
 func _do_stop() -> void:
 	if not _can_control():
 		return
+	_dir_cancel()
 	nav_generation += 1
 	var r: Dictionary = await _act({"type": "stop_navigation"})
 	_hide_marker()
@@ -949,6 +979,148 @@ func _on_act_button(arg: String) -> void:
 			if str(r.get("reason", "")) == "too_far":
 				near_valid = false
 				_dirty = true
+
+
+# ───────────────────────── 键盘 ─────────────────────────
+
+
+## 网页层报来现在按着的方向键（"up,left" 这样的列表，空串 = 都松开）。
+func _on_keys(arg: String) -> void:
+	var parts: PackedStringArray = arg.split(",", false)
+	var was_idle: bool = _key_vec() == Vector2.ZERO
+	key_up = "up" in parts
+	key_down = "down" in parts
+	key_left = "left" in parts
+	key_right = "right" in parts
+	if phase != Phase.PLAYING:
+		return
+	if was_idle and _key_vec() != Vector2.ZERO and not control_mine:
+		_can_control()  # 只读：提示一次
+
+
+## 屏幕方向 -> 世界方向。镜头固定朝北俯视（向上 = -z，向右 = +x），所以不用旋转；斜向归一化。
+func _key_vec() -> Vector2:
+	var v := Vector2(float(key_right) - float(key_left), float(key_down) - float(key_up))
+	return v.normalized() if v != Vector2.ZERO else v
+
+
+func _key_vec_text() -> String:
+	var v: Vector2 = _key_vec()
+	return "%.3f,%.3f" % [v.x, v.y]
+
+
+func _send_dir(v: Vector2, now_t: float) -> void:
+	dir_seq += 1
+	dir_last = v
+	dir_sent_ms = now_t
+	net.send({"t": "dir", "seq": dir_seq, "epoch": control_epoch, "x": snappedf(v.x, 0.001), "z": snappedf(v.y, 0.001)})
+
+
+## 每帧：按住就定时重发，方向变了马上发，松手发零向量。
+func _tick_dir(now_t: float) -> void:
+	var v: Vector2 = _key_vec()
+	if v == Vector2.ZERO:
+		dir_suppressed = false
+		if dir_active:
+			dir_active = false
+			if net.is_open() and ws_ready:
+				_send_dir(Vector2.ZERO, now_t)
+		return
+	if dir_suppressed or not ws_ready or not net.is_open() or not control_mine or ctx_activity != null:
+		return
+	var gap: float = now_t - dir_sent_ms
+	if (v != dir_last and gap >= DIR_MIN_GAP_MS) or gap >= DIR_RESEND_MS:
+		if not dir_active:
+			# 起步：之后点地确认的回答不再代表现状，也不再显示"正在走向某处"的标记
+			nav_generation += 1
+			near_valid = false
+			_hide_marker()
+			_dirty = true
+		dir_active = true
+		_send_dir(v, now_t)
+
+
+## 点地、点物件、停下、Esc：方向输入让位。还按着键的话，这一次按住不再发方向（免得下一次重发把刚点的路线盖掉）。
+func _dir_cancel() -> void:
+	if dir_active and net.is_open() and ws_ready:
+		_send_dir(Vector2.ZERO, clock.ticks_ms())
+	dir_active = false
+	dir_sent_ms = -1.0e9
+	dir_suppressed = _key_vec() != Vector2.ZERO
+
+
+func _dir_reset() -> void:
+	key_up = false
+	key_down = false
+	key_left = false
+	key_right = false
+	dir_active = false
+	dir_suppressed = false
+	dir_sent_ms = -1.0e9
+
+
+## 刚发过方向输入（或还在按着）：这时自己的路线是方向输入的短租约，不能走 10 秒的续租。
+func _dir_recent(now_t: float) -> bool:
+	return dir_active or now_t - dir_sent_ms < 1200.0
+
+
+func _dir_hint(msg: String) -> void:
+	var t: float = clock.ticks_ms()
+	if t - dir_toast_ms > 3000.0:
+		dir_toast_ms = t
+		_toast(msg, "warn")
+
+
+## E：和最近的可互动物件或人互动。复用点击的入口：够得着的物件直接开始动作，远的先走过去，人就走到身边。
+func _do_interact() -> void:
+	if phase != Phase.PLAYING or not _can_control():
+		return
+	var sa: TActor = actors.get(self_id)
+	if sa == null:
+		return
+	if not near_valid:
+		await _refresh_me()  # 刚停下时"够不够得着"还是旧的：读一次再决定
+		if phase != Phase.PLAYING:
+			return
+	var me := Vector2(sa.disp.x, sa.disp.y)
+	var best_kind: String = ""
+	var best_id: String = ""
+	var best_d: float = INTERACT_RANGE
+	for ob in world.scene_objects(cur_scene):
+		var d: float = me.distance_to(Vector2((ob["pos"] as Vector3).x, (ob["pos"] as Vector3).z))
+		if d < best_d:
+			best_d = d
+			best_kind = "obj"
+			best_id = str(ob["id"])
+	for id in actors:
+		if id == self_id:
+			continue
+		var a: TActor = actors[id]
+		var d2: float = me.distance_to(a.disp)
+		if d2 < best_d:
+			best_d = d2
+			best_kind = "actor"
+			best_id = id
+	if best_kind == "":
+		_toast("附近没有可以互动的东西。", "info")
+		return
+	if best_kind == "actor":
+		selected_obj = ""
+		var a2: TActor = actors[best_id]
+		_do_navigate({"approach": best_id}, a2.actor_name, Vector3(a2.disp.x, 0.0, a2.disp.y))
+		return
+	selected_obj = best_id
+	_dirty = true
+	if near_valid and _is_near(best_id):
+		for o in here.get("objects", []):
+			if str(o.get("id", "")) == best_id and o.get("action") is Dictionary and o.get("active") == null:
+				_dir_cancel()
+				_on_act_button("do:" + best_id)
+				return
+		_toast("现在没有可以做的事。", "info")
+		return
+	var ob2: Dictionary = world.find_object(cur_scene, best_id)
+	_do_navigate({"to": best_id}, str(ob2.get("name", "")), Vector3(float(ob2["x"]), 0.0, float(ob2["z"])))
 
 
 # ───────────────────────── 输入 ─────────────────────────
@@ -1136,6 +1308,8 @@ func _process(dt: float) -> void:
 	if now_t >= next_heartbeat and presence_epoch >= 0:
 		next_heartbeat = now_t + float(heartbeat_ms)
 		_heartbeat()
+
+	_tick_dir(now_t)
 
 	# 角色
 	for id in actors:
@@ -1372,6 +1546,7 @@ func _push_debug() -> void:
 		"lastError": last_error,
 		"markerVisible": marker.visible,
 		"tapLimit": _tap_limit(),
+		"dir": {"seq": dir_seq, "active": dir_active, "suppressed": dir_suppressed, "keys": _key_vec_text()},
 		"screenScale": DisplayServer.screen_get_scale(),
 	}
 	bridge.hud_debug(JSON.stringify(d))

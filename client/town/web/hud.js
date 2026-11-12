@@ -213,6 +213,71 @@
     show($('destMenu'), $('destMenu').hidden);
   });
 
+  /* ── 键盘：WASD / 方向键移动，E 互动，Esc 关面板或停步 ──
+   * 在网页层处理：焦点在输入框里时一律不响应；窗口失焦、切后台、焦点进输入框都当成全部松开（Godot 会据此发零向量）。
+   * 只发「现在按着哪几个方向」，方向到世界坐标的换算和协议在 main.gd。 */
+  var KEYMAP = { KeyW: 'up', ArrowUp: 'up', KeyS: 'down', ArrowDown: 'down', KeyA: 'left', ArrowLeft: 'left', KeyD: 'right', ArrowRight: 'right' };
+  var held = {}; // e.code -> true
+  var lastKeys = '';
+  function isTyping(t) {
+    if (!t || !t.tagName) return false;
+    var n = t.tagName.toLowerCase();
+    return n === 'input' || n === 'textarea' || n === 'select' || !!t.isContentEditable;
+  }
+  function playing() {
+    return state.phase === 'playing';
+  }
+  function emitKeys() {
+    var dirs = {};
+    for (var c in held) if (held[c]) dirs[KEYMAP[c]] = true;
+    var j = ['up', 'down', 'left', 'right'].filter(function (d) { return dirs[d]; }).join(',');
+    if (j === lastKeys) return;
+    lastKeys = j;
+    emit('keys', j);
+  }
+  function releaseAll() {
+    held = {};
+    emitKeys();
+  }
+  window.addEventListener(
+    'keydown',
+    function (e) {
+      if (e.ctrlKey || e.metaKey || e.altKey || isTyping(e.target) || !playing()) return;
+      var code = e.code;
+      if (KEYMAP[code]) {
+        e.preventDefault();
+        held[code] = true;
+        emitKeys();
+      } else if (code === 'KeyE') {
+        e.preventDefault();
+        if (!e.repeat) emit('interact');
+      } else if (code === 'Escape') {
+        if (e.repeat) return;
+        if (!$('destMenu').hidden) show($('destMenu'), false);
+        else emit('stop');
+      }
+    },
+    true,
+  );
+  window.addEventListener(
+    'keyup',
+    function (e) {
+      if (!KEYMAP[e.code]) return;
+      held[e.code] = false;
+      emitKeys();
+    },
+    true,
+  );
+  window.addEventListener('blur', releaseAll);
+  document.addEventListener('visibilitychange', function () {
+    if (document.visibilityState !== 'visible') releaseAll();
+  });
+  document.addEventListener('focusin', function (e) {
+    if (isTyping(e.target)) releaseAll();
+  });
+  // 触摸设备不显示键位提示（主要输入是手指，没有物理键盘）
+  var hasKeyboard = !!(window.matchMedia && window.matchMedia('(hover: hover) and (pointer: fine)').matches);
+
   /* ── 状态 ── */
   var lastActionsJson = '';
   var lastDestJson = '';
@@ -298,11 +363,14 @@
     renderPanel(s);
     lastPhase = s.phase;
     if (s.phase !== 'playing') {
+      releaseAll();
+      show($('keyHint'), false);
       document.body.setAttribute('data-phase', s.phase);
       clearTags(); // 重新登录 / 出错面板下不留旧姓名牌
       return;
     }
     document.body.setAttribute('data-phase', 'playing');
+    show($('keyHint'), hasKeyboard);
     $('space').textContent = s.space || s.sceneName || '栖灯镇';
     $('conn').className = 'dot ' + (s.conn || '');
     $('conn').title = s.conn === 'ok' ? '已连接' : s.conn === 'reconnecting' ? '重新连接中…' : '离线';

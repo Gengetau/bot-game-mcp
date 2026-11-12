@@ -108,6 +108,17 @@ button.big { font-size: 18px; padding: 12px 28px; min-height: 48px; }
 }
 #destMenu button { min-height: 36px; padding: 6px 12px; }
 
+#hud #keyHint {
+  position: absolute; left: calc(12px + var(--safe-left)); bottom: calc(14px + var(--safe-bottom)); z-index: 1; pointer-events: none;
+  font-size: 13px; color: var(--muted); min-height: 30px; padding: 4px 10px; gap: 4px; flex-wrap: wrap;
+}
+#keyHint kbd {
+  font: inherit; font-size: 12px; font-weight: 700; color: var(--text); background: rgba(255, 255, 255, 0.12); border: 1px solid var(--line);
+  border-radius: 5px; padding: 0 5px; min-width: 20px; text-align: center;
+}
+#keyHint .sep { opacity: 0.5; }
+@media (max-width: 900px) { #keyHint { display: none !important; } }
+
 /* z-index:0 让 #tags 自成层叠上下文：里面 .tag 的 z-index 不再外泄、压到顶栏 / 按钮 / 遮罩上面 */
 #tags { position: absolute; inset: 0; overflow: hidden; pointer-events: none; z-index: 0; }
 .tag {
