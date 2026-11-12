@@ -71,10 +71,8 @@ var renew_rev: int = 0
 var next_ping: float = 0.0
 var next_heartbeat: float = 0.0
 var next_poll: float = 0.0
-## WebSocket 通着时的保险：服务器只在有人走动时推快照，别人进镇 / 离开不会触发，所以隔几秒主动取一次 /scene
-var next_safety_poll: float = 0.0
+## 已应用的最新快照的服务器时间：晚到的旧快照（比如断线时轮询的回应）不能盖掉新的
 var last_scene_time: float = -1.0
-const SAFETY_POLL_MS := 3000.0
 var last_pong_ms: float = 0.0
 var ping_sent: Dictionary = {}
 
@@ -989,9 +987,6 @@ func _process(dt: float) -> void:
 			next_poll = now_t + 1500.0
 			if net.state != "open":
 				_poll_scene()
-		if ws_ready and now_t >= next_safety_poll:
-			next_safety_poll = now_t + SAFETY_POLL_MS
-			_poll_scene()
 		if ws_ready and now_t >= next_ping:
 			next_ping = now_t + 5000.0
 			net.send({"t": "ping", "n": now_t})

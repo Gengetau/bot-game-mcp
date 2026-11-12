@@ -14,7 +14,7 @@ import { ENTRY_PLACE, INTERESTS, STREETS, TRAITS } from './content.js';
 import { WorldError, badRequest, precondition } from './errors.js';
 import { card, publicSpot } from './project.js';
 import { sha256, type Auth, type WorldService } from './service.js';
-import { stopNav } from './space.js';
+import { stopNav, touchScene } from './space.js';
 import type { Principal, ResidentRow, ResidentState } from './types.js';
 
 export interface ProfileInput {
@@ -248,6 +248,8 @@ function comeOnline(w: WorldService, r: ResidentRow, now: number): void {
   if (r.present_since !== null) return;
   r.present_since = now;
   w.saveResident(r);
+  // 同一场景实例里的人要在快照里看到她出现（她自己的快照也从「只有自己」变成整个现场）
+  touchScene(w, r.resident_id);
   const space = w.spaceOf(r);
   if (space) {
     const others = w.audienceIn(space).filter((x) => x.resident_id !== r.resident_id);
@@ -466,6 +468,7 @@ export function installIdentity(w: WorldService): void {
         throw precondition(`已经有一位居民叫「${name}」了。`, 'name_taken');
       }
       r.name = name;
+      touchScene(w, r.resident_id);
     }
     if (action.bio !== undefined) r.state.bio = sanitizeName(String(action.bio), 80);
     if (action.traits !== undefined) r.state.traits = pickList(action.traits, KNOWN_TRAITS, w.params.traitCount, '个性倾向');

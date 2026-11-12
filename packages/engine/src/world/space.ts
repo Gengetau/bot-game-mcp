@@ -701,6 +701,16 @@ export function sceneView(w: WorldService, viewer: ResidentRow, now: number): Sc
   return { protocol: 1, mapVersion: w.map.mapVersion, checksum: w.map.checksum, scene: sceneId, space: viewer.location_id, serverTime: now, self: viewer.resident_id, actors };
 }
 
+/**
+ * 场景快照里除了位置还有别的东西：谁在场、名字、是不是在一局小游戏里。
+ * 这些变了（上线、离线、进出小游戏、改名）也要让同一场景实例里的人拿到新快照——调这个。
+ * 只是通知（提交之后才发出去），不写任何位置。
+ */
+export function touchScene(w: WorldService, residentId: string): void {
+  const a = actorOf(w, residentId);
+  if (a) w.bumpSpace(sceneKeyOf(a));
+}
+
 /** 这位居民所在的场景实例的订阅键（和 w.onSpace 收到的键对应）。 */
 export function sceneKeyOfResident(w: WorldService, residentId: string): string | null {
   const a = actorOf(w, residentId);
@@ -826,6 +836,8 @@ export function installSpace(w: WorldService): void {
   // 离线（明确离开、在场租约到期、服务器重启）：立即停步。重启时停在最后一个耐久检查点
   w.hooks.offline.push((r, at, reason) => {
     const a = actorOf(w, r.resident_id);
+    // 离线的人从别人的场景快照里消失（她自己的快照也只剩自己）：不管当时在不在走，都要通知这个场景
+    if (a) w.bumpSpace(sceneKeyOf(a));
     if (!a?.nav) return;
     if (a.map_version !== w.map.mapVersion) {
       // 这条路线是按旧地图规划的（换了地图版本之后的那次重启）：不拿新地图去结算旧折线，

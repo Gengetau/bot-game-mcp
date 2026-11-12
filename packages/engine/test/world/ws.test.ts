@@ -366,6 +366,19 @@ describe('WS：scene 同步', () => {
     expect(stopped.actors.find((x: any) => x.id === b.residentId).nav).toBeUndefined();
   });
 
+  it('有人进镇、离开：站着不动也会推新的 scene（不用等她第一次走动）', async () => {
+    const app = await serve();
+    const { u, c } = await connect(app, '阿灯');
+    const from = c.msgs.length;
+    const other = await new User(app).login('小满');
+    const withOther = await c.waitFor((m) => m.t === 'scene' && m.actors.some((x: any) => x.id === other.residentId), 3000, from);
+    expect(withOther.actors.map((x: any) => x.id).sort()).toEqual([u.residentId, other.residentId].sort());
+    const from2 = c.msgs.length;
+    other.actor.leave();
+    const without = await c.waitFor((m) => m.t === 'scene' && !m.actors.some((x: any) => x.id === other.residentId), 3000, from2);
+    expect(without.actors.map((x: any) => x.id)).toEqual([u.residentId]);
+  });
+
   it('进了自己家：收到 home 场景的快照，留在外面的人的快照里没有她', async () => {
     const app = await serve();
     const { u: a, c: ca } = await connect(app, '阿灯');

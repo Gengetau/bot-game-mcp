@@ -719,6 +719,64 @@ describe('场景快照', () => {
     expect(sceneView(t.w, guest.row(), t.clock.t).actors.map((x) => x.id)).toEqual([guest.residentId]);
   });
 
+  it('快照里不只有位置：有人上线、离线、在场租约到期、改名、进出小游戏，同一场景实例的订阅者都会被通知', () => {
+    const t = makeTown();
+    const a = t.join('阿灯');
+    const keys: string[][] = [];
+    t.w.onSpace((k) => keys.push(k));
+    const seen = () => keys.splice(0).flat();
+    // 上线：新来的人出现在别人的快照里
+    const b = t.join('小岚');
+    expect(seen()).toContain('town|');
+    expect(sceneView(t.w, a.row(), t.clock.t).actors.map((x) => x.id)).toContain(b.residentId);
+    // 改名
+    b.act('update_profile', { name: '小岚岚' });
+    expect(seen()).toContain('town|');
+    expect(sceneView(t.w, a.row(), t.clock.t).actors.find((x) => x.id === b.residentId)!.name).toBe('小岚岚');
+    // 明确离开：站着不动的人离线，也要通知
+    b.leave();
+    expect(seen()).toContain('town|');
+    expect(sceneView(t.w, a.row(), t.clock.t).actors.map((x) => x.id)).toEqual([a.residentId]);
+    // 再进来
+    b.enter();
+    expect(seen()).toContain('town|');
+    // 在场租约到期（没有明确离开）
+    for (let i = 0; i < 8; i++) {
+      t.advance(20_000);
+      a.heartbeat();
+    }
+    expect(b.row().present_since).toBeNull();
+    expect(seen()).toContain('town|');
+    expect(sceneView(t.w, a.row(), t.clock.t).actors.map((x) => x.id)).toEqual([a.residentId]);
+  });
+
+  it('进出小游戏（快照里的 busy）会通知场景；在私宅里上线、离线通知的是那一户的实例', () => {
+    const t = makeTown();
+    const a = t.join('阿灯');
+    const b = t.join('小岚');
+    const c = t.join('阿树');
+    for (const x of [a, b]) x.go('arcade');
+    const keys: string[][] = [];
+    t.w.onSpace((k) => keys.push(k));
+    const seen = () => keys.splice(0).flat();
+    const p = a.act('propose_game', { game: 'number_bomb' });
+    b.act('join_game', { activityId: p.activity.id });
+    seen();
+    a.act('start_game', { activityId: p.activity.id });
+    expect(seen()).toContain('town|');
+    expect(sceneView(t.w, c.row(), t.clock.t).actors.filter((x) => x.busy === 'game').map((x) => x.id).sort()).toEqual([a.residentId, b.residentId].sort());
+    a.act('quit_game');
+    expect(seen()).toContain('town|');
+    expect(sceneView(t.w, c.row(), t.clock.t).actors.find((x) => x.id === a.residentId)!.busy).toBeUndefined();
+    // 私宅实例
+    c.go('home');
+    seen();
+    c.leave();
+    expect(seen()).toEqual([`home|${c.residentId}`]);
+    c.enter();
+    expect(seen()).toEqual([`home|${c.residentId}`]);
+  });
+
   it('位置变化在提交之后才通知场景的订阅者；回滚的命令不通知', () => {
     const t = makeTown();
     const a = t.join('阿灯');
