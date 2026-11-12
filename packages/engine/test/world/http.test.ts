@@ -255,10 +255,13 @@ async function alive(t: Town, ms: number, webs: Web[], actors: Actor[] = []): Pr
 
 /** 把网页居民和 AI 居民都走到游戏馆的第一张桌边（小游戏要站在桌边才能凑桌 / 加入）。 */
 async function seatAtTable(t: Town, webs: Web[], actors: Actor[] = []): Promise<void> {
+  // 先让网页居民心跳一下：前面花在别处的时间可能已经让它的控制租约过期
+  for (const w of webs) await w.post('/town/api/heartbeat', { clientId: w.clientId, presenceEpoch: t.w.resident(w.residentId)!.presence_epoch });
   for (const x of actors) x.go('arcade:table1');
   for (const w of webs) {
     const r = t.w.mustResident(w.residentId);
-    new Actor(t, r.principal_id, r.resident_id, w.clientId, r.name).go('arcade:table1');
+    // HTTP 层给客户端编号加了 web: 前缀
+    new Actor(t, r.principal_id, r.resident_id, `web:${w.clientId}`, r.name).go('arcade:table1');
   }
   await alive(t, 1_000, webs, actors);
 }
@@ -849,7 +852,7 @@ describe('HTTP：enter / me / actions', () => {
     const anon = new Web(app.base);
     const pg = await anon.get(`/town/api/public/game/${p.json.activity.id}`);
     expect(pg.status).toBe(200);
-    expect(pg.json).toMatchObject({ type: 'number_bomb', status: 'running', activityId: p.json.activity.id, venue: 'plaza' });
+    expect(pg.json).toMatchObject({ type: 'number_bomb', status: 'running', activityId: p.json.activity.id, venue: 'arcade' });
     expect(pg.json.you).toBeUndefined();
     expect(pg.json.todo).toBeUndefined();
     expect(pg.text).not.toContain('"bomb"');

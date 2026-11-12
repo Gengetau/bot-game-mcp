@@ -1619,6 +1619,17 @@ class Sim {
       return this.moveTo(ag, conn, 'arcade');
     }
     const tableById = new Map(here.tables.map((t) => [t.id, t]));
+    // 视图里的 near 必须和独立重算一致（只在没有走动时才比：走路中位置按时间现算，两边取同一时刻所以也一致，这里不特别排除）
+    for (const t of here.tables) {
+      const indep = this.atTableIndependent(ag.p.residentId, t.id);
+      this.rejectChecks.run++;
+      if (indep.ok !== t.near) {
+        this.rejectChecks.failed++;
+        const msg = `视图说 ${t.id} near=${t.near}，独立重算距离 ${indep.dist.toFixed(2)} 米（${indep.ok ? '该够得着' : '该够不着'}）`;
+        if (this.rejectChecks.samples.length < 10) this.rejectChecks.samples.push(msg);
+        this.inv.fail('table_near_view', msg, { who: ag.p.name, table: t.id, dist: indep.dist }, now);
+      }
+    }
     const mine = here.activities.find((a) => a.players.some((p) => p.id === me));
     if (mine) {
       const tbl = mine.tableId ? tableById.get(mine.tableId) : undefined;
@@ -1648,7 +1659,16 @@ class Sim {
     if (open.length > 0 && rnd.chance(0.8)) {
       const pick = rnd.pick(open);
       const tbl = tableById.get(pick.tableId!);
-      if (tbl && !tbl.near) return this.moveTo(ag, conn, tbl.id);
+      if (tbl && !tbl.near) {
+        // 偶尔不走过去，直接加入：站得太远必须被 too_far 拒绝（距离由独立重算判断）
+        if (rnd.chance(0.25) && !this.atTableIndependent(ag.p.residentId, tbl.id).ok) {
+          const probe = this.exec(ag, conn, 'join_game', { activityId: pick.id });
+          this.expectReject(ag, '离桌太远时加入', probe, ['precondition_failed'], { table: tbl.id });
+          if (!probe.ok && probe.reason !== 'too_far') this.inv.fail('reject_expected', `离桌太远时加入：期望 too_far，实际 ${probe.reason}`, { table: tbl.id }, now);
+          return rnd.range(2, 6) * 1000;
+        }
+        return this.moveTo(ag, conn, tbl.id);
+      }
       const out = this.exec(ag, conn, 'join_game', { activityId: pick.id, ...(rnd.chance(0.5) ? { objectId: pick.tableId } : {}) });
       if (out.ok) this.checkTableMember('join_game', ag.p.residentId, ag.p.name, pick.tableId!);
       return rnd.range(5, 15) * 1000;
@@ -1662,7 +1682,15 @@ class Sim {
     const least = offered.filter((g) => (this.gameStarted.get(g.type) ?? 0) === (this.gameStarted.get(offered[0]!.type) ?? 0));
     const g = rnd.pick(least);
     const table = free.find((t) => t.near) ?? rnd.pick(free);
-    if (!table.near) return this.moveTo(ag, conn, table.id);
+    if (!table.near) {
+      if (rnd.chance(0.25) && !this.atTableIndependent(ag.p.residentId, table.id).ok) {
+        const probe = this.exec(ag, conn, 'propose_game', { game: g.type, objectId: table.id });
+        this.expectReject(ag, '离桌太远时凑桌', probe, ['precondition_failed'], { table: table.id });
+        if (!probe.ok && probe.reason !== 'too_far') this.inv.fail('reject_expected', `离桌太远时凑桌：期望 too_far，实际 ${probe.reason}`, { table: table.id }, now);
+        return rnd.range(2, 6) * 1000;
+      }
+      return this.moveTo(ag, conn, table.id);
+    }
     const out = this.exec(ag, conn, 'propose_game', { game: g.type, objectId: table.id });
     if (out.ok) {
       this.bump(`propose_${g.type}`);

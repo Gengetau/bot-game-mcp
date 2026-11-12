@@ -803,21 +803,28 @@ function navFaultScenarios(): { name: string; checks: number }[] {
       c.reopen(true, 20 * SEC);
       const act = c.w.db.get('SELECT status, table_id FROM activities WHERE activity_id = ?', activityId)!;
       check(1000 + c.n, act.table_id === T, '重启后这一局不在原来的桌子上');
-      check(1000 + c.n, tableOpen(c, T) === 1, () => `重启后这张桌上开着的局应恰好 1 个，实际 ${tableOpen(c, T)}`);
       const games = c.w.db.scalar('SELECT COUNT(*) FROM game_records WHERE activity_id = ?', activityId);
       const inGame = c.who.filter((x) => c.w.mustResident(x.residentId).activity_id === activityId).length;
       if (point === 'before_commit') {
-        check(1000 + c.n, act.status === 'forming' && games === 0 && inGame === 0, () => `提交前崩溃：这一局应还在凑桌，实际 ${act.status}，游戏记录 ${games}，在局里 ${inGame} 人`);
-        // 重试开局：全新执行，三个人都还在桌边，照常开
-        const again = c.cmd(a, { type: 'start_game', activityId });
-        check(1000 + c.n, again.status === 'accepted', '提交前崩溃后重试开局没成功');
-        check(1000 + c.n, c.who.every((x) => c.w.mustResident(x.residentId).activity_id === activityId), '重试开局后三个人应都在局里');
+        // 开局的事务回滚了：没有游戏记录、没有人进局。重启时所有人先下线，凑桌随发起人下线解散，桌子空出来
+        check(1000 + c.n, act.status === 'aborted' && games === 0 && inGame === 0, () => `提交前崩溃：这一局不该开始，实际 ${act.status}，游戏记录 ${games}，在局里 ${inGame} 人`);
+        check(1000 + c.n, tableOpen(c, T) === 0, () => `提交前崩溃重启后桌子应空出来，实际开着 ${tableOpen(c, T)} 个局`);
+        check(1000 + c.n, c.w.db.scalar('SELECT COUNT(*) FROM settlements WHERE activity_id = ?', activityId) === 0, '提交前崩溃的局不该有结算');
+        // 人还在桌边的原位，重新凑一桌、开局都行（全新执行）
+        for (const x of c.who) check(1000 + c.n, atTable(c, x, T), `${x.name} 在开局崩溃重启后不在桌边`);
+        const p2 = c.cmd(a, { type: 'propose_game', game: 'number_bomb', objectId: T });
+        const id2 = String(p2.activity.id);
+        for (const x of c.who.slice(1)) c.cmd(x, { type: 'join_game', activityId: id2 });
+        const again = c.cmd(a, { type: 'start_game', activityId: id2 });
+        check(1000 + c.n, again.status === 'accepted', '提交前崩溃后重新凑桌开局没成功');
+        check(1000 + c.n, c.who.every((x) => c.w.mustResident(x.residentId).activity_id === id2), '重新开局后三个人应都在局里');
+        check(1000 + c.n, tableOpen(c, T) === 1, '重新开局后这张桌上应恰好一个局');
       } else {
+        // 事务已经提交，只是响应丢了：局在进行，三个人都在局里，只有一份游戏记录
         check(1000 + c.n, act.status === 'running' && games === 1 && inGame === 3, () => `提交后崩溃：这一局应已开始，实际 ${act.status}，游戏记录 ${games}，在局里 ${inGame} 人`);
+        check(1000 + c.n, tableOpen(c, T) === 1, () => `提交后崩溃重启后这张桌上开着的局应恰好 1 个，实际 ${tableOpen(c, T)}`);
+        for (const x of c.who) check(1000 + c.n, atTable(c, x, T), `${x.name} 在开局崩溃重启后不在桌边`);
       }
-      // 局里的人不能走，位置还在桌边；这张桌被占着，第二个局被拒
-      for (const x of c.who) check(1000 + c.n, atTable(c, x, T), `${x.name} 在开局崩溃重启后不在桌边`);
-      check(1000 + c.n, c.w.db.scalar("SELECT COUNT(*) FROM activities WHERE table_id = ? AND status = 'running'", T) === 1, '重启后这张桌上应有恰好一个进行中的局');
       c.snap('开局崩溃重启后');
     });
   }

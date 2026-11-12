@@ -62,7 +62,7 @@ async function walkTo(c: TownClient, to: Parameters<TownClient['navigate']>[0]):
   const mv = await c.navigate(to);
   let nav = mv.status === 'accepted' ? mv.navigation : undefined;
   for (let i = 0; nav && i < 60; i++) {
-    await sleep(Math.min(nav.renewEveryMs, 2_000));
+    await sleep(Math.min(nav.renewEveryMs ?? 2_000, 2_000));
     const r = await c.renewNavigation({ navigationId: nav.navigationId, revision: nav.revision });
     nav = r.navigation ?? undefined;
   }
