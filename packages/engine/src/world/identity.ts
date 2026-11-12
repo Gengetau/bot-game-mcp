@@ -26,6 +26,22 @@ export interface ProfileInput {
 const KNOWN_TRAITS = new Set(TRAITS.map((t) => t.id));
 const KNOWN_INTERESTS = new Set(INTERESTS.map((t) => t.id));
 
+/**
+ * 居民名字的清洗：在 sanitizeName 之外再去掉「看不见的字符」（零宽空格、方向控制等，Unicode 的 Cf 类），
+ * 免得用 `阿灯\u200b` 冒充 `阿灯`、或用方向控制符把名字显示成别的样子。
+ */
+function cleanName(raw: unknown, max: number): string {
+  return sanitizeName(String(raw ?? '').replace(/\p{Cf}/gu, ''), max);
+}
+
+/** 判重用的骨架：全角半角、大小写都不算区别（SQLite 的 lower() 只管 ASCII，不够用）。 */
+const nameSkeleton = (name: string): string => name.normalize('NFKC').toLowerCase();
+
+function nameTaken(w: WorldService, name: string, exceptResidentId?: string): boolean {
+  const key = nameSkeleton(name);
+  return w.db.all('SELECT resident_id, name FROM residents WHERE world_id = ?', w.worldId).some((row) => row.resident_id !== exceptResidentId && nameSkeleton(String(row.name)) === key);
+}
+
 function pickList(raw: unknown, known: Set<string>, max: number, what: string): string[] {
   if (raw === undefined || raw === null) return [];
   if (!Array.isArray(raw)) throw badRequest(`${what}应该是一个列表。`);
@@ -156,9 +172,9 @@ export function revokeSession(w: WorldService, token: string): void {
 // ───────────────────────── 注册 ─────────────────────────
 
 function register(w: WorldService, principal: Principal, profile: ProfileInput, now: number): ResidentRow {
-  const name = sanitizeName(String(profile.name ?? principal.display_name ?? ''), 16);
+  const name = cleanName(profile.name ?? principal.display_name ?? '', 16);
   if (!name) throw precondition('第一次进入需要给居民起个名字。', 'profile_required');
-  if (w.db.get('SELECT 1 AS x FROM residents WHERE world_id = ? AND lower(name) = lower(?)', w.worldId, name)) {
+  if (nameTaken(w, name)) {
     throw precondition(`已经有一位居民叫「${name}」了，换个名字吧。`, 'name_taken');
   }
   const state: ResidentState = {
@@ -379,7 +395,8 @@ export function claimControl(w: WorldService, auth: Auth): { control: { epoch: n
       r.control_epoch += 1;
       r.controller_client = auth.clientId;
     }
-    r.controller_until = now + w.params.presenceGraceMs;
+    // 控制权不比握着它的这条租约活得更久：这个客户端掉线，控制权就跟着过期
+    r.controller_until = Number(lease.expires_at);
     w.saveResident(r);
     w.emitTo([r.resident_id], 'control', { epoch: r.control_epoch }, now);
     return { control: { epoch: r.control_epoch, mine: true as const } };
@@ -402,7 +419,8 @@ export function installIdentity(w: WorldService): void {
       announceAway(w, r, at);
       w.goOffline(r, at, 'lease_expired');
     }
-    if (r.controller_client && r.controller_until <= now) {
+    // 所有租约都过期了：没有任何客户端还能握着控制权
+    if (r.controller_client) {
       const fresh = w.mustResident(r.resident_id);
       fresh.controller_client = null;
       fresh.control_epoch += 1;
@@ -413,9 +431,9 @@ export function installIdentity(w: WorldService): void {
   // 修改资料：公开资料（名字、简介、个性）、可询问的兴趣、展示设置
   w.handlers.set('update_profile', ({ r, action }) => {
     if (action.name !== undefined) {
-      const name = sanitizeName(String(action.name), 16);
+      const name = cleanName(action.name, 16);
       if (!name) throw badRequest('名字不能为空。');
-      if (name.toLowerCase() !== r.name.toLowerCase() && w.db.get('SELECT 1 AS x FROM residents WHERE world_id = ? AND lower(name) = lower(?)', w.worldId, name)) {
+      if (nameTaken(w, name, r.resident_id)) {
         throw precondition(`已经有一位居民叫「${name}」了。`, 'name_taken');
       }
       r.name = name;

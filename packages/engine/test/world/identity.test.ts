@@ -156,6 +156,24 @@ describe('栖灯镇身份：名字与资料', () => {
     expect(err.reason).toBe('name_taken');
   });
 
+  it('用看不见的字符、全角字母、大小写写法伪装成别人的名字，一律算重复', () => {
+    const t = makeTown();
+    t.join('阿灯');
+    t.join('Ada');
+    const p = humanPrincipal(t, '9106');
+    const disguises = ['阿灯\u200b', '阿\u200d灯', '\u202e阿灯', '阿灯\ufeff', 'Ａｄａ', 'a\u200bDa'];
+    for (const name of disguises) {
+      const err = catchErr(() => enterWorld(t.w, { principalId: p.principalId, clientId: 'web:spoof' }, { profile: { name } }));
+      expect(err.reason, JSON.stringify(name)).toBe('name_taken');
+    }
+    // 改名同样挡住
+    const c = t.join('小满');
+    expect(c.fail('update_profile', { name: '阿灯\u200b' }).reason).toBe('name_taken');
+    // 名字里的看不见的字符被去掉，不留在数据库里
+    c.act('update_profile', { name: '小\u200b满\u202e二' });
+    expect(c.row().name).toBe('小满二');
+  });
+
   it('改名撞了别人的名字 name_taken；改成自己名字的大小写变化可以', () => {
     const t = makeTown();
     const a = t.join('Ada');

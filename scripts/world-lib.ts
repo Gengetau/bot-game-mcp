@@ -253,13 +253,16 @@ export function openWorld(o: OpenOpts): WorldService {
   return w;
 }
 
+/** 请求号序号按主体全局递增（换页面 / 重新登录后不会撞上旧回执） */
+const REQ_SEQ = new Map<string, number>();
+
 /** 一个居民的一个客户端（标签页 / 运行器）。所有动作都从 command() 进。 */
 export class Conn {
   seq = 0;
   /** 最近一次读视图拿到的动作窗口（真实客户端会缓存它；过期前一直有效） */
   window = '';
   constructor(
-    readonly w: WorldService,
+    public w: WorldService,
     readonly person: Person,
     public clientId: string,
     readonly kindOfClient: 'web' | 'mcp',
@@ -270,7 +273,10 @@ export class Conn {
   }
 
   nextRequestId(): string {
-    return `rq.${String(this.person.idx).padStart(3, '0')}.${(++this.seq).toString(36)}`;
+    const n = (REQ_SEQ.get(this.person.principalId) ?? 0) + 1;
+    REQ_SEQ.set(this.person.principalId, n);
+    this.seq = n;
+    return `rq.${String(this.person.idx).padStart(3, '0')}.${n.toString(36)}`;
   }
 
   /** 进入（注册或恢复）。agent 走 enterWorldAgent（MCP 路径，返回紧凑视图），真人走 enterWorld。 */
@@ -690,7 +696,9 @@ export class Invariants {
       this.meViewBytes.push(utf8Bytes(meJson));
       this.agentViewBytes.push(utf8Bytes(agentJson));
       if (me.game) this.gameViewBytes.push(utf8Bytes(me.game));
-      const ownEvents = db.all('SELECT projection FROM recipient_events WHERE resident_id = ? ORDER BY cursor DESC LIMIT 400', aId).map((e) => e.projection as string).join('\n');
+      const ownRows = db.all('SELECT projection FROM recipient_events WHERE resident_id = ? ORDER BY cursor DESC LIMIT 400', aId).map((e) => e.projection as string);
+      // 报价事件只发给当事人，其中的物品编号是正当知情的
+      const ownEvents = ownRows.filter((p) => !p.startsWith('{"offer":')).join('\n');
       const surfaces: [string, string][] = [['我的视图', meJson], ['AI 紧凑视图', agentJson], ['公开地图', pubView], ['公开事件流', pubEvents], ['我的私有事件流', ownEvents]];
 
       // 1) 别人没读过的信：正文暗号不能出现（寄信人自己知道，除外）
@@ -707,13 +715,15 @@ export class Invariants {
       for (const it of db.all("SELECT item_id FROM items WHERE holder_id = ? AND owner_id = ? AND reserved = 0 LIMIT 40", oId, oId)) {
         if (mine.has(it.item_id)) continue;
         this.pass('privacy_inventory');
-        for (const [label, text] of surfaces) if (text.includes(it.item_id as string)) this.fail('privacy_inventory', `${oId} 的物品编号 ${it.item_id} 出现在 ${aId} 的 ${label} 里`, null, now);
+        for (const [label, text] of surfaces) if (text.includes(it.item_id as string)) this.fail('privacy_inventory', `${oId} 的物品编号 ${it.item_id} 出现在 ${aId} 的 ${label} 里`, label === '我的私有事件流' ? db.all('SELECT cursor, projection FROM recipient_events WHERE resident_id = ? AND projection LIKE ? LIMIT 2', aId, `%${it.item_id}%`) : null, now);
       }
+      // 曾经被邀请进过那间屋子的人，事件流里留有当时的物件编号（正当）
+      const visited = db.scalar('SELECT COUNT(*) FROM home_access_grants WHERE home_id = ? AND guest_id = ? AND entered_at IS NOT NULL', `home:${oId}`, aId) > 0;
       const inHome = ar.location_id === `home:${oId}` && !ar.move;
       if (!inHome) {
         for (const o of db.all('SELECT object_id FROM placed_objects WHERE space_id = ?', `home:${oId}`)) {
           this.pass('privacy_home');
-          for (const [label, text] of surfaces) if (text.includes(o.object_id as string)) this.fail('privacy_home', `${oId} 家里的物件编号 ${o.object_id} 出现在 ${aId} 的 ${label} 里（A 不在那间屋里）`, null, now);
+          for (const [label, text] of surfaces) if (!(visited && label === '我的私有事件流') && text.includes(o.object_id as string)) this.fail('privacy_home', `${oId} 家里的物件编号 ${o.object_id} 出现在 ${aId} 的 ${label} 里（A 不在那间屋里）`, null, now);
         }
         // 3) 屋内发言：不在受众里的人看不到
       }

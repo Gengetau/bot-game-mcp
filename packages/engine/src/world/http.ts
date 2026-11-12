@@ -88,6 +88,8 @@ export function mountTown(app: Express, w: WorldService, log: (msg: string) => v
   const allowAuth = rateLimiter(20);
   const pingMs = opts.heartbeatMs ?? 20_000;
   const closers = new Set<() => void>();
+  /** 每个登录会话打开的居民流：会话撤销（登出）或过期时一起关掉，不能让已失效的会话继续收私有事件 */
+  const streamsOfToken = new Map<string, Set<() => void>>();
   let residentStreams = 0;
   let publicStreams = 0;
   const perResident = new Map<string, number>();
@@ -106,7 +108,13 @@ export function mountTown(app: Express, w: WorldService, log: (msg: string) => v
     if (!raw) return null;
     for (const part of raw.split(';')) {
       const i = part.indexOf('=');
-      if (i > 0 && part.slice(0, i).trim() === COOKIE) return decodeURIComponent(part.slice(i + 1).trim());
+      if (i > 0 && part.slice(0, i).trim() === COOKIE) {
+        try {
+          return decodeURIComponent(part.slice(i + 1).trim());
+        } catch {
+          return null; // 坏掉的 Cookie 等于没登录，不是服务器错误
+        }
+      }
     }
     return null;
   };
@@ -218,7 +226,13 @@ export function mountTown(app: Express, w: WorldService, log: (msg: string) => v
   app.use((req, res, next) => {
     const m = /^\/town\/api\/worlds\/([^/?]+)(\/[^?]*)?(\?.*)?$/.exec(req.url);
     if (!m) return next();
-    if (decodeURIComponent(m[1]!) !== w.worldId) {
+    let wanted = '';
+    try {
+      wanted = decodeURIComponent(m[1]!);
+    } catch {
+      /* 无法解码的世界编号当作不存在 */
+    }
+    if (wanted !== w.worldId) {
       secure(res);
       res.status(404).json({ ok: false, error: 'not_available', message: '没有这个世界。' });
       return;
@@ -227,7 +241,17 @@ export function mountTown(app: Express, w: WorldService, log: (msg: string) => v
     next();
   });
 
-  const json = express.json({ limit: '16kb' });
+  const parseJson = express.json({ limit: '16kb' });
+  /** 请求体过大或不是合法 JSON 时也按统一的错误格式回复（不让 Express 的默认错误页带着堆栈出去）。 */
+  const json: express.RequestHandler = (req, res, next) => {
+    parseJson(req, res, (err?: unknown) => {
+      if (!err) return next();
+      const status = Number((err as { status?: unknown }).status);
+      secure(res);
+      res.setHeader('Cache-Control', 'no-store');
+      res.status(status >= 400 && status < 500 ? status : 400).json({ ok: false, error: 'bad_request', message: status === 413 ? '请求体太大了。' : '请求格式不对（需要有效的 JSON）。' });
+    });
+  };
 
   // ── 公开 ──
   app.get(
@@ -285,7 +309,10 @@ export function mountTown(app: Express, w: WorldService, log: (msg: string) => v
     json,
     post((req, res) => {
       const token = tokenOf(req);
-      if (token) revokeSession(w, token);
+      if (token) {
+        revokeSession(w, token);
+        for (const close of [...(streamsOfToken.get(token) ?? [])]) close();
+      }
       setCookie(req, res, '', 0);
       return { ok: true };
     }),
@@ -400,7 +427,7 @@ export function mountTown(app: Express, w: WorldService, log: (msg: string) => v
   );
 
   // ── SSE ──
-  const openStream = (req: Request, res: Response, residentId: string | null) => {
+  const openStream = (req: Request, res: Response, residentId: string | null, token: string | null = null) => {
     res.writeHead(200, {
       'Content-Type': 'text/event-stream; charset=utf-8',
       'Cache-Control': 'no-store, no-transform',
@@ -467,7 +494,13 @@ export function mountTown(app: Express, w: WorldService, log: (msg: string) => v
       );
     }
     const timer = setInterval(() => {
-      if (!closed) res.write(': ping\n\n');
+      if (closed) return;
+      // 会话过期或被撤销：连接不再有效
+      if (token && !sessionPrincipal(w, token)) {
+        close();
+        return;
+      }
+      res.write(': ping\n\n');
     }, pingMs);
     timer.unref();
     function close() {
@@ -476,6 +509,11 @@ export function mountTown(app: Express, w: WorldService, log: (msg: string) => v
       clearInterval(timer);
       for (const off of offs) off();
       closers.delete(close);
+      if (token) {
+        const set = streamsOfToken.get(token);
+        set?.delete(close);
+        if (set && set.size === 0) streamsOfToken.delete(token);
+      }
       if (residentId) {
         residentStreams--;
         perResident.set(residentId, Math.max(0, (perResident.get(residentId) ?? 1) - 1));
@@ -483,8 +521,23 @@ export function mountTown(app: Express, w: WorldService, log: (msg: string) => v
       res.end();
     }
     closers.add(close);
+    if (token) {
+      const set = streamsOfToken.get(token) ?? new Set<() => void>();
+      set.add(close);
+      streamsOfToken.set(token, set);
+    }
     req.on('close', close);
-    send('hello', { cursor: cursor ?? (residentId ? w.cursorOf(residentId) : undefined), pcursor: pcursor ?? w.publicCursor(), time: w.now() });
+    // hello 里只回显验证过的游标；客户端带来的坏游标由随后的 resync 事件处理，不原样回显
+    const usable = (kind: 'r' | 'p', scope: string, key: string, c: string | undefined) => {
+      if (!c) return false;
+      const n = w.decodeCursor(kind, scope, c);
+      if (n === null) return false;
+      const head = w.streamHead(key);
+      return n <= head.highWater && n >= head.retainedFrom - 1;
+    };
+    const goodCursor = residentId && usable('r', residentId, `r:${residentId}`, cursor) ? cursor : residentId ? w.cursorOf(residentId) : undefined;
+    const goodPcursor = usable('p', 'public', `pub:${w.worldId}`, pcursor) ? pcursor : w.publicCursor();
+    send('hello', { cursor: goodCursor, pcursor: goodPcursor, time: w.now() });
     pump();
   };
 
@@ -508,10 +561,17 @@ export function mountTown(app: Express, w: WorldService, log: (msg: string) => v
       }
       residentStreams++;
       perResident.set(r.resident_id, (perResident.get(r.resident_id) ?? 0) + 1);
-      openStream(req, res, r.resident_id);
+      openStream(req, res, r.resident_id, tokenOf(req));
     } catch (e) {
       fail(res, e);
     }
+  });
+
+  // 没有这个接口：统一的 JSON 404（放在所有 /town/api 路由之后）
+  app.use('/town/api', (_req, res) => {
+    secure(res);
+    res.setHeader('Cache-Control', 'no-store');
+    res.status(404).json({ ok: false, error: 'not_available', message: '没有这个接口。' });
   });
 
   return () => {

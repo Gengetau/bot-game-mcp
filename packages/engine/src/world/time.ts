@@ -70,6 +70,16 @@ export function localToUtc(tz: string, date: string, hour = 0, minute = 0): numb
     if (diff === 0) break;
     guess += diff;
   }
+  // 这个钟点不存在（被夏令时跳过）：迭代不会收敛。按跳变之前的偏移换算，结果落在跳过之后（如 02:30 → 03:30）
+  const gp = localParts(tz, guess);
+  const [gy, gm, gd] = gp.date.split('-').map(Number) as [number, number, number];
+  if (Date.UTC(gy, gm - 1, gd, gp.hour, gp.minute, gp.second) !== target) {
+    const before = target - 36 * 3600_000;
+    const bp = localParts(tz, before);
+    const [by, bm, bd] = bp.date.split('-').map(Number) as [number, number, number];
+    const offsetBefore = Date.UTC(by, bm - 1, bd, bp.hour, bp.minute, bp.second) - before;
+    return target - offsetBefore;
+  }
   // 重复的小时：看看一小时前是不是同一个本地时刻
   const earlier = guess - 3600_000;
   const pe = localParts(tz, earlier);

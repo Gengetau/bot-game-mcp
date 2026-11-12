@@ -5,63 +5,11 @@
 import { describe, expect, it } from 'vitest';
 import { WorldError } from '../../src/world/errors.js';
 import { BOOKS } from '../../src/world/content.js';
-import { MINT, SINK, accountOf, availableQty, ledger, mint, shopsAt, wallet } from '../../src/world/property.js';
+import { SINK, accountOf, availableQty, ledger, mint, shopsAt, wallet } from '../../src/world/property.js';
 import { Actor, makeTown, tempDb, type Town } from './helpers.js';
+import { checkInvariants } from './invariants.js';
 
 const HOUR = 3600_000;
-
-// ───────────────────────── 不变量检查（可复用） ─────────────────────────
-
-/**
- * 全镇硬币与物品的结构性不变量：
- * - 复式：每笔交易分录合计为零；每个账户余额 = 分录合计；所有账户余额之和为零（mint 为负、sink 为正，居民为正）。
- * - 居民账户不为负，预留 ≤ 余额，且预留总额 = 预留表里的硬币合计。
- * - 居民持有的硬币总量 = 发行总量 − 回收总量（只有 mint/sink 能让居民总量变化）。
- * - 物品：预留数 = 预留表数量；预留的东西必有一份开着的报价或共同活动；借出的物品所有者 ≠ 持有者当且仅当有一条进行中的借条。
- */
-export function checkInvariants(t: Town): void {
-  const db = t.w.db;
-  // 每笔交易平衡
-  const unbalanced = db.all('SELECT transaction_id, SUM(delta) AS s FROM ledger_entries GROUP BY transaction_id HAVING s <> 0');
-  expect(unbalanced, '存在不平的交易').toEqual([]);
-  // 余额 = 分录合计
-  for (const a of db.all('SELECT account_id, balance, reserved, kind FROM accounts')) {
-    const sum = db.scalar('SELECT COALESCE(SUM(delta),0) FROM ledger_entries WHERE account_id = ?', a.account_id);
-    expect(a.balance, `账户 ${a.account_id} 余额与分录不符`).toBe(sum);
-    if (a.kind === 'resident') {
-      expect(a.balance).toBeGreaterThanOrEqual(0);
-      expect(a.reserved).toBeLessThanOrEqual(a.balance);
-      const reservedRows = db.scalar('SELECT COALESCE(SUM(coins),0) FROM resource_reservations WHERE resident_id = ?', a.account_id.replace('acct:', ''));
-      expect(a.reserved, `账户 ${a.account_id} 的预留与预留表不符`).toBe(reservedRows);
-    }
-  }
-  expect(db.scalar('SELECT COALESCE(SUM(balance),0) FROM accounts')).toBe(0);
-  const residents = db.scalar("SELECT COALESCE(SUM(balance),0) FROM accounts WHERE kind = 'resident'");
-  const minted = -db.scalar('SELECT balance FROM accounts WHERE account_id = ?', MINT);
-  const sunk = db.scalar('SELECT balance FROM accounts WHERE account_id = ?', SINK);
-  expect(residents).toBe(minted - sunk);
-  // 物品预留
-  for (const it of db.all('SELECT item_id, reserved, quantity, shelved FROM items')) {
-    const rs = db.scalar('SELECT COALESCE(SUM(quantity),0) FROM resource_reservations WHERE item_id = ?', it.item_id);
-    expect(it.reserved, `物品 ${it.item_id} 预留数与预留表不符`).toBe(rs);
-    expect(it.reserved + it.shelved).toBeLessThanOrEqual(it.quantity);
-  }
-  // 预留必须挂在还开着的事项上
-  for (const r of db.all('SELECT DISTINCT holder_kind, holder_ref FROM resource_reservations')) {
-    if (r.holder_kind === 'offer') expect(db.scalar("SELECT COUNT(*) FROM offers WHERE offer_id = ? AND status = 'open'", r.holder_ref), `孤儿预留 offer:${r.holder_ref}`).toBe(1);
-    if (r.holder_kind === 'interaction') expect(db.scalar("SELECT COUNT(*) FROM interactions WHERE interaction_id = ? AND status = 'open'", r.holder_ref), `孤儿预留 interaction:${r.holder_ref}`).toBe(1);
-  }
-  // 借出：所有者与持有者不同，当且仅当有进行中的借条
-  for (const it of db.all('SELECT item_id, owner_id, holder_id FROM items WHERE owner_id <> holder_id')) {
-    const loan = db.get("SELECT borrower_id FROM loans WHERE item_id = ? AND status = 'active'", it.item_id);
-    expect(loan?.borrower_id, `物品 ${it.item_id} 持有者与所有者不同却没有借条`).toBe(it.holder_id);
-  }
-  for (const l of db.all("SELECT item_id, owner_id, borrower_id FROM loans WHERE status = 'active'")) {
-    const it = db.get('SELECT owner_id, holder_id FROM items WHERE item_id = ?', l.item_id)!;
-    expect(it.owner_id).toBe(l.owner_id);
-    expect(it.holder_id).toBe(l.borrower_id);
-  }
-}
 
 /** 全镇各种物品的总数量（含书屋藏书）。 */
 function itemTotals(t: Town): Record<string, number> {

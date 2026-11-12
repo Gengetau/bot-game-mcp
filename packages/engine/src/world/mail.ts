@@ -153,21 +153,26 @@ export function mailboxSummary(w: WorldService, residentId: string): { unread: n
   };
 }
 
-/** 分页列出信件。inbox 只含已经投递到的；没读过的不带正文。 */
+/**
+ * 分页列出信件，从新到旧。inbox 只含已经投递到的；没读过的不带正文。
+ * 翻页游标 next 是信件的插入序号（rowid）：时间戳可能相同（同一毫秒寄出的几封信），用它翻页会漏信。
+ * 信件的投递延迟是统一的，插入顺序和投递顺序一致。
+ */
 export function listLetters(w: WorldService, residentId: string, box: 'inbox' | 'sent', before: number | null, limit: number, now: number): { letters: LetterView[]; next: number | null } {
-  const lim = Math.max(1, Math.min(50, limit));
+  const lim = Math.max(1, Math.min(50, Math.floor(Number.isFinite(limit) ? limit : 20)));
+  const cursor = before ?? Number.MAX_SAFE_INTEGER;
   const rows =
     box === 'inbox'
       ? w.db.all(
-          'SELECT * FROM letters WHERE recipient_id = ? AND delivered_at IS NOT NULL AND recipient_deleted_at IS NULL AND deliver_at < ? ORDER BY deliver_at DESC, letter_id LIMIT ?',
+          'SELECT rowid AS seq, * FROM letters WHERE recipient_id = ? AND delivered_at IS NOT NULL AND recipient_deleted_at IS NULL AND rowid < ? ORDER BY rowid DESC LIMIT ?',
           residentId,
-          before ?? Number.MAX_SAFE_INTEGER,
+          cursor,
           lim + 1,
         )
-      : w.db.all('SELECT * FROM letters WHERE sender_id = ? AND sender_deleted_at IS NULL AND sent_at < ? ORDER BY sent_at DESC, letter_id LIMIT ?', residentId, before ?? Number.MAX_SAFE_INTEGER, lim + 1);
+      : w.db.all('SELECT rowid AS seq, * FROM letters WHERE sender_id = ? AND sender_deleted_at IS NULL AND rowid < ? ORDER BY rowid DESC LIMIT ?', residentId, cursor, lim + 1);
   const page = rows.slice(0, lim);
   const last = page[page.length - 1];
-  return { letters: page.map((row) => letterView(w, row, residentId, now)), next: rows.length > lim && last ? Number(box === 'inbox' ? last.deliver_at : last.sent_at) : null };
+  return { letters: page.map((row) => letterView(w, row, residentId, now)), next: rows.length > lim && last ? Number(last.seq) : null };
 }
 
 // ───────────────────────── 安装 ─────────────────────────

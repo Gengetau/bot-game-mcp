@@ -168,6 +168,7 @@ export function createMap(opts) {
     roads.replaceChildren();
     roadPaths.clear();
     const under = s('g', { class: 'road-under' });
+    const inner = s('g', { class: 'road-inner' });
     const over = s('g', { class: 'road-over' });
     for (const [a, b] of pub.edges) {
       const A = NODES[/** @type {keyof typeof NODES} */ (a)];
@@ -176,13 +177,15 @@ export function createMap(opts) {
       const sorted = [a, b].sort().join('|');
       const ctl = BENDS[/** @type {keyof typeof BENDS} */ (sorted)];
       const d = ctl ? `M${A.x} ${A.y} Q${ctl[0]} ${ctl[1]} ${B.x} ${B.y}` : `M${A.x} ${A.y} L${B.x} ${B.y}`;
-      under.appendChild(s('path', { d, class: 'road' }));
+      under.appendChild(s('path', { d, class: 'road-edge' }));
+      inner.appendChild(s('path', { d, class: 'road' }));
       over.appendChild(s('path', { d, class: 'road-line' }));
       const p = /** @type {SVGPathElement} */ (s('path', { d, fill: 'none', stroke: 'none' }));
-      under.appendChild(p);
+      over.appendChild(p);
       roadPaths.set(`${a}>${b}`, p);
     }
     roads.appendChild(under);
+    roads.appendChild(inner);
     roads.appendChild(over);
   }
 
@@ -248,8 +251,9 @@ export function createMap(opts) {
    */
   function place(g, x, y, instant) {
     if (instant) g.classList.add('no-ease');
-    g.setAttribute('transform', `translate(${x.toFixed(1)} ${y.toFixed(1)})`);
-    if (instant) requestAnimationFrame(() => g.classList.remove('no-ease'));
+    g.style.transform = `translate(${x.toFixed(1)}px, ${y.toFixed(1)}px)`;
+    g.dataset.placed = '1';
+    if (instant) requestAnimationFrame(() => requestAnimationFrame(() => g.classList.remove('no-ease')));
   }
 
   /** @type {{ mv: { path: string[], startedAt: number, arriveAt: number }, g: SVGGElement }[]} */
@@ -294,7 +298,7 @@ export function createMap(opts) {
         const y = n.y + n.dot - row * 27;
         const g = ensureDot(r.id, r.name, r.kind, r.id === myId);
         g.removeAttribute('display');
-        const first = !g.hasAttribute('transform');
+        const first = !g.dataset.placed;
         place(g, x, y, first);
         seen.add(r.id);
       });
@@ -321,7 +325,7 @@ export function createMap(opts) {
         if (n) {
           const g = ensureDot(me.me.id, me.me.name, me.me.kind, true);
           g.removeAttribute('display');
-          place(g, n.x, n.y + n.dot, !g.hasAttribute('transform'));
+          place(g, n.x, n.y + n.dot, !g.dataset.placed);
           seen.add(me.me.id);
         }
       }
@@ -331,7 +335,7 @@ export function createMap(opts) {
       g.removeAttribute('display');
       g.classList.add('walking');
       const pt = positionOnPath(m.mv, input.now);
-      place(g, pt.x, pt.y, !g.hasAttribute('transform'));
+      place(g, pt.x, pt.y, !g.dataset.placed);
       movers.push({ mv: m.mv, g });
       seen.add(m.id);
     }

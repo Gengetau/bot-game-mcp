@@ -386,7 +386,8 @@ export function installInteract(w: WorldService): void {
         interest: Math.round((interestBase + (rainy && interestBase > 0 ? (def.rainBonus?.interest ?? 0) : 0)) * factor),
       };
       applyNeeds(w, p, delta, at);
-      const got: string[] = [];
+      // 同一种东西合并成一句（发起人的"每人一碗"和"多一碗"是同一种汤，只写一次）
+      const gotQty = new Map<string, number>();
       const outputs: { type: string; qty: number; dailyCap?: number }[] = [...def.outputsEach, ...(p.resident_id === row.initiator_id ? def.outputsInitiator : [])];
       for (const o of outputs) {
         let qty = o.qty;
@@ -398,9 +399,10 @@ export function installInteract(w: WorldService): void {
         }
         if (qty > 0) {
           addStack(w, p.resident_id, o.type, qty);
-          got.push(`${qty} 份${itemDef(o.type)?.name ?? o.type}`);
+          gotQty.set(o.type, (gotQty.get(o.type) ?? 0) + qty);
         }
       }
+      const got = [...gotQty].map(([type, n]) => `${n} 份${itemDef(type)?.name ?? type}`);
       const bits = [
         delta.social > 0 ? `社交 +${delta.social}` : '',
         delta.interest > 0 ? `兴趣 +${delta.interest}` : '',

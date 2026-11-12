@@ -117,6 +117,25 @@ describe('启动恢复：停机期间到期的事务各结算一次，保留应�
     expect(w.status).toBe('running');
   });
 
+  it('登门邀请在停机期间过期：屋里的客人被送到门口，只收到一条固定模板通知', () => {
+    const { t } = fileTown();
+    const a = t.join('阿灯');
+    const b = t.join('小岚', 'agent');
+    const inv = a.act('invite', { to: b.residentId });
+    const expires = inv.invite.expiresAt;
+    b.go(`home:${a.residentId}`);
+    expect(b.row().location_id).toBe(`home:${a.residentId}`);
+    reopen(t, { down: 30 * HOUR });
+    const row = t.w.mustResident(b.residentId);
+    expect(row.location_id).toBe(a.row().street_id);
+    expect(t.w.db.get('SELECT status FROM scheduled_jobs WHERE dedupe_key = ?', `grant:${inv.invite.grantId}`)!.status).toBe('done');
+    const notices = t.w.db.all("SELECT projection, occurred_at FROM recipient_events WHERE resident_id = ? AND type = 'notice'", b.residentId);
+    expect(notices.length).toBe(1);
+    expect(notices[0]!.occurred_at).toBe(expires);
+    expect(JSON.parse(notices[0]!.projection).text).toContain('做客的时间到了');
+    expect(t.w.pendingJobs()).toBe(0);
+  });
+
   it('报价：重启前开着的报价按停机时刻撤销，预留退回，双方各一条通知', () => {
     const { t } = fileTown();
     const a = t.join('阿灯');

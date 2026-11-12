@@ -135,6 +135,20 @@ describe('栖灯镇在场：租约到期才离线', () => {
     expect(isPresent(a)).toBe(true);
   });
 
+  it('只读视图、公开地图、公开事件流都不续租：只有心跳（或 enter）才维持在场', () => {
+    const t = makeTown();
+    const a = t.join('阿灯');
+    for (let i = 0; i < 4; i++) {
+      t.clock.advance(19_000);
+      a.view();
+      publicView(t.w);
+      t.w.readPublicEvents(t.w.publicCursor());
+      a.events();
+    }
+    t.w.tick();
+    expect(isPresent(a)).toBe(false);
+  });
+
   it('心跳必须带对应的 presenceEpoch；没有居民 / 没有租约的心跳被拒绝', () => {
     const t = makeTown();
     const a = t.join('阿灯');
@@ -331,6 +345,25 @@ describe('栖灯镇控制权：同一时刻只有一个写入客户端', () => {
     expect(tab2.fail('speak', { text: 'y' }).code).toBe('control_lost'); // tab2 也没拿到，需要 claim
     tab2.claim();
     expect(() => tab2.act('speak', { text: 'z' })).not.toThrow();
+  });
+
+  it('接管控制权的客户端自己掉线后，控制权跟着它的租约一起过期；居民回来时第一个进入的客户端拿到控制权', () => {
+    const t = makeTown();
+    const a = t.join('阿灯');
+    const tab2 = otherClient(t, a, 'web:tab-two');
+    tab2.enter();
+    t.advance(40_000);
+    tab2.heartbeat(); // tab2 的租约到 t0+100s
+    t.advance(15_000);
+    tab2.claim(); // t0+55s 接管；之后 tab2 掉线
+    expect(tab2.view().control.mine).toBe(true);
+    t.advance(46_000); // t0+101s：两个租约都过期了，居民离线
+    expect(isPresent(a)).toBe(false);
+    // 控制权不应该比握着它的租约活得更久
+    expect(a.row().controller_client).toBeNull();
+    a.enter();
+    expect(a.view().control.mine).toBe(true);
+    expect(() => a.act('speak', { text: '回来了' })).not.toThrow();
   });
 
   it('多开页面不会获得额外的发言额度（限流按居民算）', () => {
