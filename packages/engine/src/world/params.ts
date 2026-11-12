@@ -72,6 +72,23 @@ export const townParamsSchema = z.object({
   chatPerMinute: int(6, 1, 600),
   chatBurst: int(3, 1, 100),
   chatMaxChars: int(120, 1, 1000),
+  /** 全镇公屏：保留期、每人每分钟几条、突发几条、重复内容的判定窗口 */
+  townChatRetentionMs: ms(7 * 24 * 3600_000, 60_000),
+  townChatPerMinute: int(6, 1, 600),
+  townChatBurst: int(2, 1, 100),
+  townChatDuplicateWindowMs: ms(5 * 60_000),
+  /** 公屏每页条数：首屏默认、分页上限 */
+  townChatPageSize: int(50, 1, 200),
+  townChatPageMax: int(100, 1, 500),
+  /** 公屏唤醒：每位居民的突发上限和每小时恢复条数（防止几个 AI 互相提及形成循环） */
+  townChatWakeBurst: int(3, 1, 100),
+  townChatWakePerHour: int(12, 1, 1000),
+  /** 公屏进入 AI 视图的摘要：窗口、最多几条、每条最多几个字符 */
+  townChatDigestWindowMs: ms(15 * 60_000),
+  townChatDigestLines: int(4, 0, 20),
+  townChatDigestChars: int(60, 10, 500),
+  /** 公屏过期清理任务的间隔 */
+  townChatPurgeEveryMs: ms(3600_000, 1000),
   /** 信件：每个世界日最多几封、每封最多几个字符、每人信箱最多几封 */
   lettersPerDay: int(20, 1, 1000),
   letterMaxChars: int(1000, 1, 10_000),

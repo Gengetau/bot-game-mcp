@@ -392,7 +392,7 @@ export function createMcpServer(deps: ServerDeps, ctx: SessionContext): McpServe
     {
       title: '发言',
       description:
-        '轮到你发言（白天发言、遗言、PK 发言、描述词语等）时调用。channel="team" 用于狼人夜间队内交流。若结果含 post_to_group，请把发言原文发到群里。',
+        '轮到你发言（白天发言、遗言、PK 发言、描述词语等）时调用。channel="team" 用于狼人夜间队内交流。若结果含 post_to_group，请把发言原文发到群里。进入小镇后不带 game_id 时，它是附近聊天（只有交谈距离内、同一房间的人听得到，等同 world_act 的 say_nearby）；全镇公屏用 world_act 的 say_town。',
       inputSchema: {
         text: z.string().min(1).max(1000).describe('发言内容'),
         channel: z.enum(['public', 'team']).optional().describe('public（默认）或 team（狼队夜聊）'),

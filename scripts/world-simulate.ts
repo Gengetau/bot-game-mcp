@@ -56,7 +56,8 @@ import {
   type WorldService,
 } from './world-lib.js';
 import { PUBLIC_OBJECTS } from '../packages/engine/src/world/content.js';
-import { actorOf } from '../packages/engine/src/world/space.js';
+import { actorOf, posOf } from '../packages/engine/src/world/space.js';
+import { canHear } from '../packages/engine/src/world/hearing.js';
 import { exchangeTicket, issueTicket, sessionPrincipal } from '../packages/engine/src/index.js';
 
 type MeView = ReturnType<typeof townMeView>;
@@ -139,6 +140,7 @@ interface Ag {
   /** 这一趟导航里还会续几次租约（stingy 用完就不再续），null = 一直续 */
   renewsLeft: number | null;
   /** 这一趟走到一半要做的事 */
+  lastTown: number;
   walkPlan: { kind: 'reroute' | 'halt' | 'ghost' | 'chat'; at: number } | null;
   /** 走到物件旁边之后要去用的物件 */
   useObject: string | null;
@@ -165,6 +167,8 @@ class Sim {
   readonly endT = TOWN_START + Math.round(DAYS * DAY);
   nextCheck = TOWN_START + CHECK_EVERY;
   chatSeq = 0;
+  townSeq = 0;
+  townMarks: string[] = [];
   letterSeq = 0;
   bootNo = 0;
   restarts: { at: number; downtime: number; clean: boolean; runningGames: number; abortedAfter: number; outageSeen: number; idempotent: boolean }[] = [];
@@ -226,6 +230,7 @@ class Sim {
         reclaimAt: 0,
         ring: [],
         lastSpeak: -1e15,
+        lastTown: -1e15,
         firstSeen: true,
         // 固定分配几种“不守规矩”的走路方式，保证小规模模拟里每种路径都会走到
         walk: (['steady', 'steady', 'stingy', 'fickle', 'halter', 'ghost', 'steady'] as const)[i % 7]!,
@@ -678,6 +683,7 @@ class Sim {
     this.w.tick();
     const t0 = performance.now();
     this.inv.check(this.w, { now: this.clock.t, expectedResidents: this.ags.filter((a) => a.registered).length, purchases: this.purchases, rnd: this.rnd.fork(`priv${this.inv.checkRounds}`), privacySamples: PRIV });
+    this.townInvariants();
     this.bump('check_ms', performance.now() - t0);
     void final;
   }
@@ -863,6 +869,78 @@ class Sim {
 
   private localMs(): number {
     return (this.clock.t - TOWN_START) % DAY;
+  }
+
+  /** 附近聊天：发完之后按权威位置独立核对受众（不多不少），并检查事件里没有坐标。 */
+  private speakAudited(ag: Ag, conn: Conn): void {
+    const o = this.exec(ag, conn, 'speak', { text: this.chatText(ag) });
+    if (!o.ok || o.out.replayed) return;
+    this.bump('nearby_sent');
+    const now = this.clock.t;
+    const m = this.w.db.get('SELECT message_id FROM chat_messages WHERE sender_id = ? ORDER BY message_id DESC LIMIT 1', ag.p.residentId);
+    if (!m) return this.inv.fail('chat_nearby', '附近聊天发送成功却没有留下消息', { who: ag.p.name }, now);
+    const heard = new Set(this.w.db.all('SELECT resident_id FROM chat_audience WHERE message_id = ?', m.message_id).map((r) => String(r.resident_id)));
+    const speaker = actorOf(this.w, ag.p.residentId);
+    if (!speaker) return;
+    const sp = posOf(speaker, now);
+    const expected = new Set<string>();
+    for (const r of this.w.db.all('SELECT resident_id FROM residents WHERE present_since IS NOT NULL AND activity_id IS NULL')) {
+      const id = String(r.resident_id);
+      const a = actorOf(this.w, id);
+      if (id === ag.p.residentId || (a && canHear(this.w, sp, posOf(a, now)))) expected.add(id);
+    }
+    const missing = [...expected].filter((x) => !heard.has(x));
+    const extra = [...heard].filter((x) => !expected.has(x));
+    if (!heard.has(ag.p.residentId)) extra.push('(说话人不在受众里)');
+    if (missing.length || extra.length) this.inv.fail('chat_audience', `附近聊天受众与权威位置不符：缺 ${missing.length} 多 ${extra.length}`, { who: ag.p.name, missing, extra }, now);
+    else this.bump('nearby_audience_ok');
+    this.bump('nearby_heard_by_others', heard.size - 1);
+    const ev = this.w.db.all("SELECT projection AS payload FROM recipient_events WHERE type = 'chat' ORDER BY created_at DESC, cursor DESC LIMIT 3");
+    for (const e of ev) if (/"(x|z|path|arriveAt)"\s*:/.test(String(e.payload))) this.inv.fail('chat_event_coords', '聊天事件里有坐标或路线', { payload: String(e.payload).slice(0, 200) }, now);
+  }
+
+  /** 全镇公屏：在场且不在对局里才发得出去；对局中必须被拒；有时 @ 一位居民（唤醒规则由单元测试覆盖）。 */
+  private townAudited(ag: Ag, conn: Conn): void {
+    const rnd = ag.rnd;
+    const others = this.ags.filter((a) => a !== ag && a.registered);
+    const mention = others.length > 0 && rnd.chance(0.3) ? `${rnd.pick(others).p.name}，` : '';
+    const kind = rnd.pick(['chat', 'chat', 'activity', 'help']);
+    const mark = `编号T${String(++this.townSeq).padStart(6, '0')}X`;
+    const text = `${mention}${rnd.pick(PHRASES)}（${mark}）`;
+    const place = kind === 'chat' ? undefined : rnd.pick(['plaza', 'tea_house', 'bookshop', 'arcade']);
+    const r0 = this.w.mustResident(ag.p.residentId);
+    const wasInGame = r0.activity_id !== null;
+    const o = this.exec(ag, conn, 'say_town', { text, kind, ...(place ? { place } : {}) });
+    const now = this.clock.t;
+    if (o.ok) {
+      if (wasInGame) this.inv.fail('town_chat_in_game', '对局中的居民发出了公屏消息', { who: ag.p.name }, now);
+      this.bump('town_sent');
+      this.townMarks.push(mark);
+      if (mention) this.bump('town_mention_sent');
+    } else if (wasInGame && o.reason !== 'in_activity' && o.code === 'precondition_failed') {
+      this.bump('town_refused_other');
+    } else if (wasInGame && o.code === 'precondition_failed') this.bump('town_refused_in_game');
+    else if (o.code === 'rate_limited') this.bump('town_rate_limited');
+  }
+
+  /** 公屏的全局检查：序号连续；公开投影里没有公屏文字；公屏发送者发送时在场。 */
+  private townInvariants(): void {
+    const now = this.clock.t;
+    const rows = this.w.db.all('SELECT seq FROM town_chat_messages ORDER BY seq');
+    let prev = 0;
+    for (const r of rows) {
+      const q = Number(r.seq);
+      if (prev && q !== prev + 1 && this.w.params.townChatRetentionMs > 3 * 24 * 3600 * 1000) this.inv.fail('town_chat_seq', `公屏序号不连续 ${prev} → ${q}`, null, now);
+      prev = q;
+    }
+    if (this.townMarks.length === 0) return;
+    const pub = JSON.stringify(townPublicView(this.w));
+    const sample = this.townMarks.slice(-40);
+    for (const mk of sample) if (pub.includes(mk)) this.inv.fail('town_chat_public_leak', `公开地图里出现了公屏文字 ${mk}`, null, now);
+    // 公屏文字也不能出现在附近聊天的存储里
+    for (const mk of sample.slice(-5)) {
+      if (this.w.db.scalar('SELECT COUNT(*) FROM chat_messages WHERE body LIKE ?', `%${mk}%`) > 0) this.inv.fail('town_chat_became_nearby', `公屏文字 ${mk} 进了附近聊天`, null, now);
+    }
   }
 
   private chatText(ag: Ag): string {
@@ -1093,6 +1171,7 @@ class Sim {
     intents.push(['visit', v.invites.received.length > 0 ? 2.5 : 0]);
     intents.push(['revoke', v.invites.sent.length > 0 ? 0.5 : 0]);
     intents.push(['speak', residentsHere.length > 0 ? 6 : 0.6]);
+    intents.push(['town', 1.4]);
     intents.push(['ask', residentsHere.length > 0 ? 1.5 : 0]);
     intents.push(['buy', here && here.shops.length > 0 ? 3 : 0]);
     intents.push(['use', energy < 75 && (avail('soup') > 0 || avail('cookie') > 0) ? 2.5 : 0]);
@@ -1218,7 +1297,7 @@ class Sim {
           this.bump('walk_chat');
           if (now - ag.lastSpeak >= 12_000) {
             ag.lastSpeak = now;
-            this.exec(ag, conn, 'speak', { text: this.chatText(ag) });
+            this.speakAudited(ag, conn);
           }
           break;
         }
@@ -1276,7 +1355,13 @@ class Sim {
       case 'speak': {
         if (now - ag.lastSpeak < 12_000) return null;
         ag.lastSpeak = now;
-        this.exec(ag, conn, 'speak', { text: this.chatText(ag) });
+        this.speakAudited(ag, conn);
+        return short();
+      }
+      case 'town': {
+        if (now - ag.lastTown < 40_000) return null;
+        ag.lastTown = now;
+        this.townAudited(ag, conn);
         return short();
       }
       case 'ask': {
@@ -1666,7 +1751,7 @@ class Sim {
         return;
       }
       case 'non_game_in_game': {
-        const o = this.exec(ag, conn, rnd.pick(['navigate', 'move', 'speak', 'buy']), { to: 'plaza', text: 'hi', shop: 'stall', sku: 'cookie' }, nf);
+        const o = this.exec(ag, conn, rnd.pick(['navigate', 'move', 'speak', 'say_nearby', 'say_town', 'buy']), { to: 'plaza', text: 'hi', kind: 'chat', shop: 'stall', sku: 'cookie' }, nf);
         this.expectReject(ag, '在小游戏里做世界动作', o, ['precondition_failed']);
         return;
       }
@@ -2029,6 +2114,9 @@ console.log(
   `导航：navigate 成功 ${sim.counters.get('nav_accepted') ?? 0} 次（当场走完 ${sim.counters.get('nav_completed') ?? 0}）；续租 成功 ${sim.counters.get('renew_ok') ?? 0} / 已结束 ${sim.counters.get('renew_done') ?? 0} / 失去控制权 ${sim.counters.get('renew_lost') ?? 0}（其中途中换了版本 ${sim.counters.get('renew_adopted') ?? 0}）；故意不续租 ${sim.counters.get('renew_abandoned') ?? 0}；走到一半 改道 ${sim.counters.get('walk_reroute') ?? 0} / 停下 ${sim.counters.get('walk_halt') ?? 0} / 离线 ${sim.counters.get('walk_ghost') ?? 0} / 说话 ${sim.counters.get('walk_chat') ?? 0}；先走到物件旁再用 ${sim.counters.get('walk_to_use') ?? 0}`,
 );
 console.log(`导航结果：nav_stopped 按原因 ${JSON.stringify(navStops)}；you_arrived/left/arrived ${JSON.stringify(navEvents)}；公开 road 位置事件 ${roadPlaceEvents}；arrived 事实 ${arrivedFacts}；整套检查里在走路的人次 ${sim.inv.navSamples}；空间专项检查 ${sim.counters.get('space_probes') ?? 0} 轮；重启时在走路的人 ${sim.counters.get('restart_walkers') ?? 0}（场景变了 ${sim.counters.get('restart_walkers_scene_changed') ?? 0}，已走完这一段 ${sim.counters.get('restart_walkers_off_leg') ?? 0}）`);
+console.log(
+  `聊天：附近聊天发出 ${sim.counters.get('nearby_sent') ?? 0} 条（受众核对通过 ${sim.counters.get('nearby_audience_ok') ?? 0}，共被 ${sim.counters.get('nearby_heard_by_others') ?? 0} 人次听到）；全镇公屏发出 ${sim.counters.get('town_sent') ?? 0} 条（其中带名字提及 ${sim.counters.get('town_mention_sent') ?? 0}，限流 ${sim.counters.get('town_rate_limited') ?? 0}，对局中被拒 ${sim.counters.get('town_refused_in_game') ?? 0}）；公屏表 ${(sim.w.db.scalar('SELECT COUNT(*) FROM town_chat_messages') as number)} 行，唤醒事件 ${(sim.w.db.scalar("SELECT COUNT(*) FROM recipient_events WHERE type = 'town_chat_mention'") as number)} 条`,
+);
 console.log(`行为计数：${JSON.stringify(Object.fromEntries([...sim.counters].filter(([k]) => k !== 'check_ms')))}`);
 
 console.log('\n── 停机重启 ──');

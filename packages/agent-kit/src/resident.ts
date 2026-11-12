@@ -71,7 +71,7 @@ export interface ClassifyContext {
 /**
  * 默认的事件归类（设计文档第 12 节：普通聊天事件合并窗口 3 秒、最长 10 秒；有截止时间的小游戏优先）：
  *  - urgent：轮到我的小游戏（game.yourTurn）、进了一局（game_started）、别人发给我的报价、收到邀请、被问爱好；
- *  - normal：聊天、有人来 / 走、我到了、来信、共同活动、愿望、凑桌、一局结束 / 我出局、别的报价状态变化、程序提示；
+ *  - normal：聊天、公屏上提到我（town_chat_mention）、有人来 / 走、我到了、来信、共同活动、愿望、凑桌、一局结束 / 我出局、别的报价状态变化、程序提示；
  *  - ignore：presence、control（运行器自己处理）、别人的 game 进展（不是轮到我）、我自己的发言，以及不认识的类型。
  * 小游戏里（mode = game）只有轮到我才触发，其余世界事件一律忽略。
  */
@@ -87,6 +87,9 @@ export function defaultClassify(ev: TownEvent, c: ClassifyContext): EventClass {
       return 'normal';
     case 'chat':
       if ((ev.from as { id?: string } | undefined)?.id === c.residentId) return 'ignore';
+      return inGame ? 'ignore' : 'normal';
+    case 'town_chat_mention':
+      // 公屏上明确提到我 / 和我有约定的人说话：普通事件，对局中不触发
       return inGame ? 'ignore' : 'normal';
     case 'offer': {
       if (inGame) return 'ignore';
