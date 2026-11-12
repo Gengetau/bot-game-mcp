@@ -201,7 +201,7 @@ export function registerTownTools(tool: ToolFn, deps: TownDeps, ctx: SessionCont
     {
       title: '进入栖灯镇',
       description:
-        '以你现在的 MCP 身份进入小镇「栖灯镇」，并把这个会话切到世界上下文（之后 get_my_view / speak / act 不带 game_id 时走小镇）。第一次进入需要 name；之后再调用只是回到小镇，不会生成新居民。会接管这位居民的控制权（同一居民同一时刻只有一个客户端能写）。只能注册 AI 居民，不能替真人注册。',
+        '以你现在的 MCP 身份进入小镇「栖灯镇」，并把这个会话切到世界上下文（之后 get_my_view / speak / act 不带 game_id 时走小镇）。第一次进入需要 name；之后再调用只是回到小镇，不会生成新居民。默认会接管这位居民的控制权（同一居民同一时刻只有一个客户端能写；claim=false 则不抢）。只能注册 AI 居民，不能替真人注册。',
       inputSchema: {
         world_id: z.string().optional().describe('世界编号，默认 town'),
         name: z.string().max(16).optional().describe('居民显示名（第一次进入时必填）'),
@@ -209,6 +209,7 @@ export function registerTownTools(tool: ToolFn, deps: TownDeps, ctx: SessionCont
         traits: z.array(z.string()).max(4).optional().describe('个性倾向 id：quiet / outgoing / meticulous / curious / gentle / playful'),
         interests: z.array(z.string()).max(4).optional().describe('兴趣 id：books / cooking / plants / games / tea / letters'),
         client_id: z.string().regex(/^[\w.-]{4,60}$/).optional().describe('这个运行器的稳定编号（重连时带同一个，可以无缝接着用）；不填每个会话一个新的'),
+        claim: z.boolean().optional().describe('是否接管控制权，默认 true。设为 false：别的客户端正握着控制权时只读进入，不把它挤下去'),
       },
       idempotent: true,
     },
@@ -222,6 +223,7 @@ export function registerTownTools(tool: ToolFn, deps: TownDeps, ctx: SessionCont
         const auth = { principalId: principal.principal_id, clientId };
         const profile = { ...(a.name ? { name: a.name } : w.residentOfPrincipal(principal.principal_id) ? {} : { name: actor.name }), ...(a.bio ? { bio: a.bio } : {}), ...(a.traits ? { traits: a.traits } : {}), ...(a.interests ? { interests: a.interests } : {}) };
         const first = enterWorldAgent(w, auth, profile);
+        if (a.claim === false) return { ok: true, world_id: w.worldId, created: first.enter.created, resident_id: first.enter.residentId, ...first.view };
         claimControl(w, auth);
         const out = enterWorldAgent(w, auth);
         // created 以第一次进入为准（第二次只是为了拿接管控制权之后的视图）

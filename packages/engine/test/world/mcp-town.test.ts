@@ -256,6 +256,18 @@ describe('MCP 小镇：enter_world', () => {
     expect((await wactFails(c2, { type: 'speak', text: '新会话被挤下去' })).code).toBe('CONTROL_LOST');
   });
 
+  it('enter_world 带 claim=false：别的会话握着控制权时只读进入，不把它挤下去', async () => {
+    const env = makeEnv();
+    const c1 = await env.connect(QING);
+    await call(c1, 'enter_world', { name: '青青', client_id: 'run-one-0001' });
+    const c2 = await env.connect(QING);
+    const e2 = await call(c2, 'enter_world', { client_id: 'run-two-0002', claim: false });
+    expect(e2).toMatchObject({ ok: true, created: false, control: { mine: false } });
+    // 原来的会话照常能写，只读进入的那个不能
+    expect(await wact(c1, { type: 'speak', text: '我还握着' })).toMatchObject({ ok: true });
+    expect((await wactFails(c2, { type: 'speak', text: '我只是看看' })).code).toBe('CONTROL_LOST');
+  });
+
   it('真人不能走 enter_world 注册（身份名以真人票据登记过的号码不能当 AI 进入）', async () => {
     const env = makeEnv();
     env.t.join('真人', 'human'); // 真人主体 qq:20n

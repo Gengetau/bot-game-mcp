@@ -265,7 +265,7 @@ describe('TownClient：限流与没开小镇', () => {
       expect(rl.retryAfterMs).toBeGreaterThan(0);
       expect(rl.requestId).toMatch(/^rq-/);
       // 愿意多等一点就会用同一个请求号自动重试直到成功
-      const patient = new TownClient(base, { clientId: 'rl-client', maxRetries: 3, rateLimitMaxWaitMs: 60_000, sleep: async () => sleep(rl.retryAfterMs! + 50) });
+      const patient = new TownClient(base, { clientId: 'rl-client', maxRetries: 3, rateLimitMaxWaitMs: 60_000, sleep: async () => void (await sleep(rl.retryAfterMs! + 50)) });
       await patient.view();
       const done = await patient.speak('终于轮到我了', { requestId: rl.requestId! });
       expect(done.status).toBe('completed');
