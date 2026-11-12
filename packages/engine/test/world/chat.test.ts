@@ -487,7 +487,8 @@ describe('全镇公屏：分页与游标', () => {
       townChatPage(t.w, a.residentId, { after: t.w.cursorOf(a.residentId) }), // 私人事件流的游标
       townChatPage(t.w, a.residentId, { after: chatHistory(t.w, a.residentId, null, 1).next ?? 'n1.xxxxxxxxxx' }), // 附近聊天历史的游标
       townChatPage(t.w, a.residentId, { after: 'garbage' }),
-      townChatPage(t.w, a.residentId, { before: `${mine.slice(0, -1)}A` }), // 改了签名
+      // 改了签名：末位换成一个肯定不同的字符（签名末位本来就是 A 的概率是 1/64，写死成 A 会偶发地没改到）
+      townChatPage(t.w, a.residentId, { before: `${mine.slice(0, -1)}${mine.endsWith('A') ? 'B' : 'A'}` }),
       townChatPage(t.w, a.residentId, { after: 'c9zzzzz.0000000000' }),
     ];
     for (const r of results) {
