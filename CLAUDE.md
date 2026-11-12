@@ -13,6 +13,7 @@ npm run docs        # 改了规则、选项或工具描述后，重新生成 doc
 npm run simulate -- werewolf --players 9 --humans 2 --seed 1   # 离线跑一局
 npm run world:simulate -- --days 1 --residents 12 --seed 1    # 栖灯镇：固定种子跑逻辑时间并检查不变量
 npm run world:recovery                                         # 栖灯镇：故障注入
+npm run client:export && npm run client:e2e                    # 三维客户端：导出并跑浏览器端到端（需要 Godot 4.7，不在 CI 里；约 8 分钟）
 ```
 
 ## 必须遵守的不变量
@@ -37,6 +38,7 @@ npm run world:recovery                                         # 栖灯镇：故
 - 关系、愿望、日报只读 `w.fact()` 记录的结构化事实，不读聊天文字。
 - 投影只有一套（`views.ts` / `project.ts`，空间快照是 `space.ts` 的 `sceneView`）：网页、MCP、观战、日报、回顾都用它。公开层面位置只到区域（公共地点、路上、「住宅区」）；别人的信件、背包、需要、愿望、关系、屋内情况不出现在任何别人能拿到的投影和事件里。新增字段先想清楚谁能看。
 - 位置只由空间模块（`space.ts`）写：`world_actors`（场景、实例、x、z、导航）和 `residents.location_id`（区域标签）都不能被别的模块直接改。要挪人就发起导航或用 `sendToDoor`；别的模块按区域标签判断「在不在一起」，按 `requireReach` 判断够不够得着公共物件。
+- 场景快照里不只有位置：谁在场、名字、是否在一局小游戏里也在里面。改了这些就调 `touchScene`，让同一场景实例里的人拿到新快照；往快照里加字段时，想清楚它变的时候谁来通知。
 - 读位置用 `posOf` / `positionOfResident`：位置按折线和时间现算，永远截断在导航控制租约的截止时刻。不要自己插值，不要存每帧坐标。
 - 导航的每次变化（开始、改道、停止、穿过门口、结束）都递增 `nav_revision`；`nav_step` 任务必须对上导航编号和版本才生效。
 - 坐标只出现在两处：本人视图里自己的位置、`sceneView` 里同一场景实例中在场的人。事件（`w.emitTo` / `w.emitPublic`）、公开投影、日报里不能有坐标、折线、到达时间。私宅实例的快照只给屋里的人。
@@ -56,11 +58,12 @@ npm run world:recovery                                         # 栖灯镇：故
   - `src/core/game.ts`：BaseGame 基类。参考实现是 `src/games/number-bomb/index.ts`。
   - `src/mcp/server.ts`：工具、资源、提示词。`src/mcp/guides.ts` 是给 agent 的指南文本。`src/mcp/town.ts` 是小镇的工具和世界上下文路由。
   - `src/core/runner.ts`：GameRunner，从 GameManager 抽出来的「推进一局」，公共对局和小镇的嵌入小游戏共用。
-  - `src/world/`：持续世界「栖灯镇」（`service.ts` 命令管线与调度，`db.ts` SQLite，`space.ts` 空间权威，`spatial/` 地图、寻路、运动的纯函数，其余按模块：identity、life、property、mail、interact、social、games、reports、views、http、ws）。旧页面在 `town/`（静态文件，无构建；会被 Godot 网页客户端取代）。
+  - `src/world/`：持续世界「栖灯镇」（`service.ts` 命令管线与调度，`db.ts` SQLite，`space.ts` 空间权威，`spatial/` 地图、寻路、运动的纯函数，其余按模块：identity、life、property、mail、interact、social、games、reports、views、http、ws）。旧页面在 `town/`（静态文件，无构建；会被 Godot 网页客户端取代）。配置了 `town.clientDir` 时，引擎在 `/town/3d/` 托管三维客户端的导出产物。
   - `src/server/`：HTTP、SSE、stdio、bridge 传输。
   - 测试：`test/helpers.ts` 提供 FakeClock、`startGame`、`playToEnd`。
 - `packages/referee-onebot`（`bot-game-mcp-referee-onebot`，命令 `bot-game-referee`）：代码裁判，OneBot v11 正向 WebSocket。只能通过 MCP 协议和引擎说话。
 - `packages/agent-kit`（`bot-game-mcp-agent-kit`）：接入端客户端、`waitForTurn`、提示词 `playerPrompt()`；`prompts/player-zh.md` 必须和代码一致（有测试）；`examples/` 是各 agent 框架的接入示例。
+- `client/`：栖灯镇的 Godot 4 网页客户端（不是 npm 工作区）。`client/town/` 是 Godot 工程（`scripts/` GDScript，`web/` 是网页外壳和 DOM 界面，文字全在 HTML 里），`client/tools/export.sh` 导出，`client/ASSETS.md` 是素材许可台账，说明见 `client/README.md`。客户端不做预测：只按服务器给的折线和服务器时间插值。
 - `scripts/e2e.ts`：黑盒端到端，跨三个包。`scripts/world-simulate.ts`、`world-load.ts`、`world-recovery.ts`：小镇的长时间模拟、压测、故障注入。
 
 裁判和接入端不得 import 引擎内部代码；它们的测试通过包名 `bot-game-mcp` 使用引擎（vitest 和 tsconfig 已映射到引擎源码）。

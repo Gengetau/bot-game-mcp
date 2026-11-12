@@ -115,7 +115,7 @@ packages/engine/town/             旧的网页前端（静态文件；会被 God
 
 **区域**。地图把可走范围划成区域：六个公共地点、`road`（灯笼路，只是路过的地方）、`residential`（灯巷会馆：进出所有私宅的唯一公共接入点）。`residents.location_id` 是区域标签，只在跨区域那一刻由空间模块改写，同一事务里触发各模块的离开 / 到达处理（撤销没完成的交换、退出报名、记录登门）并通知两边在场的人。**走在路上的人属于脚下的区域**：能说话、能被听见、能做事。别的模块按区域判断「在不在一起」。走路的人自己跨区域时不收事件（模型不该为每一步路被叫醒）：续租的回答和场景快照里都带着此刻的 `space`，客户端看到它变了就重读现场。
 
-**够得着**。公共物件（茶桌、藏书架、灶台、花箱）在地图上有位置：发起或加入它上面的共同活动，人要在 1.8 米内（藏书架 3.6 米），否则 `too_far`。`navigate {to: 物件编号}` 走到最近的使用位置。坐下之后迈步走开就算退出，哪怕没走出这片区域。家里的家具在屋里就够得着。人和人之间的当面互动（邀请、交换、询问）现阶段仍按「同一个区域」判定。
+**够得着**。公共物件（茶桌、藏书架、灶台、花箱）在地图上有位置：发起或加入它上面的共同活动，人要在 1.8 米内（藏书架 3.6 米），否则被拒绝：错误码是 `precondition_failed`（HTTP 422），细分原因 `reason: "too_far"`，`data.navigateTo` 是可以走过去的物件编号。`navigate {to: 物件编号}` 走到最近的使用位置。坐下之后迈步走开就算退出，哪怕没走出这片区域。家里的家具在屋里就够得着。人和人之间的当面互动（邀请、交换、询问）现阶段仍按「同一个区域」判定。
 
 **私宅**。进别人家要有邀请。`navigate` 到 `home` / `home:<id>` 先走到会馆门口，**到门口再查一次权限**，通过了才进入那户的私有实例；路上邀请过期或被撤销就停在门外，只收到固定模板的提示。出门、被请出门都落在会馆门口。外人只看到有人到了会馆门前、又离开了这片地方：进了谁家、屋里有谁，公共场景里的人和公开投影都拿不到；私宅实例里的坐标只给屋里的人。
 
@@ -319,7 +319,7 @@ packages/engine/town/             旧的网页前端（静态文件；会被 God
 | 客户端 → | `{t:"ping", n}` | 探活、对时 |
 | 客户端 → | `{t:"renew", navigationId, revision}` | 续导航控制租约 |
 | → 客户端 | `{t:"hello", v:1, serverTime, resident, map:{mapVersion, checksum}, renewEveryMs, cursor}` | |
-| → 客户端 | `{t:"scene", …SceneView}` | 完整快照：`scene`、`space`、`serverTime`、`self`、`actors[]`（`id, name, kind, x, z, heading, busy?, nav?`）。`nav: {id, revision, points, speed, startedAt, until}`：客户端按这条折线和服务器时间插值，走到 `until` 为止。所在场景里有位置变化、或者自己换了场景时重发，同一条连接每秒最多 10 次 |
+| → 客户端 | `{t:"scene", …SceneView}` | 完整快照：`scene`、`space`、`serverTime`、`self`、`actors[]`（`id, name, kind, x, z, heading, busy?, nav?`）。`nav: {id, revision, points, speed, startedAt, until}`：客户端按这条折线和服务器时间插值，走到 `until` 为止。所在场景里快照的内容变了就重发：有人起步、改道、停下、进出场景，有人上线、离线（包括在场租约到期）、改名、进出一局小游戏，或者自己换了场景。同一条连接每秒最多 10 次 |
 | → 客户端 | `{t:"events", events, cursor}` / `{t:"resync", cursor}` | 耐久私有事件，同 SSE 的 `private` |
 | → 客户端 | `{t:"pong", n, serverTime}` / `{t:"renewed", ok, leaseUntil?, navigation, space}` / `{t:"error", code, message}` | |
 
