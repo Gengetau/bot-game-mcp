@@ -301,7 +301,12 @@ export function agentView(w: WorldService, r: ResidentRow, clientId: string, opt
       : null,
     coins: v.inventory.coins.available,
     items: v.inventory.items.map((i) => ({ ...(!i.stackable && i.category !== 'consumable' ? { itemId: i.itemId } : {}), type: i.type, name: i.name, qty: i.qty, ...(i.borrowedFrom ? { borrowed_from: i.borrowedFrom } : {}) })),
-    goals: v.goals.map((g) => ({ id: g.id, kind: g.kind, title: g.title, how: g.description, progress: `${g.progress}/${g.target}` })),
+    // 候选（长期愿望完成后可自选的新方向）单独标出来：没有进度，choose_goal {goalId} 选定
+    goals: v.goals.map((g) =>
+      g.status === 'offered'
+        ? { id: g.id, kind: g.kind, title: g.title, how: g.description, offered: true }
+        : { id: g.id, kind: g.kind, title: g.title, how: g.description, progress: `${g.progress}/${g.target}` },
+    ),
     mail_unread: v.mail.unread,
     invites: v.invites.received.map((i) => ({ home: i.home, host: i.host.name, expires_at: i.expiresAt })),
     offers: v.offers.map((o) => ({ id: o.id, text: o.text, mine: o.from.id === v.me.id })),

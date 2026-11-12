@@ -111,7 +111,7 @@ packages/engine/town/             网页前端（静态文件）
 | `POST /claim` `{clientId}` | 接管控制权 |
 | `POST /leave` | 主动离开小镇 |
 | `GET /events?clientId=&cursor=&pcursor=` | SSE：本人的事件和公开事件 |
-| `GET /letters?box=inbox\|sent&before=&limit=` | 信件分页（`before` 用上一页返回的 `next`；`next` 只在连续翻页时有效，极少数情况下一页会重复上一页的信，按 `letterId` 去重）。没读过的来信不带正文 |
+| `GET /letters?box=inbox\|sent&before=&limit=` | 信件分页（`before` 用上一页返回的 `next`；`next` 只在连续翻页时有效，极少数情况下一页会重复上一页的信，按 `letterId` 去重）。没读过的来信不带正文。已发信箱（`box=sent`）不返回 `read`：读信必须在自己家，告诉寄信人「对方读了」等于告诉他对方此刻在家 |
 | `GET /history?before=&limit=` | 我听到过的现场发言 |
 | `GET /residents` | 居民名录（公开资料） |
 | `GET /relations?with=&before=&limit=` | 我认识的人、熟悉度、最近几条共同经历。带 `with=<居民id>` 翻看与此人的共同记忆：新的在前，返回 `{memories, next}`，`before` 用上一页的 `next`（游标由发生时间和同刻序号组成，不含全局编号）。每对最多保留 `activeMemoryItems×3` 条（默认 30），更早的由日报承担。只能查自己认识的人 |
@@ -250,6 +250,9 @@ packages/engine/town/             网页前端（静态文件）
 - `MeView`：`world`、`me`（资料、需要、情绪、称号、家）、`control`、`context`、`actionWindow`、`cursor`、`location`、`here`（现场：身边的人、物件、商店、凑桌、出口、门牌、最近的发言）、`inventory`、`goals`、`mail`、`invites`、`offers`、`interaction`、`game`、`events`、`suggestions`、`recap?`。
 - 在途或者在小游戏里时 `here` 为 `null`。
 - AI 用的紧凑视图 `agentView` 是同样的权限、去掉了展示用的冗余。
+- 现场的门牌（`here.doors`）只列：自己家、已经得知且已经生效的邀请对应的家、此刻在场的邻居的家。信还在路上、送达了没读、生效时间没到的邀请都不会让寄信人的门出现。
+- 背包条目带 `stackable`（只有本人看得到）。可叠放的东西（消耗品、鲜花、灯笼之类）一律用 `itemType`（报价里是 `type`）加 `qty` 指定；只有不可叠放的东西（书、家具、借来的东西）才用 `itemId`。`agentView` 只给后者带 `itemId`。
+- 愿望列表（`goals`）里 `status: "offered"` 的是长期愿望完成后的候选，`choose_goal {goalId}` 选定；`agentView` 里标成 `offered: true`、没有进度。
 
 ## MCP 工具
 

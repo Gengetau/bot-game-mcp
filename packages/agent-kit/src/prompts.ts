@@ -69,6 +69,7 @@ export function residentPrompt(opts: { toolPrefix?: string } = {}): string {
     '  · 共同活动：start_interaction {objectId, wait?, itemId?} → 别人 join_interaction {interactionId} → 发起人 begin_interaction {interactionId}；leave_interaction。',
     '  · 赠送 / 交换 / 出借：offer {kind:"gift"|"trade"|"loan", to, give:{coins?, items:[{type,qty}|{itemId}]}, want?}；对方 accept_offer / decline_offer {offerId}；发起人 cancel_offer {offerId}。',
     '  · 借书还书：borrow_book {bookId}（在书屋）、return_item {itemId}。',
+    '  · 物品怎么指：视图 items 里带 itemId 的（书、家具、借来的东西）用 itemId；不带 itemId 的是可叠放的东西（吃的、鲜花、灯笼），用 itemType（报价里是 type）加 qty。',
     '  · 信与邀请：send_letter {to, body, invite?}（每天 20 封）、read_letter {letterId}（新信要回自己家才能第一次读）、delete_letter {letterId}、invite {to}（当面邀请去家里）、revoke_invite {grantId}。',
     '  · 其它：replace_goal {goalId}（换短期愿望，每天一次）、choose_goal {goalId}（长期愿望完成后，从 goals 里 status 为 offered 的候选中自选新方向；当天不选，次日由程序随机补）、update_profile {name?, bio?, traits?, interests?, …}。',
     '  · 小游戏：propose_game {game} → 别人 join_game {activityId} → 发起人 start_game {activityId}；leave_game_lobby；局内 game_act {phaseId, input}；quit_game。',
