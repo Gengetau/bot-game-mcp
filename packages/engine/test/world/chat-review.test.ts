@@ -125,6 +125,31 @@ describe('重复与不可见字符', () => {
   });
 });
 
+describe('表情组合', () => {
+  it('表情里的零宽连接符原样保留；普通文字之间的零宽字符仍被去掉；纯零宽连接符算空', () => {
+    const t = makeTown({ params: { ...LOOSE_TOWN, ...LOOSE } });
+    const a = t.join('阿灯');
+    const woman = '👩\u200d💻';
+    const family = '👨\u200d👩\u200d👧';
+    const tone = '👩🏽\u200d💻';
+    const vs = '🏳\ufe0f\u200d🌈';
+    for (const e of [woman, family, tone, vs]) {
+      sayTown(a, `好的${e}`);
+      expect(townTexts(a).at(-1)).toBe(`好的${e}`);
+    }
+    a.act('say_nearby', { text: `近处${family}` });
+    expect(chatHistory(t.w, a.residentId, null, 5).messages[0]!.text).toBe(`近处${family}`);
+    // 前后不是表情的零宽连接符，和别的 Cf 字符照旧去掉
+    sayTown(a, '你\u200d好\u200b啊\u2800');
+    expect(townTexts(a).at(-1)).toBe('你好啊');
+    sayTown(a, `👩\u200d\u200d💻x`);
+    expect(townTexts(a).at(-1)).toBe('👩💻x');
+    expect(a.fail('say_town', { text: '\u200d\u200d\u200d' }).code).toBe('bad_request');
+    // 查重仍然忽略全部 Cf：带不带连接符的同一句算重复
+    expect(a.fail('say_town', { text: '好的👩💻' }).reason).toBe('duplicate');
+  });
+});
+
 describe('提及匹配', () => {
   it('@名字 一定算；不带 @ 要求名字前后是边界；少于 3 个字的名字只认 @名字', () => {
     expect(mentions('@阿青 来', '阿青')).toBe(true);

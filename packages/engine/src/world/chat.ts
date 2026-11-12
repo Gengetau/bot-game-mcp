@@ -36,9 +36,20 @@ import type { ResidentRow } from './types.js';
 /** 不可见的格式字符（零宽空格、零宽连接符、方向控制符等 Cf 类）和盲文空白 U+2800：它们不显示，却能骗过非空、长度和重复判断。 */
 const INVISIBLE = /[\p{Cf}\u2800]/gu;
 
+/** 夹在两个 Extended_Pictographic 之间（中间允许 U+FE0F 和肤色修饰符）的零宽连接符，是表情组合（👩‍💻、👨‍👩‍👧）的一部分。 */
+const EMOJI_JOIN = /(\p{Extended_Pictographic}[\uFE0F\u{1F3FB}-\u{1F3FF}]*)\u200D(?=\p{Extended_Pictographic})|[\p{Cf}\u2800]/gu;
+
+/**
+ * 存库的文字：去掉不可见字符，但保留表情组合里的零宽连接符。
+ * 判空、查重、提及匹配用的 normalizeForMatch 仍然去掉全部 Cf。
+ */
+export function stripInvisibleKeepEmoji(s: string): string {
+  return s.replace(EMOJI_JOIN, (m, g1) => (g1 !== undefined ? m : ''));
+}
+
 export function cleanChatText(w: WorldService, raw: unknown, lenient = false): string {
   if (typeof raw !== 'string') throw badRequest('需要 text（要说的话）。');
-  const text = sanitizeUserText(raw).replace(INVISIBLE, '').replace(/\s+/g, ' ').trim();
+  const text = stripInvisibleKeepEmoji(sanitizeUserText(raw)).replace(/\s+/g, ' ').trim();
   if (!text) throw badRequest('说点什么吧。');
   const n = [...text].length;
   if (lenient) return n > w.params.chatMaxChars ? [...text].slice(0, w.params.chatMaxChars).join('') : text;
