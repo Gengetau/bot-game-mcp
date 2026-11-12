@@ -636,7 +636,7 @@ class Resident implements ResidentHandle {
     this.status = 'running';
     // 重启时居民还在路上：接着续租
     const walking = entered?.location?.walking;
-    if (walking?.navigation_id) this.startRenewing({ navigationId: walking.navigation_id, revision: walking.revision });
+    if (walking?.navigation_id) this.startRenewing({ navigationId: walking.navigation_id, revision: walking.revision, ...(walking.renew_every_ms ? { renewEveryMs: walking.renew_every_ms } : {}) }, true);
     this.lastActivityAt = this.lastIdleTickAt = this.clock.now();
     if (this.js.pending && this.js.pending.done < this.js.pending.actions.length) {
       if (this.resumeTooOld(this.js.pending)) {
@@ -654,13 +654,13 @@ class Resident implements ResidentHandle {
     this.mode = v.context?.activityId ? 'game' : 'world';
     if (initial) this.residentId = v.me?.id ?? this.residentId;
     const w = v.location?.walking;
-    if (w?.navigation_id) this.startRenewing({ navigationId: w.navigation_id, revision: w.revision });
+    if (w?.navigation_id) this.startRenewing({ navigationId: w.navigation_id, revision: w.revision, ...(w.renew_every_ms ? { renewEveryMs: w.renew_every_ms } : {}) }, true);
   }
 
   // ── 导航续租（普通程序，不调用模型） ──
 
   /** 开始（或改道后换成新的一条）续租。同一条（编号 + 版本都一样）不重复起。 */
-  private startRenewing(nav: NavigationBrief): void {
+  private startRenewing(nav: NavigationBrief, fromView = false): void {
     if (this.stopped || this.status !== 'running' || !this.town.renewNavigation) return;
     const everyMs = Math.max(200, nav.renewEveryMs ?? this.nav?.everyMs ?? 3_000);
     if (this.nav && this.navAc && this.nav.navigationId === nav.navigationId) {
@@ -673,7 +673,9 @@ class Resident implements ResidentHandle {
     const ac = (this.navAc = new AbortController());
     const onStop = () => ac.abort();
     this.ac.signal.addEventListener('abort', onStop, { once: true });
-    void this.renewLoop(ac.signal).finally(() => {
+    // 从视图里发现「已经在走」（运行器重启、接管、重连）：不知道租约还剩多久，先立刻续一次；
+    // 刚被接受的 navigate 带着满的租约，等一个周期再续
+    void this.renewLoop(ac.signal, fromView).finally(() => {
       this.ac.signal.removeEventListener('abort', onStop);
       if (this.navAc === ac) {
         this.navAc = null;
@@ -688,14 +690,21 @@ class Resident implements ResidentHandle {
     this.nav = null;
   }
 
-  private async renewLoop(signal: AbortSignal): Promise<void> {
+  private async renewLoop(signal: AbortSignal, immediate = false): Promise<void> {
+    let skipWait = immediate;
     while (!signal.aborted) {
       const cur = this.nav;
       if (!cur) return;
-      try {
-        await this.clock.sleep(cur.everyMs, signal);
-      } catch {
-        return;
+      if (skipWait) {
+        skipWait = false;
+        // 让出一拍：调用方（读视图、进镇）先把自己的事做完
+        await Promise.resolve();
+      } else {
+        try {
+          await this.clock.sleep(cur.everyMs, signal);
+        } catch {
+          return;
+        }
       }
       const n = this.nav;
       if (signal.aborted || !n || !this.town.renewNavigation) return;

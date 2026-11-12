@@ -108,7 +108,7 @@ export interface TownView {
   context: { version: number; activityId: string | null };
   action_window: string;
   cursor: string;
-  location: { space?: string; name?: string; walking?: { to: string; navigation_id: string; revision: number; arrive_at: number; lease_until: number } };
+  location: { space?: string; name?: string; walking?: { to: string; navigation_id: string; revision: number; arrive_at: number; lease_until: number; renew_every_ms?: number } };
   here: {
     /** public 公共地点 | residential 灯巷会馆 | home 私宅 */
     kind: 'public' | 'residential' | 'home' | string;

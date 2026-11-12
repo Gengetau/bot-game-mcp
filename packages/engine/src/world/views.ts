@@ -273,7 +273,7 @@ export function agentView(w: WorldService, r: ResidentRow, clientId: string, opt
       space: v.location.space,
       name: v.location.name,
       ...(v.location.navigation
-        ? { walking: { to: v.location.navigation.to.name, navigation_id: v.location.navigation.navigationId, revision: v.location.navigation.revision, arrive_at: v.location.navigation.arriveAt, lease_until: v.location.navigation.leaseUntil } }
+        ? { walking: { to: v.location.navigation.to.name, navigation_id: v.location.navigation.navigationId, revision: v.location.navigation.revision, arrive_at: v.location.navigation.arriveAt, lease_until: v.location.navigation.leaseUntil, renew_every_ms: v.location.navigation.renewEveryMs } }
         : {}),
     },
     here: here

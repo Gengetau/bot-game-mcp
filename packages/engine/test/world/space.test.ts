@@ -225,6 +225,64 @@ describe('停步与改道', () => {
     expect(t.w.db.scalar("SELECT COUNT(*) FROM scheduled_jobs WHERE kind = 'nav_step' AND status = 'pending'")).toBe(0);
   });
 
+  it('正往外走的人说要回脚下这片区域：是改主意要回来，照常走回落脚点；站着不动的才是 already_here', () => {
+    const t = makeTown();
+    const a = t.join('阿灯');
+    const first = a.act('navigate', { to: 'tea_house' });
+    t.advance(1500);
+    expect(zoneUnder(a)).toBe('plaza');
+    expect(loc(a)).toBe('plaza');
+    const away = a.pos();
+    const back = a.act('navigate', { to: 'plaza' });
+    expect(back).toMatchObject({ status: 'accepted', navigation: { to: { kind: 'place', id: 'plaza' } } });
+    expect(back.navigation.navigationId).not.toBe(first.navigation.navigationId);
+    expect(back.navigation.revision).toBeGreaterThan(first.navigation.revision);
+    expect(nav(a)!.points[0]).toEqual({ x: away.x, z: away.z });
+    a.walk();
+    const plaza = town(t).anchors.get('plaza')!;
+    expect(a.pos()).toMatchObject({ x: plaza.x, z: plaza.z, moving: false });
+    expect(loc(a)).toBe('plaza');
+    expect(nav(a)).toBeNull();
+    // 没去成别处：不记「到过某处」
+    expect(arrivedFacts(t)).toEqual([]);
+    expect(t.w.db.scalar("SELECT COUNT(*) FROM scheduled_jobs WHERE kind = 'nav_step' AND status = 'pending'")).toBe(0);
+    // 站定之后再说去这里：已经在这里
+    expect(a.fail('navigate', { to: 'plaza' }).reason).toBe('already_here');
+  });
+
+  it('刚迈步就改主意（还站在落脚点上）：不出错，原地到达', () => {
+    const t = makeTown();
+    const a = t.join('阿灯');
+    a.act('navigate', { to: 'tea_house' });
+    const back = a.act('navigate', { to: 'plaza' });
+    expect(['accepted', 'completed']).toContain(back.status);
+    a.walk();
+    expect(nav(a)).toBeNull();
+    expect(loc(a)).toBe('plaza');
+    expect(a.pos().moving).toBe(false);
+  });
+
+  it('在家里正往门口走、改主意要留下：走回屋里，不出门；站着不动时说回家仍是 already_here', () => {
+    const t = makeTown();
+    const a = t.join('阿灯');
+    a.go('home');
+    const home = `home:${a.residentId}`;
+    expect(a.fail('navigate', { to: 'home' }).reason).toBe('already_here');
+    a.go({ x: 5.25, z: 3.75 });
+    const out = a.act('navigate', { to: 'tea_house' });
+    expect(out.navigation.continues).toBe(true);
+    t.advance(400);
+    expect(a.pos()).toMatchObject({ scene: 'home', instance: a.residentId, moving: true });
+    const stay = a.act('navigate', { to: 'home' });
+    expect(stay).toMatchObject({ status: 'accepted', navigation: { to: { kind: 'home', id: home } } });
+    expect(stay.navigation.continues ?? false).toBe(false);
+    a.walk();
+    expect(loc(a)).toBe(home);
+    expect(a.pos()).toMatchObject({ scene: 'home', instance: a.residentId, x: 5.25, z: 3.75, moving: false });
+    expect(nav(a)).toBeNull();
+    expect(a.fail('navigate', { to: 'home' }).reason).toBe('already_here');
+  });
+
   it('快走到时改成去找身边的人：已经在旁边，原来那一趟到此为止，照样记一次「到过某处」', () => {
     const t = makeTown();
     const a = t.join('阿灯');
@@ -817,6 +875,40 @@ describe('重启与迁移', () => {
     expect(actorOf(t.w, b.residentId)).toMatchObject({ x: before.x, z: before.z, map_version: t.w.map.mapVersion });
     expect(a.row().location_id).toBe('plaza');
     expect(b.row().location_id).toBe('tea_house');
+  });
+
+  it('地图换了版本时有人正走在路上：重启不拿新地图去结算旧路线，路线作废，人留在这一段的起点，之后能正常走', () => {
+    const file = tempDb();
+    cleanups.push(file.cleanup);
+    const clock = new FakeClock();
+    const t = makeTown({ dbPath: file.path, clock });
+    const a = t.join('阿灯');
+    const b = t.join('小岚');
+    const start = a.pos();
+    const out = a.act('navigate', { to: 'garden' });
+    t.advance(3000);
+    renew(a);
+    // 假装这条路线是旧地图上规划的：在旧地图上它从广场出发，折线的坐标落在如今是茶馆的地方
+    const tea = town(t).anchors.get('tea_house')!;
+    const stale = nav(a)!;
+    const old = { ...stale, points: [{ x: tea.x, z: tea.z }, { x: tea.x + 0.25, z: tea.z }] };
+    t.w.db.db.prepare("UPDATE world_actors SET map_version = 'old', nav_json = ? WHERE actor_id = ?").run(JSON.stringify(old), a.residentId);
+    const cb = b.events().cursor;
+    t.clock.advance(60_000);
+    t.restart({ crash: true });
+    const row = actorOf(t.w, a.residentId)!;
+    expect(row.nav).toBeNull();
+    expect(row.nav_revision).toBeGreaterThan(out.navigation.revision);
+    expect(row.map_version).toBe(t.w.map.mapVersion);
+    expect(t.w.db.scalar("SELECT COUNT(*) FROM scheduled_jobs WHERE kind = 'nav_step' AND status = 'pending'")).toBe(0);
+    // 没有按旧折线「走到茶馆」：位置还是这一段的起点，区域标签是脚下的广场，也没有记「到过某处」
+    expect(row).toMatchObject({ x: start.x, z: start.z });
+    expect(a.row().location_id).toBe('plaza');
+    expect(arrivedFacts(t)).toEqual([]);
+    expect(eventsOf(b, cb, 'arrived').filter((e) => e.space === 'tea_house')).toEqual([]);
+    a.enter();
+    a.go('garden');
+    expect(loc(a)).toBe('garden');
   });
 
   it('地图换了版本、区域的划分变了：位置还合法的人，区域标签跟着脚下走', () => {

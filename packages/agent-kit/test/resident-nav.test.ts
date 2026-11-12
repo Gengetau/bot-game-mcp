@@ -141,6 +141,40 @@ describe('ResidentRunner：导航续租', () => {
     expect(clock.pendingTimers).toBe(0);
   });
 
+  it('从视图里发现在走：不知道租约还剩多久，立刻续一次，不等一个周期；周期用服务器给的 renew_every_ms', async () => {
+    const clock = new FakeClock();
+    const port = new FakePort(clock);
+    // 租约只剩 1 秒：等满一个周期（3 秒）就来不及了
+    port.walking = { to: '栖灯茶馆', navigation_id: 'navY', revision: 2, arrive_at: clock.now() + 20_000, lease_until: clock.now() + 1000, renew_every_ms: 2000 };
+    port.renewBehavior = (n) => ({ ok: true, leaseUntil: clock.now() + 10_000, navigation: { navigationId: n.navigationId, revision: n.revision ?? 1, renewEveryMs: 2000 } });
+    const runner = new ResidentRunner({ clock });
+    runner.add({ town: port, profile: { name: '小测' }, decide: () => null });
+    const t0 = clock.now();
+    await clock.advance(500);
+    expect(port.renews).toHaveLength(1);
+    expect(port.renews[0]).toMatchObject({ navigationId: 'navY', revision: 2 });
+    expect(port.renews[0]!.at - t0).toBeLessThan(500);
+    // 之后按 2 秒一次；同一条导航再从视图里读到不会重复立刻续
+    const first = port.renews[0]!.at;
+    await clock.advance(4100);
+    expect(port.renews.map((x) => x.at - first)).toEqual([0, 2000, 4000]);
+    await runner.stop();
+    expect(clock.pendingTimers).toBe(0);
+  });
+
+  it('自己刚发出的 navigate 带着满的租约：等一个周期再续，不立刻续', async () => {
+    const r = await rig((ctx) => (ctx.triggers.includes('chat') ? { actions: [{ type: 'navigate', to: 'tea_house' }] } : null));
+    goTea(r);
+    r.port.push(chat('r_x', '去茶馆吧'));
+    await r.clock.advance(3100);
+    expect(r.port.acts.map((a) => a.action.type)).toEqual(['navigate']);
+    expect(r.port.renews).toHaveLength(0);
+    await r.clock.advance(3000);
+    expect(r.port.renews).toHaveLength(1);
+    await r.runner.stop();
+    expect(r.clock.pendingTimers).toBe(0);
+  });
+
   it('正常退出时还在走：先 stop_navigation（stop({leave:true}) 则 leave）', async () => {
     const r = await rig((ctx) => (ctx.triggers.includes('chat') ? { actions: [{ type: 'navigate', to: 'tea_house' }] } : null));
     goTea(r);

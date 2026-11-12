@@ -499,7 +499,7 @@ function pathOrThrow(scene: CompiledScene, from: Vec2, to: Vec2): Vec2[] {
  *   - 公共物件编号（走到离自己最近、走得到的使用位置）
  *   - 居民编号（走到对方身边；对方得在同一个场景里看得见）
  */
-function plan(w: WorldService, r: ResidentRow, a: ActorRow, to: unknown, now: number): Plan {
+function plan(w: WorldService, r: ResidentRow, a: ActorRow, to: unknown, now: number, walking = false): Plan {
   const L = layout(w);
   const here = w.map.scenes.get(a.scene_id)!;
   const inHome = here.instanced;
@@ -518,7 +518,12 @@ function plan(w: WorldService, r: ResidentRow, a: ActorRow, to: unknown, now: nu
 
   if (isHome(id)) {
     if (!L.home || !w.resident(homeOwner(id))) throw precondition('没有这户人家。', 'no_such_place');
-    if (inHome && a.instance_id === homeOwner(id)) throw precondition('你已经在这里了。', 'already_here');
+    if (inHome && a.instance_id === homeOwner(id)) {
+      // 正往门口走的人改主意要留在这一户：走回屋里；本来就站着的才是「已经在这里」
+      const centre = here.anchors.get('centre');
+      if (!walking || !centre) throw precondition('你已经在这里了。', 'already_here');
+      return { points: pathOrThrow(here, from, { x: centre.x, z: centre.z }), target: { kind: 'home', id, name: spaceName(w, id, r.resident_id) }, after: [] };
+    }
     const access = checkHomeAccess(w, r, id, now);
     if (!access.ok) throw precondition(`进不去：${access.why}`, 'no_access');
     const target: NavTarget = { kind: 'home', id, name: spaceName(w, id, r.resident_id) };
@@ -537,7 +542,8 @@ function plan(w: WorldService, r: ResidentRow, a: ActorRow, to: unknown, now: nu
   if (alias && alias.scene === L.town.id) {
     const anchor = L.town.anchors.get(alias.anchor)!;
     const zone = zoneAt(L.town, anchor.x, anchor.z).id;
-    if (!inHome && r.location_id === zone) throw precondition('你已经在这里了。', 'already_here');
+    // 站在这片区域里才是「已经在这里」。正在往外走的人说要去脚下这片区域，是改主意要回来：照常走回落脚点
+    if (!inHome && r.location_id === zone && !walking) throw precondition('你已经在这里了。', 'already_here');
     goal = { x: anchor.x, z: anchor.z };
     target = { kind: 'place', id: zone, name: placeDef(zone)?.name ?? zone };
   } else if (object) {
@@ -777,7 +783,7 @@ export function installSpace(w: WorldService): void {
     }
     const me = w.mustResident(r.resident_id);
     const to = action.approach !== undefined ? String(action.approach) : (action.to ?? action.target);
-    const p = plan(w, me, a, to, now);
+    const p = plan(w, me, a, to, now, rerouted);
     if (p.already) {
       // 要去的地方就在身边：原来那一趟到此为止（已经停下了），照常记一次「到过某处」
       if (rerouted) noteArrival(w, r.resident_id, fromSpace, now);
@@ -821,6 +827,15 @@ export function installSpace(w: WorldService): void {
   w.hooks.offline.push((r, at, reason) => {
     const a = actorOf(w, r.resident_id);
     if (!a?.nav) return;
+    if (a.map_version !== w.map.mapVersion) {
+      // 这条路线是按旧地图规划的（换了地图版本之后的那次重启）：不拿新地图去结算旧折线，
+      // 直接作废，人留在这一段的起点；位置和区域标签随后由 revalidatePositions 按新地图校正
+      a.nav = null;
+      a.nav_revision += 1;
+      saveActor(w, a);
+      w.cancelJob(jobKey(a.actor_id));
+      return;
+    }
     stopNav(w, r.resident_id, reason === 'restart' ? Math.max(at, a.nav.checkpointAt) : at, 'offline');
   });
 

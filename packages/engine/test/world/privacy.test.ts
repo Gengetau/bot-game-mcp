@@ -616,12 +616,22 @@ describe('栖灯镇隐私：空间事件与场景快照', () => {
     expect(typeof v.location.x).toBe('number');
     expect(typeof v.location.z).toBe('number');
     expect(v.location.scene).toBe('town');
-    const bp = b.pos();
     expect(JSON.stringify(v.here?.residents)).not.toMatch(/"(x|z|heading|scene)":/);
     expect(v.here!.residents.map((r) => r.id)).toEqual([b.residentId]);
-    // 别人的坐标数值不出现在我的视图里（除非碰巧相同：这里两个人出生点相同时跳过比较）
+    // 别人的坐标数值不出现在我的视图里：让小岚走到广场里一个和谁都不重合的点再比
+    b.go({ x: 36.5, z: 33.25 });
+    const bp = b.pos();
     const mine = a.pos();
-    if (bp.x !== mine.x || bp.z !== mine.z) expect(JSON.stringify(v)).not.toContain(`"x":${Math.round(bp.x * 1000) / 1000}`);
+    expect(a.row().location_id).toBe(b.row().location_id);
+    expect(bp.x).not.toBe(mine.x);
+    expect(bp.z).not.toBe(mine.z);
+    const web = JSON.stringify(a.view());
+    expect(web).toContain(`"x":${mine.x}`);
+    for (const out of [web, JSON.stringify(agentView(t.w, a.row(), a.clientId)), JSON.stringify(a.events())]) {
+      expect(out).not.toContain(`"x":${bp.x}`);
+      expect(out).not.toContain(`"z":${bp.z}`);
+      expect(out).not.toContain(String(bp.x));
+    }
     const agent = JSON.stringify(agentView(t.w, a.row(), a.clientId));
     expect(agent).not.toMatch(/"(x|z|heading|points|scene|instance)":/);
     // 走路时：本人看得到路线的元信息（编号、版本、时间），身边的人看不到

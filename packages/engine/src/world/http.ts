@@ -40,7 +40,7 @@ import { claimControl, devLoginSession, exchangeTicket, heartbeat, leaveWorld, r
 import { enterWorld } from './index.js';
 import { listLetters } from './mail.js';
 import { report } from './reports.js';
-import type { WorldService } from './service.js';
+import { sha256, type WorldService } from './service.js';
 import { relationMemories, relationsOf } from './social.js';
 import { mapManifest, renewNavigation, sceneView } from './space.js';
 import { chatHistory, directory, meView, publicView } from './views.js';
@@ -362,10 +362,9 @@ export function mountTown(app: Express, w: WorldService, log: (msg: string) => v
     post((req, res) => {
       const token = tokenOf(req);
       if (token) {
-        const p = sessionPrincipal(w, token);
         revokeSession(w, token);
         for (const close of [...(streamsOfToken.get(token) ?? [])]) close();
-        if (p) wsHub.closePrincipal(p.principal_id);
+        wsHub.closeSession(sha256(token));
       }
       setCookie(req, res, '', 0);
       return { ok: true };
@@ -436,7 +435,10 @@ export function mountTown(app: Express, w: WorldService, log: (msg: string) => v
     json,
     post((req) => {
       const { p } = residentOf(req);
-      return { ok: true, ...wsHub.issueTicket(p.principal_id, clientIdOf(req)) };
+      // 票据记着取票时的登录会话：会话过期或登出，用它连上的 WebSocket 也跟着断
+      const token = tokenOf(req);
+      const session = token ? { key: sha256(token), valid: () => sessionPrincipal(w, token)?.principal_id === p.principal_id } : undefined;
+      return { ok: true, ...wsHub.issueTicket(p.principal_id, clientIdOf(req), session) };
     }),
   );
   app.post(

@@ -99,7 +99,7 @@ packages/engine/town/             旧的网页前端（静态文件；会被 God
 
 **位置**。权威位置是「场景 + 实例 + x + z」，单位米，x 向东、z 向南（和 Godot 的 x / z 一致），存在 `world_actors` 表里。画面是三维的，判定是平面的。公共场景叫 `town`；私宅是场景 `home` 的私有实例，实例编号就是房主的居民编号。
 
-**地图**。一份地图源（`spatial/town-map.ts`）：可走范围、障碍、区域、落脚点、可互动物件的位置和使用位置、进出口。启动时编译成 0.5 米的可行走网格（障碍按角色半径外扩），并算出校验值。客户端通过 `GET /map` 拿到地图源和**服务器栅格化之后的同一份网格**，不自己栅格化，所以两边不会对同一堵墙有不同看法。地图发布后不原地改：改了可走范围、落脚点或物件位置就换 `mapVersion`；启动时位置在新地图上不合法的人会被挪到所在区域的落脚点，位置还合法但区域划分变了的，区域标签改成脚下的区域。后端不需要安装 Blender 或 Godot。
+**地图**。一份地图源（`spatial/town-map.ts`）：可走范围、障碍、区域、落脚点、可互动物件的位置和使用位置、进出口。启动时编译成 0.5 米的可行走网格（障碍按角色半径外扩），并算出校验值。校验值盖住地图源和栅格化出来的结果（每个场景的可行走网格和区域划分），栅格化的算法变了它也会变；单个场景最多 65536 格，寻路的展开上限就是这张网格的格数。客户端通过 `GET /map` 拿到地图源和**服务器栅格化之后的同一份网格**，不自己栅格化，所以两边不会对同一堵墙有不同看法。地图发布后不原地改：改了可走范围、落脚点或物件位置就换 `mapVersion`；启动时位置在新地图上不合法的人会被挪到所在区域的落脚点，位置还合法但区域划分变了的，区域标签改成脚下的区域；换版本时正走在路上的人，旧路线直接作废（不拿新地图去结算旧折线），人留在那一段的起点再按上面的规则校正。后端不需要安装 Blender 或 Godot。
 
 **导航**。居民（真人和 AI 一样）只提交目的地，路线由服务器用 A* 规划：
 
@@ -210,7 +210,7 @@ packages/engine/town/             旧的网页前端（静态文件；会被 God
 
 | type | 字段 | 说明 |
 |---|---|---|
-| `navigate` | `to` 或 `approach` | 走过去。`to`：目的地 id、`home`（自己家）、`home:<id>`、公共物件编号、居民编号、地图点 `{x, z}`；`approach`：居民编号。返回 `navigation: {navigationId, revision, to, arriveAt, continues, leaseUntil, renewEveryMs}`；已经在旁边时是 `completed` + `already: "near"`。`continues: true` 表示这一段走完还要穿过门口接着走。失败原因：`already_here`、`no_such_place`、`no_access`、`no_route`、`unreachable`、`not_here`。走路时再发一次就是改道 |
+| `navigate` | `to` 或 `approach` | 走过去。`to`：目的地 id、`home`（自己家）、`home:<id>`、公共物件编号、居民编号、地图点 `{x, z}`；`approach`：居民编号。返回 `navigation: {navigationId, revision, to, arriveAt, continues, leaseUntil, renewEveryMs}`；已经在旁边时是 `completed` + `already: "near"`。`continues: true` 表示这一段走完还要穿过门口接着走。失败原因：`already_here`、`no_such_place`、`no_access`、`no_route`、`unreachable`、`not_here`。走路时再发一次就是改道；正往外走的人说要去脚下这片区域（或者在家里正往门口走时说回家），是改主意要回来，照常走回落脚点，站着不动时才是 `already_here` |
 | `stop_navigation` | — | 停在这一刻的位置。返回 `{stopped, at: {space, x, z}}` |
 | `move` | `to` | 旧名字，等同 `navigate` |
 | `speak` | `text` | 现场发言，最多 120 字（超出的截掉）。受众在提交那一刻固定：同一区域、在场、不在小游戏里。边走边说也可以 |
@@ -285,7 +285,7 @@ packages/engine/town/             旧的网页前端（静态文件；会被 God
 
 `/town/ws` 负责两件事：把场景快照推给同一场景里的人，以及作为耐久事件的另一条通道（和 SSE 同一套投影）。**耐久动作一律走 HTTP**（`POST /actions`），WebSocket 上只有续租和探活。旧客户端可以继续只用 SSE + `GET /scene` 轮询。
 
-连接：先 `POST /ws-ticket` 取票据（一次性、30 秒、绑定登录身份和 `clientId`），再连 `/town/ws`。握手时检查 `Origin`；连接本身不认 Cookie，第一条消息必须在 5 秒内带票据说 hello。消息都是 JSON 文本帧，`t` 是类型。
+连接：先 `POST /ws-ticket` 取票据（一次性、30 秒、绑定取票时的那次登录和 `clientId`），再连 `/town/ws`。连接跟着那次登录走：登出只关这一次登录开的连接（同一个人在别的设备上的不受影响）；登录过期或被撤销后，连接在下一次探活或续租时被关掉（4403）。握手时检查 `Origin`；连接本身不认 Cookie，第一条消息必须在 5 秒内带票据说 hello。消息都是 JSON 文本帧，`t` 是类型。
 
 | 方向 | 消息 | 说明 |
 |---|---|---|
@@ -299,9 +299,9 @@ packages/engine/town/             旧的网页前端（静态文件；会被 God
 
 没带 `cursor` 就从当前水位开始，不回放历史；游标无效或已被裁剪时收到 `resync`。坏消息（不是 JSON、不认识的类型、重复 hello）只回 `error`，不断开。
 
-握着控制权的客户端**正常关闭**连接（关闭码 1000 / 1001，比如关页面）会让正在走的居民立即停步；异常断开不会，由导航租约到期兜底（最多 10 秒），手机网络抖一下不至于立刻停。WebSocket 不代替在场心跳。
+握着控制权的客户端**正常关闭**连接（关闭码 1000 / 1001，比如关页面）会让正在走的居民立即停步；异常断开不会，由导航租约到期兜底（最多 10 秒），手机网络抖一下不至于立刻停。同一个客户端（同一登录身份、同一个 `clientId`）还有别的连接在时不算关闭（比如先连上新的再关旧的），服务器主动关掉的连接也不算。WebSocket 不代替在场心跳。
 
-限制和关闭码：单帧最多 4 KiB（超了 1009），只收文本帧（二进制 1003），每条连接每秒最多 30 条消息（超了 1008）。同一居民最多 4 条连接，同一 IP 和全镇总数沿用 SSE 的上限（握手时超了是 HTTP 429）。
+限制和关闭码：单帧最多 4 KiB（超了 1009），只收文本帧（二进制 1003），每条连接每秒最多 30 条消息（超了 1008）。续租按居民限速（所有连接合计，突发 6 次、之后每秒 2 次；正常每 3 秒一次远远够用），超了回 `error` `rate_limited`，不断开、也不续。同一居民最多 4 条连接，同一 IP 和全镇总数沿用 SSE 的上限（握手时超了是 HTTP 429）。
 
 | 关闭码 | 含义 |
 |---|---|
@@ -322,7 +322,7 @@ packages/engine/town/             旧的网页前端（静态文件；会被 God
 - 在小游戏里时 `here` 为 `null`。走路时 `here` 是脚下区域的现场。
 - `here.exits` 是所有可去的目的地（带大概要走多少秒）；`here.objects[].near` 表示此刻够不够得着。
 - `SceneView`（`space.ts`）：同一个场景实例里在场的人。公共场景的快照里没有任何私宅里的人；私宅的快照只给屋里的人；自己不在场（离线）时快照里只有自己。
-- AI 用的紧凑视图 `agentView` 是同样的权限、去掉了展示用的冗余：`location: {space, name, walking?}`，够不着的物件带 `far: true`。
+- AI 用的紧凑视图 `agentView` 是同样的权限、去掉了展示用的冗余：`location: {space, name, walking?}`（`walking: {to, navigation_id, revision, arrive_at, lease_until, renew_every_ms}`，接手一位正在走的居民时照这个立刻续一次租），够不着的物件带 `far: true`。
 - 门牌（`here.doors`，只在灯巷会馆）只列：自己家、已经得知且已经生效的邀请对应的家、此刻在场的邻居的家。信还在路上、送达了没读、生效时间没到的邀请都不会让寄信人的门出现。
 - 背包条目带 `stackable`（只有本人看得到）。可叠放的东西（消耗品、鲜花、灯笼之类）一律用 `itemType`（报价里是 `type`）加 `qty` 指定；只有不可叠放的东西（书、家具、借来的东西）才用 `itemId`。`agentView` 只给后者带 `itemId`。
 - 愿望列表（`goals`）里 `status: "offered"` 的是长期愿望完成后的候选，`choose_goal {goalId}` 选定；`agentView` 里标成 `offered: true`、没有进度。

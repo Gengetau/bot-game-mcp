@@ -17,6 +17,8 @@ import type {
 
 const EPS = 1e-6;
 const MAX_GRID = 1024;
+/** 一张场景最多多少个格子：寻路最坏要把每个格子展开一次，这个数就是单次寻路开销的上限 */
+const MAX_CELLS = 65536;
 const MAX_ZONES = 35;
 const ZONE_CHARS = '0123456789abcdefghijklmnopqrstuvwxyz';
 
@@ -198,6 +200,10 @@ export function compileMap(source: MapSource): CompiledMap {
         p(`网格超过 ${MAX_GRID}×${MAX_GRID}`);
         geoOk = false;
       }
+      if (geoOk && Math.round(b.w / s.cell) * Math.round(b.d / s.cell) > MAX_CELLS) {
+        p(`网格超过 ${MAX_CELLS} 格（场景太大就拆成几张，或者加大 cell）`);
+        geoOk = false;
+      }
       s.walk.forEach((w, i) => {
         if (!(w.w > 0 && w.d > 0)) {
           p(`walk[${i}] 尺寸必须为正`);
@@ -295,9 +301,17 @@ export function compileMap(source: MapSource): CompiledMap {
 
   if (problems.length) throw new Error(`地图 ${source.mapVersion} 无效：` + problems.join('；'));
 
+  // 校验值覆盖地图源和栅格化的结果：栅格化的算法改了而地图源没改，校验值也会变，
+  // 客户端不会把缓存里的旧网格当成新的（GET /map 的 ETag 就是它）
+  const hash = createHash('sha256').update(canonicalJson(source));
+  for (const id of [...scenes.keys()].sort()) {
+    const cs = scenes.get(id)!;
+    hash.update(`|${id}|${cs.cols}x${cs.rows}|`).update(cs.walkable).update(cs.zoneOf);
+  }
+
   return {
     mapVersion: source.mapVersion,
-    checksum: createHash('sha256').update(canonicalJson(source)).digest('hex'),
+    checksum: hash.digest('hex'),
     agentRadius: source.agentRadius,
     speed: source.speed,
     interactDistance: source.interactDistance,

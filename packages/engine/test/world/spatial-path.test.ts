@@ -183,7 +183,8 @@ describe('findPath', () => {
       obstacles,
     });
     const t0 = performance.now();
-    const r = findPath(sc, { x: 2.5, z: 100.5 }, { x: 197.5, z: 100.5 }, { maxExpansions: 100000 });
+    // 不传上限：默认按格子数封顶，四万格的迷宫里走得到的两点不会被误判成走不到
+    const r = findPath(sc, { x: 2.5, z: 100.5 }, { x: 197.5, z: 100.5 });
     const ms = performance.now() - t0;
     console.log(`A* 200x200: ${ms.toFixed(1)} ms, points=${r?.points.length}, length=${r?.length.toFixed(1)}`);
     expect(r).not.toBeNull();

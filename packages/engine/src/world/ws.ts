@@ -45,13 +45,20 @@ export interface TownWsOptions {
   maxBufferedBytes?: number;
 }
 
+/** 取票时所在的登录会话：连接的寿命不超过它。key 只用来把连接和会话对上（传哈希，不传令牌本身）。 */
+export interface TicketSession {
+  key: string;
+  /** 这个会话此刻还有效吗（没过期、没被撤销） */
+  valid: () => boolean;
+}
+
 export interface TownWs {
   /** 取一张一次性票据（调用方已经验证过登录） */
-  issueTicket(principalId: string, clientId: string): { ticket: string; expiresAt: number };
+  issueTicket(principalId: string, clientId: string, session?: TicketSession): { ticket: string; expiresAt: number };
   /** 挂上 HTTP 服务器的 upgrade 事件（只接 /town/ws） */
   attach(server: HttpServer): void;
-  /** 关掉这个 principal 的所有连接并作废她的票据（登出） */
-  closePrincipal(principalId: string): void;
+  /** 关掉这个登录会话的所有连接并作废它没用过的票据（登出）。同一个人在别的设备上的会话不受影响 */
+  closeSession(sessionKey: string): void;
   close(): void;
   /** 当前连接数（含还没 hello 的），测试用 */
   connections(): number;
@@ -61,7 +68,12 @@ interface Ticket {
   principalId: string;
   clientId: string;
   expiresAt: number;
+  session: TicketSession | null;
 }
+
+/** 续租的令牌桶（按居民，跨她的所有连接）：正常客户端 3 秒续一次，这里留足余量 */
+const RENEW_BURST = 6;
+const RENEW_PER_SECOND = 2;
 
 const MAX_FRAME = 4096;
 const HELLO_KEYS_MAX = 200;
@@ -78,7 +90,7 @@ export function createTownWs(w: WorldService, log: (msg: string) => void, opts: 
 
   // ── 票据（进程内存，不落库；票据是凭据，不进日志） ──
   const tickets = new Map<string, Ticket>();
-  const issueTicket: TownWs['issueTicket'] = (principalId, clientId) => {
+  const issueTicket: TownWs['issueTicket'] = (principalId, clientId, session) => {
     const now = w.now();
     for (const [k, t] of tickets) if (t.expiresAt <= now) tickets.delete(k);
     const mine = [...tickets.entries()].filter(([, t]) => t.principalId === principalId);
@@ -86,7 +98,7 @@ export function createTownWs(w: WorldService, log: (msg: string) => void, opts: 
     for (let i = 0; i <= mine.length - maxTickets; i++) tickets.delete(mine[i]![0]);
     const ticket = randomBytes(32).toString('base64url');
     const expiresAt = now + ticketTtlMs;
-    tickets.set(ticket, { principalId, clientId, expiresAt });
+    tickets.set(ticket, { principalId, clientId, expiresAt, session: session ?? null });
     return { ticket, expiresAt };
   };
   const consumeTicket = (raw: unknown): Ticket | null => {
@@ -104,11 +116,24 @@ export function createTownWs(w: WorldService, log: (msg: string) => void, opts: 
     principalId: string | null;
     clientId: string | null;
     residentId: string | null;
+    sessionKey: string | null;
     closeWith(code: number, reason: string): void;
   }
   const conns = new Set<Conn>();
   const perIp = new Map<string, number>();
   const perResident = new Map<string, number>();
+  const renewBuckets = new Map<string, { tokens: number; at: number }>();
+  /** 续租限流：WebSocket 上的 renew 不经过 HTTP 的限流，这里按居民另算一份。 */
+  const takeRenew = (residentId: string): boolean => {
+    const now = Date.now();
+    const b = renewBuckets.get(residentId) ?? { tokens: RENEW_BURST, at: now };
+    b.tokens = Math.min(RENEW_BURST, b.tokens + ((now - b.at) / 1000) * RENEW_PER_SECOND);
+    b.at = now;
+    renewBuckets.set(residentId, b);
+    if (b.tokens < 1) return false;
+    b.tokens -= 1;
+    return true;
+  };
   const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_FRAME, perMessageDeflate: false });
   let attached: { server: HttpServer; onUpgrade: (req: IncomingMessage, socket: Duplex, head: Buffer) => void } | null = null;
   let closed = false;
@@ -189,6 +214,7 @@ export function createTownWs(w: WorldService, log: (msg: string) => void, opts: 
     const timers: NodeJS.Timeout[] = [];
     let helloDone = false;
     let auth: { principalId: string; clientId: string } | null = null;
+    let session: TicketSession | null = null;
     let residentId: string | null = null;
     let cursor: string | undefined;
     let lastKey: string | null = null;
@@ -206,6 +232,7 @@ export function createTownWs(w: WorldService, log: (msg: string) => void, opts: 
       principalId: null,
       clientId: null,
       residentId: null,
+      sessionKey: null,
       closeWith(code, reason) {
         serverClosed = true;
         if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
@@ -257,7 +284,6 @@ export function createTownWs(w: WorldService, log: (msg: string) => void, opts: 
       if (sceneTimer || ws.readyState !== WebSocket.OPEN) return;
       const wait = Math.max(0, lastSceneAt + minSceneMs - Date.now());
       sceneTimer = setTimeout(sendScene, wait);
-      timers.push(sceneTimer);
     };
 
     const pump = () => {
@@ -282,14 +308,28 @@ export function createTownWs(w: WorldService, log: (msg: string) => void, opts: 
     const cleanup = () => {
       if (!conns.delete(conn)) return;
       bump(perIp, ip, -1);
-      if (residentId) bump(perResident, residentId, -1);
+      if (residentId) {
+        bump(perResident, residentId, -1);
+        if (!perResident.has(residentId)) renewBuckets.delete(residentId);
+      }
       for (const t of timers) clearTimeout(t);
+      if (sceneTimer) clearTimeout(sceneTimer);
+      sceneTimer = null;
       clearInterval(pinger);
       for (const off of offs) off();
     };
 
+    /** 取票时的登录会话过期或被撤销了：连接不能比它活得更久（和 SSE 一样）。 */
+    const sessionGone = (): boolean => {
+      if (!session || session.valid()) return false;
+      sendError('revoked', '登录已失效，请重新登录。');
+      conn.closeWith(4403, '会话已失效');
+      return true;
+    };
+
     const pinger = setInterval(() => {
       if (ws.readyState !== WebSocket.OPEN) return;
+      if (sessionGone()) return;
       if (missedPongs >= 2) return void ws.terminate();
       missedPongs++;
       try {
@@ -327,11 +367,18 @@ export function createTownWs(w: WorldService, log: (msg: string) => void, opts: 
         conn.closeWith(1013, '连接太多');
         return;
       }
+      if (t.session && !t.session.valid()) {
+        sendError('unauthenticated', '登录已失效，请重新登录。');
+        conn.closeWith(4401, '会话已失效');
+        return;
+      }
       auth = { principalId: t.principalId, clientId: t.clientId };
+      session = t.session;
       residentId = r.resident_id;
       conn.principalId = t.principalId;
       conn.clientId = t.clientId;
       conn.residentId = r.resident_id;
+      conn.sessionKey = t.session?.key ?? null;
       bump(perResident, residentId, 1);
       const given = typeof m.cursor === 'string' && m.cursor.length > 0 && m.cursor.length <= HELLO_KEYS_MAX ? m.cursor : undefined;
       cursor = given;
@@ -370,7 +417,9 @@ export function createTownWs(w: WorldService, log: (msg: string) => void, opts: 
     };
 
     const doRenew = (m: Record<string, unknown>) => {
-      if (!auth) return;
+      if (!auth || !residentId) return;
+      if (sessionGone()) return;
+      if (!takeRenew(residentId)) return void sendError('rate_limited', '续租太频繁了。');
       try {
         const out = renewNavigation(w, auth, { navigationId: m.navigationId, revision: m.revision });
         send({ t: 'renewed', ...out });
@@ -446,15 +495,16 @@ export function createTownWs(w: WorldService, log: (msg: string) => void, opts: 
       server.on('upgrade', onUpgrade);
       attached = { server, onUpgrade };
     },
-    closePrincipal(principalId) {
-      for (const [k, t] of tickets) if (t.principalId === principalId) tickets.delete(k);
-      for (const c of [...conns]) if (c.principalId === principalId) c.closeWith(4403, '已登出');
+    closeSession(sessionKey) {
+      for (const [k, t] of tickets) if (t.session?.key === sessionKey) tickets.delete(k);
+      for (const c of [...conns]) if (c.sessionKey === sessionKey) c.closeWith(4403, '已登出');
     },
     close() {
       closed = true;
       attached?.server.off('upgrade', attached.onUpgrade);
       attached = null;
       tickets.clear();
+      renewBuckets.clear();
       for (const c of [...conns]) {
         c.closeWith(1001, '服务关闭');
         c.ws.terminate();

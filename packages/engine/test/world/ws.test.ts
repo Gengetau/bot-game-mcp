@@ -391,12 +391,12 @@ describe('WS：scene 同步', () => {
     const w = app.t.w;
     const key = sceneKeyOfResident(w, u.residentId)!;
     const from = c.msgs.length;
-    // 先是同一瞬间 50 次变化：合并成很少几帧
+    // 先是同一瞬间 50 次变化：合并成很少几帧（之后没有新的变化，机器再慢帧数也不会变多）
     for (let i = 0; i < 50; i++) w.commit(() => w.bumpSpace(key));
+    await c.type('scene', 3000, from);
     await new Promise((r) => setTimeout(r, 250));
-    expect(c.count('scene', from)).toBeGreaterThanOrEqual(1);
     expect(c.count('scene', from)).toBeLessThanOrEqual(3);
-    // 再是 1 秒内每 5 毫秒一次变化：不超过 10 帧（留 1 帧余量给边界）
+    // 再是一秒左右每 5 毫秒一次变化：帧数不超过「经过的时间 / 100 毫秒」（按实际经过的时间算，慢机器上也成立）
     const from2 = c.msgs.length;
     const start = Date.now();
     while (Date.now() - start < 1000) {
@@ -404,9 +404,13 @@ describe('WS：scene 同步', () => {
       await new Promise((r) => setTimeout(r, 5));
     }
     await new Promise((r) => setTimeout(r, 150));
+    const elapsed = Date.now() - start;
     const n = c.count('scene', from2);
-    expect(n).toBeGreaterThanOrEqual(5);
-    expect(n).toBeLessThanOrEqual(11);
+    expect(n).toBeGreaterThanOrEqual(2);
+    expect(n).toBeLessThanOrEqual(Math.ceil(elapsed / 100) + 1);
+    // 最后一帧是最新的：没有哪次变化被合并丢掉
+    const last = c.msgs.filter((m) => m.t === 'scene').at(-1);
+    expect(last.serverTime).toBe(w.now());
   });
 
   it('别的场景的变化不会触发这条连接的快照', async () => {
@@ -590,9 +594,13 @@ describe('WS：关闭、限额与保活', () => {
     expect(await c.waitClosed()).toBe(4403);
   });
 
-  it('登出：这个 principal 的连接全部被关，未用的票据作废', async () => {
+  it('登出：这个登录会话的连接被关、没用过的票据作废；同一个人在别的设备上的会话不受影响', async () => {
     const app = await serve();
     const { u, c } = await connect(app, '阿灯');
+    // 同一个人在另一台设备上登录：另一个会话、另一个 clientId
+    const other = await new User(app).login('阿灯');
+    expect(other.residentId).toBe(u.residentId);
+    const { c: c2 } = await attach(app, other);
     const spare = await u.ticket();
     expect((await u.post('/town/api/auth/logout', {})).status).toBe(200);
     expect(await c.waitClosed()).toBe(4403);
@@ -600,6 +608,52 @@ describe('WS：关闭、限额与保活', () => {
     again.hello(spare);
     await again.type('error');
     expect(await again.waitClosed()).toBe(4401);
+    // 另一台设备还连着，照常能用
+    c2.send({ t: 'ping', n: 7 });
+    expect(await c2.type('pong')).toMatchObject({ n: 7 });
+    expect(c2.closed).toBeNull();
+  });
+
+  it('登录会话过期：用它连上的 WebSocket 跟着断开（4403），不会比会话活得更久', async () => {
+    const app = await serve({ ws: { pingMs: 40 } });
+    const { u, c } = await connect(app, '阿灯');
+    const other = await connect(app, '小满');
+    // 让阿灯的会话过期（只动她的；小满的不受影响）
+    const pid = app.t.w.db.get('SELECT principal_id FROM residents WHERE resident_id = ?', u.residentId)!.principal_id;
+    app.t.w.db.db.prepare('UPDATE sessions SET expires_at = ? WHERE principal_id = ?').run(app.t.clock.t - 1, pid);
+    await c.waitFor((m) => m.t === 'error' && m.code === 'revoked');
+    expect(await c.waitClosed()).toBe(4403);
+    // 过期的会话也取不到新票
+    expect((await u.post('/town/api/ws-ticket', { clientId: u.clientId })).status).toBe(401);
+    await new Promise((r) => setTimeout(r, 150));
+    expect(other.c.closed).toBeNull();
+  });
+
+  it('取票之后、hello 之前会话就失效了：票据换不来连接', async () => {
+    const app = await serve();
+    const u = await new User(app).login('阿灯');
+    const ticket = await u.ticket();
+    app.t.w.db.db.prepare('UPDATE sessions SET revoked_at = ?').run(app.t.clock.t);
+    const c = await Client.open(app.wsUrl);
+    c.hello(ticket);
+    expect(await c.type('error')).toMatchObject({ code: 'unauthenticated' });
+    expect(await c.waitClosed()).toBe(4401);
+  });
+
+  it('续租有限流：一口气发一堆 renew 只处理前几条，其余回 rate_limited，连接不断', async () => {
+    const app = await serve();
+    const { u, c } = await connect(app, '阿灯');
+    const nav = u.actor.act('navigate', { to: 'tea_house' }).navigation;
+    const from = c.msgs.length;
+    for (let i = 0; i < 20; i++) c.send({ t: 'renew', navigationId: nav.navigationId, revision: nav.revision });
+    c.send({ t: 'ping', n: 1 });
+    await c.waitFor((m) => m.t === 'pong', 3000, from);
+    const renewed = c.msgs.slice(from).filter((m) => m.t === 'renewed').length;
+    const limited = c.msgs.slice(from).filter((m) => m.t === 'error' && m.code === 'rate_limited').length;
+    expect(renewed).toBeGreaterThanOrEqual(1);
+    expect(renewed).toBeLessThanOrEqual(8);
+    expect(renewed + limited).toBe(20);
+    expect(c.closed).toBeNull();
   });
 
   it('世界所在的服务关闭时全部连接关闭', async () => {

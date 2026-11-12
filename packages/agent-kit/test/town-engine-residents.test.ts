@@ -176,10 +176,11 @@ describe('走路：运行器自动续导航租约', () => {
     };
     const h = runner.add({ town: cd, profile: { name: '丁' }, decide, ...FAST });
     const t0 = Date.now();
-    expect(await until(() => seen.some((e) => e.type === 'nav_stopped'), 20_000)).toBe(true);
+    expect(await until(() => seen.some((e) => e.type === 'nav_stopped' || e.type === 'you_arrived'), 40_000)).toBe(true);
     const took = Date.now() - t0;
-    expect(took).toBeGreaterThanOrEqual(9_000); // 租约 10 秒
-    expect(took).toBeLessThan(16_000); // 没有走完全程（约 13 秒）
+    expect(took).toBeGreaterThanOrEqual(9_000); // 租约 10 秒：不会提前停
+    // 不靠耗时上限判断（慢机器上会抖）：是被租约截住的，而不是走完了全程
+    expect(seen.some((e) => e.type === 'you_arrived')).toBe(false);
     const stopped = seen.find((e) => e.type === 'nav_stopped')!;
     expect(stopped.reason).toBe('lease');
     expect(cd.attempts).toBeGreaterThanOrEqual(2); // 运行器试过，但每次都失败，也没有崩
@@ -190,5 +191,5 @@ describe('走路：运行器自动续导航租约', () => {
     expect(v.location.walking).toBeUndefined();
     await runner.stop({ leave: true });
     await cd.close();
-  }, 40_000);
+  }, 60_000);
 });

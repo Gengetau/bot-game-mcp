@@ -10,7 +10,6 @@ export function pathLength(points: Vec2[]): number {
 }
 
 const SQRT2 = Math.SQRT2;
-const DEFAULT_MAX_EXPANSIONS = 20000;
 
 /** 二叉小根堆：按 (f, h, 格子下标) 排序，保证平手时结果确定 */
 class Heap {
@@ -83,7 +82,9 @@ export function findPath(
   to: Vec2,
   opts: { maxExpansions?: number } = {},
 ): PathResult | null {
-  const maxExpansions = opts.maxExpansions ?? DEFAULT_MAX_EXPANSIONS;
+  // 每个格子至多展开一次，所以默认上限取格子数：永远不会把走得到的两点误判成走不到。
+  // 单次寻路的开销由地图大小封顶（编译地图时限制了格子总数）；调用方想更省可以传更小的上限。
+  const maxExpansions = opts.maxExpansions ?? scene.cols * scene.rows;
   const sc = cellAt(scene, from.x, from.z);
   const gc = cellAt(scene, to.x, to.z);
   if (!sc || !gc) return null;

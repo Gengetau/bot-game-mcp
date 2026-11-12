@@ -1,6 +1,6 @@
 # 开发进度与测试记录
 
-## 2026-11-12：v2.0（开放世界）P0 —— 进行中
+## 2026-11-12：v2.0（开放世界）P0 —— 服务端空间切片完成（PR #40），Godot 客户端进行中
 
 主人给了设计文档 TOWN-DESIGN v2.0（「栖灯镇开放世界产品与技术方案」，完整替代 v1.1 的同范围要求）。PR #39 已合进 main，作为改造基线。上下文压缩后先读这一节。
 
@@ -27,6 +27,39 @@
 - 导航：`navigate`（目标可以是地点别名、物件、居民、地图点）和 `stop_navigation`；每次变化 `navigationRevision` 加一，定时任务 `nav_step` 必须对上导航编号和版本才生效。导航租约 10 秒、每 3 秒续一次（不走回执管线）；`positionAt` 截断在租约截止时刻。离线、被接管、控制连接断开都立即停步。重启后停在最后一个耐久检查点。
 - 走路时可以说话、可以做现场动作（按所在区域）。P0 里人与人的互动仍按「同一区域」，公共物件按距离（够不着返回 `too_far`，先 `navigate` 到物件）。按距离听见说话、公屏、NPC 是 P1。
 - 实时通道：WebSocket `/town/ws`（一次性连接票据），发空间快照和增量，也转发耐久事件；导航变更等耐久动作仍走 HTTP。SSE 保留给旧客户端。
+
+**P0 第一部分：服务端空间切片（PR #40，草稿，未合并、未部署）**
+
+- 做了什么：
+  - `world/spatial/`（纯函数）：地图源 `town-map.ts`（`town-p0.1`，0.5 米网格 128×96）、`compile.ts`（栅格化、校验值）、`grid.ts`、`path.ts`（A*，不斜穿障碍角）、`motion.ts`（`positionAt`）。
+  - `world/space.ts`（位置的唯一写入方）：`world_actors` 表（schema v3）、`navigate` / `stop_navigation`、导航控制租约与续租、`nav_step` 任务、区域跨越（改写区域标签并触发原有的离开 / 到达处理）、私宅实例与门口权限、够得着判定、场景快照 `sceneView`、地图清单、重启检查点、旧数据迁移。
+  - 其余模块按空间模型改造：identity（离线 / 接管即停步）、life、interact（公共物件按距离）、mail、games、social、views / project（坐标只给本人和同场景实例的人）。
+  - 传输：HTTP `GET /map`、`GET /scene`、`POST /nav/renew`、`POST /ws-ticket`；WebSocket `/town/ws`（一次性票据、绑定登录会话、快照合并下发、耐久事件转发、续租、限速和各类上限）。
+  - MCP：工具数量不变；`world_act` 多了 `navigate` / `stop_navigation`，`heartbeat` 可带 `navigation_id` + `revision` 续租。agent-kit：`TownClient.navigate / approach / stopNavigation / renewNavigation`，`ResidentRunner` 后台续租循环（不调用模型）。旧网页 `/town/` 改成兼容新接口（仍是 SVG 地图，走路时轮询 `/scene` 并续租）。
+  - 脚本：`world:simulate` / `world:recovery` / `world:load` 都换成空间模型，加了空间不变量和导航故障场景。
+- 审查（多角度找问题 → 独立反驳式复核 → 修复 → 反向验证测试）：
+  - 改造中途一位独立审查者看空间本体：4 条，全部修复（不在场的观察者能拿到在场者坐标；续租只对编号不对版本；续租每次都唤醒整个场景；地图换版本后区域标签不跟着脚下走）。
+  - 完成后 8 个角度的审查：13 条，没有高危；两条中等的复核后降为低。全部处理：WebSocket 绑定到取票的那次登录（登出只关这次登录的连接，会话失效后连接被关）；WebSocket 续租按居民限速；场景定时器累积；正在走的人说回脚下区域 / 回屋里被答 `already_here`；运行器接手正在走的居民时首轮续租要等满一个周期（现在立刻续）；指南把 `rate_limited` 列成 navigate 的失败原因；换地图版本时正在走的人重启后按旧折线结算；A* 展开上限小于网格格数；校验值没盖住栅格化结果；README 过时；三处测试不牢（恒真的隐私断言、依赖墙钟的阈值）。
+  - 这批修复再过一轮 4 个角度的反驳式复核（结果见下面「测试结果」之后的记录）。
+- 有意的设计（免得以后重复讨论）：
+  - 走路的人自己跨区域时不收事件（不为每一步路唤醒模型）；续租回答和场景快照带 `space`，客户端自己看。
+  - 人与人的当面互动 P0 仍按「同一区域」；公共物件按距离。按距离听见、公屏、NPC 是 P1。
+  - 住宅区的 `left` 事件会让会馆门前的人知道「有人离开了这片地方」，但不知道进了谁家——和 v1 的粗粒度投影一致。
+  - 握着控制权的 WebSocket 正常关闭才立即停步；异常断开靠 10 秒租约兜底。
+- 测试结果（最终代码实测）：
+  - `npm run typecheck` 通过；`npm test` 68 个文件 1389 个测试全过；`npm run build && npm run e2e` 通过；`npm run docs` 无差异。
+  - `world:simulate --days 1 --residents 12 --seed 1`：0 违例，摘要 `4945110df0c6f8e3`（修复前后一致）。
+  - `world:recovery`：200 轮、15618 次不变量检查全部成立；导航故障场景（走到一半被杀、`nav_step` 提交前 / 后失败、跨区域时崩溃）共 210 项全过。
+  - `world:load`：30 位居民 3 局小游戏，命令 p99 12.0 ms、续租 p99 12.9 ms（门槛 50 ms；这次是和审查任务抢 CPU 时量的，空闲时约 10 / 8 ms）；场景快照 5.5 KiB / 30 人。
+- 已知的限制：
+  - `nav_step` 靠 1 秒一次的 tick 触发，跨区域 / 到达的处理最多晚 1 秒左右（p95 约 260 ms）。位置本身按时间现算，不受影响；晚的只是区域标签和到达事件。
+  - 没有真机验证（安卓、iOS Safari）；WebSocket 只在 Node 的 `ws` 客户端和无头 Chromium 里测过。
+  - 旧页面 `/town/` 的地图仍是示意图，不显示连续位置；它会被 Godot 客户端取代。
+
+**P0 第二部分：Godot 灰盒网页客户端（进行中）**
+
+- 任务说明写在会话草稿里（容器是临时的，要点记在这里）：工程在 `client/town/`，导出产物不进库；挂在 `/town/3d/`，由引擎静态托管（配置 `town.clientDir` / `BOTGAME_TOWN_CLIENT_DIR`），单独的 CSP，外壳没有内联脚本；灰盒从 `GET /map` 生成，客户端不寻路、不预测，只按服务器折线和服务器时间插值；点地 / 停下 / 改道 / 走近物件做一次动作 / 进出私宅；角色走 Blender（bpy）→ GLB 链路；手势后播放音频；`?debug=1` 时把位置写到 `window.__town` 给 Playwright 断言；`npm run client:e2e` 不进 CI。
+- 分支只有一条（`claude/loving-ride-s01h0g`）：PR #40 没合并之前，客户端的提交会接在同一个 PR 后面。
 
 ## 2026-11-12：持续世界「栖灯镇」（后端 + 前端，PR #39，未部署）
 

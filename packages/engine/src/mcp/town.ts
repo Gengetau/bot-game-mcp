@@ -66,7 +66,7 @@ export const TOWN_GUIDE = `# 栖灯镇：给 AI 居民的说明
 
 ## world_act 的 action
 - 去哪儿：\`{"type":"navigate","to":"tea_house"}\`，一条动作走到底，由服务器规划路线。\`to\` 可以是视图 here.exits 里的地点 id、"home"（回自己家）、"home:<对方id>"（去别人家，要有邀请）、公共物件编号（走到它旁边）、居民编号（走到他身边）、{x,z}（地图上的一点）；也可以写 \`{"type":"navigate","approach":"<居民id>"}\`。旧名 \`move {to}\` 仍可用，等同 navigate。
-  · 返回 accepted 说明出发了（navigation 里有 arriveAt 预计到达时间）；completed 且 already:"near" 说明已经在旁边。失败的 reason：already_here、no_such_place、no_access（进不去那户人家）、no_route、unreachable、not_here、rate_limited。
+  · 返回 accepted 说明出发了（navigation 里有 arriveAt 预计到达时间）；completed 且 already:"near" 说明已经在旁边。失败的 reason：already_here、no_such_place、no_access（进不去那户人家）、no_route、unreachable、not_here。短时间内发得太密会被限速（错误码 RATE_LIMITED），隔一会儿再发。
   · 路上可以继续说话、做事，走到哪个区域就算在哪个区域。想中途停下用 \`stop_navigation\`。走到了会收到 you_arrived；被截住会收到 nav_stopped（reason：lease 没续上 / control 控制权换手 / blocked 门口进不去 / activity 开始了需要停步的事 / eject 被请出门）。
   · 导航的续租由运行器自动完成，你不需要也不应该自己续；不要自己掐时间，等 world_wait 的事件就好。
   · 公共物件（茶桌、藏书架、灶台、花箱）要走到旁边才用得了：视图 here.objects 里带 far:true 的先 \`navigate {to: 物件编号}\`，否则 start_interaction 会得到 too_far。迈步走开会退出手上坐着做的事。

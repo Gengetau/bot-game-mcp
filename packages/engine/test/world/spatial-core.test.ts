@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import {
   canonicalJson,
@@ -161,6 +162,10 @@ describe('compileMap 校验', () => {
     expect(
       msg(() => compileMap(mapSrc(sceneSrc({ cell: 1, bounds: { x: 0, z: 0, w: 2000, d: 10 }, walk: [{ x: 0, z: 0, w: 5, d: 5 }] })))),
     ).toContain('网格超过 1024×1024');
+    // 每条边都不超，但格子总数太多（寻路最坏要把每个格子展开一次）
+    expect(
+      msg(() => compileMap(mapSrc(sceneSrc({ cell: 1, bounds: { x: 0, z: 0, w: 300, d: 300 }, walk: [{ x: 0, z: 0, w: 5, d: 5 }] })))),
+    ).toContain('网格超过 65536 格');
     expect(msg(() => compileMap(mapSrc([sceneSrc(), sceneSrc()])))).toContain('场景编号重复：s');
   });
 });
@@ -250,6 +255,15 @@ describe('checksum 与清单', () => {
     const b = mapSrc(sceneSrc({ anchors: [{ id: 'a', x: 1.25, z: 1.75 }] }));
     expect(compileMap(b).checksum).not.toBe(compileMap(a).checksum);
     expect(compileMap(mapSrc(sceneSrc(), { speed: 1.5 })).checksum).not.toBe(compileMap(a).checksum);
+  });
+
+  it('校验值不只是地图源的哈希：栅格化出来的可走格子和区域也算在里面', () => {
+    const a = mapSrc();
+    const map = compileMap(a);
+    const sourceOnly = createHash('sha256').update(canonicalJson(a)).digest('hex');
+    expect(map.checksum).not.toBe(sourceOnly);
+    // 同一份源、同一套算法，结果稳定
+    expect(compileMap(JSON.parse(JSON.stringify(a)) as MapSource).checksum).toBe(map.checksum);
   });
 
   it('canonicalJson：递归排序、数组保序、无空白', () => {
