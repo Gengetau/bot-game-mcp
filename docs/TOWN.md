@@ -15,17 +15,19 @@
     "dbFile": "./data/town.db",
     "publicUrl": "https://example.com/town/",
     "devLogin": false,
+    "clientDir": "./client/town/build/web",
     "params": {}
   }
 }
 ```
 
-也可以用环境变量：`BOTGAME_TOWN=1`、`BOTGAME_TOWN_DB`、`BOTGAME_TOWN_URL`、`BOTGAME_TOWN_DEV_LOGIN=1`。
+也可以用环境变量：`BOTGAME_TOWN=1`、`BOTGAME_TOWN_DB`、`BOTGAME_TOWN_URL`、`BOTGAME_TOWN_CLIENT_DIR`、`BOTGAME_TOWN_DEV_LOGIN=1`。
 
 - 数据存在独立的 SQLite 文件里，用 Node 自带的 `node:sqlite`（WAL、`synchronous=FULL`），不需要额外依赖。
 - `devLogin` 是本机试玩用的：任何人输入名字就能以真人身份进入。只该在本机或可信内网打开。
 - 正式环境里真人通过代码裁判私聊拿到的一次性登录链接进入（见「身份」）。
 - 页面在 `/town/`。没登录也能看公开的小镇地图。
+- `clientDir`（可选）：三维网页客户端的导出目录（Godot 网页导出产物），引擎把它挂在 `/town/3d/` 下，规则见「三维客户端的托管」。不填或目录不存在时 `/town/3d/` 返回 404。
 - 部署、密钥和服务器配置不在开发范围内。
 
 本机试一下：
@@ -155,6 +157,30 @@ packages/engine/town/             旧的网页前端（静态文件；会被 God
 | `GET /game?since=` | 我所在小游戏的座位视图 |
 
 `clientId` 是客户端自己生成并保存的稳定编号（4~80 个字母数字或 `-_.:`），每个标签页一个。
+
+### 三维客户端的托管（`/town/3d/`）
+
+引擎只做静态托管，不参与客户端的逻辑。客户端必须挂在 `/town/` 之下，因为会话 Cookie `town_session` 的 `Path` 是 `/town`。
+
+- `GET /town/3d` 重定向（301）到 `/town/3d/`（保留查询串）；`GET /town/3d/` 发 `index.html`；`GET /town/3d/<路径>` 发 `clientDir` 里的文件，允许子目录。只支持 GET / HEAD，其他方法 405。这组路由排在旧页面的 `/town/:file` 之前，`3d` 不会被当成文件名。
+- **类型**：html、js、css、json、png、webp、svg、woff2（同旧页面）加 wasm（`application/wasm`）、pck（`application/octet-stream`）、glb、ogg、wav、mp3、ico。不认识的后缀一律 404（包括 `.br` / `.gz` 本身，它们只作为预压缩副本被选用）。
+- **防目录穿越**：解码后的路径里有 `\`、空字节、空段（`//`）、以点开头的段（含 `..` 和隐藏文件）、坏的百分号编码一律 404；规范化后必须仍在 `clientDir` 之内；文件（含预压缩副本）的真实路径（解析符号链接后）也必须在 `clientDir` 的真实路径之内，指向目录外的符号链接 404。目录之内的符号链接可以。
+- **预压缩**：请求的 `Accept-Encoding` 接受 `br` / `gzip`（`q=0` 视为不接受）且存在同名 `.br` / `.gz` 文件时，直接发预压缩文件（`br` 优先），带 `Content-Encoding` 和 `Vary: Accept-Encoding`，`Content-Type` 仍是原文件的类型。引擎不会在请求时现压缩，要压缩请在导出之后自己做（比如对 `.wasm`、`.pck`、`.js` 各生成 `.br` / `.gz`）。
+- **缓存**：所有文件都带 `ETag`（大小 + 修改时间 + 编码）和 `Last-Modified`，支持 `If-None-Match` → 304；`Cache-Control: no-cache`（每次都校验，Godot 导出的文件名不带哈希，所以不设长缓存），`index.html` 同样。
+- **流式发送**：用文件流，不进内存缓存（`.wasm` 约 40 MB）。不支持 Range。
+- **没配 / 目录不存在**：`clientDir` 没配或目录不存在（每次请求都检查，目录晚点出现也行），`/town/3d/…` 返回 404 和一句中文纯文本说明，不抛异常。
+- **安全头**：`X-Content-Type-Options: nosniff`、`Referrer-Policy: no-referrer`、`X-Frame-Options: DENY` 与旧页面相同。
+- **CSP**（只在这条路径上，旧页面和 `/town/api` 的 CSP 不变）：
+
+  ```
+  default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline';
+  img-src 'self' data: blob:; connect-src 'self' ws://<host>; media-src 'self' blob:; worker-src 'self' blob:;
+  font-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'
+  ```
+
+  没有 `'unsafe-eval'`；`'wasm-unsafe-eval'` 只允许编译 WebAssembly。HTML 外壳不能有内联脚本和内联事件处理器（Godot 的配置放进 `<script type="application/json">` 数据块，由外部脚本读取；这种数据块不是可执行脚本，不受 `script-src` 管）。`style-src 'unsafe-inline'` 沿用旧页面（外壳里的 `<style>` 和 `style` 属性）。
+
+  **WebSocket 与 Safari**：CSP3 规定 `connect-src 'self'` 也匹配同源的 `ws:` / `wss:`，Chromium 和现代 Firefox / Safari 都按此处理；但旧版 Safari（WebKit 在约 15.4 之前）只把 `'self'` 当成 `http(s)`，会拦掉同源 WebSocket。这里没有测过真机 Safari（容器里没有 WebKit），所以按稳妥做法在 `connect-src` 里显式加上 `ws://host` 或 `wss://host`：host 取请求的 `X-Forwarded-Host`（没有就取 `Host`，和 WebSocket 的同源检查一致），scheme 看请求是不是 HTTPS（含 `X-Forwarded-Proto: https`）；配了 `publicUrl` 时它的主机也会加上。Host 头不可信，所以必须匹配「主机名 / IPv4 / `[IPv6]` + 可选端口」的严格格式，含空格、分号、逗号、引号等任何别的字符都被丢弃（那样 `connect-src` 就只剩 `'self'`），不可能借 Host 头往 CSP 里注入指令。
 
 ### 动作请求
 
