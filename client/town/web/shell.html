@@ -13,8 +13,8 @@
 <body>
 <canvas id="canvas" tabindex="-1"></canvas>
 
-<div id="hud" aria-live="polite">
-  <div id="tags"></div>
+<div id="hud">
+  <div id="tags" aria-hidden="true"></div>
 
   <div id="topbar">
     <div class="chip" id="where"><span id="conn" class="dot" title="连接状态"></span><span id="connText" class="conn-text" hidden></span><span id="space">栖灯镇</span></div>
@@ -23,18 +23,22 @@
     <a class="chip btn" id="oldLink" href="/town/">旧页面</a>
   </div>
 
-  <div id="readonly" class="banner" hidden>
-    <span>另一处正握着你的居民，这里现在只读。</span>
-    <button id="claimBtn" type="button" class="primary">接管</button>
-  </div>
+  <!-- 只读横幅、状态条、提示条排在同一个纵向容器里：高度变了（窄屏换行）后面的自动往下排，不再互相压住 -->
+  <div id="stack">
+    <div id="readonly" class="banner" hidden>
+      <span>另一处正握着你的居民，这里现在只读。</span>
+      <button id="claimBtn" type="button" class="primary">接管</button>
+    </div>
 
-  <div id="toasts"></div>
+    <div id="statusRow">
+      <div id="activityChip" class="chip" hidden>
+        <span id="activityText"></span>
+        <button id="leaveActBtn" type="button">停下手上的事</button>
+      </div>
+      <div id="pendingChip" class="chip" hidden><span class="spin"></span><span>正在确认…</span></div>
+    </div>
 
-  <div id="pendingChip" class="chip" hidden><span class="spin"></span><span>正在确认…</span></div>
-
-  <div id="activityChip" class="chip" hidden>
-    <span id="activityText"></span>
-    <button id="leaveActBtn" type="button">停下手上的事</button>
+    <div id="toasts" role="status" aria-live="polite"></div>
   </div>
 
   <div id="bottombar">

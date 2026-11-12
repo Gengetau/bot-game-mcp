@@ -7,7 +7,9 @@
  *
  * 选项：--no-shots 不写截图；--only=3,4 只跑指定步骤（步骤之间有先后依赖，只用于调试）；--keep-engine-log 失败时不删临时目录。
  * 退出码：全部通过为 0；任何步骤失败、控制台错误、页面错误、CSP 违规、请求失败都算失败（非零）。
- * 结果写到 client/demo/results.json，截图写到 client/demo/NN-说明.png（deviceScaleFactor 2）。
+ * 结果写到 client/demo/results.json，截图写到 client/demo/NN-说明.png（手机 deviceScaleFactor 2，桌面 1）。
+ * 只有全部通过（退出码 0）且没有 --only 时才覆盖这两样；失败的运行把结果写到 client/demo/results.failed.json（已 gitignore），
+ * 截图先写到临时目录，通过后才搬过去，不会把已提交的验收记录换成失败记录。
  *
  * 分辨率说明：手机上下文是 390x844、deviceScaleFactor 2；桌面上下文是 1440x900、deviceScaleFactor 1。桌面如果也用 2，
  * 画布有 520 万像素，SwiftShader 只剩 1~2 帧每秒，页面的时钟估计被拖慢到往返 1.5 秒，位置精度断言会被渲染饥饿而不是客户端本身搞坏（实测）。
@@ -18,7 +20,7 @@
  */
 import { spawn, execFileSync } from 'node:child_process';
 import { createRequire } from 'node:module';
-import { existsSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync, readdirSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -33,6 +35,9 @@ const NO_SHOTS = ARGS.includes('--no-shots');
 const KEEP = ARGS.includes('--keep-engine-log');
 const ONLY = (ARGS.find((a) => a.startsWith('--only=')) ?? '').slice(7).split(',').filter(Boolean).map(Number);
 const T_POS = 0.6; // 页面里的位置 与 服务器折线现算位置 的容差（米）
+// 页面的服务器时间估计与服务器真实时间的容差（毫秒）。页面的 serverNow 一秒内只在 Godot 帧里写进 __town（软件渲染约 3~7 帧每秒，
+// 最旧约 300 毫秒），脚本用「值变化的那一刻」去对齐，剩下的是时钟估计本身的误差；走路速度 2.4 米每秒，400 毫秒约 1 米。
+const T_CLOCK_MS = 400;
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const rnd = () => randomBytes(3).toString('hex');
@@ -70,7 +75,9 @@ const freePort = () =>
     });
   });
 
+const browsers = [];
 const TMP = mkdtempSync(join(tmpdir(), 'town-client-e2e-'));
+const SHOT_TMP = join(TMP, 'shots'); // 截图先写这里，全部通过后才搬进 client/demo/
 const AI_KEY = `bgk_e2e_${rnd()}${rnd()}${rnd()}`;
 let engine = null;
 const engineTail = [];
@@ -117,18 +124,59 @@ async function startEngine() {
   }
 }
 
-function stopEngine() {
-  if (!engine || engine.exitCode !== null || !engine.pid) return;
+/** 引擎进程组里还有没有活着的进程（tsx 会再起一层 node，组长退出了孙子可能还在关库）。 */
+function groupAlive() {
+  if (!engine?.pid) return false;
+  try {
+    process.kill(-engine.pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** 停引擎并等进程组真正退出；超时改发 SIGKILL。删临时目录必须在这之后，否则引擎还在关 SQLite 时目录就没了。 */
+async function stopEngine() {
+  if (!engine?.pid || !groupAlive()) return;
   try {
     process.kill(-engine.pid, 'SIGTERM');
   } catch {
+    /* 已经退出 */
+  }
+  const t0 = Date.now();
+  while (groupAlive() && Date.now() - t0 < 8000) await sleep(100);
+  if (groupAlive()) {
     try {
-      engine.kill('SIGTERM');
+      process.kill(-engine.pid, 'SIGKILL');
+    } catch {
+      /* 已经退出 */
+    }
+    while (groupAlive() && Date.now() - t0 < 12_000) await sleep(100);
+  }
+}
+
+// 脚本被 Ctrl-C / 超时杀掉时，引擎自成进程组收不到终端的信号，必须自己停；同步的 exit 钩子兜底（崩溃路径）
+let interrupted = false;
+for (const sig of ['SIGINT', 'SIGTERM']) {
+  process.on(sig, async () => {
+    if (interrupted) return;
+    interrupted = true;
+    console.error(`\n收到 ${sig}，停止引擎并清理…`);
+    for (const b of browsers) await b.close().catch(() => {});
+    await stopEngine();
+    if (!KEEP) rmSync(TMP, { recursive: true, force: true });
+    process.exit(sig === 'SIGINT' ? 130 : 143);
+  });
+}
+process.on('exit', () => {
+  if (engine?.pid && groupAlive()) {
+    try {
+      process.kill(-engine.pid, 'SIGKILL');
     } catch {
       /* 已经退出 */
     }
   }
-}
+});
 
 // ───────────────────────── 步骤记录 ─────────────────────────
 
@@ -150,9 +198,11 @@ async function step(n, title, fn) {
   console.log(`\n步骤 ${n}  ${title}`);
   try {
     await fn();
+    settleAllowed();
     current.ok = true;
     console.log(`  ✓ 步骤 ${n} 通过（${((Date.now() - t0) / 1000).toFixed(1)} 秒）`);
   } catch (e) {
+    for (const p of [A, B, A2, A3].filter(Boolean)) p.w.allow = [];
     current.error = e instanceof Error ? e.message : String(e);
     console.log(`  ✗ 步骤 ${n} 失败：${current.error}`);
   }
@@ -161,20 +211,33 @@ async function step(n, title, fn) {
   results.push(current);
 }
 
+/** 步骤结束时核对声明过的失败请求次数，然后清空声明（下一步重新声明）。 */
+function settleAllowed() {
+  const ws = [A, B, A2, A3].filter(Boolean).map((p) => p.w);
+  const bad = [];
+  for (const w of ws) {
+    for (const a of w.allow) if (a.hits < a.min || a.hits > a.max) bad.push(`[${w.label}] ${a.why}：声明 ${a.min}~${a.max} 次，实际 ${a.hits} 次`);
+    w.allow = [];
+  }
+  if (bad.length) throw new Error(`被拒绝的请求次数与声明不符：${bad.join('；')}`);
+}
+
 // ───────────────────────── 浏览器侧工具 ─────────────────────────
 
 const shots = [];
 async function shot(page, name) {
   if (NO_SHOTS) return;
-  mkdirSync(DEMO_DIR, { recursive: true });
-  const file = join(DEMO_DIR, `${name}.png`);
+  mkdirSync(SHOT_TMP, { recursive: true });
+  const file = join(SHOT_TMP, `${name}.png`);
   await page.screenshot({ path: file });
   shots.push({ name, size: statSync(file).size });
 }
 
 /** 一个被监视的页面：收集控制台错误、页面错误、CSP 违规、失败请求，以及 /actions 的回应。 */
 function watch(page, label) {
-  const w = { label, problems: [], expected: [], actions: [], csp: 0 };
+  // allow：本步骤声明过「会被服务器规则拒绝」的请求（method + 路径）；凡是 >=400 的响应没有对上声明的，一律记为问题。
+  // consoleFail：Chromium 为每个非 2xx 的 fetch 固定打一行 Failed to load resource；它的条数必须等于被声明消耗掉的失败次数。
+  const w = { label, problems: [], allow: [], allowedHits: 0, consoleFail: 0, actions: [], csp: 0 };
   page.on('console', (m) => {
     const text = m.text();
     if (/GPU stall|ReadPixels/.test(text)) return; // 软件渲染的驱动提示，不是错误
@@ -184,9 +247,9 @@ function watch(page, label) {
       return;
     }
     if (m.type() !== 'error') return;
-    // 服务器规则失败（4xx）时 Chromium 固定会打一行这个；本脚本故意触发几次规则失败，按「预期」单独记账
+    // 服务器规则失败（4xx）时 Chromium 固定会打一行这个；只计数，收尾时必须等于 allowedHits
     if (/^Failed to load resource: the server responded with a status of 4\d\d/.test(text)) {
-      w.expected.push(text);
+      w.consoleFail++;
       return;
     }
     w.problems.push(`控制台错误：${text.slice(0, 300)}`);
@@ -201,7 +264,15 @@ function watch(page, label) {
   page.on('response', (r) => {
     const u = r.url();
     const st = r.status();
-    if (st >= 500) w.problems.push(`服务器 ${st}：${r.request().method()} ${u.replace(BASE, '')}`);
+    if (st >= 400) {
+      const m = r.request().method();
+      const path = u.replace(BASE, '');
+      const hit = w.allow.find((a) => a.method === m && a.path.test(path) && a.hits < a.max);
+      if (hit) {
+        hit.hits++;
+        w.allowedHits++;
+      } else w.problems.push(`未声明的 HTTP ${st}：${m} ${path}`);
+    }
     if (!/\/town\/api\/actions$/.test(u) || r.request().method() !== 'POST') return;
     const rec = { status: st, type: null, code: null, message: null, t: Date.now() };
     try {
@@ -223,6 +294,11 @@ function watch(page, label) {
   return w;
 }
 
+/** 声明接下来会有 min~max 次「被服务器规则拒绝」的请求（必须在触发之前调用）；收尾时核对实际次数。 */
+function allowFailure(w, method, path, { min = 1, max = 1, why }) {
+  w.allow.push({ method, path, min, max, why, hits: 0 });
+}
+
 async function newPlayer(browser, label, ctxOpts, { wsGate = false } = {}) {
   const ctx = await browser.newContext(ctxOpts);
   const page = await ctx.newPage();
@@ -234,13 +310,17 @@ async function newPlayer(browser, label, ctxOpts, { wsGate = false } = {}) {
   let gate = null;
   if (wsGate) {
     // 让测试能在需要的时候把 WebSocket 断掉并拦住重连
-    gate = { block: false, sockets: [] };
+    gate = { block: false, silent: false, sockets: [] };
     await page.routeWebSocket(/\/town\/ws/, (ws) => {
       if (gate.block) {
         ws.close();
         return;
       }
-      ws.connectToServer();
+      const server = ws.connectToServer();
+      // 显式转发，才能在 silent 时把服务器发来的消息吞掉（页面那头看起来就是连接还开着、但什么都收不到：半开连接）
+      server.onMessage((m) => {
+        if (!gate.silent) ws.send(m);
+      });
       gate.sockets.push(ws);
     });
   }
@@ -326,6 +406,46 @@ async function serverScene(p) {
 const selfActor = (sc) => sc.actors.find((a) => a.id === sc.self);
 const normPts = (pts) => pts.map((q) => (Array.isArray(q) ? { x: q[0], z: q[1] } : q));
 
+/**
+ * 页面的服务器时间估计与服务器真实时间之差（毫秒，正数 = 页面快）。
+ * 位置断言用页面自己的 serverNow 现算折线位置，只能证明公式一致；时钟对时对不对，要拿服务器那边的时间来比：
+ *  1) 服务器时间对到本机：GET /scene 前后各取一次 Date.now，取中点（扣掉往返的一半），得到 服务器 - 本机 的偏移（同一台机器上应接近 0，一并记下）；
+ *  2) 页面的 __town.serverNow 只在 Godot 帧里写（软件渲染最旧约 300 毫秒），所以快速轮询到它「变化」的那一刻，用前后两次读取的中点作为写入时刻；
+ *  3) 差 = 页面 serverNow - (写入时刻 + 偏移)。
+ */
+async function clockSkew(p) {
+  const t0 = Date.now();
+  const sc = await serverScene(p);
+  const t1 = Date.now();
+  const srvOff = sc.serverTime - (t0 + t1) / 2;
+  const read = () => p.page.evaluate(() => window.__town.serverNow);
+  let prev = await read();
+  let tPrev = Date.now();
+  for (;;) {
+    const n = await read();
+    const tNow = Date.now();
+    if (n !== prev) {
+      const tw = (tPrev + tNow) / 2;
+      return { diff: n - (tw + srvOff), rtt: t1 - t0, srvOff, bracket: tNow - tPrev };
+    }
+    if (tNow - tPrev > 3000) throw new Error('页面的 serverNow 3 秒内没有更新');
+    prev = n;
+    tPrev = tNow;
+  }
+}
+
+/** 连采 3 次；每一次都要在 T_CLOCK_MS 之内。 */
+async function assertClock(p, tag) {
+  const xs = [];
+  for (let i = 0; i < 3; i++) {
+    xs.push(await clockSkew(p));
+    await sleep(150);
+  }
+  note(`${tag}：页面时钟 - 服务器时间 = ${xs.map((x) => x.diff.toFixed(0)).join(' / ')} ms（容差 ±${T_CLOCK_MS}；本机-服务器偏移 ${xs.map((x) => x.srvOff.toFixed(0)).join('/')} ms，/scene 往返 ${xs.map((x) => x.rtt).join('/')} ms，读取括号宽 ${xs.map((x) => x.bracket).join('/')} ms）`);
+  for (const x of xs) check(Math.abs(x.diff) < T_CLOCK_MS, `${tag}：页面的服务器时间估计偏离真实服务器时间 ${x.diff.toFixed(0)} ms，超过 ±${T_CLOCK_MS} ms`);
+  return xs;
+}
+
 /** 按服务器折线 + 速度 + 出发时刻，在服务器时间 t（毫秒）的位置；截断在租约截止 until。 */
 function polyAt(nav, t) {
   const pts = normPts(nav.points);
@@ -362,8 +482,7 @@ const seen = async (page, id) => (await snap(page)).actors.find((a) => a.id === 
 
 // ───────────────────────── 主流程 ─────────────────────────
 
-const browsers = [];
-let A, B, A2;
+let A, B, A2, A3;
 let aiClient = null;
 let aiId = null;
 const metrics = { versions: {}, bundle: [], load: {} };
@@ -418,6 +537,9 @@ async function main() {
 
   // ── 2 ──
   await step(2, 'A 点地走路：服务器里在走；B 页面里 A 的位置与服务器现算位置相差 < 0.6 米', async () => {
+    // 位置对比用的是页面自己的服务器时间，所以先单独核对页面的时钟确实对准了服务器（A、B 两个页面都查；放在走路之前，免得占用走路的时间）
+    await assertClock(B, '步骤 2 B 页');
+    await assertClock(A, '步骤 2 A 页');
     await clickWorld(A, 42, 21);
     const sc0 = await until(async () => {
       const a = selfActor(await serverScene(A));
@@ -506,6 +628,8 @@ async function main() {
   await step(5, '点不可走的地方：有失败提示，角色不动；点障碍内部：按服务器规则', async () => {
     // 先点障碍内部（喷泉正中，从广场里点得到）。服务器规则是「2.5 米内取最近可走点」：要么拒绝要么走到喷泉边上
     const m0 = A.w.actions.length;
+    // 声明：下面空地那一下必定被拒绝（1 次）；喷泉正中的 navigate 是否被拒取决于「最近可走点」规则（再多 0~1 次）
+    allowFailure(A.w, 'POST', /\/town\/api\/actions$/, { min: 1, max: 2, why: '步骤 5：点空地必定 unreachable；喷泉正中可能被拒' });
     const spot = { x: 32, z: 24 }; // 喷泉正中，喷泉脚印 (30.5..33.5, 22.5..25.5)
     const q = await project(A.page, spot.x, spot.z);
     const vp = await viewport(A.page);
@@ -551,6 +675,7 @@ async function main() {
   // ── 6 ──
   await step(6, '走近公共物件做动作：远处直接做 → too_far；走近后成功', async () => {
     const n0 = A.w.actions.length;
+    allowFailure(A.w, 'POST', /\/town\/api\/actions$/, { min: 1, max: 1, why: '步骤 6：远处直接 start_interaction 必定 too_far' });
     await A.page.evaluate(() => window.__town.act({ type: 'start_interaction', objectId: 'bookshop:shelf' }));
     const rec = await until(() => A.w.actions.slice(n0).find((r) => r.type === 'start_interaction' && r.code), 8000, 'too_far 回应');
     check(rec.reason === 'too_far' || rec.code === 'too_far', `期望 too_far，实际 ${rec.code}/${rec.reason}（${rec.message}）`);
@@ -634,6 +759,54 @@ async function main() {
     check(navs.length === 0, `点界面按钮不应发出 navigate，实际 ${navs.length} 条`);
     const end = selfActor(await serverScene(B));
     check(!end.nav && end.x === start.x && end.z === start.z, '点界面按钮后 B 不应移动');
+
+    // 点按判定的阈值按 CSS 像素算（tap-threshold-dpr-1）：dsf 2 的手机上，手指抖 8 个 CSS 像素（16 物理像素，旧阈值 14 物理像素会吞掉）仍是点按；
+    // 单指拖 30 个 CSS 像素（60 物理像素）不是点按。坐标是 CDP 的 CSS 像素。
+    const dpr = await B.page.evaluate(() => window.devicePixelRatio);
+    check(dpr === 2, `手机上下文的 devicePixelRatio 应为 2，实际 ${dpr}`);
+    const pickGround = async () => {
+      const s0 = await snap(B.page);
+      const me = s0.actors.find((a) => a.id === s0.self);
+      const vp = await viewport(B.page);
+      for (const [dx, dz] of [[3, 2], [-3, 2], [3, -3], [-3, -3], [5, 0], [-5, 0]]) {
+        const q = await project(B.page, me.x + dx, me.z + dz);
+        // 左右各留 40 像素给拖动，顶部避开顶栏，底部避开底栏
+        if (q.x > 60 && q.x < vp.w - 60 && q.y > 130 && q.y < vp.h - 200) return q;
+      }
+      throw new Error('找不到可以点的空地');
+    };
+    const q1 = await pickGround();
+    const nTap = B.w.actions.length;
+    // 渲染饥饿时每条 CDP 触摸命令要等渲染进程应答（实测一条约 0.4~0.5 秒），逐条 await 会把「按下到抬起」拖过客户端 700 毫秒的点按时限，
+    // 测的就成了时限而不是位移阈值。所以整段手势一次性发出（命令在同一个会话里按顺序执行），再一起等应答。
+    const tt0 = Date.now();
+    await Promise.all([
+      touch('touchStart', [[q1.x, q1.y]]),
+      touch('touchMove', [[q1.x + 4, q1.y]]),
+      touch('touchMove', [[q1.x + 8, q1.y]]),
+      touch('touchEnd', []),
+    ]);
+    note(`抖动点按整段手势发出并应答耗时 ${Date.now() - tt0} ms`);
+    const tapRec = await until(() => B.w.actions.slice(nTap).find((r) => r.type === 'navigate'), 8000, '手指抖 8 个 CSS 像素的点按仍触发 navigate');
+    check(tapRec.status === 200, `抖动点按的 navigate 应成功，实际 ${tapRec.status} ${tapRec.code}`);
+    await until(async () => selfActor(await serverScene(B))?.nav, 8000, '抖动点按之后服务器里 B 在走');
+    note(`dsf ${dpr}：触摸按下后挪 8 个 CSS 像素再抬起，仍发出 navigate（HTTP ${tapRec.status}）`);
+    await until(async () => !selfActor(await serverScene(B))?.nav, 30_000, 'B 走完');
+    await sleep(500);
+    const q2 = await pickGround();
+    const nDrag = B.w.actions.length;
+    const before = selfActor(await serverScene(B));
+    await Promise.all([
+      touch('touchStart', [[q2.x - 15, q2.y]]),
+      ...[1, 2, 3, 4, 5, 6].map((k) => touch('touchMove', [[q2.x - 15 + k * 5, q2.y]])), // 一共拖 30 个 CSS 像素
+      touch('touchEnd', []),
+    ]);
+    await sleep(1500);
+    const dragNav = B.w.actions.slice(nDrag).filter((r) => r.type === 'navigate');
+    check(dragNav.length === 0, `单指拖 30 个 CSS 像素不应发出 navigate，实际 ${dragNav.length} 条`);
+    const after = selfActor(await serverScene(B));
+    check(!after.nav && after.x === before.x && after.z === before.z, '拖动之后 B 不应在走');
+    note('单指拖动 30 个 CSS 像素：没有 navigate，B 没动');
   });
 
   // ── 8 ──
@@ -646,6 +819,9 @@ async function main() {
     await until(async () => (await seen(A.page, aiId)) && (await seen(B.page, aiId)), 15_000, '两个页面都看见 AI 进镇');
     const start = await seen(B.page, aiId);
     note(`AI ${aiId} 进镇，起点 (${start.x.toFixed(1)}, ${start.z.toFixed(1)})，两个页面都看见`);
+    // AI 走路期间两个页面的位置也是按页面自己的服务器时间现算的：先核对时钟对准了服务器
+    await assertClock(A, '步骤 8 A 页');
+    await assertClock(B, '步骤 8 B 页');
     const r = await aiClient.act({ type: 'navigate', to: 'bookshop' });
     check(r.navigation, 'navigate 应返回导航信息');
     let nav = r.navigation;
@@ -795,16 +971,73 @@ async function main() {
     await sleep(500);
     await shot(A.page, '13-desktop-old-tab-readonly');
   });
+
+  // ── 12 ──
+  await step(12, '复制标签页（window.open 复制 sessionStorage）：新页面换一个 clientId，原页面不变', async () => {
+    const cidOf = (pg) => pg.evaluate(() => (window.TownHud ? window.TownHud.clientId() : null));
+    const c0 = await cidOf(A2.page);
+    check(c0, '第二个标签页应有 clientId');
+    const [pop] = await Promise.all([A.ctx.waitForEvent('page'), A2.page.evaluate(() => void window.open(location.href))]);
+    A3 = { ctx: A.ctx, page: pop, w: watch(pop, 'A3 复制的标签页'), label: 'A3', touch: false };
+    await pop.waitForFunction(() => window.TownHud && window.TownHud.ready, null, { timeout: 120_000 });
+    await pop.evaluate(() => window.TownHud.ready); // 等 Web Locks 抢占完（占用时会换新 id 写回 sessionStorage）
+    const c1 = await cidOf(pop);
+    const stored = await pop.evaluate(() => sessionStorage.getItem('town3d.clientId'));
+    const c0b = await cidOf(A2.page);
+    note(`原页面 ${c0}，复制的页面 ${c1}（sessionStorage 里是 ${stored}）`);
+    check(c1 && c1 !== c0, `复制的标签页应换新的 clientId，实际相同：${c1}`);
+    check(stored === c1, '新 id 应写回复制页面自己的 sessionStorage');
+    check(c0b === c0, '原页面的 clientId 不应变');
+    A3.w.closing = true;
+    await pop.close();
+  });
+
+  // ── 13 ──
+  await step(13, '死连接检测：服务器消息静默约 12 秒，界面转为「重连中」，放行后恢复', async () => {
+    check((await snap(A.page)).conn === 'ok', '开始前 A 页的连接应是 ok');
+    A.gate.silent = true; // 连接还开着，但页面什么都收不到（半开连接）
+    const t0 = Date.now();
+    const down = await until(async () => {
+      const sn = await snap(A.page);
+      return sn.conn !== 'ok' ? sn.conn : null;
+    }, 30_000, '静默之后界面转为断线');
+    const dt = Date.now() - t0;
+    note(`服务器静默 ${(dt / 1000).toFixed(1)} 秒后界面连接状态变为 ${down}（客户端的静默阈值 12 秒，最后一条消息可能在静默开始前 0~5 秒就收到了）`);
+    check(dt >= 6000, `不应在静默不足 6 秒时就判死（实际 ${dt} ms）`);
+    await sleep(800);
+    const banner = await A.page.$eval('#connText', (e) => (e.hidden ? '' : e.textContent));
+    check(/重连|离线/.test(banner), `静默判死后界面应显示文字提示，实际「${banner}」`);
+    A.gate.silent = false;
+    await until(async () => (await snap(A.page)).conn === 'ok', 40_000, '放行后重连成功');
+    note(`放行后恢复为 ok；断线提示「${banner}」`);
+  });
+
+  // ── 14 ──
+  await step(14, '主动离开小镇后：界面停在「已离开」面板，不自动重新进入', async () => {
+    const r = await A2.ctx.request.post(`${BASE}/town/api/leave`, { data: {} });
+    check(r.ok(), `POST /leave 返回 ${r.status()}`);
+    for (const [pg, tag] of [[A2.page, 'A2'], [A.page, 'A']]) {
+      await until(() => pg.evaluate(() => document.body.dataset.phase === 'ready' && /离开了小镇/.test(document.getElementById('panel')?.textContent ?? '')), 20_000, `${tag} 页面出现「你已经离开了小镇」面板`);
+    }
+    await sleep(6000); // 比心跳、重连退避、离线轮询的周期都长；若有自动重进，这段时间里一定发生
+    for (const [pg, tag] of [[A2.page, 'A2'], [A.page, 'A']]) {
+      check(await pg.evaluate(() => document.body.dataset.phase === 'ready'), `${tag} 页面不应自动重新进入`);
+    }
+    const sess = await (await A2.ctx.request.get(`${BASE}/town/api/session`)).json();
+    check(sess.resident && sess.resident.present === false, `服务器上居民应一直是不在场，实际 ${JSON.stringify(sess.resident)}`);
+    await shot(A2.page, '14-desktop-left-town');
+    note('两个页面都停在「你已经离开了小镇」面板，6 秒内没有自动重新进入，服务器上居民不在场');
+  });
 }
 
 // ───────────────────────── 收尾 ─────────────────────────
 
 function allWatches() {
-  return [A, B, A2].filter(Boolean).map((p) => p.w);
+  return [A, B, A2, A3].filter(Boolean).map((p) => p.w);
 }
 
 async function collectCsp() {
-  for (const p of [A, B, A2].filter(Boolean)) {
+  for (const p of [A, B, A2, A3].filter(Boolean)) {
     try {
       const v = await p.page.evaluate(() => window.__csp ?? []);
       if (v.length) p.w.problems.push(`CSP 违规事件：${v.join('; ')}`);
@@ -820,28 +1053,31 @@ try {
   await main();
   await collectCsp();
   // 页面级问题汇总成一个「步骤」
+  await sleep(500); // 让最后的控制台消息到齐
   const probs = allWatches().flatMap((w) => w.problems.map((m) => `[${w.label}] ${m}`));
-  const expected = allWatches().reduce((n, w) => n + w.expected.length, 0);
+  // 控制台里「Failed to load resource … 4xx」的行数必须等于被声明过的预期失败次数：多出来的是没声明的资源/接口失败，少了说明声明没有对上实际请求
+  for (const w of allWatches()) {
+    if (w.consoleFail !== w.allowedHits) probs.push(`[${w.label}] 控制台里 4xx 的「Failed to load resource」${w.consoleFail} 行，与声明过的预期失败 ${w.allowedHits} 次不符`);
+  }
+  const expected = allWatches().reduce((n, w) => n + w.allowedHits, 0);
   console.log('\n全程检查');
-  if (probs.length === 0) console.log(`  ✓ 控制台错误 / pageerror / CSP 违规 / 失败请求：0 条（另有 ${expected} 行是故意触发的服务器规则失败留下的浏览器固有输出）`);
+  if (probs.length === 0) console.log(`  ✓ 控制台错误 / pageerror / CSP 违规 / 失败请求 / 未声明的 4xx、5xx：0 条（另有 ${expected} 次是步骤里声明过的服务器规则拒绝，控制台行数与之相等）`);
   else {
     console.log(`  ✗ 发现 ${probs.length} 条问题：`);
     for (const m of probs) console.log(`      - ${m}`);
   }
-  results.push({ n: 99, title: '全程没有控制台错误、页面错误、CSP 违规、失败请求', ok: probs.length === 0, ms: 0, notes: probs.length ? probs : [`0 条；故意触发的规则失败（4xx）留下的浏览器输出 ${expected} 行`], error: probs.length ? `${probs.length} 条问题` : undefined });
+  results.push({ n: 99, title: '全程没有控制台错误、页面错误、CSP 违规、失败请求', ok: probs.length === 0, ms: 0, notes: probs.length ? probs : [`0 条；步骤里声明过的服务器规则拒绝 ${expected} 次，控制台 4xx 行数与之相等（逐页：${allWatches().map((w) => `${w.label} ${w.consoleFail}/${w.allowedHits}`).join('，')}）`], error: probs.length ? `${probs.length} 条问题` : undefined });
 } catch (e) {
   console.error('\n脚本出错：', e);
   results.push({ n: 0, title: '脚本自身', ok: false, ms: 0, error: String(e?.stack ?? e), notes: [] });
 } finally {
-  for (const p of [A, B, A2].filter(Boolean)) p.w.closing = true;
+  for (const p of [A, B, A2, A3].filter(Boolean)) p.w.closing = true;
   try {
     await aiClient?.close();
   } catch {
     /* 忽略 */
   }
   for (const b of browsers) await b.close().catch(() => {});
-  stopEngine();
-  await sleep(500);
   const failed = results.filter((r) => !r.ok);
   console.log('\n汇总');
   for (const r of results) console.log(`  ${r.ok ? '✓' : '✗'} ${r.n === 99 ? '全程' : `步骤 ${r.n}`}  ${r.title}${r.ok ? '' : `\n      ${r.error}`}`);
@@ -852,18 +1088,28 @@ try {
   } else if (!results.length) {
     exitCode = 1;
   } else console.log(`\n全部 ${results.length} 项通过。`);
+  const report = { date: new Date().toISOString().slice(0, 10), versions: metrics.versions, bundle: metrics.bundle, load: metrics.load, steps: results, shots };
   try {
-    mkdirSync(DEMO_DIR, { recursive: true });
-    const keep = readdirSync(DEMO_DIR).length >= 0;
-    if (keep && !ONLY.length) {
-      writeFileSync(
-        join(DEMO_DIR, 'results.json'),
-        JSON.stringify({ date: new Date().toISOString().slice(0, 10), versions: metrics.versions, bundle: metrics.bundle, load: metrics.load, steps: results, shots }, null, 2),
-      );
+    if (!ONLY.length && !interrupted) {
+      mkdirSync(DEMO_DIR, { recursive: true });
+      if (exitCode === 0) {
+        // 全部通过：截图和 results.json 一起换成这一遍的（截图是先写在临时目录里的）
+        for (const sh of shots) copyFileSync(join(SHOT_TMP, `${sh.name}.png`), join(DEMO_DIR, `${sh.name}.png`));
+        writeFileSync(join(DEMO_DIR, 'results.json'), JSON.stringify(report, null, 2));
+        rmSync(join(DEMO_DIR, 'results.failed.json'), { force: true });
+      } else {
+        // 失败的运行不动已提交的 results.json 和截图
+        writeFileSync(join(DEMO_DIR, 'results.failed.json'), JSON.stringify(report, null, 2));
+        console.log(`失败的结果写在 ${join(DEMO_DIR, 'results.failed.json')}；已提交的 results.json 和截图没有动。`);
+      }
     }
-  } catch {
-    /* 忽略 */
+  } catch (e) {
+    console.error('写结果失败：', e);
+    exitCode = 1;
   }
-  if (!(KEEP && exitCode)) rmSync(TMP, { recursive: true, force: true });
+  // 引擎真正退出之后才删临时目录
+  await stopEngine();
+  if (KEEP && exitCode) console.log(`临时目录保留在 ${TMP}`);
+  else rmSync(TMP, { recursive: true, force: true });
   process.exit(exitCode);
 }

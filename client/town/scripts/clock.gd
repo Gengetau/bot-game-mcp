@@ -6,7 +6,12 @@ extends RefCounted
 var offset_ms: float = 0.0
 var has_sync: bool = false
 var rtt_ms: float = 0.0
-var _samples: Array = []  # [rtt, offset]
+var _samples: Array = []  # [rtt, offset, 采集时刻]
+
+## 样本超过这个年龄就不可信（休眠、换网络之后偏移可能已经变了）
+const MAX_AGE_MS := 25000.0
+## 新样本的偏移和当前偏移差超过这个值，说明旧样本整体过时，丢掉重来
+const JUMP_MS := 500.0
 
 
 static func ticks_ms() -> float:
@@ -19,6 +24,7 @@ func server_now() -> float:
 
 ## 没有 ping 样本之前的粗略估计（假设单程延迟为 0）。
 func rough(server_time: float) -> void:
+	_prune(ticks_ms())
 	if _samples.is_empty():
 		offset_ms = server_time - ticks_ms()
 		has_sync = true
@@ -29,7 +35,10 @@ func sample(sent_ticks: float, recv_ticks: float, server_time: float) -> void:
 	if rtt < 0.0:
 		return
 	var off: float = server_time - (sent_ticks + recv_ticks) * 0.5
-	_samples.append([rtt, off])
+	_prune(recv_ticks)
+	if not _samples.is_empty() and absf(off - offset_ms) > JUMP_MS:
+		_samples.clear()
+	_samples.append([rtt, off, recv_ticks])
 	if _samples.size() > 8:
 		_samples.pop_front()
 	var best: Array = _samples[0]
@@ -39,6 +48,14 @@ func sample(sent_ticks: float, recv_ticks: float, server_time: float) -> void:
 	offset_ms = float(best[1])
 	rtt_ms = float(best[0])
 	has_sync = true
+
+
+func _prune(now_ticks: float) -> void:
+	var keep: Array = []
+	for s in _samples:
+		if now_ticks - float(s[2]) <= MAX_AGE_MS:
+			keep.append(s)
+	_samples = keep
 
 
 func reset() -> void:

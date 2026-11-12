@@ -60,9 +60,17 @@
         });
     },
     unlockAudio: function () {
+      /* 已经 closed 的（Godot 重建过上下文）从列表里清掉，免得越积越多 */
+      audioCtxs = audioCtxs.filter(function (c) {
+        return c.state !== 'closed';
+      });
       audioCtxs.forEach(function (c) {
         try {
-          if (c.state === 'suspended') c.resume();
+          /* iOS Safari 锁屏 / 来电 / 切后台后是 'interrupted' 不是 'suspended'，也要 resume */
+          if (c.state !== 'running' && c.state !== 'closed') {
+            var p = c.resume();
+            if (p && p.catch) p.catch(function () {});
+          }
         } catch (e) {
           /* 被阻止就静音继续 */
         }
@@ -78,6 +86,12 @@
 
   document.addEventListener('visibilitychange', function () {
     host.emit('vis', document.visibilityState === 'visible' ? '1' : '0');
+    /* 回前台先试一次（多数浏览器要用户手势才放行，不行就等下面的手势监听） */
+    if (document.visibilityState === 'visible') host.unlockAudio();
+  });
+  /* 回到前台后的下一次触碰也尝试恢复声音；一直保留，不是一次性的（每次被系统打断都要能再恢复） */
+  ['pointerdown', 'touchend'].forEach(function (n) {
+    document.addEventListener(n, host.unlockAudio, { capture: true, passive: true });
   });
   window.addEventListener('pageshow', function () {
     host.emit('vis', '1');
@@ -118,12 +132,21 @@
     e.preventDefault();
     hud.fatal('图形上下文丢失了（设备资源紧张）。请刷新页面。');
   });
-  engine
-    .startGame({
-      onProgress: function (cur, total) {
-        if (total > 0) hud.setLoading(cur / total, '正在加载客户端… ' + Math.round((cur / total) * 100) + '%');
-        else hud.setLoading(0.3, '正在加载客户端…');
-      },
+  /* Godot 一启动就读 clientId，所以要等 hud.js 把「这个 id 是否被另一个活页面占用」查清楚；
+   * 最多等 1.5 秒兜底（查不出来就按原样用） */
+  Promise.race([
+    hud.ready,
+    new Promise(function (res) {
+      setTimeout(res, 1500);
+    }),
+  ])
+    .then(function () {
+      return engine.startGame({
+        onProgress: function (cur, total) {
+          if (total > 0) hud.setLoading(cur / total, '正在加载客户端… ' + Math.round((cur / total) * 100) + '%');
+          else hud.setLoading(0.3, '正在加载客户端…');
+        },
+      });
     })
     .then(function () {
       hud.setLoading(1, '正在初始化…');

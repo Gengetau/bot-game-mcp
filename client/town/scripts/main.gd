@@ -5,7 +5,9 @@ extends Node3D
 enum Phase { BOOT, READY, BUSY, LOGIN, ERROR, PLAYING }
 
 const API := "/town/api"
-const TAP_MAX_MOVE := 14.0
+## 点按判定的移动阈值，单位是 CSS 像素；实际比较时乘 devicePixelRatio 换成画布的物理像素
+## （Godot 网页端的触摸/鼠标坐标是物理像素，高分屏手机上固定数值会把正常点按判成拖动）
+const TAP_MAX_MOVE_CSS := 10.0
 const TAP_MAX_MS := 700.0
 const SELECT_NEAR := 15.0
 
@@ -75,6 +77,17 @@ var next_poll: float = 0.0
 var last_scene_time: float = -1.0
 var last_pong_ms: float = 0.0
 var ping_sent: Dictionary = {}
+## 死连接检测：最近一次从 WebSocket 收到任何东西的时刻。半开连接（网络切换、NAT 超时）不会触发 close，只能靠静默时长判断
+const WS_SILENT_MS := 12000.0
+const WS_PROBE_MS := 3000.0
+var last_rx_ms: float = 0.0
+var probe_sent_ms: float = 0.0
+var probe_until_ms: float = 0.0  # >0：回到前台后的探测期限，期限前没收到任何东西就按断线处理
+
+var claiming: bool = false  # 自己正在点「接管」：这期间的 control 事件是自己引起的
+var poll_busy: bool = false
+var map_retry_at: float = 0.0
+var revoke_checking: bool = false
 
 # 交互
 var pending: int = 0
@@ -201,9 +214,18 @@ func _on_visibility(vis: bool) -> void:
 	if not vis or phase != Phase.PLAYING:
 		return
 	# 回到前台：马上对时、续心跳、要一份快照
-	next_ping = 0.0
 	next_heartbeat = 0.0
-	if not ws_ready:
+	# 休眠期间时钟样本全不可信：清掉，等快照粗对、ping 精对
+	clock.reset()
+	if ws_ready:
+		# 立刻探测一次：3 秒内什么都没收到就是死连接（手机锁屏后常见）
+		var t: float = clock.ticks_ms()
+		next_ping = t + 5000.0
+		probe_sent_ms = t
+		probe_until_ms = t + WS_PROBE_MS
+		net.send({"t": "ping", "n": t})
+	else:
+		next_ping = 0.0
 		reconnect_at = 0.0
 	_poll_scene()
 
@@ -423,14 +445,16 @@ func _relogin() -> void:
 		_run_flow()
 
 
-func _load_map() -> bool:
+## fatal=false 用于游戏中途重载：失败只提示，不把正在玩的人踢到错误面板。
+func _load_map(fatal: bool = true) -> bool:
 	if map_loading:
 		return false
 	map_loading = true
 	var r: Dictionary = await bridge.http("GET", API + "/map")
 	map_loading = false
 	if int(r["status"]) != 200 or not (r["data"] is Dictionary):
-		_fail("加载地图失败。" + _err_msg(r))
+		if fatal:
+			_fail("加载地图失败。" + _err_msg(r))
 		return false
 	manifest = r["data"]
 	var src: Dictionary = manifest.get("source", {})
@@ -443,13 +467,22 @@ func _load_map() -> bool:
 
 ## 地图校验值对不上：停掉新的空间动作，重新取地图、重建场景。
 func _reload_map_after_mismatch() -> void:
+	var now_t: float = clock.ticks_ms()
+	# 失败后隔几秒才允许再试（下一份对不上的快照会再次触发），不会无限快速重试
+	if map_loading or now_t < map_retry_at:
+		return
+	map_retry_at = now_t + 5000.0
 	_toast("地图更新了，正在重新加载…", "warn")
-	var ok: bool = await _load_map()
-	if ok:
-		_clear_actors()
-		if net.is_open():
-			net.send({"t": "ping", "n": clock.ticks_ms()})
-		_dirty = true
+	var ok: bool = await _load_map(false)
+	if not ok:
+		return
+	_clear_actors()
+	# 对不上的快照被丢掉了，新地图要一份新快照；时间门槛归零，免得被旧时间戳挡掉
+	last_scene_time = 0.0
+	if net.is_open():
+		net.send({"t": "ping", "n": clock.ticks_ms()})
+	_dirty = true
+	await _poll_scene(true)
 
 
 # ───────────────────────── 网络：WebSocket ─────────────────────────
@@ -481,6 +514,8 @@ func _schedule_reconnect() -> void:
 
 
 func _on_ws_open() -> void:
+	last_rx_ms = clock.ticks_ms()
+	probe_until_ms = 0.0
 	net.send({"t": "hello", "v": 1, "ticket": ws_ticket} if ev_cursor == "" else {"t": "hello", "v": 1, "ticket": ws_ticket, "cursor": ev_cursor})
 	ws_ticket = ""
 
@@ -491,17 +526,72 @@ func _on_ws_closed(code: int, _reason: String) -> void:
 	if not want_net:
 		return
 	if code == 4403:
-		_relogin()
+		_on_revoked()
+		return
+	if revoke_checking:
 		return
 	_schedule_reconnect()
 
 
+## 连接被判为死连接：关掉、立刻重连（断线期间续租退回 HTTP、离线轮询自动启动）。
+func _drop_dead_ws() -> void:
+	ws_ready = false
+	probe_until_ms = 0.0
+	net.close_now()
+	reconnect_at = 0.0
+	next_poll = 0.0
+	_dirty = true
+
+
+## 会话被撤销（4403 / revoked）：可能是登录失效，也可能是居民在别处主动离开了小镇。
+## 先查清楚再决定，网络抖动查不出结果时按普通断线重连，不能误判成「离开」。
+func _on_revoked() -> void:
+	if revoke_checking or not want_net:
+		return
+	revoke_checking = true
+	ws_ready = false
+	net.close_now()
+	_dirty = true
+	var sess: Dictionary = await bridge.http("GET", API + "/session")
+	revoke_checking = false
+	if phase != Phase.PLAYING or not want_net:
+		return
+	var d = sess.get("data")
+	if int(sess["status"]) == 200 and d is Dictionary:
+		if not bool(d.get("loggedIn", false)):
+			_relogin()
+			return
+		var res = d.get("resident")
+		if res is Dictionary and not bool(res.get("present", true)):
+			_enter_left_state()
+			return
+		_schedule_reconnect()  # 登录还在、人也还在：只是连接被换掉了
+		return
+	if int(sess["status"]) == 401:
+		_relogin()
+		return
+	_schedule_reconnect()  # 查不到（网络问题）：当普通断线处理
+
+
+## 居民已经不在场：停在面板上等用户点按钮，不自动重新进入。
+func _enter_left_state() -> void:
+	want_net = false
+	ws_ready = false
+	net.close_now()
+	_clear_actors()
+	_hide_marker()
+	_set_phase(Phase.READY, "你已经离开了小镇。想回来的话，点下面的按钮重新进入。")
+
+
 func _on_ws_message(msg: Dictionary) -> void:
+	last_rx_ms = clock.ticks_ms()
 	var t: String = str(msg.get("t", ""))
 	match t:
 		"hello":
 			ws_ready = true
 			backoff_ms = 1000.0
+			# 新连接：旧样本全丢，先用 serverTime 粗对，再立刻 ping 精对
+			clock.reset()
 			clock.rough(float(msg.get("serverTime", 0.0)))
 			renew_every_ms = maxf(1000.0, float(msg.get("renewEveryMs", 3000.0)))
 			ev_cursor = str(msg.get("cursor", ev_cursor))
@@ -530,6 +620,14 @@ func _on_ws_message(msg: Dictionary) -> void:
 		"error":
 			var code: String = str(msg.get("code", ""))
 			if code == "revoked":
+				_on_revoked()
+			elif code == "control_lost":
+				# 和 HTTP 续租路径一致：失去控制权，界面变只读，并读一次自己的状态
+				control_mine = false
+				_dirty = true
+				_heartbeat()
+				_refresh_me()
+			elif code == "unauthenticated":
 				_relogin()
 			elif code != "rate_limited":
 				last_error = code + ": " + str(msg.get("message", ""))
@@ -544,11 +642,14 @@ func _on_event(ev: Dictionary) -> void:
 		"nav_stopped":
 			var reason: String = str(data.get("reason", ""))
 			var table := {"lease": "路上没有续上，停下了。", "control": "控制权换了人，停下了。", "blocked": "前面走不过去，停下了。", "activity": "进入了一局游戏，停下了。", "eject": "你被请出了门。"}
-			_toast(str(table.get(reason, "停下了。")), "warn")
+			# 自己点「接管」也会让原来的路线停下：这时不是别人接管，不报
+			if reason != "control" or (not claiming and not control_mine):
+				_toast(str(table.get(reason, "停下了。")), "warn")
 			_hide_marker()
 			arrival_refresh_at = clock.ticks_ms() + 80.0
 		"control":
-			if int(data.get("epoch", 0)) != control_epoch:
+			# 自己接管期间，事件可能先于 HTTP 回应到达：忽略。平时只有 epoch 比已知的大才是被别处接管
+			if not claiming and int(data.get("epoch", 0)) > control_epoch:
 				control_mine = false
 				control_epoch = int(data.get("epoch", control_epoch))
 				_toast("另一处接管了你的居民，这里变成只读。", "warn")
@@ -591,8 +692,7 @@ func _on_scene(msg: Dictionary) -> void:
 		return
 	var cs: String = str(msg.get("checksum", ""))
 	if cs != "" and manifest.has("checksum") and cs != str(manifest["checksum"]):
-		if not map_loading:
-			_reload_map_after_mismatch()
+		_reload_map_after_mismatch()
 		return
 	# 旧快照不能盖掉新的：WS 推送和 GET /scene 兜底在路上会交错，晚到的旧回应会把刚开始走的人「按回原地」
 	if msg.has("serverTime"):
@@ -662,8 +762,14 @@ func _clear_actors() -> void:
 	renew_id = ""
 
 
-func _poll_scene() -> void:
+## 上一份还没回来就不再发新的（离线轮询每 1.5 秒一次，回前台时还会补一次，慢网络下会越叠越多）。
+## force 只给地图重载用：它要的是重载之后的新快照，不能被重载前发出的那一份顶掉。
+func _poll_scene(force: bool = false) -> void:
+	if poll_busy and not force:
+		return
+	poll_busy = true
 	var r: Dictionary = await bridge.http("GET", API + "/scene")
+	poll_busy = false
 	if int(r["status"]) == 200 and r["data"] is Dictionary:
 		_on_scene(r["data"])
 	elif int(r["status"]) == 401:
@@ -792,6 +898,9 @@ func _do_stop() -> void:
 
 
 func _do_claim() -> void:
+	if claiming:
+		return
+	claiming = true
 	var r: Dictionary = await bridge.http("POST", API + "/claim", {"clientId": client_id})
 	if int(r["status"]) == 200 and r["data"] is Dictionary and bool(r["data"].get("ok", true)):
 		var ctl = r["data"].get("control")
@@ -805,6 +914,7 @@ func _do_claim() -> void:
 		_toast("已接管，可以操作了。", "ok")
 	else:
 		_toast(_err_msg(r), "err")
+	claiming = false
 	_dirty = true
 
 
@@ -892,17 +1002,22 @@ func _tap_begin(p: Vector2) -> void:
 	_tap_start = {"pos": p, "t": clock.ticks_ms()}
 
 
+## 网页端 screen_get_scale() 返回 devicePixelRatio，输入坐标是物理像素：阈值按 CSS 像素换算
+func _tap_limit() -> float:
+	return TAP_MAX_MOVE_CSS * maxf(1.0, DisplayServer.screen_get_scale())
+
+
 func _tap_move(p: Vector2) -> void:
 	if _tap_start.is_empty():
 		return
-	if p.distance_to(_tap_start["pos"]) > TAP_MAX_MOVE:
+	if p.distance_to(_tap_start["pos"]) > _tap_limit():
 		_tap_start.clear()
 
 
 func _tap_finish(p: Vector2) -> void:
 	if _tap_start.is_empty():
 		return
-	var ok: bool = p.distance_to(_tap_start["pos"]) <= TAP_MAX_MOVE and clock.ticks_ms() - float(_tap_start["t"]) <= TAP_MAX_MS
+	var ok: bool = p.distance_to(_tap_start["pos"]) <= _tap_limit() and clock.ticks_ms() - float(_tap_start["t"]) <= TAP_MAX_MS
 	_tap_start.clear()
 	if ok:
 		_on_tap(p)
@@ -952,6 +1067,10 @@ func _on_tap(p: Vector2) -> void:
 	var g = rig.ground_hit(p)
 	if g == null:
 		return
+	# 点到地图范围之外（竖屏时的天空、地图边缘外的远处）：射线会落在很远的地面上，不发导航
+	var bnd = world.bounds.get(cur_scene)
+	if bnd is Rect2 and not (bnd as Rect2).grow(1.0).has_point(Vector2(g.x, g.z)):
+		return
 	selected_obj = ""
 	_do_navigate({"to": {"x": snappedf(g.x, 0.01), "z": snappedf(g.z, 0.01)}}, "", Vector3(g.x, 0.0, g.z))
 
@@ -990,6 +1109,16 @@ func _process(dt: float) -> void:
 		if ws_ready and now_t >= next_ping:
 			next_ping = now_t + 5000.0
 			net.send({"t": "ping", "n": now_t})
+		# 死连接检测：ping 每 5 秒一次，服务器每次都会回，静默超过 12 秒就是半开连接
+		if net.state == "open":
+			var dead: bool = now_t - last_rx_ms > WS_SILENT_MS
+			if probe_until_ms > 0.0:
+				if last_rx_ms >= probe_sent_ms:
+					probe_until_ms = 0.0
+				elif now_t >= probe_until_ms:
+					dead = true
+			if dead:
+				_drop_dead_ws()
 	if now_t >= next_heartbeat and presence_epoch >= 0:
 		next_heartbeat = now_t + float(heartbeat_ms)
 		_heartbeat()
@@ -1223,5 +1352,7 @@ func _push_debug() -> void:
 		"checksum": str(manifest.get("checksum", "")),
 		"lastError": last_error,
 		"markerVisible": marker.visible,
+		"tapLimit": _tap_limit(),
+		"screenScale": DisplayServer.screen_get_scale(),
 	}
 	bridge.hud_debug(JSON.stringify(d))

@@ -105,9 +105,37 @@ client/art_source/, client/ASSETS.md   素材来源与台账
 
 ## 目标浏览器记录
 
-| 环境 | 状态 |
-|---|---|
-| 无头 Chromium（Playwright，SwiftShader，桌面 1440x900 与手机模拟 390x844 触摸） | 已验证：`npm run client:e2e` 的 11 步全过（含 AI 居民、断线重连、两个标签页控制权），无 CSP 违规；细节见 `client/demo/README.md` |
-| 安卓 Chrome | 待真机验证 |
-| iOS Safari（含 `connect-src` 同源 ws、音频手势、安全区） | 待真机验证 |
-| Windows Chrome / Edge | 待真机验证 |
+### 已知的硬性要求（有依据的，不是推测）
+
+| 要求 | 依据 | 说明 |
+|---|---|---|
+| WebGL 2 | Godot 4 的 Compatibility 渲染器基于 WebGL 2 | 缺失时 `boot.js` 用 `Engine.getMissingFeatures({ threads: false })` 检查并在面板上给出中文提示，不进入游戏 |
+| WebAssembly | 引擎是 `index.wasm`（约 39.5 MB，brotli 约 6.9 MB） | 同上 |
+| CSP 允许 `'wasm-unsafe-eval'` | `docs/TOWN.md` 的 CSP：`script-src 'self' 'wasm-unsafe-eval'`，没有 `'unsafe-eval'` | 浏览器必须认 `'wasm-unsafe-eval'` 才能编译 wasm；整页没有内联脚本，客户端也不用 `JavaScriptBridge.eval` |
+| `connect-src` 对同源 WebSocket 的匹配 | `docs/TOWN.md`「WebSocket 与 Safari」：CSP3 规定 `'self'` 也匹配同源 `ws:`/`wss:`，旧版 Safari（约 15.4 之前）只当成 http(s)，会拦同源 WebSocket | 引擎在 `connect-src` 里额外显式写了 `ws(s)://host`，所以按文档不依赖这一点；没有在真机 Safari 上验证过 |
+| 单线程导出 | 导出预设不开线程 | 不需要 `SharedArrayBuffer`，也就不需要 COOP/COEP 头 |
+
+没有写任何「最低版本号」：文档里除了「约 15.4 之前的 Safari 的同源 ws 行为」之外没有依据，真机测过再填。
+
+### 目标环境与记录（真机数据没有，一律「待真机」）
+
+| 环境 | 机型 | 系统版本 | 浏览器版本 | 分辨率 | 首屏到可操作 | 帧时间 | 发现的问题 |
+|---|---|---|---|---|---|---|---|
+| 无头 Chromium（Playwright，SwiftShader，桌面 1440x900 与手机模拟 390x844 触摸 dsf 2） | 容器 4 核，无 GPU | Linux 6.18 | Chromium 见 `client/demo/results.json` 的 `versions` | 1440x900 dsf 1；390x844 dsf 2 | 见 `client/demo/README.md` 步骤 1（回环） | 软件渲染约 3 到 8 帧每秒，无参考意义 | `npm run client:e2e` 全部步骤通过，无 CSP 违规；细节见 `client/demo/README.md` |
+| 安卓 Chrome | 待真机 | 待真机 | 待真机 | 待真机 | 待真机 | 待真机 | 待真机 |
+| iOS Safari（含 `connect-src` 同源 ws、音频手势、安全区、软键盘） | 待真机 | 待真机 | 待真机 | 待真机 | 待真机 | 待真机 | 待真机 |
+| Windows Chrome / Edge | 待真机 | 待真机 | 待真机 | 待真机 | 待真机 | 待真机 | 待真机 |
+
+### 真机记录模板（每台设备复制一份）
+
+```
+机型：            系统版本：            浏览器（含版本）：
+屏幕分辨率与 devicePixelRatio：            网络：（Wi-Fi / 4G，大致带宽）
+首屏到可操作：    打开页面 -> 出现「进入小镇」按钮 ___ 秒；点进入 -> 可以点地走路 ___ 秒
+帧时间：          ?debug=1 下读 window.__town.fps，走路时 5 秒内的平均 ___ / 最低 ___（毫秒 = 1000 / fps）
+点按：            点地走路是否稳定（手指稍有抖动是否仍响应）、双指缩放、点按钮会不会误触发走路
+声音：            点进入后有无确认音；切后台再回来是否恢复
+软键盘：          名字输入框弹出键盘时，「进入」按钮是否仍可见可点
+断线：            开飞行模式 10 秒再关，界面是否显示「重连中」并恢复
+发现的问题：
+```

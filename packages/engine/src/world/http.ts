@@ -302,6 +302,8 @@ export function mountTown(app: Express, w: WorldService, log: (msg: string) => v
     return [...out];
   };
   const notFound3d = (req: Request, res: Response, msg = '没有这个文件。') => {
+    // 流打开失败时头已按文件设好；404 的纯文本体不能再带着原文件的编码和校验头（浏览器会按 br/gzip 解码出乱码）
+    for (const h of ['Content-Encoding', 'ETag', 'Last-Modified', 'Content-Length']) res.removeHeader(h);
     secure(res, csp3d(sameOriginConnect(req)));
     res.status(404).type('text/plain; charset=utf-8').send(msg);
   };
@@ -333,6 +335,7 @@ export function mountTown(app: Express, w: WorldService, log: (msg: string) => v
   app.use('/town/3d', (req, res, next) => {
     if (req.method !== 'GET' && req.method !== 'HEAD') {
       res.setHeader('Allow', 'GET, HEAD');
+      secure(res, csp3d(sameOriginConnect(req)));
       res.status(405).type('text/plain; charset=utf-8').send('只支持 GET。');
       return;
     }

@@ -56,21 +56,25 @@ button.big { font-size: 18px; padding: 12px 28px; min-height: 48px; }
 
 #topbar {
   position: absolute; top: calc(10px + var(--safe-top)); left: calc(12px + var(--safe-left)); right: calc(12px + var(--safe-right));
-  display: flex; gap: 8px; align-items: center;
+  display: flex; gap: 8px; align-items: center; z-index: 2;
 }
 #topbar .spacer { flex: 1; }
-#space { font-weight: 600; }
+#topbar .btn { flex: none; }
+#where { min-width: 0; flex: 0 1 auto; }
+#space { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
+/* 只读横幅、状态条、提示条在 #stack 里按流排列，高度变了不会互相压住 */
+#stack {
+  position: absolute; z-index: 2; top: calc(56px + var(--safe-top)); left: calc(12px + var(--safe-left)); right: calc(12px + var(--safe-right));
+  display: flex; flex-direction: column; align-items: center; gap: 6px; pointer-events: none;
+}
 .banner {
-  position: absolute; top: calc(56px + var(--safe-top)); left: 50%; transform: translateX(-50%); width: min(560px, calc(100vw - 24px));
-  display: flex; gap: 12px; align-items: center; justify-content: space-between; background: rgba(60, 40, 20, 0.92);
+  width: min(560px, 100%); display: flex; gap: 12px; align-items: center; justify-content: space-between; background: rgba(60, 40, 20, 0.92);
   border: 1px solid rgba(243, 201, 105, 0.5); border-radius: 12px; padding: 8px 12px;
 }
-
-#toasts {
-  position: absolute; top: calc(104px + var(--safe-top)); left: 50%; transform: translateX(-50%); width: min(560px, calc(100vw - 24px));
-  display: flex; flex-direction: column; gap: 6px; align-items: center;
-}
+#statusRow { width: min(560px, 100%); display: flex; flex-wrap: wrap; gap: 6px; justify-content: space-between; align-items: flex-start; pointer-events: none; }
+#statusRow .chip { max-width: 100%; }
+#toasts { width: min(560px, 100%); display: flex; flex-direction: column; gap: 6px; align-items: center; }
 .toast {
   background: var(--panel-solid); border: 1px solid var(--line); border-radius: 12px; padding: 8px 14px; max-width: 100%;
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35); animation: toastIn 0.18s ease-out; pointer-events: none;
@@ -80,16 +84,16 @@ button.big { font-size: 18px; padding: 12px 28px; min-height: 48px; }
 .toast.err { border-color: rgba(255, 142, 142, 0.8); color: #ffd9d9; }
 @keyframes toastIn { from { opacity: 0; transform: translateY(-6px); } }
 
-#pendingChip { position: absolute; top: calc(56px + var(--safe-top)); right: calc(12px + var(--safe-right)); }
+#pendingChip { margin-left: auto; }
 .spin { width: 14px; height: 14px; border: 2px solid rgba(255, 255, 255, 0.3); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.8s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
-#activityChip { position: absolute; top: calc(56px + var(--safe-top)); left: calc(12px + var(--safe-left)); }
+#activityChip { flex-wrap: wrap; }
 #activityChip button { min-height: 28px; padding: 2px 10px; font-size: 13px; }
 
 #bottombar {
   position: absolute; left: calc(12px + var(--safe-left)); right: calc(12px + var(--safe-right)); bottom: calc(14px + var(--safe-bottom));
-  display: flex; flex-direction: column; align-items: center; gap: 8px;
+  display: flex; flex-direction: column; align-items: center; gap: 8px; z-index: 2;
 }
 #actions { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; }
 #actions button { min-height: 48px; padding: 8px 18px; display: flex; flex-direction: column; align-items: center; gap: 0; line-height: 1.2; }
@@ -104,9 +108,10 @@ button.big { font-size: 18px; padding: 12px 28px; min-height: 48px; }
 }
 #destMenu button { min-height: 36px; padding: 6px 12px; }
 
-#tags { position: absolute; inset: 0; overflow: hidden; pointer-events: none; }
+/* z-index:0 让 #tags 自成层叠上下文：里面 .tag 的 z-index 不再外泄、压到顶栏 / 按钮 / 遮罩上面 */
+#tags { position: absolute; inset: 0; overflow: hidden; pointer-events: none; z-index: 0; }
 .tag {
-  position: absolute; left: 0; top: 0; white-space: nowrap; will-change: transform; font-size: 13px; padding: 1px 8px; border-radius: 8px;
+  position: absolute; left: 0; top: 0; white-space: nowrap; max-width: 60vw; overflow: hidden; text-overflow: ellipsis; will-change: transform; font-size: 13px; padding: 1px 8px; border-radius: 8px;
   background: rgba(15, 22, 32, 0.72); border: 1px solid transparent; color: #fff; text-shadow: 0 1px 2px rgba(0, 0, 0, 0.6);
 }
 .tag.s { border-color: var(--self); color: var(--self); font-weight: 700; }
@@ -117,7 +122,14 @@ button.big { font-size: 18px; padding: 12px 28px; min-height: 48px; }
 .tag.z { background: transparent; font-size: 15px; font-weight: 700; color: rgba(255, 255, 255, 0.85); letter-spacing: 2px; text-shadow: 0 1px 3px rgba(0, 0, 0, 0.8); padding: 0; }
 .tag.p { background: rgba(120, 90, 20, 0.88); border-color: rgba(243, 201, 105, 0.7); font-size: 12px; }
 
-.overlay { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; background: radial-gradient(ellipse at 50% 40%, #2b3c52 0%, #141b25 100%); padding: 20px; }
+/* 矮屏 / 键盘弹出时卡片可以滚动；用 margin:auto 居中（装不下时贴顶，不像 center 那样上下都被裁） */
+.overlay {
+  position: absolute; inset: 0; z-index: 10; display: flex; align-items: flex-start; justify-content: center; overflow-y: auto; overscroll-behavior: contain;
+  pointer-events: auto; touch-action: pan-y; -webkit-overflow-scrolling: touch;
+  background: radial-gradient(ellipse at 50% 40%, #2b3c52 0%, #141b25 100%);
+  padding: calc(20px + var(--safe-top)) calc(20px + var(--safe-right)) calc(20px + var(--safe-bottom)) calc(20px + var(--safe-left));
+}
+.overlay > .card { margin: auto; flex: none; }
 .overlay.clear { background: transparent; pointer-events: none; display: none; }
 .card {
   width: min(380px, 100%); background: var(--panel-solid); border: 1px solid var(--line); border-radius: 18px;

@@ -15,7 +15,7 @@
     "dbFile": "./data/town.db",
     "publicUrl": "https://example.com/town/",
     "devLogin": false,
-    "clientDir": "./client/town/build/web",
+    "clientDir": "/srv/bot-game-mcp/client/town/build/web",
     "params": {}
   }
 }
@@ -27,7 +27,7 @@
 - `devLogin` 是本机试玩用的：任何人输入名字就能以真人身份进入。只该在本机或可信内网打开。
 - 正式环境里真人通过代码裁判私聊拿到的一次性登录链接进入（见「身份」）。
 - 页面在 `/town/`。没登录也能看公开的小镇地图。
-- `clientDir`（可选）：三维网页客户端的导出目录（Godot 网页导出产物），引擎把它挂在 `/town/3d/` 下，规则见「三维客户端的托管」。不填或目录不存在时 `/town/3d/` 返回 404。
+- `clientDir`（可选）：三维网页客户端的导出目录（Godot 网页导出产物），引擎把它挂在 `/town/3d/` 下，规则见「三维客户端的托管」。不填或目录不存在时 `/town/3d/` 返回 404。相对路径按**进程当前目录**解析（引擎不做别的处理）；用 `npm -w bot-game-mcp …` 启动时当前目录是 `packages/engine`，写 `./client/…` 会指错地方，所以建议写绝对路径（环境变量 `BOTGAME_TOWN_CLIENT_DIR` 同理）。
 - 部署、密钥和服务器配置不在开发范围内。
 
 本机试一下：
@@ -167,7 +167,7 @@ packages/engine/town/             旧的网页前端（静态文件；会被 God
 - **防目录穿越**：解码后的路径里有 `\`、空字节、空段（`//`）、以点开头的段（含 `..` 和隐藏文件）、坏的百分号编码一律 404；规范化后必须仍在 `clientDir` 之内；文件（含预压缩副本）的真实路径（解析符号链接后）也必须在 `clientDir` 的真实路径之内，指向目录外的符号链接 404。目录之内的符号链接可以。
 - **预压缩**：请求的 `Accept-Encoding` 接受 `br` / `gzip`（`q=0` 视为不接受）且存在同名 `.br` / `.gz` 文件时，直接发预压缩文件（`br` 优先），带 `Content-Encoding` 和 `Vary: Accept-Encoding`，`Content-Type` 仍是原文件的类型。引擎不会在请求时现压缩，要压缩请在导出之后自己做（比如对 `.wasm`、`.pck`、`.js` 各生成 `.br` / `.gz`）。
 - **缓存**：所有文件都带 `ETag`（大小 + 修改时间 + 编码）和 `Last-Modified`，支持 `If-None-Match` → 304；`Cache-Control: no-cache`（每次都校验，Godot 导出的文件名不带哈希，所以不设长缓存），`index.html` 同样。
-- **流式发送**：用文件流，不进内存缓存（`.wasm` 约 40 MB）。不支持 Range。
+- **流式发送**：用文件流，不进内存缓存（`.wasm` 约 40 MB）。不支持 Range。如果文件在检查之后、打开之前出了问题（被删、权限、句柄用尽），返回 404，并先清掉已按文件设好的 `Content-Encoding`、`ETag`、`Last-Modified`、`Content-Length`，免得中文纯文本说明被当成 br/gzip 解码。
 - **没配 / 目录不存在**：`clientDir` 没配或目录不存在（每次请求都检查，目录晚点出现也行），`/town/3d/…` 返回 404 和一句中文纯文本说明，不抛异常。
 - **安全头**：`X-Content-Type-Options: nosniff`、`Referrer-Policy: no-referrer`、`X-Frame-Options: DENY` 与旧页面相同。
 - **CSP**（只在这条路径上，旧页面和 `/town/api` 的 CSP 不变）：
@@ -454,7 +454,7 @@ npm run world:recovery                                       # 故障注入：�
 
 ## 还没做的
 
-- Godot 网页客户端（灰盒街道、点击移动、角色和音频资源管线）是下一个 PR；现在的 `/town/` 页面是旧的示意界面，只做了最小兼容。
+- 三维客户端：P0 灰盒已经有了（街道、点击移动、角色和音频资源管线，见 `client/README.md`，由 `/town/3d/` 托管）。聊天、背包、信箱、小游戏界面、NPC 等仍只在旧的 `/town/` 页面里，三维客户端还没有。
 - 按距离的附近聊天、小镇频道、NPC、住宅内部的摆设坐标、场景快照的增量同步：v2.0 的第二阶段。
 - 人和人之间的当面互动现在按「同一个区域」判定，还没有改成按距离。
 

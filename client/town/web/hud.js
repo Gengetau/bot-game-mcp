@@ -23,28 +23,96 @@
       /* ignore */
     }
   }
+  /* clientId 存 sessionStorage（每个标签页一个，刷新不变）。但「复制标签页」/ window.open 会把 sessionStorage
+   * 一起复制，两个活页面就共用一个 id，服务器分不出谁是控制者。所以启动时先查这个 id 是不是已被另一个
+   * 活着的页面占着：占着就换新 id 写回。Web Locks 优先（页面存活期间一直持锁，死了自动释放），
+   * 没有就退回 BroadcastChannel 询问，再没有就保持原状。Godot 启动前 boot.js 会等 ready。 */
   var cid = null;
+  function randomCid() {
+    var r = '';
+    var a = new Uint8Array(9);
+    (window.crypto || window.msCrypto).getRandomValues(a);
+    for (var i = 0; i < a.length; i++) r += (a[i] % 36).toString(36);
+    return 'web-' + r;
+  }
+  function storeCid(v) {
+    cid = v;
+    try {
+      sessionStorage.setItem('town3d.clientId', v);
+    } catch (e) {
+      /* ignore */
+    }
+  }
   function clientId() {
     if (cid) return cid;
+    var v = null;
     try {
-      cid = sessionStorage.getItem('town3d.clientId');
+      v = sessionStorage.getItem('town3d.clientId');
     } catch (e) {
-      cid = null;
+      v = null;
     }
-    if (!cid) {
-      var r = '';
-      var a = new Uint8Array(9);
-      (window.crypto || window.msCrypto).getRandomValues(a);
-      for (var i = 0; i < a.length; i++) r += (a[i] % 36).toString(36);
-      cid = 'web-' + r;
-      try {
-        sessionStorage.setItem('town3d.clientId', cid);
-      } catch (e) {
-        /* ignore */
-      }
-    }
+    if (v) cid = v;
+    else storeCid(randomCid());
     return cid;
   }
+  function delay(ms) {
+    return new Promise(function (res) {
+      setTimeout(res, ms);
+    });
+  }
+  /* 抢这个 id 的锁：抢到则永远不放（Promise 不 resolve，直到页面关闭）；抢不到返回 false */
+  function holdLock(id) {
+    return new Promise(function (res) {
+      navigator.locks
+        .request('town3d.cid.' + id, { ifAvailable: true }, function (lock) {
+          res(!!lock);
+          return lock ? new Promise(function () {}) : undefined;
+        })
+        .catch(function () {
+          res(true);
+        });
+    });
+  }
+  function claimCid() {
+    var id = clientId();
+    if (navigator.locks && navigator.locks.request) {
+      return holdLock(id)
+        .then(function (ok) {
+          // 刷新时旧文档的锁可能还没放掉，等一下再试一次，别把刷新当成复制
+          return ok ? true : delay(250).then(function () { return holdLock(id); });
+        })
+        .then(function (ok) {
+          if (ok) return;
+          storeCid(randomCid());
+          return holdLock(cid);
+        });
+    }
+    if (typeof BroadcastChannel === 'function') {
+      return new Promise(function (res) {
+        var ch;
+        try {
+          ch = new BroadcastChannel('town3d.cid');
+        } catch (e) {
+          res();
+          return;
+        }
+        var taken = false;
+        ch.onmessage = function (ev) {
+          var m = ev.data || {};
+          if (m.id !== cid) return;
+          if (m.t === 'who') ch.postMessage({ t: 'have', id: cid });
+          else if (m.t === 'have') taken = true;
+        };
+        ch.postMessage({ t: 'who', id: id });
+        setTimeout(function () {
+          if (taken) storeCid(randomCid());
+          res();
+        }, 250);
+      });
+    }
+    return Promise.resolve();
+  }
+  var ready = claimCid().catch(function () {});
 
   function emit(name, arg) {
     if (window.TownHost) window.TownHost.emit('ui', name, arg === undefined ? '' : String(arg));
@@ -66,6 +134,7 @@
 
   /* ── 面板 ── */
   var state = {};
+  var dead = false;
   var lastPhase = '';
   function show(el, on) {
     el.hidden = !on;
@@ -81,7 +150,7 @@
     show($('panelLoading'), ph === 'boot' || ph === 'loading');
     show($('panelLink'), ph === 'error' && !!s.link);
     var txt = '';
-    if (ph === 'ready') txt = '点击进入，开始你的一天。';
+    if (ph === 'ready') txt = s.msg || '点击进入，开始你的一天。';
     else if (ph === 'busy' || ph === 'error') txt = s.msg || '';
     else if (ph === 'login') txt = '';
     else txt = s.msg || '正在加载客户端…';
@@ -117,6 +186,16 @@
     var v = $('nameInput').value.trim();
     if (v) lsSet('town3d.name', v);
     emit('login', v);
+  });
+  // 键盘弹出后输入框 / 进入按钮滚进可见范围
+  $('nameInput').addEventListener('focus', function () {
+    setTimeout(function () {
+      try {
+        $('loginBtn').scrollIntoView({ block: 'nearest' });
+      } catch (e) {
+        /* ignore */
+      }
+    }, 300);
   });
   $('stopBtn').addEventListener('click', function () {
     emit('stop');
@@ -208,6 +287,7 @@
   }, 1000);
 
   function setState(json) {
+    if (dead) return; // 致命错误面板不能被下一次状态推送盖掉
     var s;
     try {
       s = typeof json === 'string' ? JSON.parse(json) : json;
@@ -219,6 +299,7 @@
     lastPhase = s.phase;
     if (s.phase !== 'playing') {
       document.body.setAttribute('data-phase', s.phase);
+      clearTags(); // 重新登录 / 出错面板下不留旧姓名牌
       return;
     }
     document.body.setAttribute('data-phase', 'playing');
@@ -233,6 +314,14 @@
     $('stopBtn').disabled = !(s.walking && s.mine !== false);
     $('homeBtn').textContent = s.inHome ? '出门' : '回家';
     renderActions(s.actions);
+    // 请求在途时，会再发请求的按钮先禁用，免得连点出第二个请求和一条红色报错；「停下」不在此列，随时可用
+    var busy = (s.pending || 0) > 0;
+    Array.prototype.forEach.call($('actions').children, function (b) {
+      b.disabled = busy || b.className === 'busy';
+    });
+    ['claimBtn', 'leaveActBtn', 'homeBtn'].forEach(function (id) {
+      $(id).disabled = busy;
+    });
     renderDest(s.dest);
     renderActivity(s.activity);
   }
@@ -252,7 +341,24 @@
 
   /* ── 姓名牌：Godot 每帧给归一化的屏幕坐标，这里用 transform 摆 ── */
   var tagEls = {};
+  function clearTags() {
+    if (!Object.keys(tagEls).length) return;
+    $('tags').textContent = '';
+    tagEls = {};
+  }
+  // 顶栏下沿：地面标签（区域名、门口）不画进这条带里，免得压住右上角按钮；一秒量一次，别每帧强制布局
+  var topLimit = 0;
+  var topLimitAt = -1e9;
+  function getTopLimit() {
+    var now = performance.now();
+    if (now - topLimitAt > 1000) {
+      topLimitAt = now;
+      topLimit = $('topbar').getBoundingClientRect().bottom + 4;
+    }
+    return topLimit;
+  }
   function setTags(json) {
+    if (dead) return;
     var list;
     try {
       list = JSON.parse(json);
@@ -262,21 +368,51 @@
     var box = $('tags');
     var W = box.clientWidth;
     var H = box.clientHeight;
+    var top = getTopLimit();
     var seen = {};
     for (var i = 0; i < list.length; i++) {
       var t = list[i];
-      seen[t.i] = true;
+      var px = t.x * W;
+      var py = t.y * H;
+      // 明显在屏幕外的不建 DOM、不写 transform
+      if (px < -80 || px > W + 80 || py < -30 || py > H + 60) continue;
       var el = tagEls[t.i];
       if (!el) {
         el = document.createElement('div');
         tagEls[t.i] = el;
+        el.setAttribute('data-id', t.i);
         box.appendChild(el);
       }
-      el.className = 'tag ' + t.k + (t.m ? ' m' : '') + (t.sel ? ' sel' : '');
+      var cls = 'tag ' + t.k + (t.m ? ' m' : '') + (t.sel ? ' sel' : '');
+      if (el.className !== cls) el.className = cls;
       if (el.textContent !== t.n) el.textContent = t.n;
-      el.style.zIndex = t.k === 's' ? '5' : t.k === 'a' ? '4' : t.k === 'z' ? '1' : '3';
-      el.style.transform = 'translate(' + (t.x * W).toFixed(1) + 'px,' + (t.y * H).toFixed(1) + 'px) translate(-50%,-100%)';
-      el.setAttribute('data-id', t.i);
+      var sig = cls + '|' + t.n;
+      if (el._sig !== sig) {
+        // 文字或样式变了才量一次尺寸（不每帧读布局）
+        el._sig = sig;
+        el._w = el.offsetWidth;
+        el._h = el.offsetHeight;
+      }
+      var hw = el._w / 2 + 2;
+      var hh = el._h;
+      if (t.k === 'z' || t.k === 'p') {
+        // 区域名 / 门口牌贴着顶栏时直接不画，比被按钮遮住好
+        if (py - hh < top) {
+          if (el.style.display !== 'none') el.style.display = 'none';
+          seen[t.i] = true;
+          continue;
+        }
+      } else if (py - hh < top) {
+        py = top + hh;
+      }
+      if (el.style.display === 'none') el.style.display = '';
+      // 贴着左右边缘时钳进屏幕，整块牌都看得见
+      px = hw * 2 >= W ? W / 2 : Math.max(hw, Math.min(W - hw, px));
+      py = Math.min(py, H - 2);
+      seen[t.i] = true;
+      var zi = t.k === 's' ? '5' : t.k === 'a' ? '4' : t.k === 'z' ? '1' : '3';
+      if (el.style.zIndex !== zi) el.style.zIndex = zi;
+      el.style.transform = 'translate(' + px.toFixed(1) + 'px,' + py.toFixed(1) + 'px) translate(-50%,-100%)';
     }
     for (var id in tagEls) {
       if (!seen[id]) {
@@ -293,6 +429,8 @@
     $('progressBar').style.width = Math.round(Math.max(0, Math.min(1, frac)) * 100) + '%';
   }
   function fatal(msg) {
+    dead = true; // 之后 setState / setTags 都不再接受，错误面板留着
+    clearTags();
     renderPanel({ phase: 'error', msg: msg, link: '/town/' });
     $('retryBtn').onclick = function () {
       location.reload();
@@ -345,6 +483,7 @@
     setLoading: setLoading,
     fatal: fatal,
     debugSet: debugSet,
+    ready: ready,
   };
   setLoading(0, '正在加载客户端…');
 })();

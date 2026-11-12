@@ -9,7 +9,18 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { gzipSync } from 'node:zlib';
 import express from 'express';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+// 让测试能在 stat 成功之后让「打开文件」失败（模拟文件刚被删、权限、EMFILE）；默认原样转发
+const openFail = vi.hoisted(() => ({ on: false }));
+vi.mock('node:fs', async (orig) => {
+  const actual = await orig<typeof import('node:fs')>();
+  return {
+    ...actual,
+    createReadStream: ((...args: Parameters<typeof actual.createReadStream>) =>
+      openFail.on ? actual.createReadStream('/nonexistent/town-open-fail') : actual.createReadStream(...args)) as typeof actual.createReadStream,
+  };
+});
 import { SeededRng } from '../../src/core/rng.js';
 import { createRegistry } from '../../src/games/index.js';
 import { mountTown, type TownHttpOptions } from '../../src/world/http.js';
@@ -25,6 +36,7 @@ interface Res {
 
 const cleanups: (() => Promise<void> | void)[] = [];
 afterEach(async () => {
+  openFail.on = false;
   while (cleanups.length) await cleanups.pop()!();
 });
 
@@ -96,6 +108,21 @@ async function serve(opts: TownHttpOptions & { publicUrl?: string } = {}) {
 }
 
 describe('/town/3d/ 静态托管', () => {
+  it('stat 之后打开失败：404 不带 Content-Encoding / ETag / Last-Modified', async () => {
+    const { get } = await serve();
+    const ok = await get('/town/3d/game.js', { 'accept-encoding': 'br, gzip' });
+    expect(ok.status).toBe(200);
+    openFail.on = true;
+    const r = await get('/town/3d/game.js', { 'accept-encoding': 'br, gzip' });
+    expect(r.status).toBe(404);
+    expect(r.headers['content-encoding']).toBeUndefined();
+    // Express 会按 404 正文自己算一个 ETag；这里只要求不是原文件的那个
+    expect(r.headers.etag).not.toBe(ok.headers.etag);
+    expect(r.headers['last-modified']).toBeUndefined();
+    expect(r.headers['content-type']).toBe('text/plain; charset=utf-8');
+    expect(r.text).toBe('没有这个文件。');
+  });
+
   it('/town/3d 重定向到 /town/3d/（保留查询串）', async () => {
     const { get } = await serve();
     const r = await get('/town/3d?debug=1');
@@ -126,7 +153,11 @@ describe('/town/3d/ 静态托管', () => {
 
   it('非 GET 返回 405', async () => {
     const { get } = await serve();
-    expect((await get('/town/3d/index.html', {}, 'POST')).status).toBe(405);
+    const r = await get('/town/3d/index.html', {}, 'POST');
+    expect(r.status).toBe(405);
+    // 拒绝的回应也带安全头
+    expect(r.headers['x-content-type-options']).toBe('nosniff');
+    expect(String(r.headers['content-security-policy'])).toContain("default-src 'none'");
   });
 
   it('各种类型的 MIME；子目录可取；内容完整', async () => {
