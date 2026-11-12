@@ -207,7 +207,7 @@ export async function startHttpServer(rt: Runtime, log: (msg: string) => void = 
   }
 
   const closeWeb = config.web ? mountWeb(app, manager, log) : () => undefined;
-  const town = rt.world ? mountTown(app, rt.world, log) : null;
+  const town = rt.world ? mountTown(app, rt.world, log, { clientDir: config.town.clientDir }) : null;
   const closeTown = town ?? (() => undefined);
 
   // 空闲会话清理

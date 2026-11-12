@@ -98,10 +98,12 @@ export const configSchema = z.object({
       publicUrl: z.string().url().nullable().default(null),
       /** 本机试玩登录：任何人输入名字就能以真人身份进入。只该在本机或可信内网打开 */
       devLogin: z.boolean().default(false),
+      /** 三维网页客户端的导出目录（Godot 网页导出产物），由引擎挂在 /town/3d/ 下静态托管；不填或目录不存在时 /town/3d/ 返回 404 */
+      clientDir: z.string().nullable().default(null),
       /** 覆盖默认参数（见 src/world/params.ts）。时区在开服后不能改 */
       params: z.record(z.string(), z.unknown()).default({}),
     })
-    .default({ enabled: false, dbFile: './data/town.db', publicUrl: null, devLogin: false, params: {} }),
+    .default({ enabled: false, dbFile: './data/town.db', publicUrl: null, devLogin: false, clientDir: null, params: {} }),
   refereeStaleSeconds: z.number().int().min(10).default(120),
   lobbyTtlMinutes: z.number().int().min(1).default(120),
   idleGameTtlMinutes: z.number().int().min(5).default(360),
@@ -140,11 +142,12 @@ export function loadConfig(path?: string, env: NodeJS.ProcessEnv = process.env):
   if (env.BOTGAME_PORT) raw.port = Number(env.BOTGAME_PORT);
   if (env.BOTGAME_STATE_FILE !== undefined) raw.stateFile = env.BOTGAME_STATE_FILE || null;
   if (env.BOTGAME_SEED) raw.seed = env.BOTGAME_SEED;
-  if (env.BOTGAME_TOWN !== undefined || env.BOTGAME_TOWN_DB || env.BOTGAME_TOWN_URL || env.BOTGAME_TOWN_DEV_LOGIN !== undefined) {
+  if (env.BOTGAME_TOWN !== undefined || env.BOTGAME_TOWN_DB || env.BOTGAME_TOWN_URL || env.BOTGAME_TOWN_CLIENT_DIR !== undefined || env.BOTGAME_TOWN_DEV_LOGIN !== undefined) {
     raw.town = { ...(raw.town ?? {}) };
     if (env.BOTGAME_TOWN !== undefined) raw.town.enabled = env.BOTGAME_TOWN === '1' || env.BOTGAME_TOWN === 'true';
     if (env.BOTGAME_TOWN_DB) raw.town.dbFile = env.BOTGAME_TOWN_DB;
     if (env.BOTGAME_TOWN_URL) raw.town.publicUrl = env.BOTGAME_TOWN_URL;
+    if (env.BOTGAME_TOWN_CLIENT_DIR !== undefined) raw.town.clientDir = env.BOTGAME_TOWN_CLIENT_DIR || null;
     if (env.BOTGAME_TOWN_DEV_LOGIN !== undefined) raw.town.devLogin = env.BOTGAME_TOWN_DEV_LOGIN === '1' || env.BOTGAME_TOWN_DEV_LOGIN === 'true';
   }
   if (env.BOTGAME_SCRIPTS_DIR !== undefined) raw.scriptsDir = env.BOTGAME_SCRIPTS_DIR || null;
