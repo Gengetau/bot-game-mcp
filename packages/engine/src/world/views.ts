@@ -336,13 +336,15 @@ function chatSeqOf(w: WorldService, residentId: string, high: number, messageId:
   return high - Number(w.db.scalar('SELECT COUNT(*) FROM chat_audience WHERE resident_id = ? AND message_id > ?', residentId, messageId));
 }
 
+// 只按受众表和时间窗取（受众在发送那一刻定下），不再按当前区域标签过滤：边走边聊、跨过区域边界后仍看得到刚听过的话。
+// 例外是住宅里说的话：屋里的话只在同一间屋里的现场视图出现（出了门，历史里仍有，现场视图里没有）。
 function hereChat(w: WorldService, residentId: string, space: string, now: number): HereView['chat'] {
   const cut = now - 30 * 60_000;
   // message_id 随时间递增：给受众表的主键扫描加下界（30 分钟窗口内最早的消息），查询量与历史长度无关
   const rows = w.db.all(
     `SELECT m.message_id, m.sender_id, m.body, m.sent_at FROM chat_audience a JOIN chat_messages m ON m.message_id = a.message_id
      WHERE a.resident_id = ? AND a.message_id >= (SELECT COALESCE(MIN(message_id), 9223372036854775807) FROM chat_messages WHERE sent_at > ?)
-       AND m.space_id = ? AND m.sent_at > ? ORDER BY a.message_id DESC LIMIT 20`,
+       AND (m.space_id NOT LIKE 'home:%' OR m.space_id = ?) AND m.sent_at > ? ORDER BY a.message_id DESC LIMIT 20`,
     residentId,
     cut,
     space,

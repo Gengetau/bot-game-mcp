@@ -12,6 +12,7 @@ import { type Row } from './db.js';
 import { badRequest, precondition } from './errors.js';
 import { bumpCounter, counter, setHomeAccessCheck, spaceName, takeToken } from './life.js';
 import { card } from './project.js';
+import { requirePersonReach } from './reach.js';
 import type { WorldService } from './service.js';
 import { sendToDoor } from './space.js';
 import type { ResidentRow } from './types.js';
@@ -229,11 +230,7 @@ export function installMail(w: WorldService): void {
 
   // ── 当面邀请 ──
   w.handlers.set('invite', ({ r, action, now }) => {
-    const space = w.spaceOf(r);
-    const guest = w.resident(String(action.to ?? ''));
-    if (!space || !guest || guest.resident_id === r.resident_id || !w.interactive(guest) || w.spaceOf(guest) !== space) {
-      throw precondition('对方不在你身边。不在一处的话，可以写信邀请。', 'not_here');
-    }
+    const guest = requirePersonReach(w, r, w.resident(String(action.to ?? '')), now, '对方不在你身边。不在一处的话，可以写信邀请。');
     takeToken(w, r.resident_id, 'invite', 4, 2, now, '发邀请');
     const grantId = createGrant(w, r, guest, 'in_person', action.reentry !== false, now, now);
     const view = inviteView(w, w.db.get('SELECT * FROM home_access_grants WHERE grant_id = ?', grantId)!);

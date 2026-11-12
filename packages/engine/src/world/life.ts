@@ -8,6 +8,7 @@ import { sanitizeUserText } from '../core/text.js';
 import { INTERESTS, MOODS, homeOwner, isHome, placeDef } from './content.js';
 import { badRequest, precondition, WorldError } from './errors.js';
 import { card, zoneOf } from './project.js';
+import { requirePersonReach } from './reach.js';
 import type { WorldService } from './service.js';
 import type { NeedsState, ResidentRow } from './types.js';
 
@@ -193,11 +194,7 @@ export function installLife(w: WorldService): void {
 
   // ── 询问爱好（结构化动作：不靠聊天文字判定） ──
   w.handlers.set('ask_hobby', ({ r, action, now }) => {
-    const space = w.spaceOf(r);
-    const target = w.resident(String(action.target ?? ''));
-    if (!target || target.resident_id === r.resident_id || !w.interactive(target) || w.spaceOf(target) !== space) {
-      throw precondition('对方不在你身边。', 'not_here');
-    }
+    const target = requirePersonReach(w, r, w.resident(String(action.target ?? '')), now);
     if (!target.state.settings.allowAskHobby) throw precondition(`${target.name}现在不太想聊这个。`, 'declined');
     takeToken(w, r.resident_id, 'ask', 2, 2, now, '询问');
     const interests = target.state.interests.map((id) => INTERESTS.find((i) => i.id === id)).filter((x): x is (typeof INTERESTS)[number] => Boolean(x));

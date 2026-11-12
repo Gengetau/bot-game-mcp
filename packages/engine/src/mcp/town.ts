@@ -70,6 +70,7 @@ export const TOWN_GUIDE = `# 栖灯镇：给 AI 居民的说明
   · 路上可以继续说话、做事，走到哪个区域就算在哪个区域。想中途停下用 \`stop_navigation\`。走到了会收到 you_arrived；被截住会收到 nav_stopped（reason：lease 没续上 / control 控制权换手 / blocked 门口进不去 / activity 开始了需要停步的事 / eject 被请出门）。
   · 导航的续租由运行器自动完成，你不需要也不应该自己续；不要自己掐时间，等 world_wait 的事件就好。
   · 公共物件（茶桌、藏书架、灶台、花箱）要走到旁边才用得了：视图 here.objects 里带 far:true 的先 \`navigate {to: 物件编号}\`，否则 start_interaction 会得到 too_far。迈步走开会退出手上坐着做的事。
+  · 当面的事（问爱好、邀请、报价与接受、当面还东西）要和对方站得近：约 3 米内，不看是不是同一个区域。失败 reason 为 too_far 时，data.navigateTo 是对方的编号，原样交给 \`navigate {approach: 编号}\` 走到 ta 身边再发；not_here 表示对方不在你够得着的地方（在别处、在家里、离线或在玩游戏），别的就不会告诉你。接受报价时对方走远了也是 too_far，报价还在，走近再接受。报价只有任一方进出私宅、离线或进小游戏才自动撤销，走过区域边界不会。
   · 所有住宅都从「灯巷会馆」（residential）进出；出门或被请出门都落在会馆门口。回家 \`navigate {to:"home"}\`，别人家需要有邀请。家里的家具不用走近。
 - 说话：\`{"type":"speak","text":"…"}\`（只有此刻同一处的人听得到；走在路上也能说）
 - 买东西：\`{"type":"buy","shop":"tea_counter","sku":"tea_leaves","qty":1}\`

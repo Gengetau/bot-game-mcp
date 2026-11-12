@@ -22,6 +22,8 @@ export const townParamsSchema = z.object({
   navLeaseMs: ms(10_000, 1000),
   /** 导航续租间隔（告诉客户端和运行器的建议值）。续租由普通程序发，不调用模型 */
   navRenewEveryMs: ms(3_000, 500),
+  /** 人和人当面互动（询问、邀请、报价、当面还东西）的最大距离（米）：大于物件的 interactDistance、小于听力距离。放在参数里，不放地图 */
+  personReach: z.number().min(0.5).max(8).default(3.0),
   /** 改路线的频率上限：每分钟几次、突发几次 */
   navPerMinute: int(120, 1, 6000),
   navBurst: int(8, 1, 600),

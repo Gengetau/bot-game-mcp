@@ -449,6 +449,30 @@ export class Invariants {
     this.echo(`\n!! 不变量违例 [${name}] ${message}\n   ${JSON.stringify(detail)?.slice(0, 600)}`);
   }
 
+  /**
+   * 面对面动作成功之后核对一次（不信任被测的 canInteractPerson，自己重新量）：
+   * 询问、邀请、报价、接受报价成交的那一刻，双方在同一个场景实例里、距离不超过 personReach。
+   * 模拟里命令和检查用同一个时钟，成功提交后的位置就是判定时的位置。
+   */
+  checkFaceToFace(w: WorldService, type: string, actorId: string, fields: Record<string, unknown>, now: number): void {
+    let otherId: string | undefined;
+    if (type === 'offer' || type === 'invite') otherId = String(fields.to ?? '');
+    else if (type === 'ask_hobby') otherId = String(fields.target ?? '');
+    else if (type === 'accept_offer') otherId = w.db.get('SELECT from_id FROM offers WHERE offer_id = ?', String(fields.offerId ?? ''))?.from_id as string | undefined;
+    if (!otherId) return;
+    this.pass('face_to_face_in_reach');
+    const a = actorOf(w, actorId);
+    const b = actorOf(w, otherId);
+    if (!a || !b || a.scene_id !== b.scene_id || a.instance_id !== b.instance_id) {
+      this.fail('face_to_face_in_reach', `${type} 成功了，但双方不在同一个场景实例里`, { type, actorId, otherId, a: a && [a.scene_id, a.instance_id], b: b && [b.scene_id, b.instance_id] }, now);
+      return;
+    }
+    const pa = posOf(a, now);
+    const pb = posOf(b, now);
+    const d = Math.hypot(pa.x - pb.x, pa.z - pb.z);
+    if (d > w.params.personReach + 0.02) this.fail('face_to_face_in_reach', `${type} 成功了，但双方相距 ${d.toFixed(2)} 米，超过 personReach ${w.params.personReach}`, { type, actorId, otherId, d }, now);
+  }
+
   /** 做一轮检查。返回本轮新增的违例条数。 */
   check(w: WorldService, ctx: InvariantContext): number {
     const before = this.totalViolations;

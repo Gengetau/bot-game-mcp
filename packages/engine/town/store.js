@@ -705,7 +705,12 @@ export async function act(action, opts = {}) {
           void reenter();
           return d;
         }
-        if (!opts.quiet) toast(d.message ?? '现在做不了这件事。', 'warn');
+        if (!opts.quiet) {
+          // 离对方太远：服务端给了 navigateTo（对方的居民编号），提供一个「走过去」入口。not_here 不带任何位置信息，只显示说明
+          const near = d.reason === 'too_far' && typeof d.navigateTo === 'string' ? d.navigateTo : null;
+          if (near) toast(d.message ?? '离得太远了。', 'warn', 6500, { label: '走过去', onclick: () => void act({ type: 'navigate', approach: near }) });
+          else toast(d.message ?? '现在做不了这件事。', 'warn');
+        }
         scheduleRefreshMe(250);
         return d;
       default:

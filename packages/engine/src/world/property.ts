@@ -11,6 +11,8 @@ import { type Row, parseJson } from './db.js';
 import { badRequest, notAvailable, precondition } from './errors.js';
 import { applyNeeds, takeToken } from './life.js';
 import { card } from './project.js';
+import { actorOf } from './space.js';
+import { personReach, requirePersonReach } from './reach.js';
 import type { WorldService } from './service.js';
 import type { ResidentRow } from './types.js';
 
@@ -362,8 +364,21 @@ export function installProperty(w: WorldService): void {
     createUnique(w, r.resident_id, 'book', { bookId: book.id, title: book.title });
   });
 
-  const cancelAll = (r: ResidentRow, _x: unknown, at: number) => cancelOffersOf(w, r.resident_id, '有一方离开了', at);
-  w.hooks.leaveSpace.push(cancelAll);
+  // 报价只按「同一个场景实例 + 距离」成立：跨区域边界不撤销。撤销的时机：任一方进出私宅（换了场景实例）、
+  // 离线或失去在场资格、进入小游戏
+  w.hooks.arrive.push((r, _space, at) => {
+    for (const row of w.db.all("SELECT * FROM offers WHERE status = 'open' AND (from_id = ? OR to_id = ?)", r.resident_id, r.resident_id)) {
+      const fa = actorOf(w, String(row.from_id));
+      const ta = actorOf(w, String(row.to_id));
+      if (!fa || !ta || fa.scene_id !== ta.scene_id || fa.instance_id !== ta.instance_id) closeOffer(w, row, 'cancelled', '有一方离开了', at);
+    }
+  });
+  w.hooks.leaveSpace.push((r, _space, at) => {
+    // 开局时 games.ts 对每个入局的人调用它（此时这一局已是 running）：进入对局撤销报价
+    if (w.db.get("SELECT 1 AS x FROM activity_participants p JOIN activities a ON a.activity_id = p.activity_id WHERE p.resident_id = ? AND p.active = 1 AND a.status = 'running'", r.resident_id)) {
+      cancelOffersOf(w, r.resident_id, '有一方进了小游戏', at);
+    }
+  });
   w.hooks.offline.push((r, at) => cancelOffersOf(w, r.resident_id, '有一方离线了', at));
 
   // ── 买东西 ──
@@ -454,8 +469,7 @@ export function installProperty(w: WorldService): void {
     const kind = String(action.kind ?? '');
     if (kind !== 'gift' && kind !== 'trade' && kind !== 'loan') throw badRequest('kind 应该是 gift、trade 或 loan。');
     const space = w.spaceOf(r);
-    const to = w.resident(String(action.to ?? ''));
-    if (!space || !to || to.resident_id === r.resident_id || !w.interactive(to) || w.spaceOf(to) !== space) throw precondition('对方不在你身边。', 'not_here');
+    const to = requirePersonReach(w, r, w.resident(String(action.to ?? '')), now);
     const give = parseBundle(w, action.give, 'give', r.resident_id);
     const want = kind === 'trade' ? parseBundle(w, action.want, 'want', to.resident_id) : { coins: 0, items: [] };
     if (bundleEmpty(give)) throw badRequest('要给出点什么。');
@@ -504,7 +518,8 @@ export function installProperty(w: WorldService): void {
     const row = loadOffer(action.offerId, r.resident_id, 'to_id');
     if (row.status !== 'open' || row.expires_at <= now) throw precondition('这份报价已经失效了。', 'offer_closed');
     const from = w.mustResident(row.from_id);
-    if (!w.interactive(from) || w.spaceOf(from) !== w.spaceOf(r) || w.spaceOf(r) !== row.space_id) throw precondition('你们已经不在一处了。', 'not_here');
+    // 成交时再量一次：走远了就拒绝，报价留着（预留不动），走近再点；离开实例、离线、进对局才会自动撤销
+    requirePersonReach(w, r, from, now, '你们已经不在一处了。');
     const give = parseJson<Bundle>(row.give_json, { coins: 0, items: [] });
     const want = parseJson<Bundle>(row.want_json, { coins: 0, items: [] });
     const changed = w.db.run("UPDATE offers SET status = 'accepted', closed_at = ? WHERE offer_id = ? AND status = 'open'", now, row.offer_id).changes;
@@ -595,8 +610,10 @@ export function installProperty(w: WorldService): void {
       how = 'library';
     } else {
       const owner = w.mustResident(it.owner_id);
-      if (w.interactive(owner) && w.spaceOf(owner) === space) how = 'in_person';
+      const reach = personReach(w, r, owner, now);
+      if (reach.ok) how = 'in_person';
       else if (space === RESIDENTIAL_PLACE) how = 'return_box';
+      else if (reach.why === 'too_far') throw precondition(`离${owner.name}太远了，先走到ta身边，或者放进灯巷会馆门前${owner.name}家的归还箱。`, 'too_far', { navigateTo: owner.resident_id });
       else throw precondition(`要当面还给${owner.name}，或者放进灯巷会馆门前${owner.name}家的归还箱。`, 'not_here');
     }
     w.db.run('UPDATE items SET holder_id = owner_id WHERE item_id = ?', it.item_id);

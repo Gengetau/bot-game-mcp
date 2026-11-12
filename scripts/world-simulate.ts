@@ -343,6 +343,7 @@ class Sim {
         this.failBy.set(k, (this.failBy.get(k) ?? 0) + 1);
       }
     } else if (out.out.replayed && this.fingerprint(ag.p.residentId) !== fp) this.rejectEffect(type, fields, 'replayed');
+    if (out.ok && !out.out.replayed) this.inv.checkFaceToFace(this.w, type, ag.p.residentId, fields, this.clock.t);
     if (out.ok && !out.out.replayed && !o.neg) {
       ag.ring.push({ conn, req, out: JSON.parse(JSON.stringify(out.out)), at: this.clock.t });
       if (ag.ring.length > 12) ag.ring.shift();
@@ -1892,7 +1893,7 @@ function navScenarios(inv: Invariants): { name: string; ok: boolean; note: strin
   // 8. 邀请在路上被撤销：走到门口进不去，停在会馆门前
   {
     go(A, 'plaza');
-    go(B, 'plaza');
+    go(B, A.p.residentId); // 当面邀请要站得近：走到 A 身边
     A.c.send('invite', { to: B.p.residentId });
     const grant = w.db.get('SELECT grant_id FROM home_access_grants WHERE guest_id = ? AND revoked_at IS NULL', B.p.residentId);
     go(A, 'home');

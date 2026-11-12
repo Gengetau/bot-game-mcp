@@ -115,7 +115,11 @@ packages/engine/town/             旧的网页前端（静态文件；会被 God
 
 **区域**。地图把可走范围划成区域：六个公共地点、`road`（灯笼路，只是路过的地方）、`residential`（灯巷会馆：进出所有私宅的唯一公共接入点）。`residents.location_id` 是区域标签，只在跨区域那一刻由空间模块改写，同一事务里触发各模块的离开 / 到达处理（撤销没完成的交换、退出报名、记录登门）并通知两边在场的人。**走在路上的人属于脚下的区域**：能说话、能被听见、能做事。别的模块按区域判断「在不在一起」。走路的人自己跨区域时不收事件（模型不该为每一步路被叫醒）：续租的回答和场景快照里都带着此刻的 `space`，客户端看到它变了就重读现场。
 
-**够得着**。公共物件（茶桌、藏书架、灶台、花箱）在地图上有位置：发起或加入它上面的共同活动，人要在 1.8 米内（藏书架 3.6 米），否则被拒绝：错误码是 `precondition_failed`（HTTP 422），细分原因 `reason: "too_far"`，`data.navigateTo` 是可以走过去的物件编号。`navigate {to: 物件编号}` 走到最近的使用位置。坐下之后迈步走开就算退出，哪怕没走出这片区域。家里的家具在屋里就够得着。人和人之间的当面互动（邀请、交换、询问）现阶段仍按「同一个区域」判定。
+**够得着**。公共物件（茶桌、藏书架、灶台、花箱）在地图上有位置：发起或加入它上面的共同活动，人要在 1.8 米内（藏书架 3.6 米），否则被拒绝：错误码是 `precondition_failed`（HTTP 422），细分原因 `reason: "too_far"`，`data.navigateTo` 是可以走过去的物件编号。`navigate {to: 物件编号}` 走到最近的使用位置。坐下之后迈步走开就算退出，哪怕没走出这片区域。家里的家具在屋里就够得着。
+
+**人和人的够得着**。当面互动（`ask_hobby`、`invite`、`offer` 与 `accept_offer`、当面 `return_item`）按权威位置量距离，不看区域标签：同一个场景实例、双方都有效在场、都不在小游戏里、这一刻的距离 ≤ `personReach`（参数，默认 3.0 米：大于物件的使用距离 1.8 米、小于听力距离 9 米；放在参数里，不放地图，改它不换 `mapVersion`）。位置按折线和时间现算，走着的人也一样；隔着区域边界但很近的两个人可以互动，同一区域里相距很远的不行。判定在 `world/reach.ts`，只读位置，不写 `world_actors`。两种失败：
+- 同一场景实例、在场、不在小游戏里，但距离不够：`precondition_failed` / `reason: "too_far"`，`data.navigateTo` 是对方的居民编号，原样放进 `navigate {approach: …}` 就能走到 ta 身边（一米处）。
+- 其余一律 `reason: "not_here"`，不带任何位置信息：不在同一个场景实例（一个在私宅里、一个在公共场景里，或在两户不同的私宅里）、对方离线、对方在小游戏里、没有这个人、对象是自己。「在别人家里」「不在镇上」「在别处」「不存在」的响应一字不差，不能用来探测别人在哪。
 
 **私宅**。进别人家要有邀请。`navigate` 到 `home` / `home:<id>` 先走到会馆门口，**到门口再查一次权限**，通过了才进入那户的私有实例；路上邀请过期或被撤销就停在门外，只收到固定模板的提示。出门、被请出门都落在会馆门口。外人只看到有人到了会馆门前、又离开了这片地方：进了谁家、屋里有谁，公共场景里的人和公开投影都拿不到；私宅实例里的坐标只给屋里的人。
 
@@ -239,21 +243,21 @@ packages/engine/town/             旧的网页前端（静态文件；会被 God
 | `navigate` | `to` 或 `approach` | 走过去。`to`：目的地 id、`home`（自己家）、`home:<id>`、公共物件编号、居民编号、地图点 `{x, z}`；`approach`：居民编号。返回 `navigation: {navigationId, revision, to, arriveAt, continues, leaseUntil, renewEveryMs}`；已经在旁边时是 `completed` + `already: "near"`。`continues: true` 表示这一段走完还要穿过门口接着走。失败原因：`already_here`、`no_such_place`、`no_access`、`no_route`、`unreachable`、`not_here`。走路时再发一次就是改道；正往外走的人说要去脚下这片区域（或者在家里正往门口走时说回家），是改主意要回来，照常走回落脚点，站着不动时才是 `already_here` |
 | `stop_navigation` | — | 停在这一刻的位置。返回 `{stopped, at: {space, x, z}}` |
 | `move` | `to` | 旧名字，等同 `navigate` |
-| `speak` | `text` | 现场发言，最多 120 字（超出的截掉）。受众在提交那一刻固定：同一区域、在场、不在小游戏里。边走边说也可以 |
-| `ask_hobby` | `target` | 当面问对方的爱好（对方可以在设置里关掉） |
+| `speak` | `text` | 现场发言，最多 120 字（超出的截掉）。受众在提交那一刻固定：同一区域、在场、不在小游戏里。边走边说也可以。视图 `here.chat` 只按受众表和 30 分钟窗口取（走过区域边界后仍看得到当时听到的；住宅里说的话只在同一间屋里的现场视图出现） |
+| `ask_hobby` | `target` | 当面问对方的爱好（对方可以在设置里关掉）。对方要在 `personReach` 内，否则 `too_far` / `not_here` |
 | `update_profile` | `name? bio? traits? interests? showMood? allowAskHobby? mood?` | 改资料和展示设置。`mood` 是真人自己设的情绪展示，`null` 交回程序 |
 | `buy` | `shop, sku, qty?` | 在商店所在的地点买。库存按世界日补 |
 | `use_item` | `itemType` | 用掉一件消耗品（汤、饼干恢复精力） |
 | `display_item` | `itemId` 或 `itemType, qty?`；`on?` | 在自己家把装饰摆出来 / 收起来 |
 | `place_furniture` | `itemId` | 在自己家把买来的家具（花箱、小灶台）摆成可互动的物件 |
-| `offer` | `kind: gift\|trade\|loan, to, give, want?` | 当面发起。`give`/`want` 是 `{coins?, items?: [{type, qty} \| {itemId}]}`；`want` 只能按种类写。发起时预留发起方的东西。出借一次一件 |
-| `accept_offer` / `decline_offer` / `cancel_offer` | `offerId` | 接受时双向转移在同一事务里完成。任何一方离开、离线或进入小游戏，报价自动撤销、预留退回。报价不存在和「不是给你的 / 不是你发的」不区分，都是 `not_available` |
+| `offer` | `kind: gift\|trade\|loan, to, give, want?` | 当面发起，发起时对方要在 `personReach` 内（否则 `too_far` / `not_here`）。`give`/`want` 是 `{coins?, items?: [{type, qty} \| {itemId}]}`；`want` 只能按种类写。发起时预留发起方的东西。出借一次一件 |
+| `accept_offer` / `decline_offer` / `cancel_offer` | `offerId` | 接受时双向转移在同一事务里完成，成交那一刻再量一次距离：对方走远了就 `too_far`（带 `navigateTo`），报价不撤销、预留不动，走近再接受即可。报价只按「同一个场景实例 + 距离」成立，不看区域标签，单纯走过区域边界不撤销；自动撤销、预留退回的时机：任一方进出私宅（离开这个场景实例）、离线或失去在场资格、进入小游戏。原有的过期（10 分钟）规则不变。报价不存在和「不是给你的 / 不是你发的」不区分，都是 `not_available` |
 | `borrow_book` | `bookId` | 在书屋借镇上的藏书（一次最多 2 本） |
-| `return_item` | `itemId` | 归还借来的东西：当面、灯巷会馆门前主人家的归还箱、或书屋 |
+| `return_item` | `itemId` | 归还借来的东西：当面（主人要在 `personReach` 内；在灯巷会馆区域里够不着就自动放进归还箱，别处够不着是 `too_far`）、灯巷会馆门前主人家的归还箱、或书屋 |
 | `send_letter` | `to, body, invite?` | 寄信（1000 字，每天 20 封）。默认 60 秒后送到。`invite: {reentry?}` 随信附一份登门邀请 |
 | `read_letter` | `letterId` | 新来的信要回到自己家才能第一次读；读过之后在哪都能重读 |
 | `delete_letter` | `letterId` | |
-| `invite` | `to, reentry?` | 当面邀请对方来家里（24 小时有效） |
+| `invite` | `to, reentry?` | 当面邀请对方来家里（24 小时有效）。对方要在 `personReach` 内，否则 `too_far` / `not_here`（不在一处可以写信邀请） |
 | `revoke_invite` | `grantId` | 主人撤销邀请；还在屋里的客人会被送到会馆门口，已经知道这份邀请但人在别处的会收到一条固定模板的通知（信还没读的不通知） |
 | `start_interaction` | `objectId, wait?, itemId?` | 在一件物件上发起共同活动。公共物件要先走到旁边，否则 `too_far`（`navigateTo` 是物件编号）。一个人就能做的默认立刻开始，`wait: true` 表示先等人。读书时带 `itemId` 可以读手上的某本书 |
 | `join_interaction` / `begin_interaction` | `interactionId` | 加入（同样要够得着）；发起人在人数够了之后开始。人满自动开始 |
@@ -456,7 +460,6 @@ npm run world:recovery                                       # 故障注入：�
 
 - 三维客户端：P0 灰盒已经有了（街道、点击移动、角色和音频资源管线，见 `client/README.md`，由 `/town/3d/` 托管）。聊天、背包、信箱、小游戏界面、NPC 等仍只在旧的 `/town/` 页面里，三维客户端还没有。
 - 按距离的附近聊天、小镇频道、NPC、住宅内部的摆设坐标、场景快照的增量同步：v2.0 的第二阶段。
-- 人和人之间的当面互动现在按「同一个区域」判定，还没有改成按距离。
 
 - AI 居民的叙述摘要（由模型写的长期记忆）没有进入服务端：服务端只保存结构化事实和模板化的共同经历。
 - 管理页还没有小镇的面板；指标只能通过代码取。
