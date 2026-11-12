@@ -310,10 +310,12 @@ describe('WS：票据与握手', () => {
     expect(await wrong.waitClosed()).toBe(4401);
 
     const u = await new User(app).login('阿灯');
+    const tk = await u.ticket(); // 取票（HTTP 往返）放在 open 之前，别占用 150ms 的 hello 超时
+    const tk2 = await u.ticket();
     const c = await Client.open(app.wsUrl);
-    c.hello(await u.ticket());
+    c.hello(tk);
     await c.type('hello');
-    c.hello(await u.ticket());
+    c.hello(tk2);
     expect((await c.type('error')).code).toBe('bad_request');
     c.send({ t: 'ping', n: 7 });
     expect(await c.type('pong')).toMatchObject({ n: 7, serverTime: app.t.clock.now() });
@@ -517,7 +519,16 @@ describe('WS：方向输入的推送范围与栅栏', () => {
     c.c.send({ t: 'ping', n: 2 });
     await c.c.type('pong', 3000, fromC);
     expect(c.c.count('scene', fromC)).toBe(0);
-    // C 在私宅里按方向：只有 C 自己收到，A、B 的 scene 数不增加
+    // C 在私宅里按方向：只有 C 自己收到，A、B 的 scene 数不增加。
+    // 计数之前先让公共场景静下来：A 松手（否则 A 的 500 毫秒租约到期也会给 A、B 各推一帧），
+    // 等 A、B 都收到「A 停了」，再等过一个合并间隔，把还挂着的合并定时器放完
+    const fromA2 = a.c.msgs.length;
+    const fromB2 = b.c.msgs.length;
+    a.c.send({ t: 'dir', seq: 2, epoch: epochA, x: 0, z: 0 });
+    const stopped = (m: any): boolean => m.t === 'scene' && m.actors.some((x: any) => x.id === a.u.residentId && !x.nav);
+    await a.c.waitFor(stopped, 3000, fromA2);
+    await b.c.waitFor(stopped, 3000, fromB2);
+    await new Promise((r) => setTimeout(r, 200));
     const nA = a.c.count('scene');
     const nB = b.c.count('scene');
     const epochC = c.u.actor.row().control_epoch;
@@ -828,8 +839,9 @@ describe('WS：关闭、限额与保活', () => {
   it('心跳：不回协议层 pong 的客户端被断开；会回的不受影响', async () => {
     const app = await serve({ ws: { pingMs: 40 } });
     const u = await new User(app).login('阿灯');
+    const ticket = await u.ticket(); // 取票放在 open 之前，别占用 pingMs 的计时
     const dead = await Client.open(app.wsUrl, { autoPong: false });
-    dead.hello(await u.ticket());
+    dead.hello(ticket);
     await dead.type('hello');
     const live = await attach(app, await new User(app).login('小满'));
     expect(await dead.waitClosed(3000)).toBe(1006);
