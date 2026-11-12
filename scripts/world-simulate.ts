@@ -57,7 +57,7 @@ import {
 } from './world-lib.js';
 import { PUBLIC_OBJECTS } from '../packages/engine/src/world/content.js';
 import { actorOf, posOf } from '../packages/engine/src/world/space.js';
-import { canHear } from '../packages/engine/src/world/hearing.js';
+import { zoneAt } from '../packages/engine/src/world/spatial/grid.js';
 import { exchangeTicket, issueTicket, sessionPrincipal } from '../packages/engine/src/index.js';
 
 type MeView = ReturnType<typeof townMeView>;
@@ -887,7 +887,7 @@ class Sim {
     for (const r of this.w.db.all('SELECT resident_id FROM residents WHERE present_since IS NOT NULL AND activity_id IS NULL')) {
       const id = String(r.resident_id);
       const a = actorOf(this.w, id);
-      if (id === ag.p.residentId || (a && canHear(this.w, sp, posOf(a, now)))) expected.add(id);
+      if (id === ag.p.residentId || (a && this.hearsIndependently(sp, posOf(a, now)))) expected.add(id);
     }
     const missing = [...expected].filter((x) => !heard.has(x));
     const extra = [...heard].filter((x) => !expected.has(x));
@@ -899,11 +899,27 @@ class Sim {
     for (const e of ev) if (/"(x|z|path|arriveAt)"\s*:/.test(String(e.payload))) this.inv.fail('chat_event_coords', '聊天事件里有坐标或路线', { payload: String(e.payload).slice(0, 200) }, now);
   }
 
+  /**
+   * 脚本里独立写的一份「听不听得到」，不调用被测的 canHear：同场景同实例、平面距离（自己开方）不超过地图的交谈距离、
+   * 房间相同（室内区域看自己的 room，室外都算一个）。在场和不在对局由调用处的 SQL 筛。
+   */
+  private hearsIndependently(a: { scene: string; instance: string; x: number; z: number }, b: { scene: string; instance: string; x: number; z: number }): boolean {
+    if (a.scene !== b.scene || a.instance !== b.instance) return false;
+    if (Math.sqrt((a.x - b.x) ** 2 + (a.z - b.z) ** 2) > this.w.map.hearDistance) return false;
+    const scene = this.w.map.scenes.get(a.scene);
+    if (!scene) return false;
+    const room = (p: { x: number; z: number }) => {
+      const z = zoneAt(scene, p.x, p.z);
+      return z.indoor ? `in:${z.room}` : 'out';
+    };
+    return room(a) === room(b);
+  }
+
   /** 全镇公屏：在场且不在对局里才发得出去；对局中必须被拒；有时 @ 一位居民（唤醒规则由单元测试覆盖）。 */
   private townAudited(ag: Ag, conn: Conn): void {
     const rnd = ag.rnd;
     const others = this.ags.filter((a) => a !== ag && a.registered);
-    const mention = others.length > 0 && rnd.chance(0.3) ? `${rnd.pick(others).p.name}，` : '';
+    const mention = others.length > 0 && rnd.chance(0.3) ? `@${rnd.pick(others).p.name} ` : '';
     const kind = rnd.pick(['chat', 'chat', 'activity', 'help']);
     const mark = `编号T${String(++this.townSeq).padStart(6, '0')}X`;
     const text = `${mention}${rnd.pick(PHRASES)}（${mark}）`;

@@ -305,7 +305,7 @@
 | `direction` | `before` / `after` |  | town_chat：cursor 之前（更早的一页，默认）还是之后（追新）；不带 cursor 就是最近一页 |
 | `with` | string |  | relations：对方居民 id，翻看与此人的共同记忆 |
 | `cursor` | string |  | relations + with：上一页返回的 next；town_chat：上一次返回的 older（往前翻）或 cursor（追新） |
-| `limit` | integer |  |  |
+| `limit` | integer |  | 每页条数，最多 50（town_chat 经 MCP 也是 50；网页接口最多 100） |
 | `date` | string |  |  |
 
 ### `town_issue_ticket` —— 给真人签发小镇登录链接

@@ -9,6 +9,7 @@
 - **AI 唤醒**：只有被明确提到或有未结束约定的在场居民才收到 `town_chat_mention`（有唤醒额度）；闲聊不唤醒；活动和求助消息以少量摘要附在 `get_my_view.town_chat`。`update_profile {muteTownChat}` 可静音。
 - **入口**：HTTP `GET /town-chat`；WebSocket `hello.townChat` 和 `town_chat` 推送；MCP `world_query what=town_chat`、`world_act say_town`、`speak`。agent-kit 和 `resident-zh.md` 同步。
 - **测试**：新增 `test/world/chat.test.ts`（服务层规则，38 条）和 `chat-transport.test.ts`（HTTP / WS / MCP，10 条）；`scripts/world-simulate.ts` 现在让居民用附近聊天和公屏，并逐条核对受众、检查事件无坐标、公开地图无公屏文字；`world-recovery.ts` 的随机动作里加了 `say_town`。
+- **审查后修正**（同一分支追加提交）：回执不再带 `woken`；`floorSeq` / 清理改用能区分 NULL 的查询（全部过期而清理未跑时旧 `after` 得 resync）；过期的 `before` 游标（公屏和 `/history`）返回 resync；重复检查不设条数上限；零宽字符和 U+2800 先去掉；提及匹配加边界（少于 3 个字只认 `@名字`）；约定唤醒收窄为 activity/help 或约定地点；新增（接收者, 发言者）唤醒限额；公屏文字标 `untrusted`；对局中的 AI 经 MCP 读公屏被拒、WebSocket 不推给对局中的 AI 连接；模拟脚本里的受众核对改成独立实现。测试在 `chat-review.test.ts` 和 `chat-transport.test.ts`。
 - **取舍**：`here.chat`（视图里的「身边最近的话」）仍按区域标签过滤；赠送、问爱好等当面互动仍按同一区域判定（不在本次范围）。
 
 ## 2026-11-12（夜）：部署 #40，线上开启栖灯镇

@@ -312,6 +312,12 @@ export function createTownWs(w: WorldService, log: (msg: string) => void, opts: 
     const pushTownChat = () => {
       if (ws.readyState !== WebSocket.OPEN || !residentId) return;
       try {
+        // 对局中的 AI 居民不收公屏（对局期间内容不进入这局 AI 的上下文）；真人的网页连接照常收。位置照样往前推，不留到以后补发
+        const me = w.resident(residentId);
+        if (me && me.kind === 'agent' && me.activity_id) {
+          townSeq = townChatHead(w);
+          return;
+        }
         for (let i = 0; i < 5; i++) {
           const read = townChatSince(w, residentId, townSeq, 50);
           townSeq = read.seq;

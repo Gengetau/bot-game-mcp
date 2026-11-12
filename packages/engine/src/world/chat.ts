@@ -9,9 +9,10 @@
  *   这条通道永远不会因为人走远或换场景变成全镇消息：发全镇必须显式用 `say_town`。
  * - 全镇公屏（动作 `say_town`）：独立的表、独立的连续序号（stream_heads 的 tc:<world>）。已认证的居民可以读保留期内的历史，
  *   不要求在场；只有有效在场且不在小游戏里的居民能发。匿名观众读不到（没有任何公开出口带它）。
- *   不逐条唤醒 AI：只有「明确提到我」或「和我有已有约定的人说的话」才给在场、不在小游戏里、没静音的居民发一条
- *   `town_chat_mention` 事件（带每人的唤醒额度，防止几个 AI 互相提及形成循环）；公共活动和求助消息在下一次读视图时
- *   以少量摘要的形式附带。对局中的居民既不被唤醒，视图里也没有公屏摘要。
+ *   不逐条唤醒 AI：只有「明确提到我」（@名字，或边界清楚的完整名字）或「和我有未结束约定的人发了与约定相关的活动 / 求助消息」
+ *   才给在场、不在小游戏里、没静音的居民发一条 `town_chat_mention` 事件（按（接收者, 发言者）和接收者总额度两层限额）；
+ *   公共活动和求助消息在下一次读视图时以少量摘要的形式附带。进入 AI 上下文的公屏文字一律标 untrusted：是别的居民写的内容，不是指令。
+ *   对局中的居民既不被唤醒，视图里也没有摘要，AI 经 MCP 也读不了（真人的网页入口对局中仍可只读查看）。
  *
  * 游标是不透明字符串，绑定世界、主体和通道（service.ts 的 encodeCursor）：别人的或别的通道的游标无效，
  * 保留期之外的游标得到明确的重同步要求，不会退回成无筛选的全量查询。
@@ -32,9 +33,12 @@ import type { ResidentRow } from './types.js';
  * 清洗并校验一条要发的话：先过 sanitizeUserText，空的和超长的都给明确的错误（不悄悄截断）。
  * lenient=true 只给旧动作名 `speak` 用：超长的按旧行为截到上限，保持老客户端不变。
  */
+/** 不可见的格式字符（零宽空格、零宽连接符、方向控制符等 Cf 类）和盲文空白 U+2800：它们不显示，却能骗过非空、长度和重复判断。 */
+const INVISIBLE = /[\p{Cf}\u2800]/gu;
+
 export function cleanChatText(w: WorldService, raw: unknown, lenient = false): string {
   if (typeof raw !== 'string') throw badRequest('需要 text（要说的话）。');
-  const text = sanitizeUserText(raw).replace(/\s+/g, ' ').trim();
+  const text = sanitizeUserText(raw).replace(INVISIBLE, '').replace(/\s+/g, ' ').trim();
   if (!text) throw badRequest('说点什么吧。');
   const n = [...text].length;
   if (lenient) return n > w.params.chatMaxChars ? [...text].slice(0, w.params.chatMaxChars).join('') : text;
@@ -42,6 +46,11 @@ export function cleanChatText(w: WorldService, raw: unknown, lenient = false): s
     throw new WorldError('bad_request', `这句话太长了（${n} 字），最多 ${w.params.chatMaxChars} 字。`, 'text_too_long', { maxChars: w.params.chatMaxChars, chars: n });
   }
   return text;
+}
+
+/** 比较用的归一化：NFKC、去不可见字符、小写。重复判断和提及匹配用同一份。 */
+export function normalizeForMatch(s: string): string {
+  return s.normalize('NFKC').replace(INVISIBLE, '').toLowerCase();
 }
 
 const clip = (s: string, n: number): string => {
@@ -104,7 +113,9 @@ export function nearbyHistory(
   let beforeSeq: number | null = null;
   if (typeof before === 'string' && before !== '') {
     const n = /^\d{1,12}$/.test(before) ? Number(before) : w.decodeCursor('n', nearbyScope(residentId), before);
-    if (n === null || n > high + 1) return { messages: [], next: null, resync: true };
+    // 超出范围，或指向的那条已经被清掉（最早还留着的序号 = 水位 - 受众行数 + 1）：重同步
+    const floorN = high - Number(w.db.scalar('SELECT COUNT(*) FROM chat_audience WHERE resident_id = ?', residentId)) + 1;
+    if (n === null || n > high + 1 || n < floorN) return { messages: [], next: null, resync: true };
     beforeSeq = n;
   } else if (typeof before === 'number' && Number.isFinite(before)) {
     beforeSeq = Math.floor(before);
@@ -204,12 +215,14 @@ function project(w: WorldService, viewerId: string, row: { seq: number; sender_i
 /** 保留期内最早的一条的序号（没有就是水位 + 1）。读的时候现算，不依赖清理任务有没有跑过。 */
 function floorSeq(w: WorldService, now: number): number {
   const head = w.streamHead(townKey(w));
-  const min = w.db.scalar('SELECT MIN(seq) FROM town_chat_messages WHERE world_id = ? AND sent_at >= ?', w.worldId, now - w.params.townChatRetentionMs);
+  // 用 get 而不是 scalar：scalar 会把 NULL 当成 0，分不出「保留期内一条都没有」
+  const min = w.db.get('SELECT MIN(seq) AS m FROM town_chat_messages WHERE world_id = ? AND sent_at >= ?', w.worldId, now - w.params.townChatRetentionMs)?.m;
   return Math.max(head.retainedFrom, min === null || min === undefined ? head.highWater + 1 : Number(min));
 }
 
 /**
- * 读公屏。调用方必须已经确认 residentId 是已认证、获准进入这个世界的居民；不要求在场，对局中也能读。
+ * 读公屏。调用方必须已经确认 residentId 是已认证、获准进入这个世界的居民；不要求在场。
+ * 对局中的 AI 不能读由 MCP 入口（mcp/town.ts）拒绝；真人网页入口对局中保持只读可看。
  * 没有游标：最近一页（默认 50 条）。before：比这个游标更早的一页。after：比这个游标更新的（最多一页，用于追新）。
  */
 export function townChatPage(w: WorldService, residentId: string, q: { before?: string | null; after?: string | null; limit?: number } = {}, now: number = w.now()): TownChatPage {
@@ -241,7 +254,8 @@ export function townChatPage(w: WorldService, residentId: string, q: { before?: 
   let beforeSeq = head.highWater + 1;
   if (q.before) {
     const n = w.decodeCursor('c', townScope(residentId), q.before);
-    if (n === null || n > head.highWater + 1) return resync;
+    // 游标指向的那条已经过了保留期（或被清掉）：要求重同步，不返回空页
+    if (n === null || n > head.highWater + 1 || n < floor) return resync;
     beforeSeq = n;
   }
   const rows = read('SELECT * FROM town_chat_messages WHERE world_id = ? AND seq < ? AND sent_at >= ? ORDER BY seq DESC LIMIT ?', w.worldId, beforeSeq, cut, size + 1);
@@ -275,37 +289,78 @@ export function townChatHead(w: WorldService): number {
 
 // ───────────────────────── 相关性（唤醒与摘要） ─────────────────────────
 
-/** 和这位居民有「已有约定」的人：对方发给我的或我发给他的未决报价、同一桌还没开的小游戏、同一件还没结束的共同活动。 */
-function commitmentPartners(w: WorldService, residentId: string): Set<string> {
-  const out = new Set<string>();
+/**
+ * 和这位居民有「未结束约定」的人，以及约定相关的地点：对方发给我的或我发给他的未决报价（没有地点）、同一桌还没开的小游戏
+ * （地点是那家游戏馆）、同一件还没结束的共同活动（地点是物件所在处）。
+ */
+function commitmentPartners(w: WorldService, residentId: string): Map<string, Set<string>> {
+  const out = new Map<string, Set<string>>();
+  const add = (id: unknown, place?: unknown) => {
+    const k = String(id);
+    if (k === residentId) return;
+    const set = out.get(k) ?? new Set<string>();
+    if (place !== undefined && place !== null) set.add(String(place));
+    out.set(k, set);
+  };
   for (const row of w.db.all("SELECT from_id, to_id FROM offers WHERE status = 'open' AND (from_id = ? OR to_id = ?)", residentId, residentId)) {
-    out.add(String(row.from_id === residentId ? row.to_id : row.from_id));
+    add(row.from_id === residentId ? row.to_id : row.from_id);
   }
   for (const row of w.db.all(
-    `SELECT b.resident_id FROM activity_participants a JOIN activity_participants b ON b.activity_id = a.activity_id AND b.active = 1
+    `SELECT b.resident_id, x.venue_id AS place FROM activity_participants a JOIN activity_participants b ON b.activity_id = a.activity_id AND b.active = 1
      JOIN activities x ON x.activity_id = a.activity_id
      WHERE a.resident_id = ? AND a.active = 1 AND x.status IN ('forming','ready')`,
     residentId,
   )) {
-    out.add(String(row.resident_id));
+    add(row.resident_id, row.place);
   }
   for (const row of w.db.all(
-    `SELECT b.resident_id FROM interaction_participants a JOIN interaction_participants b ON b.interaction_id = a.interaction_id AND b.active = 1
+    `SELECT b.resident_id, x.space_id AS place FROM interaction_participants a JOIN interaction_participants b ON b.interaction_id = a.interaction_id AND b.active = 1
      JOIN interactions x ON x.interaction_id = a.interaction_id
      WHERE a.resident_id = ? AND a.active = 1 AND x.status IN ('open','running')`,
     residentId,
   )) {
-    out.add(String(row.resident_id));
+    add(row.resident_id, row.place);
   }
-  out.delete(residentId);
   return out;
 }
 
-/** 明确提到：文字里有 @名字 或完整的名字（名字至少两个字，免得单字名字匹配一切）。 */
-function mentions(text: string, name: string): boolean {
-  const n = name.trim();
-  if ([...n].length < 2) return false;
-  return text.includes(`@${n}`) || text.includes(n);
+/**
+ * 「与已有约定有关」：发言者和我之间有未结束的约定，而且这条消息和约定有关——
+ * 活动 / 求助类消息，或者带的 place 正是约定的地点。普通闲聊不因为有约定就叫醒对方。
+ */
+function relatedByCommitment(commit: Map<string, Set<string>>, senderId: string, kind: string, placeId: string | null | undefined): boolean {
+  const places = commit.get(senderId);
+  if (!places) return false;
+  if (kind === 'activity' || kind === 'help') return true;
+  return !!placeId && places.has(placeId);
+}
+
+const isWordChar = (ch: string | undefined): boolean => ch !== undefined && /[\p{L}\p{N}\p{M}_]/u.test(ch);
+
+/**
+ * 明确提到。两边先 NFKC、去不可见字符、小写，然后：
+ * - `@名字` 一定算（不看前后）；
+ * - 名字少于 3 个字（按字符数）只认 `@名字`；
+ * - 不带 @ 时，名字前后都必须是边界（空白、标点、开头 / 结尾），不能紧贴字母、数字或汉字。
+ *   中文没有空格分词，所以汉字名字不带 @ 时必须被标点或空格隔开（「阿汐，来玩吗」算，「阿汐加油」「小阿汐」不算）：
+ *   名字是别的词的一部分时不会误唤醒。
+ */
+export function mentions(text: string, name: string): boolean {
+  const n = normalizeForMatch(name.trim());
+  const t = normalizeForMatch(text);
+  const len = [...n].length;
+  if (len < 2) return false;
+  if (t.includes(`@${n}`)) return true;
+  if (len < 3) return false;
+  let from = 0;
+  for (;;) {
+    const i = t.indexOf(n, from);
+    if (i < 0) return false;
+    const before = [...t.slice(0, i)].pop();
+    const after = [...t.slice(i + n.length)][0];
+    if (!isWordChar(before) && !isWordChar(after)) return true;
+    from = i + 1;
+  }
 }
 
 function muted(r: ResidentRow): boolean {
@@ -318,20 +373,22 @@ function muted(r: ResidentRow): boolean {
  * 并且这位居民的唤醒额度还有（额度用完这条消息仍然在频道里，只是不再叫醒她；下一次读视图的摘要里仍然会有）。
  */
 function wakeFor(w: WorldService, sender: ResidentRow, text: string, kind: TownKind, place: { id: string; name: string } | undefined, now: number): number {
-  const partners = commitmentPartners(w, sender.resident_id);
-  let woken = 0;
   const candidates = w.db.all('SELECT resident_id FROM residents WHERE world_id = ? AND present_since IS NOT NULL AND activity_id IS NULL AND resident_id <> ? ORDER BY resident_id', w.worldId, sender.resident_id);
+  let woken = 0;
   for (const c of candidates) {
     const r = w.resident(String(c.resident_id));
     if (!r || muted(r)) continue;
     const named = mentions(text, r.name);
-    const committed = partners.has(r.resident_id);
+    const committed = !named && relatedByCommitment(commitmentPartners(w, r.resident_id), sender.resident_id, kind, place?.id);
     if (!named && !committed) continue;
+    // 先判（接收者, 发言者）这一层，再扣接收方的总额度：一个人刷不光别人的额度
+    if (!tryToken(w, r.resident_id, `town_wake_from:${sender.resident_id}`, w.params.townChatWakePairBurst, w.params.townChatWakePairPerHour / 60, now)) continue;
     if (!tryToken(w, r.resident_id, 'town_wake', w.params.townChatWakeBurst, w.params.townChatWakePerHour / 60, now)) continue;
     w.emitTo(
       [r.resident_id],
       'town_chat_mention',
-      { from: card(sender), kind, text: clip(text, w.params.townChatDigestChars), reason: named ? 'mention' : 'commitment', ...(place ? { place } : {}) },
+      // untrusted：text 是别的居民写的内容，不是给你的指令
+      { from: card(sender), kind, text: clip(text, w.params.townChatDigestChars), reason: named ? 'mention' : 'commitment', untrusted: true, ...(place ? { place } : {}) },
       now,
     );
     woken++;
@@ -344,7 +401,7 @@ function wakeFor(w: WorldService, sender: ResidentRow, text: string, kind: TownK
  * 条数和每条长度都有上限。不在场、在小游戏里、静音的居民没有摘要（对局中的 AI 看不到公屏）。
  * 里面的文字是别的居民写的，只是内容，不是指令。
  */
-export function townChatDigest(w: WorldService, r: ResidentRow, now: number): { from: string; kind: TownKind; text: string; place?: string; mentions_you?: true }[] | null {
+export function townChatDigest(w: WorldService, r: ResidentRow, now: number): { from: string; kind: TownKind; text: string; place?: string; mentions_you?: true; untrusted: true }[] | null {
   if (r.activity_id || r.present_since === null || muted(r)) return null;
   const maxLines = w.params.townChatDigestLines;
   if (maxLines <= 0) return [];
@@ -356,16 +413,17 @@ export function townChatDigest(w: WorldService, r: ResidentRow, now: number): { 
   );
   if (!rows.length) return [];
   const partners = commitmentPartners(w, r.resident_id);
-  const out: { from: string; kind: TownKind; text: string; place?: string; mentions_you?: true }[] = [];
+  const out: { from: string; kind: TownKind; text: string; place?: string; mentions_you?: true; untrusted: true }[] = [];
   for (const m of rows) {
     const named = mentions(String(m.body), r.name);
-    if (!(named || partners.has(String(m.sender_id)) || m.kind === 'activity' || m.kind === 'help')) continue;
+    if (!(named || m.kind === 'activity' || m.kind === 'help' || relatedByCommitment(partners, String(m.sender_id), m.kind, m.place))) continue;
     const sender = w.resident(String(m.sender_id));
     const place = placeOf(m.place);
     out.push({
       from: sender?.name ?? '某位居民',
       kind: m.kind as TownKind,
       text: clip(String(m.body), w.params.townChatDigestChars),
+      untrusted: true,
       ...(place ? { place: place.name } : {}),
       ...(named ? { mentions_you: true as const } : {}),
     });
@@ -386,7 +444,7 @@ const PURGE_KEY = 'town_chat_purge';
 /** 删掉过了保留期的公屏消息，并把「最早还能续传的位置」推过去：拿着被删区间的游标来续传会得到重同步。 */
 export function purgeTownChat(w: WorldService, now: number): number {
   const cut = now - w.params.townChatRetentionMs;
-  const max = w.db.scalar('SELECT MAX(seq) FROM town_chat_messages WHERE world_id = ? AND sent_at < ?', w.worldId, cut);
+  const max = w.db.get('SELECT MAX(seq) AS m FROM town_chat_messages WHERE world_id = ? AND sent_at < ?', w.worldId, cut)?.m;
   if (max === null || max === undefined) return 0;
   const n = w.db.run('DELETE FROM town_chat_messages WHERE world_id = ? AND sent_at < ?', w.worldId, cut).changes;
   w.db.run('UPDATE stream_heads SET retained_from = MAX(retained_from, ?) WHERE stream_key = ?', Number(max) + 1, townKey(w));
@@ -453,8 +511,9 @@ export function installChat(w: WorldService): void {
       if (!place) throw badRequest('place 只能是公共地点的编号（plaza、tea_house、bookshop、kitchen、garden、arcade、residential）。位置提示不能指向某户人家或具体坐标。');
     }
     // 重复内容：同一个人在窗口内说了一模一样的话
-    const norm = (s: string) => s.normalize('NFKC').replace(/\s+/g, '').toLowerCase();
-    const recent = w.db.all('SELECT body FROM town_chat_messages WHERE world_id = ? AND sender_id = ? AND sent_at >= ? ORDER BY seq DESC LIMIT 10', w.worldId, r.resident_id, now - w.params.townChatDuplicateWindowMs);
+    // 窗口内这个人发的全部（每分钟最多 6 条，窗口只有几分钟，行数有界），不设条数上限
+    const norm = (s: string) => normalizeForMatch(s).replace(/\s+/g, '');
+    const recent = w.db.all('SELECT body FROM town_chat_messages WHERE world_id = ? AND sender_id = ? AND sent_at >= ?', w.worldId, r.resident_id, now - w.params.townChatDuplicateWindowMs);
     if (recent.some((m) => norm(String(m.body)) === norm(text))) {
       throw precondition('刚刚已经发过一模一样的话了，换个说法或者稍后再发。', 'duplicate');
     }
@@ -464,9 +523,10 @@ export function installChat(w: WorldService): void {
     const seq = head.highWater + 1;
     w.db.run('INSERT INTO stream_heads(stream_key, high_water, retained_from) VALUES (?,?,1) ON CONFLICT(stream_key) DO UPDATE SET high_water = excluded.high_water', townKey(w), seq);
     w.db.run('INSERT INTO town_chat_messages(world_id, seq, sender_id, kind, body, place, sent_at) VALUES (?,?,?,?,?,?,?)', w.worldId, seq, r.resident_id, kind, text, place?.id ?? null, now);
-    const woken = wakeFor(w, r, text, kind, place, now);
+    // 回执里不带唤醒了谁：那会让发言者知道对方是否静音、额度是否用尽
+    wakeFor(w, r, text, kind, place, now);
     w.bumpTownChat();
-    return { status: 'completed', scope: 'town', id: w.encodeCursor('c', townScope(r.resident_id), seq), woken };
+    return { status: 'completed', scope: 'town', id: w.encodeCursor('c', townScope(r.resident_id), seq) };
   });
 
   // ── 过期清理（定时任务） ──

@@ -664,11 +664,13 @@ describe('全镇公屏：AI 唤醒与摘要', () => {
     expect(await t.w.waitResident(b.residentId, cb, undefined, 0)).toBe('event');
     expect(woke(t, c, cc)).toEqual([]);
     expect(await t.w.waitResident(c.residentId, cc, undefined, 0)).toBe('timeout');
-    // 提到自己的名字也算；发言的人提到自己不叫醒自己
+    // 名字只是别的词的一部分不算；@名字 算；发言的人提到自己不叫醒自己
     const cb2 = b.view().cursor;
     t.advance(1_000);
     sayTown(a, '小岚的茶泡好了吗');
-    sayTown(b, '我是小岚');
+    expect(woke(t, b, cb2)).toHaveLength(0);
+    sayTown(a, '@小岚的茶泡好了吗');
+    sayTown(b, '我是@小岚');
     expect(woke(t, b, cb2)).toHaveLength(1);
   });
 
@@ -680,7 +682,9 @@ describe('全镇公屏：AI 唤醒与摘要', () => {
     a.act('offer', { kind: 'gift', to: b.residentId, give: { coins: 1 } });
     const cb = b.view().cursor;
     const cc = c.view().cursor;
-    sayTown(a, '礼物收到了就告诉我一声哦'); // 没提名字，但 b 与 a 有未决的报价
+    sayTown(a, '礼物收到了就告诉我一声哦'); // 普通闲聊：有未决报价也不叫醒
+    expect(woke(t, b, cb)).toEqual([]);
+    sayTown(a, '礼物的事想请你帮个忙', { kind: 'help' }); // 约定 + 求助类消息：才叫醒
     expect(woke(t, b, cb).map((e) => (e.data as { reason: string }).reason)).toEqual(['commitment']);
     expect(woke(t, c, cc)).toEqual([]);
   });
@@ -701,17 +705,17 @@ describe('全镇公屏：AI 唤醒与摘要', () => {
     mate.act('start_game', { activityId: g.activity.id });
     pulse(a, player, mate, muted);
     const cursors = new Map([player, muted, away].map((x) => [x.residentId, x.view().cursor]));
-    sayTown(a, '小岚 小朵 小夏 都来看看');
+    sayTown(a, '@小岚 @小朵 @小夏 都来看看');
     for (const x of [player, muted, away]) expect(woke(t, x, cursors.get(x.residentId)!), x.name).toEqual([]);
     expect(t.w.db.scalar("SELECT COUNT(*) FROM recipient_events WHERE type = 'town_chat_mention'")).toBe(0);
     // 静音的人读得到历史，只是不被唤醒、视图里没有摘要
-    expect(townTexts(muted)).toEqual(['小岚 小朵 小夏 都来看看']);
+    expect(townTexts(muted)).toEqual(['@小岚 @小朵 @小夏 都来看看']);
     expect(townChatDigest(t.w, muted.row(), t.w.now())).toBeNull();
     // 对局结束（退出）之后，再次提到才会触发
     player.act('quit_game');
     t.advance(1_000);
     pulse(a, player);
-    sayTown(a, '小岚 欢迎回来');
+    sayTown(a, '@小岚 欢迎回来');
     expect(woke(t, player, cursors.get(player.residentId)!)).toHaveLength(1);
   });
 
@@ -723,14 +727,14 @@ describe('全镇公屏：AI 唤醒与摘要', () => {
     for (let i = 0; i < 8; i++) {
       t.advance(5_000);
       pulse(a, b);
-      sayTown(a, `小岚，第${i}次叫你`);
+      sayTown(a, `@小岚 第${i}次叫你`);
     }
-    expect(woke(t, b, cb)).toHaveLength(t.w.params.townChatWakeBurst);
+    expect(woke(t, b, cb)).toHaveLength(t.w.params.townChatWakePairBurst);
     expect(townTexts(b)).toHaveLength(8);
     // 一小时后额度恢复
     t.advanceAlive(60 * 60_000, [a, b]);
     const cb2 = b.view().cursor;
-    sayTown(a, '小岚，一小时之后再叫你');
+    sayTown(a, '@小岚 一小时之后再叫你');
     expect(woke(t, b, cb2)).toHaveLength(1);
   });
 
@@ -747,9 +751,9 @@ describe('全镇公屏：AI 唤醒与摘要', () => {
     expect(v.town_chat!.map((l) => l.text).join()).not.toContain('随便聊聊');
     expect(v.town_chat!.at(-1)).toMatchObject({ from: '阿灯', kind: 'help', place: '檐下书屋' });
     // 闲聊里提到我，也会进摘要，并标出来
-    sayTown(a, '小岚在吗');
+    sayTown(a, '@小岚 在吗');
     const v2 = agentView(t.w, b.row(), b.clientId) as { town_chat?: { mentions_you?: boolean; text: string }[] };
-    expect(v2.town_chat!.at(-1)).toMatchObject({ text: '小岚在吗', mentions_you: true });
+    expect(v2.town_chat!.at(-1)).toMatchObject({ text: '@小岚 在吗', mentions_you: true, untrusted: true });
     // 自己说的不进自己的摘要；窗口过了就没有了
     expect(JSON.stringify(agentView(t.w, a.row(), a.clientId))).not.toContain('谁能帮我找本书');
     t.advanceAlive(20 * 60_000, [a, b]);

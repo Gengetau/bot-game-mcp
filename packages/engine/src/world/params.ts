@@ -81,8 +81,11 @@ export const townParamsSchema = z.object({
   townChatPageSize: int(50, 1, 200),
   townChatPageMax: int(100, 1, 500),
   /** 公屏唤醒：每位居民的突发上限和每小时恢复条数（防止几个 AI 互相提及形成循环） */
-  townChatWakeBurst: int(3, 1, 100),
+  townChatWakeBurst: int(6, 1, 100),
   townChatWakePerHour: int(12, 1, 1000),
+  /** 同一个发言者对同一个接收者的唤醒：突发上限和每小时恢复条数（一个人刷不光别人的总额度） */
+  townChatWakePairBurst: int(3, 1, 100),
+  townChatWakePairPerHour: int(3, 1, 1000),
   /** 公屏进入 AI 视图的摘要：窗口、最多几条、每条最多几个字符 */
   townChatDigestWindowMs: ms(15 * 60_000),
   townChatDigestLines: int(4, 0, 20),
