@@ -1584,25 +1584,56 @@ class Sim {
     return rnd.range(8, 20) * 1000;
   }
 
+  /**
+   * 独立重算「此刻这个人在不在这张桌边」：只用权威位置和地图源里桌子的中心 / 够得着距离，不调引擎的 objectReach / requireReach。
+   * 凑桌成员在加入（和发起）的那一刻必须在桌边；距离按位置现算，和被测代码互不依赖。
+   */
+  private atTableIndependent(residentId: string, tableId: string): { ok: boolean; dist: number } {
+    const p = positionOfResident(this.w, residentId, this.clock.t);
+    const town = this.w.map.scenes.get(this.w.map.spawn.scene)!;
+    const it = town.interactables.get(tableId);
+    if (!p || !it) return { ok: false, dist: Infinity };
+    const dist = Math.hypot(p.x - it.x, p.z - it.z);
+    return { ok: p.scene === town.id && dist <= (it.reach ?? this.w.map.interactDistance) + 0.011, dist };
+  }
+
+  private checkTableMember(tag: string, residentId: string, name: string, tableId: string): void {
+    this.rejectChecks.run++;
+    const at = this.atTableIndependent(residentId, tableId);
+    if (!at.ok) {
+      this.rejectChecks.failed++;
+      const msg = `${tag}：${name} 加入 ${tableId} 时不在桌边（距离 ${at.dist.toFixed(2)} 米）`;
+      if (this.rejectChecks.samples.length < 10) this.rejectChecks.samples.push(msg);
+      this.inv.fail('table_member_near', msg, { who: name, tableId, dist: at.dist }, this.clock.t);
+    }
+  }
+
   private gameIntent(ag: Ag, conn: Conn, v: MeView, c: { space: string }): number | null {
     const rnd = ag.rnd;
     const now = this.clock.t;
     const here = v.here;
     const me = v.me.id;
-    const venues: Record<string, string[]> = { arcade: ['number_bomb', 'sealed_auction', 'liars_dice'], plaza: ['number_bomb'], tea_house: ['liars_dice'] };
-    if (!here || here.games.length === 0) {
-      const dest = rnd.weighted<string>([['arcade', 7], ['plaza', 1], ['tea_house', 1]])!;
-      if (dest === c.space) return null;
-      return this.moveTo(ag, conn, dest);
+    // 小游戏按桌入局：现在只有游戏馆有桌子（number_bomb / liars_dice 的场所也收窄到了游戏馆）
+    if (!here || here.games.length === 0 || here.tables.length === 0) {
+      if (c.space === 'arcade') return null;
+      return this.moveTo(ag, conn, 'arcade');
     }
-    void venues;
+    const tableById = new Map(here.tables.map((t) => [t.id, t]));
     const mine = here.activities.find((a) => a.players.some((p) => p.id === me));
     if (mine) {
+      const tbl = mine.tableId ? tableById.get(mine.tableId) : undefined;
       if (mine.status === 'forming' && mine.host.id === me) {
         const created = mine.lobbyExpiresAt - this.w.params.activityLobbyTtlMs;
         const full = mine.players.length >= mine.max;
         if (mine.players.length >= mine.min && (full || now - created > rnd.range(40, 150) * 1000 || rnd.chance(0.2))) {
-          this.exec(ag, conn, 'start_game', { activityId: mine.id });
+          // 发起人自己走开了就先回桌边（引擎会 too_far）
+          if (tbl && !tbl.near) return this.moveTo(ag, conn, tbl.id);
+          const out = this.exec(ag, conn, 'start_game', { activityId: mine.id });
+          if (out.ok) {
+            this.bump('table_start');
+            const dropped = (out.out as { dropped?: string[] }).dropped;
+            if (dropped?.length) this.bump('table_start_dropped');
+          }
           return rnd.range(3, 8) * 1000;
         }
         return rnd.range(8, 20) * 1000;
@@ -1613,19 +1644,30 @@ class Sim {
       }
       return rnd.range(8, 20) * 1000;
     }
-    const open = here.activities.filter((a) => a.status === 'forming' && a.players.length < a.max);
+    const open = here.activities.filter((a) => a.status === 'forming' && a.players.length < a.max && a.tableId);
     if (open.length > 0 && rnd.chance(0.8)) {
-      this.exec(ag, conn, 'join_game', { activityId: rnd.pick(open).id });
+      const pick = rnd.pick(open);
+      const tbl = tableById.get(pick.tableId!);
+      if (tbl && !tbl.near) return this.moveTo(ag, conn, tbl.id);
+      const out = this.exec(ag, conn, 'join_game', { activityId: pick.id, ...(rnd.chance(0.5) ? { objectId: pick.tableId } : {}) });
+      if (out.ok) this.checkTableMember('join_game', ag.p.residentId, ag.p.name, pick.tableId!);
       return rnd.range(5, 15) * 1000;
     }
-    // 自己凑一桌：优先玩得最少的那种（三种都要打到）
+    // 自己凑一桌：优先玩得最少的那种（三种都要打到），挑一张空桌（先看脚边的）
+    const free = here.tables.filter((t) => !t.activityId);
+    if (free.length === 0) return rnd.range(8, 20) * 1000;
     const offered = here.games.filter((g) => g.type !== 'sealed_auction' || here.residents.length + 1 >= g.min);
     if (offered.length === 0) return null;
     offered.sort((a, b) => (this.gameStarted.get(a.type) ?? 0) - (this.gameStarted.get(b.type) ?? 0));
     const least = offered.filter((g) => (this.gameStarted.get(g.type) ?? 0) === (this.gameStarted.get(offered[0]!.type) ?? 0));
     const g = rnd.pick(least);
-    const out = this.exec(ag, conn, 'propose_game', { game: g.type });
-    if (out.ok) this.bump(`propose_${g.type}`);
+    const table = free.find((t) => t.near) ?? rnd.pick(free);
+    if (!table.near) return this.moveTo(ag, conn, table.id);
+    const out = this.exec(ag, conn, 'propose_game', { game: g.type, objectId: table.id });
+    if (out.ok) {
+      this.bump(`propose_${g.type}`);
+      this.checkTableMember('propose_game', ag.p.residentId, ag.p.name, table.id);
+    }
     return rnd.range(8, 20) * 1000;
   }
 

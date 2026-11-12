@@ -57,6 +57,17 @@ afterAll(async () => {
   rmSync(dir, { recursive: true, force: true });
 });
 
+/** 走到某处：像运行器那样按 renewEveryMs 续租，直到这一程走完（renewNavigation 返回 navigation:null）。 */
+async function walkTo(c: TownClient, to: Parameters<TownClient['navigate']>[0]): Promise<void> {
+  const mv = await c.navigate(to);
+  let nav = mv.status === 'accepted' ? mv.navigation : undefined;
+  for (let i = 0; nav && i < 60; i++) {
+    await sleep(Math.min(nav.renewEveryMs, 2_000));
+    const r = await c.renewNavigation({ navigationId: nav.navigationId, revision: nav.revision });
+    nav = r.navigation ?? undefined;
+  }
+}
+
 /** 不断 wait，直到出现满足条件的事件。 */
 async function waitFor(c: TownClient, pred: (e: TownEvent) => boolean, tries = 20): Promise<TownEvent> {
   for (let i = 0; i < tries; i++) {
@@ -134,7 +145,13 @@ describe('TownClient：真引擎', () => {
     const hb = await a.heartbeat();
     expect(hb.control.mine).toBe(true);
 
-    // 一局小游戏：凑桌 → 加入 → 开局 → 轮流出牌 → 结束
+    // 一局小游戏：先走到游戏桌边；离得远时凑桌 / 加入被拒（too_far，带 navigateTo）
+    await walkTo(a, 'arcade');
+    const tooFar = await a.proposeGame('number_bomb', 'arcade:table1').catch((e) => e);
+    expect(tooFar).toBeInstanceOf(PreconditionFailedError);
+    expect(tooFar.reason).toBe('too_far');
+    await Promise.all([walkTo(a, 'arcade:table1'), walkTo(b, 'arcade:table1')]);
+    // 凑桌 → 加入 → 开局 → 轮流出牌 → 结束
     const prop = await a.proposeGame('number_bomb', 'arcade:table1');
     expect(prop.ok).toBe(true);
     const va = await a.view();
@@ -177,7 +194,10 @@ describe('TownClient：真引擎', () => {
     expect(after[0]!.coins + after[1]!.coins).toBeGreaterThan(coinsBefore[0]! + coinsBefore[1]!);
     // 重新能正常说话（客户端记着的上下文版本已经跟着视图更新）
     expect((await a.speak('这局真刺激')).status).toBe('completed');
-  }, 60_000);
+    // 打完后人留在桌边，能接着走：回广场（后面的用例都在广场上买东西）
+    await Promise.all([walkTo(a, 'plaza'), walkTo(b, 'plaza')]);
+    expect((await a.view()).location.space).toBe('plaza');
+  }, 90_000);
 
   it('本地校验请求号字符集：空格 / 中文 / # 在发出前就被拒绝（和服务端同一个规则）', async () => {
     for (const bad of ['move to tea 001', '请求号一二三四五六七八', 'req#00000001', 'a/b/c/d/e/f/g/h', 'short']) {

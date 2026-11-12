@@ -14,7 +14,7 @@ import { issueTicket, devLoginSession } from '../../src/world/identity.js';
 import { createWorld } from '../../src/world/index.js';
 import type { WorldService } from '../../src/world/service.js';
 import { FakeClock } from '../helpers.js';
-import { makeTown, type Actor, type Town } from './helpers.js';
+import { Actor, makeTown, type Town } from './helpers.js';
 
 // ───────────────────────── 测试辅助 ─────────────────────────
 
@@ -250,6 +250,17 @@ async function alive(t: Town, ms: number, webs: Web[], actors: Actor[] = []): Pr
     t.w.tick();
     left -= step;
   }
+}
+
+
+/** 把网页居民和 AI 居民都走到游戏馆的第一张桌边（小游戏要站在桌边才能凑桌 / 加入）。 */
+async function seatAtTable(t: Town, webs: Web[], actors: Actor[] = []): Promise<void> {
+  for (const x of actors) x.go('arcade:table1');
+  for (const w of webs) {
+    const r = t.w.mustResident(w.residentId);
+    new Actor(t, r.principal_id, r.resident_id, w.clientId, r.name).go('arcade:table1');
+  }
+  await alive(t, 1_000, webs, actors);
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -681,6 +692,7 @@ describe('HTTP：enter / me / actions', () => {
     const { t, app } = await serveTown();
     const a = await new Web(app.base).login('甲');
     const b = await new Web(app.base).login('乙');
+    await seatAtTable(t, [a, b]);
     const p = await a.act({ type: 'propose_game', game: 'number_bomb', objectId: 'arcade:table1' });
     expect(p.status).toBe(200);
     const id = p.json.activity.id;
@@ -823,6 +835,7 @@ describe('HTTP：enter / me / actions', () => {
     errShape(g, 409, 'context_stale');
     expect(g.json).toMatchObject({ contextVersion: expect.any(Number), activityId: null });
     // 凑一桌：game 与 public/game
+    await seatAtTable(t, [a], [bAct]);
     const p = await a.act({ type: 'propose_game', game: 'number_bomb', objectId: 'arcade:table1' });
     expect(p.status, p.text).toBe(200);
     bAct.act('join_game', { activityId: p.json.activity.id });
@@ -1177,6 +1190,7 @@ describe('HTTP：SSE 事件流', () => {
     const { t, app, a, b } = await pair();
     const sse = await stream(app, a);
     await sse.waitFor((e) => e.event === 'hello');
+    await seatAtTable(t, [a], [b]);
     const p = await a.act({ type: 'propose_game', game: 'number_bomb', objectId: 'arcade:table1' });
     b.act('join_game', { activityId: p.json.activity.id });
     await a.act({ type: 'start_game', activityId: p.json.activity.id });

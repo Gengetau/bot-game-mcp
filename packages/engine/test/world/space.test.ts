@@ -3,6 +3,7 @@
  */
 import { afterEach, describe, expect, it } from 'vitest';
 import { SCHEMA_VERSION } from '../../src/world/db.js';
+import { rewindSchema } from './schema-rewind.js';
 import { WorldError } from '../../src/world/errors.js';
 import { actorOf, controlDisconnected, mapManifest, renewNavigation, sceneView, whereabouts } from '../../src/world/space.js';
 import { zoneAt } from '../../src/world/spatial/grid.js';
@@ -889,9 +890,7 @@ describe('重启与迁移', () => {
     const now = t.clock.t;
     // 把库改回 v2 的样子
     const raw = t.w.db.db;
-    raw.exec('DROP TABLE world_actors');
-    raw.exec('DROP TABLE town_chat_messages');
-    raw.exec('PRAGMA user_version = 2');
+    rewindSchema(raw, 2);
     raw.prepare("UPDATE residents SET location_id = 'street_east' WHERE resident_id = ?").run(a.residentId);
     raw.prepare("UPDATE chat_messages SET space_id = 'street_west'").run();
     raw.prepare("INSERT INTO scheduled_jobs(dedupe_key, due_at, priority, kind, payload, status, created_at) VALUES ('move:legacy:1', ?, 1, 'move_arrive', '{}', 'pending', ?)").run(now + 5000, now);

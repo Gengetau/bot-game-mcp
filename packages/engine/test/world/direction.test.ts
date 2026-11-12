@@ -415,9 +415,9 @@ describe('方向输入：与点地导航互相打断、门禁、游戏', () => {
     const t = makeTown();
     const a = t.join('阿灯');
     const b = t.join('小岚');
-    a.go('arcade');
-    b.go('arcade');
-    const id = a.act('propose_game', { game: 'number_bomb' }).activity.id as string;
+    a.go('arcade:table1');
+    b.go('arcade:table1');
+    const id = a.act('propose_game', { game: 'number_bomb', objectId: 'arcade:table1' }).activity.id as string;
     b.act('join_game', { activityId: id });
     const kb = new Keys(b);
     kb.press(0, 1);

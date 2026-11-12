@@ -11,7 +11,8 @@ import type { GameRecord } from '../../src/core/types.js';
 import { createRegistry } from '../../src/games/index.js';
 import { gameViewFor, publicGameView } from '../../src/world/games.js';
 import type { WorldError } from '../../src/world/errors.js';
-import type { MeView } from '../../src/world/views.js';
+import { agentView, publicView, type MeView } from '../../src/world/views.js';
+import { actorOf, directionInput, sceneView } from '../../src/world/space.js';
 import { FakeClock, REF, bot, startGame } from '../helpers.js';
 import { isWalkable, zoneAt } from '../../src/world/spatial/index.js';
 import { Actor, makeTown, tempDb, type Town } from './helpers.js';
@@ -1688,5 +1689,103 @@ describe('小游戏：按桌入局（town-p1.0）', () => {
     a.act('start_game', { activityId: id });
     const stale = a.fail('speak', { text: '旧上下文' }, { expected: { contextVersion: before.version, controlEpoch: epoch, activityId: null } });
     expect(stale.code).toBe('context_stale');
+  });
+});
+
+describe('小游戏：按桌入局 × 键盘方向输入 / 聊天 / 场景快照 / 视图', () => {
+  const nearTable = (a: Actor, tableId: string): boolean => a.view().here!.tables.find((x) => x.id === tableId)!.near;
+  const press = (a: Actor, x: number, z: number, seq: number) => directionInput(a.t.w, a.auth, { seq, epoch: a.row().control_epoch, x, z, source: 1 });
+  const NORTH_OF_TABLE1 = { x: 27.5, z: 42.75 };
+
+  it('方向键走路的人也一样：还在桌边 → 凑桌通过并站住（方向路线停掉）；走出够得着的距离 → too_far，带 navigateTo', () => {
+    const t = makeTown();
+    const [a, b] = residents(t, 2) as [Actor, Actor];
+    gather(t, [a, b], 'arcade', null);
+    a.go(NORTH_OF_TABLE1);
+    press(a, 1, 0, 1); // 沿桌子北边向东迈步
+    t.advance(200);
+    expect(a.pos().moving).toBe(true);
+    expect(actorOf(t.w, a.residentId)!.nav!.target.kind).toBe('dir');
+    expect(nearTable(a, TABLE1)).toBe(true);
+    const id = a.act('propose_game', { game: 'number_bomb', objectId: TABLE1 }).activity.id as string;
+    expect(a.pos().moving).toBe(false);
+    expect(actorOf(t.w, a.residentId)!.nav).toBeNull();
+    // b 朝北走开：很快超出 2 米，加入被拒（被拒的命令不会替他停步），带着可走过去的桌子
+    b.go(NORTH_OF_TABLE1);
+    press(b, 0, -1, 1);
+    t.advance(450);
+    expect(nearTable(b, TABLE1)).toBe(false);
+    const far = b.fail('join_game', { activityId: id });
+    expect(far.reason).toBe('too_far');
+    expect(far.data).toMatchObject({ navigateTo: TABLE1 });
+    expect(t.w.db.scalar('SELECT COUNT(*) FROM activity_participants WHERE activity_id = ?', id)).toBe(1);
+    // 方向键走在路上的人，开局时（在桌边）也会被站住；走远了的被剔除
+    t.advance(600);
+    b.go(TABLE1);
+    b.act('join_game', { activityId: id });
+    press(b, 0, 1, 2); // 朝桌子方向，贴着桌子走不动或走很短
+    t.advance(100);
+    a.act('start_game', { activityId: id });
+    expect(actorOf(t.w, b.residentId)!.nav).toBeNull();
+    expect(b.row().activity_id).toBe(id);
+  });
+
+  it('对局中不能发附近聊天和公屏；被剔除的人没在局里照常能发；进出局都通知同一场景里的人，快照里的 busy 跟着变', () => {
+    const t = makeTown({ params: { chatPerMinute: 600, chatBurst: 100, townChatPerMinute: 600, townChatBurst: 100 } });
+    const [a, b, c, d] = residents(t, 4) as [Actor, Actor, Actor, Actor];
+    gather(t, [a, b, c], 'arcade'); // d 也在游戏馆，但不在桌边，是旁观的人
+    d.enter();
+    d.go('arcade');
+    const id = a.act('propose_game', { game: 'number_bomb', objectId: TABLE1 }).activity.id as string;
+    b.act('join_game', { activityId: id });
+    c.act('join_game', { activityId: id });
+    c.go({ x: 38.5, z: 42.25 }); // 走开（没出游戏馆），开局时被剔除
+    const keys: string[][] = [];
+    t.w.onSpace((k) => keys.push(k));
+    const seen = () => keys.splice(0).flat();
+    seen();
+    const started = a.act('start_game', { activityId: id });
+    expect(started.dropped).toEqual([c.name]);
+    expect(seen()).toContain('town|');
+    const busyIds = () => sceneView(t.w, d.row(), t.clock.t).actors.filter((x) => x.busy === 'game').map((x) => x.id).sort();
+    expect(busyIds()).toEqual([a.residentId, b.residentId].sort());
+    // 局里：附近聊天和公屏都被拒；局外（含被剔除的）照常
+    expect(a.fail('say_town', { text: '局内想发' })).toMatchObject({ code: 'precondition_failed', reason: 'in_activity' });
+    expect(b.fail('say_nearby', { text: '局内想说' })).toMatchObject({ code: 'precondition_failed' });
+    expect(c.act('say_town', { text: '被剔除的人照常发' })).toBeTruthy();
+    expect(d.act('say_town', { text: '旁观的人照常发' })).toBeTruthy();
+    // 结束：通知场景，busy 清掉，又能发了
+    seen();
+    playOut(t, 'number_bomb', [a, b, c, d], id, new SeededRng('chat-snap'));
+    expect(seen()).toContain('town|');
+    expect(busyIds()).toEqual([]);
+    t.advanceAlive(1_000, [a, b, c, d]);
+    expect(a.act('say_town', { text: '打完了，又能发' })).toBeTruthy();
+    expect(b.act('say_nearby', { text: '打完了' })).toBeTruthy();
+  });
+
+  it('视图：here.tables 带占用（谁都能看见公共场所里的桌子）；别处没有桌子；公开视图各地点的凑桌带 tableId；AI 的精简视图也有 tables', () => {
+    const t = makeTown();
+    const [a, b, c] = residents(t, 3) as [Actor, Actor, Actor];
+    gather(t, [a, b], 'arcade');
+    const id = a.act('propose_game', { game: 'number_bomb', objectId: TABLE1 }).activity.id as string;
+    const tablesOf = (x: Actor) => x.view().here!.tables.map((q) => [q.id, q.activityId]);
+    expect(tablesOf(b)).toEqual([[TABLE1, id], [TABLE2, null]]);
+    expect(b.view().here!.activities.map((x) => x.tableId)).toEqual([TABLE1]);
+    // 站在广场上的人 here 里没有桌子
+    c.enter();
+    expect(c.view().here!.space).toBe('plaza');
+    expect(c.view().here!.tables).toEqual([]);
+    // 公开视图：地点里的凑桌带桌子编号
+    const pv = publicView(t.w);
+    expect(pv.places.find((p) => p.id === 'arcade')!.activities).toEqual([expect.objectContaining({ id, tableId: TABLE1 })]);
+    // AI 的精简视图
+    const ai = b.row().kind === 'agent' ? b : a;
+    const v = agentView(t.w, ai.row(), ai.clientId) as { here: { tables: { id: string; far?: true; activity?: string }[]; activities: { table: string | null }[] } };
+    expect(v.here.tables.map((q) => q.id)).toEqual([TABLE1, TABLE2]);
+    expect(v.here.tables.find((q) => q.id === TABLE1)!.activity).toBe(id);
+    expect(v.here.tables.find((q) => q.id === TABLE1)!.far).toBeUndefined();
+    expect(v.here.tables.find((q) => q.id === TABLE2)!.far).toBe(true);
+    expect(v.here.activities.map((x) => x.table)).toEqual([TABLE1]);
   });
 });

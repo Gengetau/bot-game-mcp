@@ -161,9 +161,9 @@ describe('HTTP：GET /town/api/town-chat', () => {
   it('对局中只读：网页动作被拒绝，历史照常能读', async () => {
     const app = await serve({ params: { townChatPerMinute: 600, townChatBurst: 100 } });
     const [p1, p2, p3] = [await new User(app).login('甲'), await new User(app).login('乙'), await new User(app).login('丙')];
-    for (const p of [p1, p2]) p.actor.go('arcade');
+    for (const p of [p1, p2]) p.actor.go('arcade:table1');
     for (const p of [p1, p2, p3]) p.actor.heartbeat();
-    const g = p1.actor.act('propose_game', { game: 'number_bomb' });
+    const g = p1.actor.act('propose_game', { game: 'number_bomb', objectId: 'arcade:table1' });
     p2.actor.act('join_game', { activityId: g.activity.id });
     p1.actor.act('start_game', { activityId: g.activity.id });
     expect((await p3.act({ type: 'say_town', text: '局外人发的' })).status).toBe(200);
@@ -268,9 +268,9 @@ describe('WebSocket：公屏新消息推送', () => {
   it('对局中：真人网页连接照常收到公屏推送；AI 居民的连接收不到（也不会在之后补发）', async () => {
     const app = await serve({ params: { townChatPerMinute: 600, townChatBurst: 100 } });
     const [p1, p2, p3] = [await new User(app).login('甲'), await new User(app).login('乙'), await new User(app).login('丙')];
-    for (const p of [p1, p2]) p.actor.go('arcade');
+    for (const p of [p1, p2]) p.actor.go('arcade:table1');
     for (const p of [p1, p2, p3]) p.actor.heartbeat();
-    const g = p1.actor.act('propose_game', { game: 'number_bomb' });
+    const g = p1.actor.act('propose_game', { game: 'number_bomb', objectId: 'arcade:table1' });
     p2.actor.act('join_game', { activityId: g.activity.id });
     p1.actor.act('start_game', { activityId: g.activity.id });
     const human = await wsConnect(app, p1);
@@ -417,12 +417,12 @@ describe('MCP：附近聊天和公屏', () => {
     const qing = await enterAgent(env, QING);
     const mo = await enterAgent(env, MO);
     const xi = await enterAgent(env, XI);
-    for (const x of [qing, mo]) x.actor.go('arcade');
+    for (const x of [qing, mo]) x.actor.go('arcade:table1');
     for (const x of [qing, mo, xi]) x.actor.heartbeat();
     // 开局之前就有一条提到阿青的公屏（进了事件队列）
     const cursor = (await call(qing.client, 'get_my_view')).cursor;
     await wact(xi.client, { type: 'say_town', text: '阿青 来打一局？', kind: 'activity', place: 'arcade' });
-    const g = qing.actor.act('propose_game', { game: 'number_bomb' });
+    const g = qing.actor.act('propose_game', { game: 'number_bomb', objectId: 'arcade:table1' });
     mo.actor.act('join_game', { activityId: g.activity.id });
     qing.actor.act('start_game', { activityId: g.activity.id });
     for (const x of [qing, mo, xi]) x.actor.heartbeat();
