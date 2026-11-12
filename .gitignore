@@ -12,3 +12,4 @@ client/town/.godot/
 
 # 端到端失败运行的结果（成功的 results.json 才入库）
 client/demo/results.failed.json
+client/town/art_private/

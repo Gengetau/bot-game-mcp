@@ -2,19 +2,16 @@
 
 importer="texture"
 type="CompressedTexture2D"
-uid="uid://b5ahuc8f5taju"
-path="res://.godot/imported/resident_colormap.png-229d960be61b6c0bc0b367f88bd9e765.ctex"
+uid="uid://dvnrf0v33q863"
+path="res://.godot/imported/outfit_4.png-2ac8bf2a4076084556eeda77a3444e7c.ctex"
 metadata={
 "vram_texture": false
-}
-generator_parameters={
-"md5": "5bab7115fb4200b777b20aed611dc0d2"
 }
 
 [deps]
 
-source_file="res://assets/models/characters/resident_colormap.png"
-dest_files=["res://.godot/imported/resident_colormap.png-229d960be61b6c0bc0b367f88bd9e765.ctex"]
+source_file="res://assets/models/characters/outfit_4.png"
+dest_files=["res://.godot/imported/outfit_4.png-2ac8bf2a4076084556eeda77a3444e7c.ctex"]
 
 [params]
 
@@ -26,7 +23,7 @@ compress/rdo_quality_loss=0.0
 compress/hdr_compression=1
 compress/normal_map=0
 compress/channel_pack=0
-mipmaps/generate=true
+mipmaps/generate=false
 mipmaps/limit=-1
 roughness/mode=0
 roughness/src_normal=""

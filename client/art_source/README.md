@@ -1,5 +1,8 @@
 # art_source：美术源文件与导出约定
 
+> 居民和街景已换成 KayKit + Kenney Fantasy Town（见 `client/ASSETS.md`）。重新生成用 `recolor_kenney.py`、`build_residents.sh`/`build_residents.gd`、`recolor_residents.py`。
+> 下面「目录」里的 `build_resident.py`、`check_resident.gd` 和 Mini Characters 是旧流程（P0 验证用），运行时已不再使用，只作历史记录。
+
 这里放 Blender 脚本、第三方原始素材（只留用到的文件）、许可证文本和导出约定。
 运行时资产在 `client/town/assets/`；台账和授权见 `client/ASSETS.md`。
 
