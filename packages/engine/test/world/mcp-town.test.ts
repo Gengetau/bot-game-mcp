@@ -15,6 +15,7 @@ import { createRegistry } from '../../src/games/index.js';
 import { Authenticator, type SessionContext } from '../../src/mcp/auth.js';
 import { createMcpServer } from '../../src/mcp/server.js';
 import { mountTown } from '../../src/world/http.js';
+import { agentPrincipal, exchangeTicket, issueTicket, sessionPrincipal } from '../../src/world/identity.js';
 import { grantItem } from '../../src/world/property.js';
 import { meView } from '../../src/world/views.js';
 import { makeTown, type Actor, type Town } from './helpers.js';
@@ -362,8 +363,31 @@ describe('MCP 小镇：get_my_view / speak / act 的路由', () => {
     const noPhase = await fails(qing, 'act', { action: 'guess', number: 5, request_id: rid() });
     expect(noPhase.code).toBe('BAD_REQUEST');
     expect(noPhase.text).toContain('phase_id');
-    const notIn = await fails(qing, 'act', { action: 'guess', number: 5, request_id: rid(), phase_id: 1 });
+    // phase_id 每局从 1 数起：还要带局号或上下文版本，才知道说的是哪一局
+    const noGame = await fails(qing, 'act', { action: 'guess', number: 5, request_id: rid(), phase_id: 1 });
+    expect(noGame.code).toBe('BAD_REQUEST');
+    expect(noGame.text).toContain('game_id');
+    const view = await call(qing, 'get_my_view');
+    const notIn = await fails(qing, 'act', { action: 'guess', number: 5, request_id: rid(), phase_id: 1, context_version: view.context.version });
     expect(['PRECONDITION_FAILED', 'CONTEXT_STALE', 'PHASE_STALE']).toContain(notIn.code);
+    const wrongGame = await fails(qing, 'act', { action: 'guess', number: 5, request_id: rid(), phase_id: 1, game_id: 'TG-NOPE0000' });
+    expect(['PRECONDITION_FAILED', 'CONTEXT_STALE', 'PHASE_STALE']).toContain(wrongGame.code);
+  });
+
+  it('open 模式下自己认领的号码登记在单独的命名空间：抢先认领真人的号码，挡不住那位真人登录', async () => {
+    const env = makeEnv();
+    const w = env.t.w;
+    // 没有密钥绑定的会话（open 模式 login 认领）以 20999 这个号码进入小镇
+    const squatter = agentPrincipal(w, { id: '20999', name: '抢注者' }, { selfClaimed: true });
+    expect(squatter.kind).toBe('agent');
+    // 真人 20999 之后照常能拿到票据并登录
+    const ticket = issueTicket(w, { provider: 'qq', subject: '20999', name: '真人' });
+    const session = exchangeTicket(w, ticket.ticket);
+    const human = sessionPrincipal(w, session.token)!;
+    expect(human.kind).toBe('human');
+    expect(human.principal_id).not.toBe(squatter.principal_id);
+    // 密钥绑定的身份仍和真人共用命名空间：同一个号码不能两头都是
+    expect(() => agentPrincipal(w, { id: '20999', name: '有密钥的 bot' })).toThrow();
   });
 });
 

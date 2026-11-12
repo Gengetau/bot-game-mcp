@@ -107,14 +107,14 @@ function setTownSession(ctx: SessionContext, s: TownSession | null): void {
 function authOf(deps: TownDeps, ctx: SessionContext, me: Identity) {
   const s = townSession(ctx);
   if (!s) throw new WorldError('unauthenticated', '这个会话还没有进入小镇。');
-  const principal = agentPrincipal(deps.world, me);
+  const principal = agentPrincipal(deps.world, me, { selfClaimed: !ctx.fixed });
   return { principalId: principal.principal_id, clientId: s.clientId };
 }
 
 function residentOf(deps: TownDeps, ctx: SessionContext, me: Identity) {
   const auth = authOf(deps, ctx, me);
   const r = deps.world.residentOfPrincipal(auth.principalId);
-  if (!r) throw new WorldError('unauthenticated', '还没有居民身份，请先 enter_world。');
+  if (!r) throw new WorldError('unauthenticated', '还没有居民身份，请先 enter_world。', 'no_resident');
   return { auth, r };
 }
 
@@ -134,15 +134,26 @@ export async function townView(deps: TownDeps, ctx: SessionContext, me: Identity
     touch(deps, auth, r.presence_epoch);
     let events: unknown[] = [];
     let resync = false;
+    let more = false;
+    let readCursor: string | undefined;
     if (a.cursor) {
       const ms = Math.min(a.wait_seconds ?? 0, MAX_WAIT_SECONDS) * 1000;
       if (ms > 0) await deps.world.waitResident(r.resident_id, a.cursor, r.context_version, ms, signal);
       const read = deps.world.readResidentEvents(r.resident_id, a.cursor, 50);
       events = read.events.map((e) => ({ type: e.type, at: e.at, ...e.data }));
       resync = read.resync;
+      more = read.more;
+      // 视图里的 cursor 是水位；只读了前 50 条时必须停在已读到的位置，否则后面的事件会被悄悄跳过。
+      // 要求重同步时以快照（视图）里的水位为准。
+      if (!read.resync) readCursor = read.cursor;
     }
     const fresh = deps.world.mustResident(r.resident_id);
-    return { world_id: deps.world.worldId, ...agentView(deps.world, fresh, auth.clientId), ...(a.cursor ? { new_events: events, ...(resync ? { resync: true } : {}) } : {}) };
+    return {
+      world_id: deps.world.worldId,
+      ...agentView(deps.world, fresh, auth.clientId),
+      ...(readCursor ? { cursor: readCursor } : {}),
+      ...(a.cursor ? { new_events: events, ...(more ? { more: true } : {}), ...(resync ? { resync: true } : {}) } : {}),
+    };
   } catch (e) {
     throw toGameError(e);
   }
@@ -176,9 +187,14 @@ export function townSpeak(deps: TownDeps, ctx: SessionContext, me: Identity, a: 
 }
 
 /** 世界上下文里的 act：当前小游戏里的规则动作。必须带 phase_id。 */
-export function townGameAct(deps: TownDeps, ctx: SessionContext, me: Identity, a: { request_id?: string; action_window?: string; context_version?: number; phase_id?: number }, input: Record<string, unknown>): unknown {
+export function townGameAct(deps: TownDeps, ctx: SessionContext, me: Identity, a: { request_id?: string; action_window?: string; context_version?: number; phase_id?: number; game_id?: string; activity_id?: string }, input: Record<string, unknown>): unknown {
   if (a.phase_id === undefined) throw toGameError(new WorldError('bad_request', '小镇里的游戏动作需要 phase_id（在 get_my_view 的 game.phase_id）。'));
-  return command(deps, ctx, me, a, { type: 'game_act', phaseId: a.phase_id, input }, false);
+  // phase_id 每局都从 1 数起，单凭它分不出是哪一局：必须再带上局号或上下文版本，上一局迟到的动作才不会落进下一局
+  if (a.game_id === undefined && a.context_version === undefined) {
+    throw toGameError(new WorldError('bad_request', '小镇里的游戏动作还需要 game_id（视图里的 game.game_id）或 context_version（视图里的 context.version），用来确认是哪一局。'));
+  }
+  // phaseId 每局都从 1 数起：带上 game_id（局）与 activity_id（活动）才能挡住上一局的迟到动作
+  return command(deps, ctx, me, a, { type: 'game_act', phaseId: a.phase_id, ...(a.game_id !== undefined ? { gameId: a.game_id } : {}), input }, false);
 }
 
 export function registerTownTools(tool: ToolFn, deps: TownDeps, ctx: SessionContext, me: () => Identity): void {
@@ -217,7 +233,7 @@ export function registerTownTools(tool: ToolFn, deps: TownDeps, ctx: SessionCont
       wrap(() => {
         const actor = me();
         if (a.world_id && a.world_id !== w.worldId) throw new WorldError('not_available', '没有这个世界。');
-        const principal = agentPrincipal(w, actor);
+        const principal = agentPrincipal(w, actor, { selfClaimed: !ctx.fixed });
         const clientId = `mcp:${a.client_id ?? townSession(ctx)?.clientId.slice(4) ?? randomUUID()}`;
         setTownSession(ctx, { clientId });
         const auth = { principalId: principal.principal_id, clientId };
@@ -226,8 +242,9 @@ export function registerTownTools(tool: ToolFn, deps: TownDeps, ctx: SessionCont
         if (a.claim === false) return { ok: true, world_id: w.worldId, created: first.enter.created, resident_id: first.enter.residentId, ...first.view };
         claimControl(w, auth);
         const out = enterWorldAgent(w, auth);
-        // created 以第一次进入为准（第二次只是为了拿接管控制权之后的视图）
-        return { ok: true, world_id: w.worldId, created: first.enter.created, resident_id: out.enter.residentId, ...out.view };
+        // created、recap 以第一次进入为准（第二次时居民已在场，算不出离开信息）
+        const recap = (first.view as Record<string, unknown>).recap;
+        return { ok: true, world_id: w.worldId, created: first.enter.created, resident_id: out.enter.residentId, ...out.view, ...(recap ? { recap } : {}) };
       }),
   );
 
@@ -319,7 +336,7 @@ export function registerTownTools(tool: ToolFn, deps: TownDeps, ctx: SessionCont
     },
     () =>
       wrap(() => {
-        const principal = agentPrincipal(w, me());
+        const principal = agentPrincipal(w, me(), { selfClaimed: !ctx.fixed });
         setTownSession(ctx, null);
         if (!w.residentOfPrincipal(principal.principal_id)) return { ok: true };
         return leaveWorld(w, principal.principal_id);
@@ -345,9 +362,9 @@ export function registerTownTools(tool: ToolFn, deps: TownDeps, ctx: SessionCont
       wrap(() => {
         const actor = me();
         if (a.what === 'public') return publicView(w);
-        const principal = agentPrincipal(w, actor);
+        const principal = agentPrincipal(w, actor, { selfClaimed: !ctx.fixed });
         const r = w.residentOfPrincipal(principal.principal_id);
-        if (!r) throw new WorldError('unauthenticated', '还没有居民身份，请先 enter_world。');
+        if (!r) throw new WorldError('unauthenticated', '还没有居民身份，请先 enter_world。', 'no_resident');
         const now = w.now();
         switch (a.what) {
           case 'residents':

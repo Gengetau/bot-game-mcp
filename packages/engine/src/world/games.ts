@@ -38,7 +38,8 @@ function load(w: WorldService, activityId: string): Loaded | null {
   else {
     const full = w.db.get('SELECT record_json FROM game_records WHERE activity_id = ?', activityId)!;
     rec = JSON.parse(full.record_json) as GameRecord;
-    w.gameCache.set(activityId, { rec: structuredClone(rec), rng: row.rng_state, revision: Number(row.revision) });
+    // 只缓存进行中的局：结束的局不会再被推进，观战读到时从数据库重读即可
+    if (rec.status === 'running') w.gameCache.set(activityId, { rec: structuredClone(rec), rng: row.rng_state, revision: Number(row.revision) });
   }
   const { rng, save } = w.gameRng(activityId, row.rng_state);
   return { rec, rng, save, revision: Number(row.revision) };
@@ -205,7 +206,8 @@ export function installGames(w: WorldService): void {
     const json = JSON.stringify(g.rec);
     const rngState = g.save();
     w.db.run('UPDATE game_records SET status = ?, revision = ?, record_json = ?, rng_state = ?, updated_at = ? WHERE activity_id = ?', g.rec.status, rev, json, rngState, at, act.activity_id);
-    w.gameCache.set(act.activity_id, { rec: g.rec, rng: rngState, revision: rev });
+    if (g.rec.status === 'running') w.gameCache.set(act.activity_id, { rec: g.rec, rng: rngState, revision: rev });
+    else w.gameCache.delete(act.activity_id);
     g.revision = rev;
     const parts = w.db.all('SELECT resident_id, game_seat, active, quit_at FROM activity_participants WHERE activity_id = ?', act.activity_id);
     if (g.rec.status !== 'running') {
@@ -464,6 +466,11 @@ export function installGames(w: WorldService): void {
       }
       if (downtime > w.params.shortOutageLimitMs) {
         abortGame(act, '服务器中断太久，这局没法公平地继续', now);
+        continue;
+      }
+      // 活动自身的绝对截止时间已在停机期间过去：按超时中止，不再顺延
+      if (act.deadline !== null && act.deadline !== undefined && Number(act.deadline) <= now) {
+        abortGame(act, '超过了一局的最长时间', Number(act.deadline));
         continue;
       }
       const before = g.rec.log.length;

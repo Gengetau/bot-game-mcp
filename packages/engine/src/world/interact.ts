@@ -29,7 +29,7 @@ import { addMood, applyNeeds, bumpCounter, counter, settledNeeds } from './life.
 import { card } from './project.js';
 import { addStack, mint, release, reserve, takeStack } from './property.js';
 import { sha256, type WorldService } from './service.js';
-import { localParts, localToUtc } from './time.js';
+import { localParts, localToUtc, nextDate } from './time.js';
 import type { ResidentRow } from './types.js';
 
 // ───────────────────────── 天气 ─────────────────────────
@@ -477,7 +477,19 @@ export function installInteract(w: WorldService): void {
     w.emitPublic('public_event', { event: eventView({ ...row, status: 'closed' }), text }, Number(row.closes_at));
   });
 
-  w.hooks.newDay.push((date, now) => ensureEventInstances(w, date, now));
+  w.hooks.newDay.push((date, now) => {
+    // 停机跨了多个世界日：把最后一个已有实例之后、今天之前的日子补成「错过」（窗口已过的实例不排任务）
+    const last = w.db.get('SELECT MAX(business_date) AS d FROM public_event_instances');
+    let d = last?.d ? nextDate(String(last.d)) : date;
+    // 最多回补离今天最近的 14 天，避免长期停机后一次写太多行
+    const floor = nextDate(date, -14);
+    if (d < floor) d = floor;
+    while (d < date) {
+      ensureEventInstances(w, d, now);
+      d = nextDate(d);
+    }
+    ensureEventInstances(w, date, now);
+  });
   void badRequest;
   void homeOwner;
 }

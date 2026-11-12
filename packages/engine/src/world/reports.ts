@@ -7,6 +7,7 @@
  */
 import { INTERACTIONS, PLACES, PUBLIC_EVENTS } from './content.js';
 import { type Row, parseJson } from './db.js';
+import { WorldError } from './errors.js';
 import type { PublicEventDef } from './content.js';
 import { weatherAt } from './interact.js';
 import { mailboxSummary } from './mail.js';
@@ -30,8 +31,10 @@ function buildPublic(w: WorldService, date: string): string[] {
   const lines: string[] = [];
   const weather = weatherAt(w, from + 12 * 3600_000);
   lines.push(`这一天午间的天气：${weather.name}。`);
-  const joined = w.db.all('SELECT name FROM residents WHERE world_id = ? AND created_at >= ? AND created_at < ? ORDER BY created_at LIMIT 12', w.worldId, from, to).map((r) => String(r.name));
-  if (joined.length) lines.push(`新来了 ${joined.length} 位居民：${joined.join('、')}。`);
+  const joinedTotal = Number(w.db.scalar('SELECT COUNT(*) FROM residents WHERE world_id = ? AND created_at >= ? AND created_at < ?', w.worldId, from, to) ?? 0);
+  const joined = w.db.all('SELECT name FROM residents WHERE world_id = ? AND created_at >= ? AND created_at < ? ORDER BY created_at, resident_id LIMIT 12', w.worldId, from, to).map((r) => String(r.name));
+  // 人数用总数；名字最多列 12 个，多出来的写「等」
+  if (joinedTotal > 0) lines.push(`新来了 ${joinedTotal} 位居民：${joined.join('、')}${joinedTotal > joined.length ? ' 等' : ''}。`);
   const facts = w.db.all("SELECT type, payload FROM world_events WHERE world_id = ? AND visibility = 'public' AND occurred_at >= ? AND occurred_at < ?", w.worldId, from, to);
   const byPlace = new Map<string, number>();
   let games = 0;
@@ -70,14 +73,24 @@ function buildPersonal(w: WorldService, residentId: string, date: string): strin
     from,
     to,
   );
+  // 一次取出这些事实的其他当事人，不再每条事实查一次（走 event_id 索引）；分块避开变量个数上限
+  const othersByEvent = new Map<number, string[]>();
+  const ids = rows.map((r) => Number(r.event_id));
+  for (let i = 0; i < ids.length; i += 500) {
+    const chunk = ids.slice(i, i + 500);
+    for (const o of w.db.all(`SELECT event_id, resident_id FROM event_parties WHERE event_id IN (${chunk.map(() => '?').join(',')}) AND resident_id <> ? ORDER BY event_id, resident_id`, ...chunk, residentId)) {
+      const k = Number(o.event_id);
+      const list = othersByEvent.get(k);
+      if (list) list.push(String(o.resident_id));
+      else othersByEvent.set(k, [String(o.resident_id)]);
+    }
+  }
   const lines: string[] = [];
   const counts = new Map<string, number>();
   const push = (text: string) => counts.set(text, (counts.get(text) ?? 0) + 1);
   for (const row of rows) {
     const d = parseJson<Record<string, any>>(row.payload, {});
-    const others = w.db
-      .all('SELECT resident_id FROM event_parties WHERE event_id = ? AND resident_id <> ?', row.event_id, residentId)
-      .map((o) => nameOf(w, String(o.resident_id)));
+    const others = (othersByEvent.get(Number(row.event_id)) ?? []).map((id) => nameOf(w, id));
     const withWho = others.length ? `和${others.slice(0, 3).join('、')}${others.length > 3 ? '等人' : ''}` : '';
     switch (row.type) {
       case 'interaction_completed':
@@ -128,25 +141,49 @@ function buildPersonal(w: WorldService, residentId: string, date: string): strin
   return lines;
 }
 
+/** 事实保留天数：日报、衍生记录都按它对齐（个人日报的原始事实超过它就没有了）。 */
+const FACT_RETENTION_DAYS = 35;
+
+/** 已定稿日报的保留天数，不短于事实保留期。 */
+const REPORT_RETENTION_DAYS = 90;
+
+function isRealDate(date: string): boolean {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(date);
+  if (!m) return false;
+  const [y, mo, d] = [Number(m[1]), Number(m[2]), Number(m[3])];
+  const t = new Date(Date.UTC(2000, mo - 1, d));
+  t.setUTCFullYear(y, mo - 1, d);
+  return t.getUTCFullYear() === y && t.getUTCMonth() === mo - 1 && t.getUTCDate() === d;
+}
+
 /**
  * 读某一天的日报。已经过完的世界日只生成一次并存下来；今天的是「到目前为止」，不存。
+ *
+ * 只有世界在正常运行（追赶完成）时才落盘：恢复追赶期间已过日的事实可能还没全部结算，
+ * 这时现算现返回（final 为 false），不能把残缺的日报固化。换日钩子在追赶中按时间顺序结算，
+ * 显式传 persist = true。
+ * 世界创建之前、或早于事实保留期的日期只现算不存，免得被遍历日期撑大数据库、或把空日报固化。
  */
-export function report(w: WorldService, scope: 'public' | { residentId: string }, date: string, now: number): ReportView {
+export function report(w: WorldService, scope: 'public' | { residentId: string }, date: string, now: number, persist: boolean = w.status === 'running'): ReportView {
+  if (!isRealDate(date)) throw new WorldError('bad_request', '日期不对。');
   const key = scope === 'public' ? 'public' : `r:${scope.residentId}`;
   const kind = scope === 'public' ? 'public' : 'personal';
-  const final = date < w.today(now);
-  if (final) {
+  const today = w.today(now);
+  const isPast = date < today;
+  if (isPast) {
     const row = w.db.get('SELECT body_json FROM daily_reports WHERE scope = ? AND business_date = ?', key, date);
     if (row) return { scope: kind, date, lines: parseJson<string[]>(row.body_json, []), final: true };
   }
   const lines = scope === 'public' ? buildPublic(w, date) : buildPersonal(w, scope.residentId, date);
-  if (final) {
+  const created = Number(w.db.get('SELECT created_at FROM worlds WHERE world_id = ?', w.worldId)?.created_at ?? now);
+  const store = isPast && persist && date >= w.today(created) && date >= nextDate(today, -FACT_RETENTION_DAYS);
+  if (store) {
     w.commit(() => {
       const water = w.db.scalar('SELECT COALESCE(MAX(event_id), 0) FROM world_events');
       w.db.run('INSERT OR IGNORE INTO daily_reports(scope, business_date, source_water, version, body_json, created_at) VALUES (?,?,?,1,?,?)', key, date, water, JSON.stringify(lines), now);
     });
   }
-  return { scope: kind, date, lines, final };
+  return { scope: kind, date, lines, final: isPast && persist };
 }
 
 export interface Recap {
@@ -225,9 +262,18 @@ function prune(w: WorldService, now: number): void {
   run('DELETE FROM notification_outbox WHERE sent_at IS NULL AND created_at < ?', now - 2 * 86400_000);
   run("DELETE FROM business_keys WHERE key LIKE 'newday:%' AND created_at < ?", now - 14 * 86400_000);
   // 结构化事实保留到个人日报肯定已经生成之后（回顾和日报之外不再需要原始事实）
-  const factCut = now - 35 * 86400_000;
+  const factCut = now - FACT_RETENTION_DAYS * 86400_000;
   run('DELETE FROM event_parties WHERE event_id IN (SELECT event_id FROM world_events WHERE occurred_at < ?)', factCut);
   run('DELETE FROM world_events WHERE occurred_at < ?', factCut);
+  // 已定稿的日报比原始事实多留一阵（事实裁掉后它是唯一的当日记录），超过日报保留期再裁
+  run('DELETE FROM daily_reports WHERE business_date < ?', nextDate(w.today(now), -REPORT_RETENTION_DAYS));
+  // 已经结束的衍生记录（只删终态；进行中的互动、未过期的邀请、未归还的借出、未读信都不动。
+  // 账本、结算、活动结果是业务凭据，长期保留，不在这里）
+  run("DELETE FROM interaction_participants WHERE interaction_id IN (SELECT interaction_id FROM interactions WHERE status IN ('completed','cancelled') AND closed_at < ?)", factCut);
+  run("DELETE FROM interactions WHERE status IN ('completed','cancelled') AND closed_at < ?", factCut);
+  run("DELETE FROM loans WHERE status = 'returned' AND returned_at < ?", factCut);
+  run('DELETE FROM home_access_grants WHERE expires_at < ? AND (revoked_at IS NULL OR revoked_at < ?) AND grant_id NOT IN (SELECT invite_grant_id FROM letters WHERE invite_grant_id IS NOT NULL)', factCut, factCut);
+  run("DELETE FROM scheduled_jobs WHERE status = 'failed' AND COALESCE(processed_at, due_at) < ?", factCut);
   // 结束很久的小游戏记录
   const gameCut = now - 7 * 86400_000;
   run("DELETE FROM game_records WHERE activity_id IN (SELECT activity_id FROM activities WHERE status IN ('completed','aborted') AND ended_at < ?)", gameCut);
@@ -252,14 +298,14 @@ export function installReports(w: WorldService): void {
     const yesterday = nextDate(date, -1);
     if (w.today(created) <= yesterday) {
       // 昨天的公开日报，以及昨天有过记录的居民各自的个人日报
-      const pub = report(w, 'public', yesterday, now);
+      const pub = report(w, 'public', yesterday, now, true);
       const [from, to] = dayRange(w, yesterday);
       for (const row of w.db.all(
         'SELECT DISTINCT p.resident_id FROM event_parties p JOIN world_events e ON e.event_id = p.event_id WHERE e.occurred_at >= ? AND e.occurred_at < ?',
         from,
         to,
       )) {
-        report(w, { residentId: String(row.resident_id) }, yesterday, now);
+        report(w, { residentId: String(row.resident_id) }, yesterday, now, true);
       }
       w.emitPublic('report', { date: yesterday, lines: pub.lines }, now);
       w.db.run('INSERT OR IGNORE INTO notification_outbox(dedupe_key, destination, payload, created_at) VALUES (?,?,?,?)', `report:${yesterday}`, 'announce', JSON.stringify({ kind: 'daily_report', title: `${w.worldName}日报 ${yesterday}`, text: pub.lines.join('\n'), at: now }), now);

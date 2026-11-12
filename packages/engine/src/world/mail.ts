@@ -86,16 +86,16 @@ function createGrant(w: WorldService, owner: ResidentRow, guest: ResidentRow, vi
 }
 
 /** 把一位客人请到门口（邀请到期或被撤销）。离线的客人也会被挪到门外，回来时就在巷子里。 */
-function eject(w: WorldService, guestId: string, home: string, at: number, text: string): void {
+function eject(w: WorldService, guestId: string, home: string, at: number, text: string): boolean {
   const guest = w.resident(guestId);
-  if (!guest) return;
+  if (!guest) return false;
   const owner = w.resident(homeOwner(home));
   const street = owner?.street_id ?? guest.street_id;
   if (guest.move) {
     // 还在路上：到门口时会再查一次权限，这里不用动
-    return;
+    return false;
   }
-  if (guest.location_id !== home) return;
+  if (guest.location_id !== home) return false;
   for (const h of w.hooks.leaveSpace) h(guest, home, at);
   const fresh = w.mustResident(guestId);
   const others = w.audienceIn(home).filter((x) => x.resident_id !== guestId);
@@ -103,15 +103,24 @@ function eject(w: WorldService, guestId: string, home: string, at: number, text:
   placeAt(w, fresh, street, at);
   // 固定模板：不透露屋里之后发生了什么
   w.emitTo([guestId], 'notice', { text }, at);
+  return true;
 }
 
 function endGrant(w: WorldService, g: Row, at: number, revoked: boolean): void {
   if (revoked) w.db.run('UPDATE home_access_grants SET revoked_at = ? WHERE grant_id = ? AND revoked_at IS NULL', at, g.grant_id);
   w.db.run('UPDATE home_access_grants SET exited_at = COALESCE(exited_at, ?) WHERE grant_id = ? AND entered_at IS NOT NULL', at, g.grant_id);
-  // 还有别的有效邀请就不用出门
-  if (validGrant(w, g.guest_id, g.home_id, at)) return;
   const owner = w.resident(g.owner_id);
-  eject(w, g.guest_id, g.home_id, at, revoked ? `${owner?.name ?? '主人'}结束了这次邀请，你回到了门外的巷子里。` : `在${owner?.name ?? '主人'}家做客的时间到了，你回到了门外的巷子里。`);
+  const ownerName = owner?.name ?? '主人';
+  let ejected = false;
+  // 还有别的有效邀请就不用出门
+  if (!validGrant(w, g.guest_id, g.home_id, at)) {
+    ejected = eject(w, g.guest_id, g.home_id, at, revoked ? `${ownerName}结束了这次邀请，你回到了门外的巷子里。` : `在${ownerName}家做客的时间到了，你回到了门外的巷子里。`);
+  }
+  // 撤销要明确告知已得知邀请的人；不在屋里时 eject 不发通知，这里补一条固定模板。
+  // 还没读信（learned_at 为空）的人不通知，免得借通知泄露信里的邀请。
+  if (revoked && !ejected && g.learned_at !== null && g.learned_at !== undefined) {
+    w.emitTo([g.guest_id], 'notice', { text: `${ownerName}结束了这次邀请。` }, at);
+  }
 }
 
 // ───────────────────────── 信件 ─────────────────────────
@@ -155,24 +164,30 @@ export function mailboxSummary(w: WorldService, residentId: string): { unread: n
 
 /**
  * 分页列出信件，从新到旧。inbox 只含已经投递到的；没读过的不带正文。
- * 翻页游标 next 是信件的插入序号（rowid）：时间戳可能相同（同一毫秒寄出的几封信），用它翻页会漏信。
+ * 翻页游标 next 是该居民自己信箱里的序号（由 rowid 换算，不暴露全局序号）：时间戳可能相同（同一毫秒寄出的几封信），用它翻页会漏信。
  * 信件的投递延迟是统一的，插入顺序和投递顺序一致。
+ * next 只在翻页期间有效：软删除不移位，但日终清理（reports.ts prune）会物理删除双方都删过的信，
+ * 若发生在两次翻页请求之间，序号会前移，下一页可能重复出现上一页的信（不会漏信、不会泄露）。客户端按 letterId 去重。
  */
 export function listLetters(w: WorldService, residentId: string, box: 'inbox' | 'sent', before: number | null, limit: number, now: number): { letters: LetterView[]; next: number | null } {
   const lim = Math.max(1, Math.min(50, Math.floor(Number.isFinite(limit) ? limit : 20)));
-  const cursor = before ?? Number.MAX_SAFE_INTEGER;
-  const rows =
-    box === 'inbox'
-      ? w.db.all(
-          'SELECT rowid AS seq, * FROM letters WHERE recipient_id = ? AND delivered_at IS NOT NULL AND recipient_deleted_at IS NULL AND rowid < ? ORDER BY rowid DESC LIMIT ?',
-          residentId,
-          cursor,
-          lim + 1,
-        )
-      : w.db.all('SELECT rowid AS seq, * FROM letters WHERE sender_id = ? AND sender_deleted_at IS NULL AND rowid < ? ORDER BY rowid DESC LIMIT ?', residentId, cursor, lim + 1);
+  const col = box === 'inbox' ? 'recipient_id' : 'sender_id';
+  // 对外的 next 是「该居民自己这个信箱里的序号」（含已删除、未投递的，按 rowid 升序从 1 数），
+  // 不是全局 rowid，免得翻页游标的间隔暴露别人寄了多少信。翻页时再还原成 rowid。
+  let cursor = Number.MAX_SAFE_INTEGER;
+  if (before != null) {
+    const n = Math.floor(before);
+    if (!(n >= 1)) return { letters: [], next: null };
+    const r = w.db.all(`SELECT rowid AS seq FROM letters WHERE ${col} = ? ORDER BY rowid ASC LIMIT 1 OFFSET ?`, residentId, n - 1)[0];
+    cursor = r ? Number(r.seq) : 0;
+  }
+  const visible = box === 'inbox' ? 'delivered_at IS NOT NULL AND recipient_deleted_at IS NULL' : 'sender_deleted_at IS NULL';
+  const rows = w.db.all(`SELECT rowid AS seq, * FROM letters WHERE ${col} = ? AND ${visible} AND rowid < ? ORDER BY rowid DESC LIMIT ?`, residentId, cursor, lim + 1);
   const page = rows.slice(0, lim);
   const last = page[page.length - 1];
-  return { letters: page.map((row) => letterView(w, row, residentId, now)), next: rows.length > lim && last ? Number(last.seq) : null };
+  let next: number | null = null;
+  if (rows.length > lim && last) next = Number(w.db.scalar(`SELECT COUNT(*) FROM letters WHERE ${col} = ? AND rowid <= ?`, residentId, Number(last.seq)));
+  return { letters: page.map((row) => letterView(w, row, residentId, now)), next };
 }
 
 // ───────────────────────── 安装 ─────────────────────────

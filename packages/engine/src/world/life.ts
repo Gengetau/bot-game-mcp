@@ -252,8 +252,16 @@ export function installLife(w: WorldService): void {
     // 受众在提交这一刻固定
     const audience = w.audienceIn(space);
     const { lastInsertRowid: messageId } = w.db.run('INSERT INTO chat_messages(world_id, space_id, sender_id, body, sent_at) VALUES (?,?,?,?,?)', w.worldId, space, r.resident_id, text, now);
-    for (const a of audience) w.db.run('INSERT INTO chat_audience(resident_id, message_id) VALUES (?,?)', a.resident_id, messageId);
-    w.emitTo(audience.map((a) => a.resident_id), 'chat', { space, from: card(r), text, messageId }, now);
+    // 对外编号是每位居民自己连续的序号，不是全局 message_id（空档会暴露别处的发言量）
+    const seqOf = new Map<string, number>();
+    for (const a of audience) {
+      w.db.run('INSERT INTO chat_audience(resident_id, message_id) VALUES (?,?)', a.resident_id, messageId);
+      const key = `chat:${a.resident_id}`;
+      const seq = Number(w.db.scalar('SELECT high_water FROM stream_heads WHERE stream_key = ?', key) ?? 0) + 1;
+      w.db.run('INSERT INTO stream_heads(stream_key, high_water, retained_from) VALUES (?,?,1) ON CONFLICT(stream_key) DO UPDATE SET high_water = excluded.high_water', key, seq);
+      seqOf.set(a.resident_id, seq);
+      w.emitTo([a.resident_id], 'chat', { space, from: card(r), text, messageId: seq }, now);
+    }
     // 有来有往才算一次交谈：对方在我上一句之后（五分钟内）在同一空间说过话，而且我当时听到了。
     // 自己连着说几句、对方没有新话，后面的不算。
     const myPrev = Number(w.db.scalar('SELECT MAX(message_id) FROM chat_messages WHERE sender_id = ? AND space_id = ? AND message_id < ?', r.resident_id, space, messageId) ?? 0);
@@ -271,7 +279,7 @@ export function installLife(w: WorldService): void {
       // 每对居民每天只有前几次交谈形成事实（也就只有这几次带来熟悉度），刷屏不会堆出记录
       if (replied && counter(w, pairScope(r.resident_id, other.resident_id), 'chat', w.today(now)) < w.params.relationshipRewardEvents) w.fact('conversation', [{ id: r.resident_id, role: 'speaker' }, { id: other.resident_id, role: 'speaker' }], { space: zoneOf(space) });
     }
-    return { status: 'completed', messageId, heardBy: audience.length - 1 };
+    return { status: 'completed', messageId: seqOf.get(r.resident_id) ?? 0, heardBy: audience.length - 1 };
   });
 
   // ── 询问爱好（结构化动作：不靠聊天文字判定） ──

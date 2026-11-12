@@ -601,9 +601,15 @@ export class WorldService {
 
   private noteWriteFailure(e: unknown): void {
     if (e instanceof WorldError) return;
-    const code = String((e as { code?: unknown })?.code ?? '');
+    const x = e as { name?: unknown; code?: unknown; errstr?: unknown } | null;
+    // 游戏规则错误的消息里原样带着玩家输入，绝不能据此判断数据库状态
+    if (x && x.name === 'GameError') return;
+    const code = String(x?.code ?? '');
+    const errstr = String(x?.errstr ?? '');
+    // 只信数据库层抛出的错误（node:sqlite 的 code 为 ERR_SQLITE_ERROR，或带 SQLITE_ 前缀，或有 errstr）
+    if (!(code === 'ERR_SQLITE_ERROR' || /^SQLITE_/i.test(code) || errstr !== '')) return;
     const msg = e instanceof Error ? e.message : String(e);
-    if (/SQLITE_(FULL|IOERR|READONLY|CORRUPT|CANTOPEN)|disk is full|readonly database|disk I\/O error/i.test(`${code} ${msg}`)) {
+    if (/SQLITE_(FULL|IOERR|READONLY|CORRUPT|CANTOPEN)|disk is full|readonly database|disk I\/O error/i.test(`${code} ${errstr} ${msg}`)) {
       if (this.status === 'running') {
         this.status = 'degraded';
         this.log(`[town] 数据库不可写，暂停接受变更：${msg}`);
@@ -655,7 +661,7 @@ export class WorldService {
       const out = this.commit(() => {
         const now = this.now();
         const r = this.residentOfPrincipal(auth.principalId);
-        if (!r) throw new WorldError('unauthenticated', '还没有居民身份，请先进入小镇。');
+        if (!r) throw new WorldError('unauthenticated', '还没有居民身份，请先进入小镇。', 'no_resident');
         const receipt = this.db.get('SELECT payload_hash, response FROM request_receipts WHERE resident_id = ? AND request_id = ?', r.resident_id, requestId);
         if (receipt) {
           if (receipt.payload_hash !== payloadHash) {
@@ -834,25 +840,59 @@ export class WorldService {
    * 恢复完成前命令一律返回 recovering。分批处理，批与批之间让出事件循环。
    */
   async start(): Promise<void> {
-    await this.recover(async () => new Promise((resolve) => setImmediate(resolve)));
+    try {
+      await this.recover(async () => new Promise((resolve) => setImmediate(resolve)));
+      this.recoverFailed = false;
+    } catch (e) {
+      this.markRecoverFailed(e);
+    }
   }
 
   /** 同步版本（测试用）。 */
   startSync(): void {
-    void this.recover(null);
+    try {
+      void this.recover(null);
+      this.recoverFailed = false;
+    } catch (e) {
+      this.markRecoverFailed(e);
+    }
   }
 
-  private recover(yieldFn: (() => Promise<void>) | null): Promise<void> | void {
-    const now = this.now();
+  /** 启动恢复失败：保持 recovering（命令照旧拒绝），由 tick 退避重试，而不是永远停住。 */
+  private recoverFailed = false;
+  private recoverRetrying = false;
+  private nextRecoverTry = 0;
+
+  private markRecoverFailed(e: unknown): void {
+    this.recoverFailed = true;
+    this.nextRecoverTry = this.now() + 5000;
+    this.log(`[town] 启动恢复失败，稍后重试：${e instanceof Error ? e.message : String(e)}`);
+  }
+
+  private recoverPhase1Done = false;
+  private recoverDowntime = 0;
+
+  private recoverPhase1(now: number): number {
     const world = this.db.get<{ last_alive_at: number }>('SELECT last_alive_at FROM worlds WHERE world_id = ?', this.worldId)!;
     const downtime = Math.max(0, now - world.last_alive_at);
-    this.lastOutageMs = downtime;
     this.commit(() => {
       // 在场状态等待重新确认：重启前在场的人先按「停机那一刻离线」处理，租约留着，心跳回来就恢复
       const present = this.db.all('SELECT * FROM residents WHERE world_id = ? AND present_since IS NOT NULL', this.worldId).map((row) => this.hydrate(row));
       for (const r of present) this.goOffline(r, Math.max(r.present_since ?? 0, world.last_alive_at), 'restart');
       for (const h of this.hooks.recover) h(downtime, now);
+      this.db.run('UPDATE worlds SET last_alive_at = ? WHERE world_id = ?', now, this.worldId);
     });
+    this.recoverPhase1Done = true;
+    this.recoverDowntime = downtime;
+    this.lastOutageMs = downtime;
+    return downtime;
+  }
+
+  private recover(yieldFn: (() => Promise<void>) | null): Promise<void> | void {
+    const now = this.now();
+    // 第一段（离线处理 + recover 钩子）只做一次：成功提交后即使后面失败重试，也不再重跑，
+    // 否则各局截止时间会按更大的停机时长再顺延一次。同时把 last_alive_at 写进同一个事务，进程再重启也不会重复顺延。
+    const downtime = this.recoverPhase1Done ? this.recoverDowntime : this.recoverPhase1(now);
     const finish = () => {
       this.commit(() => {
         for (const h of this.hooks.newDay) h(this.today(), this.now());
@@ -880,7 +920,17 @@ export class WorldService {
    * 数据库不可写时停在 degraded，写入恢复后再按现实时间追赶。
    */
   tick(): void {
-    if (this.status === 'closed' || this.status === 'recovering') return;
+    if (this.status === 'closed') return;
+    if (this.status === 'recovering') {
+      // 启动恢复失败过：到点重试整个恢复流程（goOffline 对已离线者无操作，第一段已完成则只重跑追赶和收尾）
+      if (this.recoverFailed && !this.recoverRetrying && this.now() >= this.nextRecoverTry) {
+        this.recoverRetrying = true;
+        void this.start().finally(() => {
+          this.recoverRetrying = false;
+        });
+      }
+      return;
+    }
     const now = this.now();
     try {
       if (this.status === 'degraded') {
@@ -917,7 +967,11 @@ export class WorldService {
 
   /** 居民转为离线：冻结有效在场时间，交给各模块释放预留、让出没开始的席位。已提交的移动和制作照常完成。 */
   goOffline(r: ResidentRow, at: number, reason: string): void {
-    if (r.present_since === null) return;
+    if (r.present_since === null) {
+      // 已经离线（租约过期/刚重启）的居民明确离开小镇：不再结算在场时间，但仍要通知各模块（如退出进行中的小游戏）
+      if (reason === 'leave') for (const h of this.hooks.offline) h(r, at, reason);
+      return;
+    }
     r.present_ms += Math.max(0, at - r.present_since);
     r.present_since = null;
     r.last_seen_at = at;

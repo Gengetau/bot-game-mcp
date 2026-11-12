@@ -96,7 +96,8 @@ describe('公开日报：只含公开事实的聚合句子', () => {
     t.advance(2 * DAY);
     const lines = report(t.w, 'public', nextDate(t.w.today(), -1), t.clock.t).lines;
     expect(lines.length).toBeGreaterThanOrEqual(2);
-    expect(lines.some((l) => l.includes('安安静静'))).toBe(true);
+    // 一次跳过多天时，中间的日子补记了「错过」的事件，日报写「没有举行」而不是安静的话（审计 31）
+    expect(lines.some((l) => l.includes('安安静静') || l.includes('这天没有举行'))).toBe(true);
   });
 });
 

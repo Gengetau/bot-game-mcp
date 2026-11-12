@@ -8,7 +8,7 @@
  */
 import { BOOKS, SHOPS, STARTER_KIT, bookDef, homeId, itemDef, objectTypeName, type ItemDef, type ShopDef } from './content.js';
 import { type Row, parseJson } from './db.js';
-import { badRequest, precondition } from './errors.js';
+import { badRequest, notAvailable, precondition } from './errors.js';
 import { applyNeeds, takeToken } from './life.js';
 import { card } from './project.js';
 import type { WorldService } from './service.js';
@@ -366,7 +366,7 @@ export function installProperty(w: WorldService): void {
   w.hooks.offline.push((r, at) => cancelOffersOf(w, r.resident_id, '有一方离线了', at));
 
   // ── 买东西 ──
-  w.handlers.set('buy', ({ r, action, now, requestId }) => {
+  w.handlers.set('buy', ({ r, action, now }) => {
     const shop = SHOPS.find((s) => s.id === action.shop);
     if (!shop) throw badRequest('没有这家店。');
     if (w.spaceOf(r) !== shop.place) throw precondition(`要到${shop.name}所在的地方才能买。`, 'not_here');
@@ -387,10 +387,13 @@ export function installProperty(w: WorldService): void {
       today,
     );
     const cost = good.price * qty;
-    ledger(w, `buy:${r.resident_id}:${requestId}`, 'purchase', [
+    // 原因键每次购买唯一：requestId 由客户端提供，回执 7 天后被清理而账本永久保留，
+    // 用 requestId 当键会让过期后复用同一请求号的购买「不扣钱却发货」。重试幂等由请求回执保证。
+    const paid = ledger(w, `buy:${r.resident_id}:${w.id('p')}`, 'purchase', [
       [accountOf(r.resident_id), -cost],
       [SINK, cost],
     ]);
+    if (!paid) throw new Error(`购买记账失败：${r.resident_id}`); // 抛错使整笔事务回滚，库存不减、物品不发
     const book = good.bookId ? bookDef(good.bookId) : undefined;
     grantItem(w, r.resident_id, good.type, qty, 'shop', book ? { bookId: book.id, title: book.title } : undefined);
     const name = book?.title ?? itemDef(good.type)?.name ?? good.type;
@@ -489,15 +492,15 @@ export function installProperty(w: WorldService): void {
     return { status: 'accepted', offer: view };
   });
 
-  const loadOffer = (id: unknown): Row => {
+  // 不存在和「与你无关」统一报 not_available，不让陌生人探测报价编号
+  const loadOffer = (id: unknown, residentId: string, side: 'to_id' | 'from_id'): Row => {
     const row = w.db.get('SELECT * FROM offers WHERE offer_id = ?', String(id ?? ''));
-    if (!row) throw precondition('没有这份报价。', 'no_such_offer');
+    if (!row || row[side] !== residentId) throw notAvailable('没有这份报价，或者它与你无关。');
     return row;
   };
 
   w.handlers.set('accept_offer', ({ r, action, now }) => {
-    const row = loadOffer(action.offerId);
-    if (row.to_id !== r.resident_id) throw precondition('这份报价不是给你的。', 'not_yours');
+    const row = loadOffer(action.offerId, r.resident_id, 'to_id');
     if (row.status !== 'open' || row.expires_at <= now) throw precondition('这份报价已经失效了。', 'offer_closed');
     const from = w.mustResident(row.from_id);
     if (!w.interactive(from) || w.spaceOf(from) !== w.spaceOf(r) || w.spaceOf(r) !== row.space_id) throw precondition('你们已经不在一处了。', 'not_here');
@@ -541,16 +544,14 @@ export function installProperty(w: WorldService): void {
   });
 
   w.handlers.set('decline_offer', ({ r, action, now }) => {
-    const row = loadOffer(action.offerId);
-    if (row.to_id !== r.resident_id) throw precondition('这份报价不是给你的。', 'not_yours');
+    const row = loadOffer(action.offerId, r.resident_id, 'to_id');
     if (row.status !== 'open') throw precondition('这份报价已经失效了。', 'offer_closed');
     closeOffer(w, row, 'declined', '对方婉拒了', now);
     return { status: 'completed' };
   });
 
   w.handlers.set('cancel_offer', ({ r, action, now }) => {
-    const row = loadOffer(action.offerId);
-    if (row.from_id !== r.resident_id) throw precondition('这份报价不是你发的。', 'not_yours');
+    const row = loadOffer(action.offerId, r.resident_id, 'from_id');
     if (row.status !== 'open') throw precondition('这份报价已经失效了。', 'offer_closed');
     closeOffer(w, row, 'cancelled', '发起人撤销了', now);
     return { status: 'completed' };

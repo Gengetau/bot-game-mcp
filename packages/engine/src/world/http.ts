@@ -65,7 +65,12 @@ function secure(res: Response): void {
 
 function rateLimiter(limit: number, windowMs = 60_000) {
   const hits = new Map<string, { n: number; since: number }>();
-  return (key: string): boolean => {
+  /** 当前窗口还要多久才重置（毫秒，至少 1000，供 Retry-After / retryAfterMs 用） */
+  const retryMs = (key: string): number => {
+    const h = hits.get(key);
+    return h ? Math.max(1000, h.since + windowMs - Date.now()) : 1000;
+  };
+  const check = (key: string): boolean => {
     const now = Date.now();
     if (hits.size > 10_000) for (const [k, v] of hits) if (now - v.since > windowMs) hits.delete(k);
     const h = hits.get(key);
@@ -76,11 +81,14 @@ function rateLimiter(limit: number, windowMs = 60_000) {
     h.n += 1;
     return h.n <= limit;
   };
+  return Object.assign(check, { retryMs });
 }
 
 export interface TownHttpOptions {
   heartbeatMs?: number;
   requestsPerMinute?: number;
+  /** 同一 IP 同时开着的事件流上限（旁观流、居民流各算各的），默认 8 */
+  maxStreamsPerIp?: number;
 }
 
 export function mountTown(app: Express, w: WorldService, log: (msg: string) => void, opts: TownHttpOptions = {}): () => void {
@@ -93,6 +101,14 @@ export function mountTown(app: Express, w: WorldService, log: (msg: string) => v
   let residentStreams = 0;
   let publicStreams = 0;
   const perResident = new Map<string, number>();
+  const maxPerIp = opts.maxStreamsPerIp ?? 8;
+  const perIpPublic = new Map<string, number>();
+  const perIpResident = new Map<string, number>();
+  const bump = (m: Map<string, number>, k: string, d: number) => {
+    const n = Math.max(0, (m.get(k) ?? 0) + d);
+    if (n === 0) m.delete(k);
+    else m.set(k, n);
+  };
   const fileCache = new Map<string, { mtime: number; body: Buffer }>();
 
   const ipOf = (req: Request) => {
@@ -140,7 +156,9 @@ export function mountTown(app: Express, w: WorldService, log: (msg: string) => v
       secure(res);
       res.setHeader('Cache-Control', 'no-store');
       if (!allow(ipOf(req))) {
-        res.status(429).json({ ok: false, error: 'rate_limited', message: '请求太频繁，请稍后再试。' });
+        const retryAfterMs = allow.retryMs(ipOf(req));
+        res.setHeader('Retry-After', String(Math.ceil(retryAfterMs / 1000)));
+        res.status(429).json({ ok: false, error: 'rate_limited', message: '请求太频繁，请稍后再试。', retryAfterMs });
         return;
       }
       try {
@@ -164,7 +182,7 @@ export function mountTown(app: Express, w: WorldService, log: (msg: string) => v
           /* 无效的 Origin 当作跨站 */
         }
         const expected = req.header('x-forwarded-host')?.split(',')[0]?.trim() || req.header('host');
-        if (host !== expected) throw new WorldError('unauthenticated', '跨站请求被拒绝。');
+        if (host !== expected) throw new WorldError('bad_request', '跨站请求被拒绝。');
       }
       return fn(req, res);
     });
@@ -288,7 +306,8 @@ export function mountTown(app: Express, w: WorldService, log: (msg: string) => v
     '/town/api/auth/exchange',
     json,
     post((req, res) => {
-      if (!allowAuth(ipOf(req))) throw new WorldError('rate_limited', '尝试太频繁，请稍后再试。');
+      const ip = ipOf(req);
+      if (!allowAuth(ip)) throw new WorldError('rate_limited', '尝试太频繁，请稍后再试。', undefined, { retryAfterMs: allowAuth.retryMs(ip) });
       const s = exchangeTicket(w, req.body?.ticket);
       setCookie(req, res, s.token, s.expires_at - w.now());
       return { ok: true, name: s.principal.display_name, hasResident: Boolean(w.residentOfPrincipal(s.principal.principal_id)) };
@@ -298,7 +317,8 @@ export function mountTown(app: Express, w: WorldService, log: (msg: string) => v
     '/town/api/auth/dev',
     json,
     post((req, res) => {
-      if (!allowAuth(ipOf(req))) throw new WorldError('rate_limited', '尝试太频繁，请稍后再试。');
+      const ip = ipOf(req);
+      if (!allowAuth(ip)) throw new WorldError('rate_limited', '尝试太频繁，请稍后再试。', undefined, { retryAfterMs: allowAuth.retryMs(ip) });
       const s = devLoginSession(w, req.body?.name);
       setCookie(req, res, s.token, s.expires_at - w.now());
       return { ok: true, name: s.principal.display_name, hasResident: Boolean(w.residentOfPrincipal(s.principal.principal_id)) };
@@ -428,6 +448,7 @@ export function mountTown(app: Express, w: WorldService, log: (msg: string) => v
 
   // ── SSE ──
   const openStream = (req: Request, res: Response, residentId: string | null, token: string | null = null) => {
+    const ip = ipOf(req);
     res.writeHead(200, {
       'Content-Type': 'text/event-stream; charset=utf-8',
       'Cache-Control': 'no-store, no-transform',
@@ -517,7 +538,11 @@ export function mountTown(app: Express, w: WorldService, log: (msg: string) => v
       if (residentId) {
         residentStreams--;
         perResident.set(residentId, Math.max(0, (perResident.get(residentId) ?? 1) - 1));
-      } else publicStreams--;
+        bump(perIpResident, ip, -1);
+      } else {
+        publicStreams--;
+        bump(perIpPublic, ip, -1);
+      }
       res.end();
     }
     closers.add(close);
@@ -543,11 +568,14 @@ export function mountTown(app: Express, w: WorldService, log: (msg: string) => v
 
   app.get('/town/api/public/events', (req, res) => {
     secure(res);
-    if (!allow(ipOf(req)) || publicStreams >= w.params.maxPublicStreams) {
-      res.status(429).json({ ok: false, error: 'rate_limited', message: '连接太多，请稍后再试。' });
+    const ip = ipOf(req);
+    if (!allow(ip) || publicStreams >= w.params.maxPublicStreams || (perIpPublic.get(ip) ?? 0) >= maxPerIp) {
+      res.setHeader('Retry-After', '1');
+      res.status(429).json({ ok: false, error: 'rate_limited', message: '连接太多，请稍后再试。', retryAfterMs: 1000 });
       return;
     }
     publicStreams++;
+    bump(perIpPublic, ip, 1);
     openStream(req, res, null);
   });
 
@@ -555,11 +583,14 @@ export function mountTown(app: Express, w: WorldService, log: (msg: string) => v
     secure(res);
     try {
       const { r } = residentOf(req);
-      if (!allow(ipOf(req)) || residentStreams >= w.params.maxResidentStreams || (perResident.get(r.resident_id) ?? 0) >= 4) {
-        res.status(429).json({ ok: false, error: 'rate_limited', message: '连接太多，请稍后再试。' });
+      const ip = ipOf(req);
+      if (!allow(ip) || residentStreams >= w.params.maxResidentStreams || (perResident.get(r.resident_id) ?? 0) >= 4 || (perIpResident.get(ip) ?? 0) >= maxPerIp) {
+        res.setHeader('Retry-After', '1');
+        res.status(429).json({ ok: false, error: 'rate_limited', message: '连接太多，请稍后再试。', retryAfterMs: 1000 });
         return;
       }
       residentStreams++;
+      bump(perIpResident, ip, 1);
       perResident.set(r.resident_id, (perResident.get(r.resident_id) ?? 0) + 1);
       openStream(req, res, r.resident_id, tokenOf(req));
     } catch (e) {

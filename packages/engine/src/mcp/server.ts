@@ -107,7 +107,8 @@ export function createMcpServer(deps: ServerDeps, ctx: SessionContext): McpServe
   const me = (): Identity => auth.require(ctx);
   const town = deps.town;
   /** 这个会话选中了世界上下文，而且这次调用没有点名普通对局 */
-  const inTown = (gameId: string | undefined): boolean => Boolean(town && !gameId && townSession(ctx));
+  // 小镇里的嵌入局编号是 TG- 开头的（普通对局没有这个前缀）：带着它也算小镇上下文
+  const inTown = (gameId: string | undefined): boolean => Boolean(town && townSession(ctx) && (!gameId || /^TG-/i.test(gameId)));
 
   type Handler<A> = (args: A, extra: { signal: AbortSignal }) => unknown | Promise<unknown>;
   function tool<Shape extends z.ZodRawShape>(
@@ -375,7 +376,7 @@ export function createMcpServer(deps: ServerDeps, ctx: SessionContext): McpServe
         wait_seconds: waitSeconds,
         wake_on: z.enum(['turn', 'any']).optional().describe('等待时：turn=轮到我才返回（默认）；any=有任何新事件就返回'),
         full_log: z.boolean().optional().describe('返回你可见的全部历史事件（默认只返回上次查看后的新事件）'),
-        cursor: z.string().optional().describe('栖灯镇：上次视图返回的 cursor。带上它会附带之后的新事件；配合 wait_seconds 可以等到有新事件再返回'),
+        cursor: z.string().optional().describe('栖灯镇：上次视图返回的 cursor。带上它会附带之后的新事件（一次最多 50 条；返回 more=true 时用返回的 cursor 接着取）；配合 wait_seconds 可以等到有新事件再返回'),
       },
       readOnly: true,
     },
@@ -408,11 +409,11 @@ export function createMcpServer(deps: ServerDeps, ctx: SessionContext): McpServe
       title: '行动',
       description:
         '执行游戏动作（投票、夜间技能、出价、开骰、猜数……）。可用的 action 及参数以 get_my_view 返回的 todo.actions 为准，示例：act({"action":"vote","target":3})、act({"action":"bid","quantity":4,"face":6})、act({"action":"skip"})。',
-      inputSchema: { ...actionShape, game_id: gameIdOpt, ...townShape, phase_id: z.number().int().optional().describe('栖灯镇里的小游戏：当前阶段编号（视图里的 game.phase_id），必填') },
+      inputSchema: { ...actionShape, game_id: gameIdOpt, ...townShape, phase_id: z.number().int().optional().describe('栖灯镇里的小游戏：当前阶段编号（视图里的 game.phase_id），必填；同时要带 game_id（视图里的 game.game_id）或 context_version') },
     },
     (a) => {
       const { game_id, request_id, action_window, context_version, phase_id, ...input } = a;
-      if (town && inTown(game_id)) return townGameAct(town, ctx, me(), { request_id, action_window, context_version, phase_id }, input);
+      if (town && inTown(game_id)) return townGameAct(town, ctx, me(), { request_id, action_window, context_version, phase_id, ...(game_id ? { game_id } : {}) }, input);
       return manager.act(me(), game_id, input as ActionInput);
     },
   );

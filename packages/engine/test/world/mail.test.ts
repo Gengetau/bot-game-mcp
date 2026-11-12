@@ -154,7 +154,8 @@ describe('栖灯镇住宅：没有邀请进不了别人的家', () => {
     stay(t, 8_000, [a, b]);
     expect(loc(b)).toBe('street_east');
     expect(b.row().move).toBeNull();
-    expect(noticeTexts(b, cursor)).toHaveLength(1);
+    // 撤销通知（审计第 2 条：人不在屋里也要告知）+ 到门口被拒的通知
+    expect(noticeTexts(b, cursor)).toHaveLength(2);
     expect(grantRow(t, grantId).entered_at).toBeNull();
   });
 
@@ -340,7 +341,8 @@ describe('栖灯镇住宅：撤销 / 过期时屋里的客人被送到门口', (
     a.act('revoke_invite', { grantId });
     stay(t, 30_000, [a, b]);
     expect(loc(b)).toBe('plaza');
-    expect(noticeTexts(b, cursor)).toEqual([]);
+    // 已经出门的客人不再被请出一次，只收到撤销告知这一条固定模板
+    expect(noticeTexts(b, cursor)).toEqual(['阿灯结束了这次邀请。']);
   });
 });
 

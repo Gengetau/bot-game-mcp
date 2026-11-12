@@ -1390,7 +1390,7 @@ class Sim {
           ['move', { to: 'home:nobody' }, ['precondition_failed']],
           ['buy', { shop: 'stall', sku: 'cookie', qty: 99 }, ['bad_request', 'precondition_failed']],
           ['buy', { shop: 'nowhere', sku: 'x' }, ['bad_request', 'precondition_failed']],
-          ['accept_offer', { offerId: 'f_nonexistent' }, ['precondition_failed']],
+          ['accept_offer', { offerId: 'f_nonexistent' }, ['not_available']],
           ['read_letter', { letterId: 'm_nonexistent' }, ['precondition_failed']],
           ['revoke_invite', { grantId: 'h_nonexistent' }, ['precondition_failed']],
           ['return_item', { itemId: 'i_nonexistent' }, ['precondition_failed']],
@@ -1404,7 +1404,7 @@ class Sim {
           ['place_furniture', { itemId: 'i_nonexistent' }, ['precondition_failed']],
           ['replace_goal', { goalId: 'g_nonexistent' }, ['precondition_failed']],
         ];
-        if (others) cases.push(['accept_offer', { offerId: others.offer_id }, ['precondition_failed']], ['cancel_offer', { offerId: others.offer_id }, ['precondition_failed']], ['decline_offer', { offerId: others.offer_id }, ['precondition_failed']]);
+        if (others) cases.push(['accept_offer', { offerId: others.offer_id }, ['not_available']], ['cancel_offer', { offerId: others.offer_id }, ['not_available']], ['decline_offer', { offerId: others.offer_id }, ['not_available']]);
         const [type, fields, codes] = rnd.pick(cases);
         const inGame = Boolean(v.game);
         const o = this.exec(ag, conn, type, fields, nf);

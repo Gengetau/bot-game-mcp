@@ -238,7 +238,9 @@ function interestWeight(def: GoalDef, r: ResidentRow): number {
 function createGoal(w: WorldService, r: ResidentRow, kind: 'long' | 'short', now: number, exclude: Set<string>): boolean {
   const active = new Set(w.db.all("SELECT def_id FROM resident_goals WHERE resident_id = ? AND status = 'active'", r.resident_id).map((x) => String(x.def_id)));
   const doneLong = new Set(w.db.all("SELECT def_id FROM resident_goals WHERE resident_id = ? AND status = 'completed' AND kind = 'long'", r.resident_id).map((x) => String(x.def_id)));
-  const pool = GOALS.filter((g) => g.kind === kind && available(g) && !active.has(g.id) && !exclude.has(g.id) && !(kind === 'long' && doneLong.has(g.id)));
+  let pool = GOALS.filter((g) => g.kind === kind && available(g) && !active.has(g.id) && !exclude.has(g.id) && !(kind === 'long' && doneLong.has(g.id)));
+  // 长期愿望全部达成过：允许重新选已达成的方向（新实例，旧记录与称号保留）
+  if (pool.length === 0 && kind === 'long') pool = GOALS.filter((g) => g.kind === 'long' && available(g) && !active.has(g.id) && !exclude.has(g.id));
   if (pool.length === 0) return false;
   const weights = pool.map((g) => interestWeight(g, r));
   let roll = w.rng.int(weights.reduce((s, x) => s + x, 0));

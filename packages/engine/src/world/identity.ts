@@ -65,6 +65,9 @@ export function principalById(w: WorldService, principalId: string): Principal |
   return w.db.get<Principal & Record<string, any>>('SELECT principal_id, provider, subject, kind, display_name FROM principals WHERE principal_id = ?', principalId);
 }
 
+/** 没有可用昵称时的占位前缀。register 把它当作「没起名」，要求本人另外给名字。 */
+const PLACEHOLDER_NAME = '新居民';
+
 /** 幂等地登记一个主体。同一个 provider+subject 的类别一旦确定就不能变（AI 不能事后变成真人，反之亦然）。 */
 function upsertPrincipal(w: WorldService, provider: string, subject: string, kind: 'human' | 'agent', name: string): Principal {
   const existing = principalRow(w, provider, subject);
@@ -74,7 +77,10 @@ function upsertPrincipal(w: WorldService, provider: string, subject: string, kin
     }
     return existing;
   }
-  const principal: Principal = { principal_id: w.id('p'), provider, subject, kind, display_name: sanitizeName(name, 24) || subject };
+  const principalId = w.id('p');
+  // 昵称清洗后为空时用中性占位名，绝不回退成原始账号号码（它会进入居民名、公开事件和会话回包）
+  const display = cleanName(String(name), 24) || `${PLACEHOLDER_NAME}${principalId.slice(-4)}`;
+  const principal: Principal = { principal_id: principalId, provider, subject, kind, display_name: display };
   w.db.run(
     'INSERT INTO principals(principal_id, provider, subject, kind, display_name, created_at) VALUES (?,?,?,?,?,?)',
     principal.principal_id,
@@ -87,9 +93,15 @@ function upsertPrincipal(w: WorldService, provider: string, subject: string, kin
   return principal;
 }
 
-/** MCP 鉴权后的 AI 身份 → 主体。只会登记成 agent，不能借此注册真人。 */
-export function agentPrincipal(w: WorldService, identity: { id: string; name: string }): Principal {
-  return w.commit(() => upsertPrincipal(w, 'qq', String(identity.id), 'agent', identity.name));
+/**
+ * MCP 鉴权后的 AI 身份 → 主体。只会登记成 agent，不能借此注册真人。
+ *
+ * 密钥绑定的身份（keys 模式、stdio）号码是服务器配置的，和真人票据共用 'qq' 这个命名空间：
+ * 同一个号码要么是 AI 要么是真人。open 模式下号码是自己认领的、没人核实过，登记在单独的
+ * 'open' 命名空间里：否则谁都能抢先认领一个真人的号码，让那位真人再也登录不了小镇。
+ */
+export function agentPrincipal(w: WorldService, identity: { id: string; name: string }, opts: { selfClaimed?: boolean } = {}): Principal {
+  return w.commit(() => upsertPrincipal(w, opts.selfClaimed ? 'open' : 'qq', String(identity.id), 'agent', identity.name));
 }
 
 // ───────────────────────── 登录票据与会话 ─────────────────────────
@@ -172,7 +184,8 @@ export function revokeSession(w: WorldService, token: string): void {
 // ───────────────────────── 注册 ─────────────────────────
 
 function register(w: WorldService, principal: Principal, profile: ProfileInput, now: number): ResidentRow {
-  const name = cleanName(profile.name ?? principal.display_name ?? '', 16);
+  const fallback = principal.display_name?.startsWith(PLACEHOLDER_NAME) ? '' : principal.display_name;
+  const name = cleanName(profile.name ?? fallback ?? '', 16);
   if (!name) throw precondition('第一次进入需要给居民起个名字。', 'profile_required');
   if (nameTaken(w, name)) {
     throw precondition(`已经有一位居民叫「${name}」了，换个名字吧。`, 'name_taken');
@@ -321,7 +334,7 @@ export function heartbeat(w: WorldService, auth: Auth, presenceEpoch: unknown): 
   return w.commit(() => {
     const now = w.now();
     const r = w.residentOfPrincipal(auth.principalId);
-    if (!r) throw new WorldError('unauthenticated', '还没有居民身份，请先进入小镇。');
+    if (!r) throw new WorldError('unauthenticated', '还没有居民身份，请先进入小镇。', 'no_resident');
     const lease = w.db.get('SELECT epoch, expires_at, boot_id FROM presence_leases WHERE resident_id = ? AND client_id = ?', r.resident_id, auth.clientId);
     if (!lease || lease.epoch !== r.presence_epoch || presenceEpoch !== r.presence_epoch || lease.expires_at <= now) {
       throw precondition('在场状态已经失效，请重新进入小镇。', 'presence_lost');
@@ -357,7 +370,7 @@ export function leaveWorld(w: WorldService, principalId: string): { ok: true; pr
   const out = w.commit(() => {
     const now = w.now();
     const r = w.residentOfPrincipal(principalId);
-    if (!r) throw new WorldError('unauthenticated', '还没有居民身份。');
+    if (!r) throw new WorldError('unauthenticated', '还没有居民身份。', 'no_resident');
     r.presence_epoch += 1;
     r.control_epoch += 1;
     r.controller_client = null;
@@ -388,7 +401,7 @@ export function claimControl(w: WorldService, auth: Auth): { control: { epoch: n
   return w.commit(() => {
     const now = w.now();
     const r = w.residentOfPrincipal(auth.principalId);
-    if (!r) throw new WorldError('unauthenticated', '还没有居民身份，请先进入小镇。');
+    if (!r) throw new WorldError('unauthenticated', '还没有居民身份，请先进入小镇。', 'no_resident');
     const lease = w.db.get('SELECT epoch, expires_at FROM presence_leases WHERE resident_id = ? AND client_id = ?', r.resident_id, auth.clientId);
     if (!lease || lease.epoch !== r.presence_epoch || lease.expires_at <= now) throw precondition('在场状态已经失效，请重新进入小镇。', 'presence_lost');
     if (r.controller_client !== auth.clientId) {

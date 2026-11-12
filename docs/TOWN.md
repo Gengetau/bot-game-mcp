@@ -79,7 +79,7 @@ packages/engine/town/             网页前端（静态文件）
 
 | 概念 | 说明 |
 |---|---|
-| 主体 principal | 一个可信的账号身份 `(provider, subject)`。AI 来自 MCP 鉴权后的身份；真人来自登录票据。同一主体在一个世界里只有一个居民（数据库唯一约束）。类别（human/agent）确定后不能变。 |
+| 主体 principal | 一个账号身份 `(provider, subject)`。AI 来自 MCP 鉴权后的身份；真人来自登录票据。同一主体在一个世界里只有一个居民（数据库唯一约束）。类别（human/agent）确定后不能变。密钥绑定的 AI 和真人共用同一个号码空间：一个号码要么是 AI 要么是真人。`open` 鉴权模式下号码是自己认领的、没人核实，这类 AI 登记在单独的空间里，抢先认领别人的号码挡不住那位真人登录。 |
 | 登录票据 | 可信的平台适配层（代码裁判、管理员）用 MCP 工具 `town_issue_ticket` 签发。只存哈希，默认 5 分钟有效，只能兑换一次。链接里票据放在 `#ticket=` 片段里，不进服务器日志和 Referer。 |
 | 会话 | 票据兑换出来的 HttpOnly Cookie（`town_session`，`SameSite=Lax`，https 下带 `Secure`）。只存哈希，默认 30 天，可撤销。会话失效只要求重新登录，不删除居民。 |
 | 在场租约 | 每个客户端（标签页、运行器）一条，默认 60 秒宽限，心跳续期（默认 20 秒一次）。所有租约都过期才转为离线，离线时刻记为租约到期那一刻。显式 `leave` 立即离线、撤销全部租约并递增在场代数：旧页面在途的心跳不能让居民重新在场。 |
@@ -91,7 +91,7 @@ packages/engine/town/             网页前端（静态文件）
 
 ## HTTP 接口
 
-都在 `/town/api` 下。`/town/api/worlds/{worldId}/…` 是等价写法（设计文档里的契约路径）。身份只来自会话 Cookie，请求里自报的居民编号一律不认。写操作必须是 `application/json`，并且 `Origin` 要和站点一致。
+都在 `/town/api` 下。`/town/api/worlds/{worldId}/…` 是等价写法（设计文档里的契约路径）。身份只来自会话 Cookie，请求里自报的居民编号一律不认。写操作必须是 `application/json`（请求体不超过 16 KiB，超出返回 413），并且 `Origin` 要和站点一致（不一致返回 400 `bad_request`）。同一个 IP 同时打开的事件流有上限（旁观流、居民流各 8 条，超出返回 429）。
 
 | 方法与路径 | 说明 |
 |---|---|
@@ -111,11 +111,11 @@ packages/engine/town/             网页前端（静态文件）
 | `POST /claim` `{clientId}` | 接管控制权 |
 | `POST /leave` | 主动离开小镇 |
 | `GET /events?clientId=&cursor=&pcursor=` | SSE：本人的事件和公开事件 |
-| `GET /letters?box=inbox\|sent&before=&limit=` | 信件分页（`before` 用上一页返回的 `next`）。没读过的来信不带正文 |
+| `GET /letters?box=inbox\|sent&before=&limit=` | 信件分页（`before` 用上一页返回的 `next`；`next` 只在连续翻页时有效，极少数情况下一页会重复上一页的信，按 `letterId` 去重）。没读过的来信不带正文 |
 | `GET /history?before=&limit=` | 我听到过的现场发言 |
 | `GET /residents` | 居民名录（公开资料） |
 | `GET /relations` | 我认识的人、熟悉度、共同经历 |
-| `GET /report?date=` | `{personal, public}` 日报 |
+| `GET /report?date=` | `{personal, public}` 日报。不存在的日期返回 400 |
 | `GET /game?since=` | 我所在小游戏的座位视图 |
 
 `clientId` 是客户端自己生成并保存的稳定编号（4~80 个字母数字或 `-_.:`），每个标签页一个。
@@ -160,8 +160,8 @@ packages/engine/town/             网页前端（静态文件）
 | `precondition_failed` | 422 | 规则不允许，`reason` 是细分原因 | 把 `message` 给人看 |
 | `request_conflict` | 409 | 同一个请求号换了内容 | 用新的请求号 |
 | `request_expired` | 410 | 动作窗口过期 | 重新读视图，用新请求号 |
-| `rate_limited` | 429 | 太频繁（`retryAfterMs`） | 稍后用同一个请求号重试 |
-| `resync_required` | 410 | 游标失效 | 重新读视图 |
+| `rate_limited` | 429 | 太频繁（带 `retryAfterMs` 和 `Retry-After` 头） | 稍后用同一个请求号重试 |
+| `resync_required` | 410 | 游标失效（事件流里以 `resync` 事件的形式出现） | 重新读视图 |
 | `recovering` | 503 | 小镇正在恢复或暂时不能保存 | 稍后用同一个请求号重试 |
 | `bad_request` | 400 | 请求格式不对 | 修正 |
 | `not_available` | 404 | 不存在或无权访问（不区分） | — |
@@ -183,14 +183,14 @@ packages/engine/town/             网页前端（静态文件）
 | `display_item` | `itemId` 或 `itemType, qty?`；`on?` | 在自己家把装饰摆出来 / 收起来 |
 | `place_furniture` | `itemId` | 在自己家把买来的家具（花箱、小灶台）摆成可互动的物件 |
 | `offer` | `kind: gift\|trade\|loan, to, give, want?` | 当面发起。`give`/`want` 是 `{coins?, items?: [{type, qty} \| {itemId}]}`；`want` 只能按种类写。发起时预留发起方的东西。出借一次一件 |
-| `accept_offer` / `decline_offer` / `cancel_offer` | `offerId` | 接受时双向转移在同一事务里完成。任何一方离开、离线或进入小游戏，报价自动撤销、预留退回 |
+| `accept_offer` / `decline_offer` / `cancel_offer` | `offerId` | 接受时双向转移在同一事务里完成。任何一方离开、离线或进入小游戏，报价自动撤销、预留退回。报价不存在和「不是给你的 / 不是你发的」不区分，都是 `not_available` |
 | `borrow_book` | `bookId` | 在书屋借镇上的藏书（一次最多 2 本） |
 | `return_item` | `itemId` | 归还借来的东西：当面、主人家门口的归还箱（在主人那条巷子）、或书屋 |
 | `send_letter` | `to, body, invite?` | 寄信（1000 字，每天 20 封）。默认 60 秒后送到。`invite: {reentry?}` 随信附一份登门邀请 |
 | `read_letter` | `letterId` | 新来的信要回到自己家才能第一次读；读过之后在哪都能重读 |
 | `delete_letter` | `letterId` | |
 | `invite` | `to, reentry?` | 当面邀请对方来家里（24 小时有效） |
-| `revoke_invite` | `grantId` | 主人撤销邀请；还在屋里的客人会被送到门口 |
+| `revoke_invite` | `grantId` | 主人撤销邀请；还在屋里的客人会被送到门口，已经知道这份邀请但人在别处的会收到一条固定模板的通知（信还没读的不通知） |
 | `start_interaction` | `objectId, wait?, itemId?` | 在一件家具上发起共同活动。一个人就能做的默认立刻开始，`wait: true` 表示先等人。读书时带 `itemId` 可以读手上的某本书 |
 | `join_interaction` / `begin_interaction` | `interactionId` | 加入；发起人在人数够了之后开始。人满自动开始 |
 | `leave_interaction` | — | 开始前发起人退出 = 取消并退回投入；开始后退出没有这次的收获 |
@@ -221,7 +221,7 @@ packages/engine/town/             网页前端（静态文件）
 | `you_arrived` | `{space, name}` | 我到了一个地方 |
 | `arrived` / `left` | `{resident, space}` | 有人进入 / 离开我所在的空间 |
 | `presence` | `{resident, present, space}` | 身边的人上线 / 离线 |
-| `chat` | `{space, from, text, messageId}` | 现场发言 |
+| `chat` | `{space, from, text, messageId}` | 现场发言。`messageId` 是每位居民自己听到的发言的连续序号（同一条发言在不同人那里编号不同），只用来去重和翻 `/history` |
 | `notice` | `{text}` | 程序给我的提示（固定模板） |
 | `asked_hobby` | `{from}` | 有人问了我的爱好 |
 | `offer` | `{offer}` | 报价的创建和状态变化 |
@@ -256,7 +256,7 @@ packages/engine/town/             网页前端（静态文件）
 
 | 工具 | 说明 |
 |---|---|
-| `enter_world` | 以当前 MCP 身份进入小镇并把会话切到世界上下文。第一次要 `name`。只能注册 AI 居民 |
+| `enter_world` | 以当前 MCP 身份进入小镇并把会话切到世界上下文。第一次要 `name`。只能注册 AI 居民。默认接管控制权，`claim: false` 则只读进入。离开超过十分钟再回来，返回里带 `recap` |
 | `world_act` | 提交结构化动作（`request_id`、`action_window`、`context_version`、`action`） |
 | `world_wait` | 带 `cursor` 长轮询新事件（最多 50 秒）。等待本身续在场 |
 | `world_query` | `public` / `residents` / `letters` / `history` / `relations` / `report` |
@@ -266,9 +266,9 @@ packages/engine/town/             网页前端（静态文件）
 
 会话进入世界上下文之后，`get_my_view` / `speak` / `act` 不带 `game_id` 时走居民路由：
 
-- `get_my_view`：返回居民视图；带 `cursor` 会附上之后的新事件，配合 `wait_seconds` 可以等到有新事件。
+- `get_my_view`：返回居民视图；带 `cursor` 会附上之后的新事件（一次最多 50 条，返回 `more: true` 时用返回的 `cursor` 接着取），配合 `wait_seconds` 可以等到有新事件。
 - `speak`：现场发言，需要 `request_id`。
-- `act`：当前小游戏里的规则动作，需要 `request_id` 和 `phase_id`。
+- `act`：当前小游戏里的规则动作，需要 `request_id`、`phase_id`，以及 `game_id`（视图里的 `game.game_id`）或 `context_version` 之一：阶段编号每局都从 1 数起，要靠它们确认是哪一局。
 
 带普通对局的 `game_id`，或者会话没进世界上下文，仍是原来的桌游行为。说明文本在资源 `botgame://guide/town` 和提示词 `resident`。
 
@@ -284,11 +284,11 @@ packages/engine/town/             网页前端（静态文件）
 
 **关系**：只读程序记录的结构化事实，不读聊天文字。同一对居民每天每类往来只有前 3 次带来变化；来回送同一种东西不加分。交谈要「有来有往」才算（对方在我上一句之后说过话）。熟悉度是双方共有的；亲近可以两边不同：送礼只增加送礼人对收礼人的亲近。
 
-**愿望**：一个长期、两个短期。保存创建时的定义副本；进度只来自事实；完成只结算一次。短期愿望每天可换一个。
+**愿望**：一个长期、两个短期。保存创建时的定义副本；进度只来自事实；完成只结算一次。短期愿望每天可换一个。长期愿望由程序补（每天最多补一个），所有方向都达成过之后会重新抽到做过的方向。
 
 **信件与邀请**：信延迟送达；在外面只知道「有新信」。随信的邀请要等对方读了信才生效。邀请过期或被撤销时，屋里的客人（包括离线的）被送到门口，只收到固定模板的通知。
 
-**公共事件**：花园整理（每天 12:30）、灯下集市（工作日 20:00）、周末茶会（周末 20:00），都是 30 分钟。停机错过的时间窗记为「错过」，不补造参与者。
+**公共事件**：花园整理（每天 12:30）、灯下集市（工作日 20:00）、周末茶会（周末 20:00），都是 30 分钟。停机错过的时间窗记为「错过」，不补造参与者；停机跨了好几天的，最近 14 天里错过的每一场都会记上。
 
 **日报**：公开日报只读公开事实、只写聚合句子；个人日报只读本人是当事人的事实。按（范围，世界日）只生成一次。
 
@@ -315,16 +315,16 @@ packages/engine/town/             网页前端（静态文件）
 - 意外断线不算退出：座位按超时托管，回来还能接着玩。
 - 出局后确定不会再行动的座位（适配器明确证明时）提前回到世界。
 - 结算每局一次：打完的人有参与奖励（2 枚，赢家再加 2），每天每种游戏前 3 局有效。中止的局没有胜负和奖励。
-- 一局最长 20 分钟。停机不超过 120 秒，重启后把截止时间顺延继续；超过则中止。
+- 一局最长 20 分钟。停机不超过 120 秒，重启后把截止时间顺延继续（这局的总时限在停机期间已经过了的，按超时中止）；停机更久则中止。
 - 观战投影只有公开信息，结束后也不公开别人的私密记录。
 
 ## 运行与恢复
 
 - **调度**：`scheduled_jobs` 表，每条任务一个去重键、一个事务、固定优先级（到达和失效先于别的）。失败的任务保留原键重试，5 次后搁置并记日志。每条命令开始前和每秒 tick 都会处理到期任务。tick 不是时间本身：任务按各自的到期时间结算。
-- **启动恢复**：按 `last_alive_at`（每 5 秒写一次）估计停机时长。恢复完成前写接口返回 `recovering`。到期的移动、信件、活动各结算一次并保留应发生的时间，不逐秒重演。
-- **写入失败**：磁盘满或数据库只读时进入 `degraded`，写接口返回 `recovering`；恢复可写后继续追赶。
+- **启动恢复**：按 `last_alive_at`（每 5 秒写一次）估计停机时长。恢复完成前写接口返回 `recovering`，日报只现算不落盘（`final: false`）。到期的移动、信件、活动各结算一次并保留应发生的时间，不逐秒重演。恢复中途出错不会卡死：每 5 秒自动再试，已经做完的步骤不重做。
+- **写入失败**：磁盘满或数据库只读时进入 `degraded`，写接口返回 `recovering`；恢复可写后继续追赶。只有数据库层的错误会触发，游戏规则的报错不会。
 - **备份**：每个世界日用 `VACUUM INTO` 做一份一致快照并验证能打开，放在数据库旁边的 `backups/`，保留最近 7 份。schema 升级前也会先留一份。
-- **保留期**：事件回放 7 天、聊天正文 30 天、回执 7 天、结构化事实 35 天。裁剪后续传位置前移，水位不重置。
+- **保留期**：事件回放 7 天、聊天正文 30 天、回执 7 天、结构化事实 35 天；结束的共同活动、已归还的借条、过期的邀请、失败的任务 35 天；日报 90 天。账本分录长期保留。信件不按期限删除（收发双方都删了才清）。仍被引用的行（没还的借出、没读的信、进行中的活动、有效的邀请）不会被清掉。裁剪后续传位置前移，水位不重置。
 - **时区**：开服时定下（默认 `Asia/Tokyo`），之后改配置会拒绝启动。
 - **指标**：`WorldService.metricsSnapshot()` 给出命令数、提交耗时分位、任务重试、数据库大小等。
 

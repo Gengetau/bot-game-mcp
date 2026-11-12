@@ -871,13 +871,13 @@ describe('HTTP：CSRF 防护与请求体限制', () => {
     const before = t.w.resident(web.residentId)!.present_since;
     for (const origin of ['http://evil.example', 'https://127.0.0.1:1', `http://127.0.0.1.evil.example:${new URL(app.base).port}`, 'null', 'not a url', 'http://localhost:' + new URL(app.base).port]) {
       const r = await web.post('/town/api/leave', {}, { origin });
-      errShape(r, 401, 'unauthenticated');
+      errShape(r, 400, 'bad_request');
       expect(r.json.message).toContain('跨站');
     }
     expect(t.w.resident(web.residentId)!.present_since).toBe(before); // 没有被离开
     // 跨站登出 / 登录也不行
-    errShape(await web.post('/town/api/auth/logout', {}, { origin: 'http://evil.example' }), 401, 'unauthenticated');
-    errShape(await new Web(app.base).post('/town/api/auth/dev', { name: '钓鱼' }, { origin: 'http://evil.example' }), 401, 'unauthenticated');
+    errShape(await web.post('/town/api/auth/logout', {}, { origin: 'http://evil.example' }), 400, 'bad_request');
+    errShape(await new Web(app.base).post('/town/api/auth/dev', { name: '钓鱼' }, { origin: 'http://evil.example' }), 400, 'bad_request');
     expect(web.cookie).not.toBe('');
     // 同源 OK；没有 Origin（curl、服务端客户端）OK
     expect((await web.post('/town/api/heartbeat', { clientId: web.clientId, presenceEpoch: (await web.me()).control.presenceEpoch }, { origin: app.base })).status).toBe(200);
@@ -885,7 +885,7 @@ describe('HTTP：CSRF 防护与请求体限制', () => {
     // 反向代理：以 X-Forwarded-Host 为准
     const viaProxy = await web.post('/town/api/heartbeat', { clientId: web.clientId, presenceEpoch: (await web.me()).control.presenceEpoch }, { origin: 'https://town.example.com', headers: { 'x-forwarded-host': 'town.example.com', 'x-forwarded-proto': 'https' } });
     expect(viaProxy.status).toBe(200);
-    errShape(await web.post('/town/api/leave', {}, { origin: 'https://evil.example', headers: { 'x-forwarded-host': 'town.example.com' } }), 401, 'unauthenticated');
+    errShape(await web.post('/town/api/leave', {}, { origin: 'https://evil.example', headers: { 'x-forwarded-host': 'town.example.com' } }), 400, 'bad_request');
   });
 
   it('请求体大小有上限（16KB）：超限 413，且是统一的 JSON 错误，不带堆栈', async () => {

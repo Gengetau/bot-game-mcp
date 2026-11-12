@@ -42,7 +42,7 @@ export function loadSqlite(): SqliteModule {
 export type Row = Record<string, any>;
 export type Param = SQLInputValue;
 
-export const SCHEMA_VERSION = 1;
+export const SCHEMA_VERSION = 2;
 
 const MIGRATIONS: readonly string[] = [
   // ───── v1 ─────
@@ -557,6 +557,11 @@ const MIGRATIONS: readonly string[] = [
     created_at INTEGER NOT NULL,
     PRIMARY KEY (scope, business_date)
   ) STRICT, WITHOUT ROWID;
+  `,
+  // ───── v2 ─────
+  // 按 event_id 反查当事人（个人日报、换日钩子、清理）；已有的 v1 库也要补上
+  `
+  CREATE INDEX IF NOT EXISTS event_parties_event ON event_parties(event_id, resident_id);
   `,
 ];
 

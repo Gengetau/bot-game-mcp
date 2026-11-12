@@ -306,15 +306,23 @@ function checkInvariants(round: number): void {
     }
   });
   check(round, badReceipts.length === 0, () => `回执内容不对：${JSON.stringify(badReceipts.slice(0, 2))}`);
+  // 购买账目的原因键是 buy:<居民>:<每次购买唯一的编号>（不含请求号），所以按居民对数：
+  // 「购买账目笔数」必须等于「回执里带 bought 的条数」——多一笔账 = 提交了一半，少一笔 = 发了货没扣钱。
   for (const b of buyRequests.filter((x) => x.round === round)) {
-    const key = `buy:${b.residentId}:${b.requestId}`;
-    check(round, db.scalar('SELECT COUNT(*) FROM ledger_transactions WHERE cause_key = ?', key) === 1, `购买 ${b.requestId} 的账目不是恰好一笔`);
+    const receipt = db.get('SELECT response FROM request_receipts WHERE resident_id = ? AND request_id = ?', b.residentId, b.requestId);
+    const cost = receipt ? (JSON.parse(String(receipt.response)) as { bought?: { cost?: number } }).bought?.cost : undefined;
+    check(round, cost === b.cost, () => `购买 ${b.requestId} 的回执花费是 ${cost}，应为 ${b.cost}`);
   }
-  // 所有「购买账目」都对应一条回执（没有回执的账目 = 提交了一半）
-  const orphanBuys = db.all(
-    `SELECT t.cause_key FROM ledger_transactions t WHERE t.kind = 'purchase' AND NOT EXISTS (SELECT 1 FROM request_receipts q WHERE t.cause_key = 'buy:' || q.resident_id || ':' || q.request_id)`,
-  );
-  check(round, orphanBuys.length === 0, () => `有购买账目没有回执：${JSON.stringify(orphanBuys.slice(0, 2))}`);
+  const buyMismatch = db.all(
+    `SELECT r.resident_id,
+            (SELECT COUNT(*) FROM ledger_transactions t WHERE t.kind = 'purchase' AND t.cause_key LIKE 'buy:' || r.resident_id || ':%') AS paid,
+            (SELECT COUNT(*) FROM request_receipts q WHERE q.resident_id = r.resident_id AND json_extract(q.response, '$.bought.cost') IS NOT NULL) AS receipts
+       FROM residents r`,
+  ).filter((row) => row.paid !== row.receipts);
+  check(round, buyMismatch.length === 0, () => `购买账目和回执对不上：${JSON.stringify(buyMismatch.slice(0, 2))}`);
+  const purchaseTotal = Number(db.scalar("SELECT COALESCE(SUM(e.delta), 0) FROM ledger_entries e JOIN ledger_transactions t ON t.transaction_id = e.transaction_id WHERE t.kind = 'purchase' AND e.delta > 0"));
+  const expectedPurchases = buyRequests.reduce((sum, x) => sum + x.cost, 0);
+  check(round, purchaseTotal === expectedPurchases, () => `购买账目合计 ${purchaseTotal}，按成功的购买应为 ${expectedPurchases}`);
   for (const a of acceptRequests.filter((x) => x.round === round)) {
     const st = db.get('SELECT status FROM offers WHERE offer_id = ?', a.offerId)?.status;
     check(round, st === 'accepted', () => `接受 ${a.requestId} 有回执，报价却是 ${st}`);

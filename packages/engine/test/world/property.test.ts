@@ -358,11 +358,11 @@ describe('财物：报价（送礼与交换）', () => {
     const { t, a, b } = twoAtPlaza();
     const c = t.join('阿木');
     const o = a.act('offer', { kind: 'gift', to: b.residentId, give: { coins: 1 } });
-    expect(a.fail('accept_offer', { offerId: o.offer.id }).reason).toBe('not_yours');
-    expect(c.fail('accept_offer', { offerId: o.offer.id }).reason).toBe('not_yours');
-    expect(a.fail('decline_offer', { offerId: o.offer.id }).reason).toBe('not_yours');
-    expect(b.fail('cancel_offer', { offerId: o.offer.id }).reason).toBe('not_yours');
-    expect(b.fail('accept_offer', { offerId: 'nope' }).reason).toBe('no_such_offer');
+    expect(a.fail('accept_offer', { offerId: o.offer.id }).code).toBe('not_available');
+    expect(c.fail('accept_offer', { offerId: o.offer.id }).code).toBe('not_available');
+    expect(a.fail('decline_offer', { offerId: o.offer.id }).code).toBe('not_available');
+    expect(b.fail('cancel_offer', { offerId: o.offer.id }).code).toBe('not_available');
+    expect(b.fail('accept_offer', { offerId: 'nope' }).code).toBe('not_available');
     b.act('accept_offer', { offerId: o.offer.id });
     expect(b.fail('accept_offer', { offerId: o.offer.id }).reason).toBe('offer_closed');
     expect(a.fail('cancel_offer', { offerId: o.offer.id }).reason).toBe('offer_closed');

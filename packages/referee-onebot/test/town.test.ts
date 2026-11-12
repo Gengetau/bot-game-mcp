@@ -313,7 +313,8 @@ describe('栖灯镇：公告转发', () => {
   let eng: { rt: Runtime; http: HttpHandle };
   const insert = (key: string, title: string, text: string) =>
     eng.rt.world!.db.run('INSERT INTO notification_outbox(dedupe_key, destination, payload, created_at) VALUES (?,?,?,?)', key, 'announce', JSON.stringify({ kind: 'public_event', title, text, at: Date.now() }), Date.now());
-  const unsent = () => Number(eng.rt.world!.db.get('SELECT COUNT(*) AS c FROM notification_outbox WHERE sent_at IS NULL')?.c);
+  // 只数测试自己放进去的公告：引擎按真实时间运行，到了钟点（比如 12:30 的花园整理）会自己产生公告
+  const unsent = () => Number(eng.rt.world!.db.get("SELECT COUNT(*) AS c FROM notification_outbox WHERE sent_at IS NULL AND (dedupe_key LIKE 'off-%' OR dedupe_key LIKE 'a-%')")?.c);
 
   beforeAll(async () => {
     eng = await bootEngine(true, dir);

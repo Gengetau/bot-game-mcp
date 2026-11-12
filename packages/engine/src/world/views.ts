@@ -134,24 +134,21 @@ function hereView(w: WorldService, r: ResidentRow, space: string, now: number): 
     activities: home ? [] : activitiesAt(w, space),
     games: home ? [] : gamesOfferedAt(w, space),
     exits,
-    chat: w.db
-      .all(
-        `SELECT m.message_id, m.sender_id, m.body, m.sent_at FROM chat_messages m JOIN chat_audience a ON a.message_id = m.message_id AND a.resident_id = ?
-         WHERE m.space_id = ? AND m.sent_at > ? ORDER BY m.message_id DESC LIMIT 20`,
-        r.resident_id,
-        space,
-        now - 30 * 60_000,
-      )
-      .reverse()
-      .map((m) => ({ messageId: Number(m.message_id), from: card(w.mustResident(m.sender_id)), text: String(m.body), at: Number(m.sent_at) })),
+    chat: hereChat(w, r.resident_id, space, now),
   };
   if (def?.kind === 'street') {
-    view.doors = w.db
-      .all('SELECT resident_id FROM residents WHERE world_id = ? AND street_id = ? ORDER BY house_no', w.worldId, space)
-      .map((row) => {
-        const owner = w.mustResident(String(row.resident_id));
-        return { home: homeId(owner.resident_id), owner: card(owner), no: owner.house_no, canEnter: checkHomeAccess(w, r, homeId(owner.resident_id), now).ok };
-      });
+    // 只列够用的门：自己家、我手上有效邀请对应的家、此刻在场的邻居的家（不遍历全部注册居民）
+    const DOOR_CAP = 60;
+    const ids = new Set<string>([r.resident_id]);
+    for (const g of w.db.all('SELECT owner_id FROM home_access_grants WHERE guest_id = ? AND expires_at > ? AND revoked_at IS NULL ORDER BY expires_at DESC LIMIT ?', r.resident_id, now, DOOR_CAP)) ids.add(String(g.owner_id));
+    // 住在这条街上、此刻在场的邻居（不管人在屋里还是在街上）
+    for (const x of w.db.all('SELECT resident_id FROM residents WHERE world_id = ? AND street_id = ? AND present_since IS NOT NULL ORDER BY house_no LIMIT ?', w.worldId, space, DOOR_CAP)) ids.add(String(x.resident_id));
+    view.doors = [...ids]
+      .map((id) => w.mustResident(id))
+      .filter((owner) => owner.street_id === space)
+      .slice(0, DOOR_CAP)
+      .map((owner) => ({ home: homeId(owner.resident_id), owner: card(owner), no: owner.house_no, canEnter: checkHomeAccess(w, r, homeId(owner.resident_id), now).ok }))
+      .sort((x, y) => x.no - y.no);
   }
   if (home) {
     const owner = w.mustResident(homeOwner(space));
@@ -330,21 +327,52 @@ export function directory(w: WorldService, now: number): { id: string; name: str
     });
 }
 
-/** 我听到过的现场发言（按消息编号往前翻页）。只包含当时我在受众里的消息。 */
+/**
+ * 对外的现场发言编号：每位居民自己连续的序号（stream_heads 里 chat:<id> 的高水位，发言时给每个受众各取一个）。
+ * 内部 message_id 是全世界共用的，不外露。某条消息的序号 = 高水位 - 我这边比它更新的消息条数；清理旧消息不会让它变。
+ */
+function chatHigh(w: WorldService, residentId: string): number {
+  return Number(w.db.scalar('SELECT high_water FROM stream_heads WHERE stream_key = ?', `chat:${residentId}`) ?? 0);
+}
+function chatSeqOf(w: WorldService, residentId: string, high: number, messageId: number): number {
+  return high - Number(w.db.scalar('SELECT COUNT(*) FROM chat_audience WHERE resident_id = ? AND message_id > ?', residentId, messageId));
+}
+
+function hereChat(w: WorldService, residentId: string, space: string, now: number): HereView['chat'] {
+  const cut = now - 30 * 60_000;
+  // message_id 随时间递增：给受众表的主键扫描加下界（30 分钟窗口内最早的消息），查询量与历史长度无关
+  const rows = w.db.all(
+    `SELECT m.message_id, m.sender_id, m.body, m.sent_at FROM chat_audience a JOIN chat_messages m ON m.message_id = a.message_id
+     WHERE a.resident_id = ? AND a.message_id >= (SELECT COALESCE(MIN(message_id), 9223372036854775807) FROM chat_messages WHERE sent_at > ?)
+       AND m.space_id = ? AND m.sent_at > ? ORDER BY a.message_id DESC LIMIT 20`,
+    residentId,
+    cut,
+    space,
+    cut,
+  );
+  const high = chatHigh(w, residentId);
+  return rows
+    .reverse()
+    .map((m) => ({ messageId: chatSeqOf(w, residentId, high, Number(m.message_id)), from: card(w.mustResident(m.sender_id)), text: String(m.body), at: Number(m.sent_at) }));
+}
+
+/** 我听到过的现场发言（按我自己的消息序号往前翻页）。只包含当时我在受众里的消息。 */
 export function chatHistory(w: WorldService, residentId: string, before: number | null, limit: number): { messages: { messageId: number; space: string; spaceName: string; from: ReturnType<typeof card>; text: string; at: number }[]; next: number | null } {
-  const lim = Math.max(1, Math.min(100, limit));
+  const lim = Math.max(1, Math.min(100, Math.floor(Number.isFinite(limit) ? limit : 30)));
+  const high = chatHigh(w, residentId);
+  // before 是序号：跳过序号 >= before 的那些（它们是最新的 high-before+1 条）
+  const skip = before === null || !Number.isFinite(before) ? 0 : Math.max(0, high - Math.floor(before) + 1);
   const rows = w.db.all(
     `SELECT m.* FROM chat_audience a JOIN chat_messages m ON m.message_id = a.message_id
-     WHERE a.resident_id = ? AND a.message_id < ? ORDER BY a.message_id DESC LIMIT ?`,
+     WHERE a.resident_id = ? ORDER BY a.message_id DESC LIMIT ? OFFSET ?`,
     residentId,
-    before ?? Number.MAX_SAFE_INTEGER,
     lim + 1,
+    skip,
   );
   const page = rows.slice(0, lim);
-  return {
-    messages: page.map((m) => ({ messageId: Number(m.message_id), space: String(m.space_id), spaceName: spaceName(w, m.space_id, residentId), from: card(w.mustResident(m.sender_id)), text: String(m.body), at: Number(m.sent_at) })),
-    next: rows.length > lim ? Number(page[page.length - 1]!.message_id) : null,
-  };
+  const top = page.length ? chatSeqOf(w, residentId, high, Number(page[0]!.message_id)) : 0;
+  const messages = page.map((m, i) => ({ messageId: top - i, space: String(m.space_id), spaceName: spaceName(w, m.space_id, residentId), from: card(w.mustResident(m.sender_id)), text: String(m.body), at: Number(m.sent_at) }));
+  return { messages, next: rows.length > lim ? top - (page.length - 1) : null };
 }
 
 export { relationsOf, STREETS };
