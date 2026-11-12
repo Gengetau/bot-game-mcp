@@ -497,6 +497,19 @@ async function walkTo(p, x, z, tol = 0.8) {
   return me;
 }
 
+/**
+ * 从候选落点里挑第一个「点得到地面」的：镜头从南边斜着往北看，别的居民的点选盒（1 × 1.9 × 1 米）
+ * 会挡住自己身后（北侧）约 2.3 米的地面，点在那里是「走到 ta 身边」而不是「走到这个点」。
+ */
+async function clearSpot(p, cands) {
+  const sc = await serverScene(p);
+  const others = sc.actors.filter((a) => a.id !== sc.self);
+  const blocked = (c) => others.some((a) => Math.abs(c.x - a.x) < 1.2 && c.z - a.z > -3.2 && c.z - a.z < 1.2);
+  const hit = cands.find((c) => !blocked(c));
+  check(hit, `候选落点都被别的居民挡住：${JSON.stringify(others.map((a) => [a.x.toFixed(1), a.z.toFixed(1)]))}`);
+  return hit;
+}
+
 /** 某个页面里（按居民编号）看到的某人。 */
 const seen = async (page, id) => (await snap(page)).actors.find((a) => a.id === id) ?? null;
 
@@ -841,7 +854,10 @@ async function main() {
     // 声明：下面空地那一下必定被拒绝（1 次）；喷泉正中的 navigate 是否被拒取决于「最近可走点」规则（再多 0~1 次）
     allowFailure(A.w, 'POST', /\/town\/api\/actions$/, { min: 1, max: 2, why: '步骤 5：点空地必定 unreachable；喷泉正中可能被拒' });
     // 新镜头更近（俯角低、距离短），喷泉要离角色 ~10 米以内才在可点区域里：先走到广场南侧
-    await walkTo(A, 32, 29);
+    // 落点不能选在别的居民身后：广场落脚点 (32, 30.25) 上常站着人，点 (32, 29) 会点到 ta 身上
+    const south = await clearSpot(A, [{ x: 32, z: 29 }, { x: 29, z: 29 }, { x: 35, z: 29 }, { x: 29, z: 27.5 }, { x: 35, z: 27.5 }]);
+    note(`先走到广场南侧 (${south.x}, ${south.z})`);
+    await walkTo(A, south.x, south.z);
     const spot = { x: 32, z: 24 }; // 喷泉正中，喷泉脚印 (30.5..33.5, 22.5..25.5)
     const q = await project(A.page, spot.x, spot.z);
     const vp = await viewport(A.page);
