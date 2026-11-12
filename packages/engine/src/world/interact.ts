@@ -5,6 +5,9 @@
  * 发起 → 等人（open）→ 正式开始（running，此时才消耗投入）→ 到时间完成（completed）。
  * 开始前取消全数退回投入；开始后中途离开不退、也没有这次的收获。完成由定时任务结算，保留应完成的时间。
  * 社交收益只在实际参与者不少于两人时生效；每天前几次全额，之后减半；产出有每日上限。
+ * 公共物件（茶桌、藏书架、灶台、花箱）按距离：发起 / 加入都要先走到物件旁边（space.ts 的 requireReach），
+ * 家里的家具在屋里就够得着。活动的 space_id 是区域标签；广播对象是这片区域里的人（含路过的）加上参与者。
+ * 迈步走开、走出区域、离线、被请出门都算退出，规则相同：开始前发起人退出 = 取消并退回，其余情形只是让出席位。
  */
 import {
   HOME_STARTER_OBJECTS,
@@ -264,6 +267,7 @@ export function installInteract(w: WorldService): void {
     return true;
   };
 
+  // 走出这片区域（含被请出门、传送）：同样退出
   w.hooks.leaveSpace.push((r, _space, at) => void leave(r.resident_id, at, '离开了'));
   // 迈步走开：坐着做的事（喝茶、看书、照料花箱）就算退出了，哪怕还没走出这片区域
   w.hooks.walk.push((r, at) => void leave(r.resident_id, at, '走开了'));

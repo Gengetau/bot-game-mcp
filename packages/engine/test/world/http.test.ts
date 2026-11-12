@@ -564,11 +564,18 @@ describe('HTTP：enter / me / actions', () => {
     const sp = await web.act({ type: 'speak', text: '你好呀' });
     expect(sp.status).toBe(200);
     expect(sp.json).toMatchObject({ ok: true, status: expect.stringMatching(/completed|accepted/), contextVersion: expect.any(Number), activityId: null, cursor: expect.stringMatching(/^r/) });
-    const mv = await web.act({ type: 'move', to: 'tea_house' });
+    const mv = await web.act({ type: 'navigate', to: 'tea_house' });
     expect(mv.status).toBe(200);
     expect(mv.json.status).toBe('accepted');
-    expect(mv.json.move.arriveAt).toBeGreaterThan(t.clock.now());
-    t.advance(15_000);
+    expect(mv.json.move).toBeUndefined(); // 旧的 move 结果形状已经没有了
+    expect(mv.json.navigation.arriveAt).toBeGreaterThan(t.clock.now());
+    expect(mv.json.navigation.navigationId).toEqual(expect.any(String));
+    // 像真正的客户端那样每几秒续一次租约，走到为止
+    for (let i = 0; i < 40 && (await web.me()).here.space !== 'tea_house'; i++) {
+      const nav = (await web.me()).location.navigation;
+      t.advance(3000);
+      if (nav) await web.post('/town/api/nav/renew', { clientId: web.clientId, navigationId: nav.navigationId, revision: nav.revision });
+    }
     expect((await web.me()).here.space).toBe('tea_house');
   });
 
@@ -720,7 +727,7 @@ describe('HTTP：enter / me / actions', () => {
     expect(t.w.db.scalar('SELECT COUNT(*) FROM chat_messages WHERE body = ?', '只说一次')).toBe(1);
     // 即使上下文在这期间变了（响应丢失后重试），仍返回原回执而不是 context_stale
     const old = await web.me();
-    await web.act({ type: 'move', to: 'tea_house' });
+    await web.act({ type: 'navigate', to: 'tea_house' });
     t.advance(15_000);
     const r3 = await web.post('/town/api/actions', { clientId: web.clientId, requestId: 'req-replay-0001', actionWindow: old.actionWindow, expected: { contextVersion: 0, controlEpoch: 0, activityId: null }, action: body });
     expect(r3.status).toBe(200);
@@ -1184,6 +1191,99 @@ describe('HTTP：SSE 事件流', () => {
 });
 
 // ───────────────────────── 静态文件 ─────────────────────────
+
+describe('HTTP：空间接口（map / scene / nav/renew / ws-ticket）', () => {
+  it('GET /map：公开，带 ETag 与缓存头；If-None-Match 命中返回 304', async () => {
+    const { app } = await serveTown();
+    const web = new Web(app.base);
+    const r = await web.get('/town/api/map');
+    expect(r.status).toBe(200);
+    expect(r.json.protocol).toBe(1);
+    expect(r.json.checksum).toEqual(expect.any(String));
+    expect(r.headers.get('etag')).toBe(`"${r.json.checksum}"`);
+    expect(r.headers.get('cache-control')).toBe('public, max-age=300');
+    const etag = r.headers.get('etag')!;
+    for (const inm of [etag, `W/${etag}`, `"zzz", ${etag}`, '*']) {
+      const hit = await web.get('/town/api/map', { headers: { 'if-none-match': inm } });
+      expect(hit.status, inm).toBe(304);
+      expect(hit.text).toBe('');
+      expect(hit.headers.get('etag')).toBe(etag);
+    }
+    const miss = await web.get('/town/api/map', { headers: { 'if-none-match': '"other"' } });
+    expect(miss.status).toBe(200);
+    expect(miss.json.checksum).toBe(r.json.checksum);
+    // 带世界编号的写法也是同一个接口
+    expect((await web.get(`/town/api/worlds/${app.w.worldId}/map`)).status).toBe(200);
+  });
+
+  it('GET /scene：未登录 401；没有居民身份 401；登录后是本人场景的完整快照', async () => {
+    const { app } = await serveTown();
+    const anon = new Web(app.base);
+    expect((await anon.get('/town/api/scene')).status).toBe(401);
+    const noResident = new Web(app.base);
+    expect((await noResident.post('/town/api/auth/dev', { name: '路人' })).status).toBe(200);
+    const nr = await noResident.get('/town/api/scene');
+    expect(nr.status).toBe(401);
+    expect(nr.json.reason).toBe('no_resident');
+    const web = await new Web(app.base).login('阿灯');
+    const sc = await web.get('/town/api/scene');
+    expect(sc.status).toBe(200);
+    expect(sc.headers.get('cache-control')).toBe('no-store');
+    expect(sc.json).toMatchObject({ protocol: 1, scene: 'town', space: 'plaza', self: web.residentId });
+    expect(sc.json.actors.map((a: any) => a.id)).toContain(web.residentId);
+  });
+
+  it('POST /nav/renew：要登录、同源 JSON；没有导航 ok:false；续上返回新租约；旧版本号 ok:false', async () => {
+    const { t, app } = await serveTown();
+    const anon = new Web(app.base);
+    expect((await anon.post('/town/api/nav/renew', { clientId: 'tab-anon-1', navigationId: 'x', revision: 1 })).status).toBe(401);
+    const web = await new Web(app.base).login('阿灯');
+    const body = { clientId: web.clientId, navigationId: 'nope', revision: 1 };
+    // 跨源、非 JSON 一律被拒
+    expect((await web.post('/town/api/nav/renew', body, { origin: 'https://evil.example' })).status).toBe(400);
+    expect((await web.post('/town/api/nav/renew', body, { contentType: 'text/plain' })).status).toBe(400);
+    expect((await web.post('/town/api/nav/renew', { navigationId: 'x', revision: 1 })).status).toBe(400); // 缺 clientId
+    const none = await web.post('/town/api/nav/renew', body);
+    expect(none.status).toBe(200);
+    expect(none.json).toMatchObject({ ok: false, navigation: null });
+
+    const mv = await web.act({ type: 'navigate', to: 'tea_house' });
+    const nav = mv.json.navigation;
+    t.advance(4000);
+    const ok = await web.post('/town/api/nav/renew', { clientId: web.clientId, navigationId: nav.navigationId, revision: nav.revision });
+    expect(ok.status).toBe(200);
+    expect(ok.json.ok).toBe(true);
+    expect(ok.json.leaseUntil).toBeGreaterThan(nav.leaseUntil);
+    expect(ok.json.navigation.navigationId).toBe(nav.navigationId);
+    const stale = await web.post('/town/api/nav/renew', { clientId: web.clientId, navigationId: nav.navigationId, revision: nav.revision + 5 });
+    expect(stale.json.ok).toBe(false);
+    expect(stale.json.navigation.navigationId).toBe(nav.navigationId);
+    // 不是控制者的页面续不了
+    const other = await web.post('/town/api/nav/renew', { clientId: 'tab-other-0001', navigationId: nav.navigationId, revision: nav.revision });
+    expect(other.status).toBe(409);
+    expect(other.json.error).toBe('control_lost');
+  });
+
+  it('POST /ws-ticket：要登录、要居民身份、同源 JSON；票据是 32 字节 base64url，30 秒有效，不进日志', async () => {
+    const { t, app } = await serveTown();
+    expect((await new Web(app.base).post('/town/api/ws-ticket', { clientId: 'tab-anon-1' })).status).toBe(401);
+    const noResident = new Web(app.base);
+    await noResident.post('/town/api/auth/dev', { name: '路人' });
+    expect((await noResident.post('/town/api/ws-ticket', { clientId: 'tab-nores-1' })).status).toBe(401);
+    const web = await new Web(app.base).login('阿灯');
+    expect((await web.post('/town/api/ws-ticket', { clientId: web.clientId }, { origin: 'https://evil.example' })).status).toBe(400);
+    expect((await web.post('/town/api/ws-ticket', { clientId: web.clientId }, { contentType: 'text/plain' })).status).toBe(400);
+    expect((await web.post('/town/api/ws-ticket', {})).status).toBe(400);
+    const r = await web.post('/town/api/ws-ticket', { clientId: web.clientId });
+    expect(r.status).toBe(200);
+    expect(r.headers.get('cache-control')).toBe('no-store');
+    expect(r.json.ticket).toMatch(/^[\w-]{43}$/);
+    expect(r.json.expiresAt).toBe(t.clock.now() + 30_000);
+    const r2 = await web.post('/town/api/ws-ticket', { clientId: web.clientId });
+    expect(r2.json.ticket).not.toBe(r.json.ticket);
+    expect(app.logs.join('\n')).not.toContain(r.json.ticket);
+  });
+});
 
 describe('HTTP：静态页面', () => {
   it('/town/ 返回 html，带 CSP 等安全头；/town 重定向到 /town/（保留查询串）', async () => {

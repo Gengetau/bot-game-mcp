@@ -210,12 +210,15 @@ describe('复核新增：已有 v1 库升级后补上 event_parties 索引', () 
     cleanups.push(tmp.cleanup);
     const first = new TownDb(tmp.path);
     first.db.exec('DROP INDEX event_parties_event');
+    // v3 才有的空间表：模拟真正的 v1 库，让 v2、v3 迁移都重新跑一遍
+    first.db.exec('DROP TABLE world_actors');
     first.db.exec('PRAGMA user_version = 1');
     first.close();
     const again = new TownDb(tmp.path);
     expect(again.userVersion()).toBe(SCHEMA_VERSION);
     const plan = again.db.prepare('EXPLAIN QUERY PLAN SELECT resident_id FROM event_parties WHERE event_id = 1').all() as { detail: string }[];
     expect(plan.map((r) => r.detail).join('\n')).toContain('event_parties_event');
+    expect(again.db.prepare("SELECT 1 AS x FROM sqlite_master WHERE name = 'world_actors'").get()).toBeTruthy();
     again.close();
   });
 });

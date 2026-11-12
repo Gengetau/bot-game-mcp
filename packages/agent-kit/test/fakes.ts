@@ -1,7 +1,7 @@
 /**
  * 运行器测试用的假时钟和假小镇端口：事件、视图、动作结果都由测试脚本控制，时间由 FakeClock 推进。
  */
-import type { ActOptions, ActResult, EnterProfile, EnterResult, RunnerClock, TownAction, TownEvent, TownPort, TownView, WaitOptions, WaitResult } from '../src/index.js';
+import type { ActOptions, ActResult, EnterProfile, EnterResult, NavigationRenewal, RunnerClock, TownAction, TownEvent, TownPort, TownView, WaitOptions, WaitResult } from '../src/index.js';
 
 const flush = async (n = 10) => {
   for (let i = 0; i < n; i++) await new Promise<void>((r) => setImmediate(r));
@@ -88,6 +88,12 @@ export class FakePort implements TownPort {
   private waiters: (() => void)[] = [];
   /** wait 返回 resync */
   nextResync = false;
+  /** 视图里的 location.walking（测试可以直接改） */
+  walking: NonNullable<TownView['location']['walking']> | null = null;
+  readonly renews: { navigationId: string; revision?: number; at: number }[] = [];
+  stops = 0;
+  /** 续租的行为：返回结果或抛错；不设就一直 ok */
+  renewBehavior: ((nav: { navigationId: string; revision?: number }) => NavigationRenewal | Promise<NavigationRenewal>) | null = null;
 
   constructor(
     readonly clock: FakeClock,
@@ -108,7 +114,7 @@ export class FakePort implements TownPort {
       context: { version: this.version, activityId: this.activityId },
       action_window: `aw.${this.version}`,
       cursor: `c${this.cursorN}`,
-      location: { space: 'plaza', name: '灯下广场' },
+      location: { space: 'plaza', name: '灯下广场', ...(this.walking ? { walking: this.walking } : {}) },
       here: this.here,
       coins: 20,
       items: [],
@@ -168,6 +174,15 @@ export class FakePort implements TownPort {
     return r ?? ({ ok: true, requestId: opts.requestId ?? 'x', status: 'completed', contextVersion: this.version, activityId: this.activityId, cursor: `c${this.cursorN}` } as ActResult);
   }
 
+  async renewNavigation(nav: { navigationId: string; revision?: number }): Promise<NavigationRenewal> {
+    this.renews.push({ ...nav, at: this.clock.now() });
+    if (this.renewBehavior) return this.renewBehavior(nav);
+    return { ok: true, leaseUntil: this.clock.now() + 10_000, navigation: { navigationId: nav.navigationId, revision: nav.revision ?? 1, renewEveryMs: 3000 } };
+  }
+  async stopNavigation() {
+    this.stops++;
+    return { ok: true };
+  }
   async heartbeat() {
     return { ok: true };
   }

@@ -5,6 +5,7 @@
  *   GET  /town/                         页面（静态文件，全部来自仓库）
  *   GET  /town/api/config               世界名、可选的个性与兴趣、是否开放开发登录
  *   GET  /town/api/public               公开的小镇地图
+ *   GET  /town/api/map                  空间地图清单（带 ETag，可缓存；客户端按 checksum 校验）
  *   GET  /town/api/public/events        SSE：公开事件流（?cursor= 续传）
  *   GET  /town/api/public/game/:id      小游戏的观战投影
  *   GET  /town/api/public/report        公开日报（?date=）
@@ -18,6 +19,10 @@
  *   GET  /town/api/me?clientId=         本人视图
  *   POST /town/api/actions              {clientId, requestId, actionWindow, expected, action}
  *   POST /town/api/heartbeat            {clientId, presenceEpoch}
+ *   GET  /town/api/scene                本人所在场景的完整快照（SceneView）
+ *   POST /town/api/nav/renew            {clientId, navigationId, revision} 续导航控制租约
+ *   POST /town/api/ws-ticket            {clientId} → {ticket, expiresAt}：一次性、30 秒内有效，换 WebSocket 登录
+ *   WS   /town/ws                       空间同步（hello 里带票据；协议见 ws.ts）
  *   POST /town/api/claim                {clientId} 接管控制权
  *   POST /town/api/leave                主动离开小镇
  *   GET  /town/api/events?clientId=     SSE：本人的事件 + 公开事件（各有游标）
@@ -26,6 +31,7 @@
  * 身份只来自会话 Cookie：请求里自报的居民编号、号码一律不认。
  */
 import { readFileSync, statSync } from 'node:fs';
+import type { Server as HttpServer } from 'node:http';
 import express, { type Express, type Request, type Response } from 'express';
 import { INTERESTS, TRAITS } from './content.js';
 import { HTTP_STATUS, WorldError } from './errors.js';
@@ -36,8 +42,10 @@ import { listLetters } from './mail.js';
 import { report } from './reports.js';
 import type { WorldService } from './service.js';
 import { relationMemories, relationsOf } from './social.js';
+import { mapManifest, renewNavigation, sceneView } from './space.js';
 import { chatHistory, directory, meView, publicView } from './views.js';
 import type { Principal } from './types.js';
+import { createTownWs, type TownWsOptions } from './ws.js';
 
 const TOWN_DIR = new URL('../../town/', import.meta.url);
 const TYPES: Record<string, string> = {
@@ -89,9 +97,15 @@ export interface TownHttpOptions {
   requestsPerMinute?: number;
   /** 同一 IP 同时开着的事件流上限（旁观流、居民流各算各的），默认 8 */
   maxStreamsPerIp?: number;
+  /** WebSocket 的参数（测试里缩短超时用） */
+  ws?: TownWsOptions;
 }
 
-export function mountTown(app: Express, w: WorldService, log: (msg: string) => void, opts: TownHttpOptions = {}): () => void {
+/** mountTown 的返回值：调用即关闭所有长连接；还要把 attach 挂到 HTTP 服务器上才有 /town/ws。 */
+export type TownMount = (() => void) & { attach(server: HttpServer): void };
+
+export function mountTown(app: Express, w: WorldService, log: (msg: string) => void, opts: TownHttpOptions = {}): TownMount {
+  const wsHub = createTownWs(w, log, { maxPerIp: opts.maxStreamsPerIp ?? 8, ...(opts.ws ?? {}) });
   const allow = rateLimiter(opts.requestsPerMinute ?? 240);
   const allowAuth = rateLimiter(20);
   const pingMs = opts.heartbeatMs ?? 20_000;
@@ -284,6 +298,24 @@ export function mountTown(app: Express, w: WorldService, log: (msg: string) => v
     })),
   );
   app.get('/town/api/public', api(() => publicView(w)));
+  // 地图清单：公开、可缓存。校验值就是 ETag，地图一变（checksum 变）客户端自然取到新的
+  let mapBody: { checksum: string; body: string } | null = null;
+  app.get(
+    '/town/api/map',
+    api((req, res) => {
+      const m = mapManifest(w);
+      if (!mapBody || mapBody.checksum !== m.checksum) mapBody = { checksum: m.checksum, body: JSON.stringify(m) };
+      const etag = `"${m.checksum}"`;
+      res.setHeader('ETag', etag);
+      res.setHeader('Cache-Control', 'public, max-age=300');
+      const inm = req.header('if-none-match');
+      if (inm && inm.split(',').some((t) => t.trim().replace(/^W\//, '') === etag || t.trim() === '*')) {
+        res.status(304).end();
+        return;
+      }
+      res.type('application/json').send(mapBody.body);
+    }),
+  );
   app.get(
     '/town/api/public/game/:id',
     api((req) => {
@@ -330,8 +362,10 @@ export function mountTown(app: Express, w: WorldService, log: (msg: string) => v
     post((req, res) => {
       const token = tokenOf(req);
       if (token) {
+        const p = sessionPrincipal(w, token);
         revokeSession(w, token);
         for (const close of [...(streamsOfToken.get(token) ?? [])]) close();
+        if (p) wsHub.closePrincipal(p.principal_id);
       }
       setCookie(req, res, '', 0);
       return { ok: true };
@@ -379,6 +413,30 @@ export function mountTown(app: Express, w: WorldService, log: (msg: string) => v
     post((req) => {
       const p = principalOf(req);
       return { ok: true, ...heartbeat(w, { principalId: p.principal_id, clientId: clientIdOf(req) }, req.body?.presenceEpoch) };
+    }),
+  );
+  app.get(
+    '/town/api/scene',
+    api((req) => {
+      const { r } = residentOf(req);
+      return sceneView(w, r, w.now());
+    }),
+  );
+  app.post(
+    '/town/api/nav/renew',
+    json,
+    post((req) => {
+      const p = principalOf(req);
+      const b = req.body ?? {};
+      return renewNavigation(w, { principalId: p.principal_id, clientId: clientIdOf(req) }, { navigationId: b.navigationId, revision: b.revision });
+    }),
+  );
+  app.post(
+    '/town/api/ws-ticket',
+    json,
+    post((req) => {
+      const { p } = residentOf(req);
+      return { ok: true, ...wsHub.issueTicket(p.principal_id, clientIdOf(req)) };
     }),
   );
   app.post(
@@ -609,7 +667,9 @@ export function mountTown(app: Express, w: WorldService, log: (msg: string) => v
     res.status(404).json({ ok: false, error: 'not_available', message: '没有这个接口。' });
   });
 
-  return () => {
+  const closeAll = () => {
     for (const close of [...closers]) close();
+    wsHub.close();
   };
+  return Object.assign(closeAll, { attach: (server: HttpServer) => wsHub.attach(server) });
 }

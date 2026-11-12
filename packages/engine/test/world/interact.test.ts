@@ -40,15 +40,17 @@ function setNeeds(t: Town, a: Actor, n: { energy?: number; social?: number; inte
 
 const needs = (a: Actor) => a.view().me.needs;
 
-/** 走到某地，并等所有人到齐。 */
+/** 各个公共地点里默认站到哪件物件旁边（公共物件按距离判定，要走到旁边才能用）。 */
+const DEFAULT_SPOT: Record<string, string> = {
+  tea_house: 'tea_house:table1',
+  bookshop: 'bookshop:shelf',
+  kitchen: 'kitchen:stove1',
+  garden: 'garden:planter1',
+};
+
+/** 走到某地（或某件物件旁边），所有人都走到才返回。place 是地点时站到它的默认物件旁边。 */
 function gather(place: string, ...people: Actor[]): void {
-  const t = people[0]!.t;
-  let arrive = t.clock.t;
-  for (const p of people) {
-    if (p.view().location.space === place) continue;
-    arrive = Math.max(arrive, p.act('move', { to: place }).move.arriveAt);
-  }
-  t.advanceTo(arrive);
+  for (const p of people) p.go(DEFAULT_SPOT[place] ?? place);
   for (const p of people) p.heartbeat();
 }
 
@@ -159,8 +161,8 @@ describe('需要：精力 / 社交 / 兴趣', () => {
     setNeeds(t, a, { energy: 0, social: 0, interest: 0 });
     a.act('speak', { text: '好累' });
     a.act('buy', { shop: 'stall', sku: 'cookie' });
-    a.go('tea_house');
-    b.go('tea_house');
+    a.go(TABLE1);
+    b.go(TABLE1);
     a.act('offer', { kind: 'gift', to: b.residentId, give: { coins: 1 } });
     const ix = a.act('start_interaction', { objectId: TABLE1, wait: true });
     b.act('join_interaction', { interactionId: ix.interaction.id });
@@ -244,9 +246,12 @@ describe('共同活动：喝茶（2~4 人）', () => {
     expect(a.fail('begin_interaction', { interactionId: ix.id }).reason).toBe('not_enough');
     b.act('join_interaction', { interactionId: ix.id });
     expect(b.fail('begin_interaction', { interactionId: ix.id }).reason).toBe('not_initiator');
-    c!.act('move', { to: 'plaza' });
-    t.advance(10_000);
-    expect(c!.fail('join_interaction', { interactionId: ix.id }).reason).toBe('not_here');
+    // 走开的人够不着桌子：too_far，并告诉他往哪里走
+    c!.go('plaza');
+    const far = c!.fail('join_interaction', { interactionId: ix.id });
+    expect(far.reason).toBe('too_far');
+    expect(far.data).toMatchObject({ navigateTo: TABLE1 });
+    expect(ixOf(c!)).toBeNull();
     expect(a.fail('begin_interaction', { interactionId: 'nope' }).reason).toBe('not_initiator');
     checkInvariants(t);
   });
@@ -254,7 +259,7 @@ describe('共同活动：喝茶（2~4 人）', () => {
   it('2~4 人：人满（4 人）自动开始，第 5 个人加入报 not_open', () => {
     const { t, people, a } = teaSetup(4);
     const e = t.join('阿雪');
-    e.go('tea_house');
+    e.go(TABLE1);
     const ix = a.act('start_interaction', { objectId: TABLE1, wait: true }).interaction;
     people[1]!.act('join_interaction', { interactionId: ix.id });
     people[2]!.act('join_interaction', { interactionId: ix.id });
@@ -273,7 +278,10 @@ describe('共同活动：喝茶（2~4 人）', () => {
     const { t, a, b, c } = teaSetup(3);
     a.act('start_interaction', { objectId: TABLE1, wait: true });
     expect(b.fail('start_interaction', { objectId: TABLE1, wait: true }).reason).toBe('busy');
-    expect(a.fail('start_interaction', { objectId: TABLE2, wait: true }).reason).toBe('already_busy');
+    // 发起人守在这张桌子旁，够不着另一张：先是距离的问题（够得着两件物件才会碰到 already_busy，见家里的那条）
+    expect(a.fail('start_interaction', { objectId: TABLE2, wait: true }).reason).toBe('too_far');
+    b.go(TABLE2);
+    c!.go(TABLE2);
     const ix2 = b.act('start_interaction', { objectId: TABLE2, wait: true }).interaction;
     c!.act('join_interaction', { interactionId: ix2.id });
     expect(ixOf(b)!.participants.map((p) => p.name)).toEqual(['小岚', '阿木']);
@@ -282,7 +290,10 @@ describe('共同活动：喝茶（2~4 人）', () => {
 
   it('不在身边的物件不能发起；没有可做的事的物件报 no_interaction', () => {
     const { t, a } = teaSetup();
-    expect(a.fail('start_interaction', { objectId: 'kitchen:stove1' }).reason).toBe('not_here');
+    // 另一处的公共物件：够不着，并指给他物件编号
+    const far = a.fail('start_interaction', { objectId: 'kitchen:stove1' });
+    expect(far.reason).toBe('too_far');
+    expect(far.data).toMatchObject({ navigateTo: 'kitchen:stove1' });
     expect(a.fail('start_interaction', { objectId: 'nope' }).reason).toBe('not_here');
     expect(a.fail('start_interaction', { objectId: TABLE1, interaction: 'cook_soup' }).reason).toBe('no_interaction');
     checkInvariants(t);
@@ -423,6 +434,114 @@ describe('共同活动：喝茶（2~4 人）', () => {
     checkInvariants(t);
   });
 
+  it('两个人都走到同一张茶桌旁才能一起喝茶：一个在桌边、一个在茶馆另一头，后者加入是 too_far', () => {
+    const t = town();
+    const a = t.join('阿灯');
+    const b = t.join('小岚', 'agent');
+    a.go(TABLE1);
+    b.go(TABLE2); // 同在茶馆，隔着一段距离
+    expect(a.view().location.space).toBe('tea_house');
+    expect(b.view().location.space).toBe('tea_house');
+    const ix = a.act('start_interaction', { objectId: TABLE1, wait: true }).interaction;
+    const far = b.fail('join_interaction', { interactionId: ix.id });
+    expect(far.reason).toBe('too_far');
+    expect(far.data).toMatchObject({ navigateTo: TABLE1 });
+    expect(ixOf(b)).toBeNull();
+    // 走到桌边就能加入
+    b.go(TABLE1);
+    b.act('join_interaction', { interactionId: ix.id });
+    a.act('begin_interaction', { interactionId: ix.id });
+    finishTen(t, [a, b]);
+    expect(needs(a).social).toBe(70);
+    expect(needs(b).social).toBe(70);
+    checkInvariants(t);
+  });
+
+  it('进行中有人迈步走开（哪怕没走出茶馆）：他退出、没有收获，其余人照常完成', () => {
+    const { t, a, b, c } = teaSetup(3);
+    const ix = a.act('start_interaction', { objectId: TABLE1, wait: true }).interaction;
+    b.act('join_interaction', { interactionId: ix.id });
+    c!.act('join_interaction', { interactionId: ix.id });
+    a.act('begin_interaction', { interactionId: ix.id });
+    t.advanceAlive(MIN, [a, b, c!]);
+    const cursor = c!.events().cursor;
+    c!.act('navigate', { to: TABLE2 }); // 刚迈步就退出
+    expect(c!.view().location.space).toBe('tea_house'); // 还在这片区域里
+    expect(ixOf(c!)).toBeNull();
+    expect(t.w.db.get('SELECT active FROM interaction_participants WHERE interaction_id = ? AND resident_id = ?', ix.id, c!.residentId)!.active).toBe(0);
+    expect(t.w.db.get('SELECT status FROM interactions WHERE interaction_id = ?', ix.id)!.status).toBe('running');
+    c!.walk();
+    finishTen(t, [a, b, c!]);
+    expect(needs(a).social).toBe(70);
+    expect(needs(b).social).toBe(70);
+    expect(needs(c!).social).toBe(60); // 走开的人没有收获
+    expect(lastDone(c!, cursor)).toHaveLength(0);
+    expect(lastDone(a)).toHaveLength(1);
+    // 投入不退
+    expect(a.qty('tea_leaves')).toBe(1);
+    checkInvariants(t);
+  });
+
+  it('还没开始时发起人迈步走开（没出茶馆）：活动取消并退回预留，等人的也被通知', () => {
+    const { t, a, b } = teaSetup();
+    const ix = a.act('start_interaction', { objectId: TABLE1, wait: true }).interaction;
+    b.act('join_interaction', { interactionId: ix.id });
+    const cursor = b.events().cursor;
+    a.act('navigate', { to: TABLE2 });
+    expect(a.view().location.space).toBe('tea_house');
+    expect(t.w.db.get('SELECT status FROM interactions WHERE interaction_id = ?', ix.id)).toMatchObject({ status: 'cancelled' });
+    expect(a.view().inventory.items.find((i) => i.type === 'tea_leaves')!.available).toBe(2);
+    expect(t.w.db.scalar('SELECT COUNT(*) FROM resource_reservations')).toBe(0);
+    expect(ixOf(b)).toBeNull();
+    expect(b.events(cursor).events.some((e) => e.type === 'interaction' && (e.data.interaction as { status: string }).status === 'cancelled')).toBe(true);
+    a.walk();
+    checkInvariants(t);
+  });
+
+  it('走开又走回桌边：已经退出，要重新加入', () => {
+    const { t, a, b } = teaSetup();
+    const ix = a.act('start_interaction', { objectId: TABLE1, wait: true }).interaction;
+    b.act('join_interaction', { interactionId: ix.id });
+    b.go(TABLE2);
+    b.go(TABLE1);
+    expect(ixOf(b)).toBeNull();
+    b.act('join_interaction', { interactionId: ix.id });
+    expect(ixOf(b)!.participants).toHaveLength(2);
+    checkInvariants(t);
+  });
+
+  it('被请出门（撤销邀请）时在别人家里的活动收尾：发起人取消并退回；人落在会馆门口', () => {
+    const t = town();
+    const a = t.join('阿灯');
+    const b = t.join('小岚', 'agent');
+    a.act('invite', { to: b.residentId });
+    b.go(`home:${a.residentId}`);
+    expect(b.row().location_id).toBe(`home:${a.residentId}`);
+    const table = b.view().here!.objects.find((o) => o.type === 'tea_table')!;
+    const ix = b.act('start_interaction', { objectId: table.id, wait: true }).interaction;
+    expect(ix.status).toBe('open');
+    const grantId = String(t.w.db.get('SELECT grant_id FROM home_access_grants WHERE owner_id = ?', a.residentId)!.grant_id);
+    a.act('revoke_invite', { grantId });
+    expect(b.row().location_id).toBe('residential');
+    expect(t.w.db.get('SELECT status FROM interactions WHERE interaction_id = ?', ix.id)).toMatchObject({ status: 'cancelled' });
+    expect(ixOf(b)).toBeNull();
+    expect(b.view().inventory.items.find((i) => i.type === 'tea_leaves')!.available).toBe(2);
+    checkInvariants(t);
+  });
+
+  it('走出茶馆（跨区域）时同样退出：到了广场，活动已经取消', () => {
+    const { t, a, b } = teaSetup();
+    const ix = a.act('start_interaction', { objectId: TABLE1, wait: true }).interaction;
+    b.act('join_interaction', { interactionId: ix.id });
+    a.go('plaza');
+    expect(a.view().location.space).toBe('plaza');
+    expect(t.w.db.get('SELECT status FROM interactions WHERE interaction_id = ?', ix.id)).toMatchObject({ status: 'cancelled' });
+    expect(ixOf(a)).toBeNull();
+    expect(ixOf(b)).toBeNull();
+    expect(a.view().inventory.items.find((i) => i.type === 'tea_leaves')!.available).toBe(2);
+    checkInvariants(t);
+  });
+
   it('参与者中途离线：已经开始的活动照常完成，离线的人也按参与结算（并且只结算一次）', () => {
     const { t, a, b } = teaSetup();
     setNeeds(t, a, { social: 20 });
@@ -545,7 +664,7 @@ describe('共同活动：读书、做汤、照料花箱、在家休息', () => {
   it('读借来的书：可以读（不消耗），读完书还在，还是借来的', () => {
     const t = town();
     const a = t.join('阿灯');
-    a.go('bookshop');
+    a.go('bookshop:shelf');
     const id = a.act('borrow_book', { bookId: 'slow_fire' }).itemId as string;
     a.act('start_interaction', { objectId: 'bookshop:shelf', itemId: id });
     finishTen(t, [a]);
@@ -579,7 +698,7 @@ describe('共同活动：读书、做汤、照料花箱、在家休息', () => {
     expect(ix.def).toBe('cook_soup');
     expect(a.qty('vegetables')).toBe(2);
     expect(a.view().inventory.items.find((i) => i.type === 'vegetables')!.available).toBe(0);
-    expect(a.fail('start_interaction', { objectId: 'kitchen:stove2' }).reason).toBe('already_busy');
+    expect(a.fail('start_interaction', { objectId: 'kitchen:stove2' }).reason).toBe('too_far'); // 灶台相隔几米，不在手边
     b.act('join_interaction', { interactionId: ix.id });
     const totals = t.w.db.scalar("SELECT COALESCE(SUM(quantity),0) FROM items WHERE type = 'vegetables'");
     a.act('begin_interaction', { interactionId: ix.id });
@@ -601,7 +720,7 @@ describe('共同活动：读书、做汤、照料花箱、在家休息', () => {
   it('做汤：一个人做，收获 2 碗，社交不生效；蔬菜不够 insufficient_items', () => {
     const t = town();
     const a = t.join('阿灯');
-    a.go('kitchen');
+    a.go('kitchen:stove1');
     setNeeds(t, a, { social: 0 });
     const out = a.act('start_interaction', { objectId: 'kitchen:stove1' });
     expect(out.interaction.status).toBe('running');
@@ -695,7 +814,7 @@ describe('共同活动：读书、做汤、照料花箱、在家休息', () => {
     expect(needs(a).social).toBe(10);
     // 第二天重新全额
     nextClearDay(t, [a, b]);
-    a.go('bookshop');
+    a.go('bookshop:shelf');
     const before = needs(a).interest;
     a.act('start_interaction', { objectId: 'bookshop:shelf' });
     finishTen(t, [a]);
@@ -744,6 +863,24 @@ describe('共同活动：读书、做汤、照料花箱、在家休息', () => {
     checkInvariants(t);
   });
 
+  it('家里的家具不按距离：在自己家里任何位置都能用；别人的家不能用 own_home 的', () => {
+    const t = town();
+    const a = t.join('阿灯');
+    const b = t.join('小岚', 'agent');
+    // 两人开局都在广场：当面邀请，再各自回去
+    a.act('invite', { to: b.residentId });
+    a.go('home');
+    const nook = a.view().here!.objects.find((o) => o.type === 'rest_nook')!;
+    a.go({ x: 1.5, z: 1.5 }); // 屋子的角落，离门最远
+    const out = a.act('start_interaction', { objectId: nook.id });
+    expect(out.interaction).toMatchObject({ def: 'rest', status: 'running' });
+    // 别人家：进得去（受邀），但在里面不能用 own_home 的家具
+    b.go(`home:${a.residentId}`);
+    expect(b.row().location_id).toBe(`home:${a.residentId}`);
+    expect(b.fail('start_interaction', { objectId: nook.id }).reason).toBe('not_home');
+    checkInvariants(t);
+  });
+
   it('在家的活动留下的事实是私密的，不进公开日报的来源', () => {
     const t = town();
     const a = t.join('阿灯');
@@ -758,7 +895,7 @@ describe('共同活动：读书、做汤、照料花箱、在家休息', () => {
   it('买来的花箱摆进家里后可以在家照料；公共花园整理不算在家里的', () => {
     const t = town();
     const a = t.join('阿灯');
-    a.go('garden');
+    a.go('garden:planter1');
     a.act('buy', { shop: 'shed', sku: 'planter_box' });
     a.go('home');
     a.act('place_furniture', { itemId: a.view().inventory.items.find((i) => i.type === 'planter_box')!.itemId });
@@ -849,7 +986,7 @@ describe('下雨的室内加成', () => {
     const run = (rain: boolean, interests: string[]) => {
       const t = atTime(findSlot(rain));
       const a = t.join('阿灯', 'human', { interests });
-      a.go('bookshop');
+      a.go('bookshop:shelf');
       setNeeds(t, a, { interest: 0 });
       a.act('start_interaction', { objectId: 'bookshop:shelf' });
       finishTen(t, [a]);
@@ -866,7 +1003,7 @@ describe('下雨的室内加成', () => {
     const rainy = (place: string, objectId: string, interests: string[]) => {
       const t = atTime(findSlot(true));
       const a = t.join('阿灯', 'human', { interests });
-      a.go(place);
+      a.go(place === 'home' ? 'home' : objectId);
       setNeeds(t, a, { interest: 0 });
       const obj = place === 'home' ? a.view().here!.objects.find((o) => o.type === 'bookshelf')!.id : objectId;
       a.act('start_interaction', { objectId: obj });
@@ -881,7 +1018,7 @@ describe('下雨的室内加成', () => {
   it('下雨加成也要遵守前 3 次全额之后减半', () => {
     const t = atTime(findSlot(true));
     const a = t.join('阿灯', 'human', { interests: ['books'] });
-    a.go('bookshop');
+    a.go('bookshop:shelf');
     setNeeds(t, a, { interest: 0 });
     const deltas: number[] = [];
     for (let i = 0; i < 4; i++) {
@@ -1012,6 +1149,8 @@ describe('公共事件', () => {
       const ix = a.act('start_interaction', { objectId: 'garden:planter1', wait: true }).interaction;
       b.act('join_interaction', { interactionId: ix.id });
       a.act('begin_interaction', { interactionId: ix.id });
+      c.go('garden:planter2');
+      d.go('garden:planter3');
       c.act('start_interaction', { objectId: 'garden:planter2' });
       d.act('start_interaction', { objectId: 'garden:planter3' });
       finishFive(t, people);
@@ -1058,6 +1197,7 @@ describe('公共事件', () => {
       toLocal(t, people, 12, 27);
       a.act('start_interaction', { objectId: 'garden:planter1' }); // 12:27 开始，12:32 完成
       toLocal(t, people, 12, 58);
+      b.go('garden:planter2');
       b.act('start_interaction', { objectId: 'garden:planter2' }); // 12:58 开始，13:03 完成
       toLocal(t, people, 13, 5);
       const inst = eventRow(t, 'garden_care')!;
@@ -1116,7 +1256,7 @@ describe('公共事件', () => {
       try {
         const t = town({ dbPath: db.path });
         const a = t.join('阿灯');
-        a.go('garden');
+        a.go('garden:planter1');
         const pubCursor = t.w.readPublicEvents(undefined).cursor;
         t.w.close();
         t.clock.t = jst('2023-11-15', 14, 0);
@@ -1172,7 +1312,7 @@ describe('公共事件', () => {
         restartFresh(t);
         expect(eventRow(t, 'garden_care')!.status).toBe('open');
         a.enter();
-        a.go('garden');
+        a.go('garden:planter1');
         a.act('start_interaction', { objectId: 'garden:planter1' });
         finishFive(t, [a]); // 12:50 完成 → 进度 +1（窗口内开始）
         expect(eventRow(t, 'garden_care')!.progress).toBe(1);
@@ -1188,7 +1328,7 @@ describe('公共事件', () => {
       try {
         const t = town({ dbPath: db.path });
         const a = t.join('阿灯');
-        a.go('garden');
+        a.go('garden:planter1');
         toLocal(t, [a], 12, 40);
         a.act('start_interaction', { objectId: 'garden:planter1' });
         t.w.close();

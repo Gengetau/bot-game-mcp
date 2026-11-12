@@ -5,6 +5,8 @@
  *
  * 引擎要开小镇（town.enabled）。运行器负责：长轮询等事件、去抖、预算（每小时 30 次、间隔 8 秒）、
  * 每步动作的 request_id、世界变了就作废、小游戏只在轮到我时决策、断线重连。你只写 decide。
+ * 想去哪儿就提交一条 navigate {to}：一条动作走到底，路上的导航续租由运行器的普通程序自动做（不经过模型），
+ * 走到了会收到 you_arrived 事件，被截住会收到 nav_stopped。
  *
  * 换成真实模型：把 decide 里的规则换成一次模型调用即可，其余不用动：
  *
@@ -52,6 +54,10 @@ function decide(ctx: DecisionContext): Decision | null {
   if (!greeted && others.length > 0) {
     greeted = true;
     return { actions: [{ type: 'speak', text: `大家好，我是${v.me.name}。` }] };
+  }
+  // 刚进镇、身边没人：去茶馆看看（navigate 一次，走到底；到了会有 you_arrived 事件再触发一次决策）
+  if (!greeted && ctx.triggers.includes('start') && others.length === 0 && !v.location.walking && v.here?.exits.some((e) => e.to === 'tea_house') && v.location.space !== 'tea_house') {
+    return { actions: [{ type: 'navigate', to: 'tea_house' }] };
   }
   return null; // 没什么要做的：安静待着
 }

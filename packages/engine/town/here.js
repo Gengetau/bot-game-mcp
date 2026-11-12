@@ -2,7 +2,7 @@
 import { avatar, clockOf, confirmDialog, fill, h, icon, toast } from './dom.js';
 import { openSpectate } from './game.js';
 import { acceptOffer, moveTo, openPerson } from './sheets.js';
-import { act, loadOlderChat, state } from './store.js';
+import { act, loadOlderChat, serverNow, state } from './store.js';
 import { btn, chip, countdown, empty, row, section, segmented } from './ui.js';
 
 /** @typedef {import('./types.js').Offer} Offer */
@@ -12,6 +12,9 @@ import { btn, chip, countdown, empty, row, section, segmented } from './ui.js';
 /** @typedef {import('./types.js').Here} Here */
 
 const tz = () => state.config?.world.timezone ?? 'Asia/Tokyo';
+
+/** 这一趟导航最初被看到的时间（进度条的起点） */
+const navSeen = { id: '', t0: 0 };
 
 /** 当前子页：聊天 / 此处 */
 let sub = 'chat';
@@ -58,7 +61,10 @@ function objectCard(o, me) {
   const btns = [];
   /** @type {HTMLSelectElement | null} */
   let bookSel = null;
-  if (a && !active) {
+  if (!o.near && (a || active)) {
+    // 公共物件按距离算：要先走到旁边
+    btns.push(btn('先走过去', () => moveTo(o.id, o.label), { variant: 'primary', small: true, icon: 'walk', disabled: Boolean(me.game) }));
+  } else if (a && !active) {
     if (a.def === 'read' && ownBooks(me).length) {
       bookSel = h('select', { class: 'text-input sm', 'aria-label': '读哪本书' }, h('option', { value: '' }, '读书架上的书'), ownBooks(me).map((b) => h('option', { value: b.itemId }, b.name)));
       btns.push(bookSel);
@@ -92,7 +98,7 @@ function objectCard(o, me) {
     'div',
     { class: `obj${active ? ' live' : ''}` },
     h('div', { class: 'obj-head' }, h('b', null, o.label), a ? chip(a.name, 'amber') : chip('摆设')),
-    a ? h('p', { class: 'hint' }, a.cost) : null,
+    a ? h('p', { class: 'hint' }, o.near ? a.cost : `${a.cost} · 离得有点远，先走到旁边`) : null,
     active
       ? h(
           'p',
@@ -259,7 +265,7 @@ export function createHere() {
     const here = me?.here;
     aroundPane.replaceChildren();
     if (!me || !here) {
-      aroundPane.appendChild(empty(me?.location.moving ? '在路上' : '这里没有现场', me?.location.moving ? '到了地方再看看周围。' : ''));
+      aroundPane.appendChild(empty('这里没有现场', ''));
       return;
     }
     /** @type {import('./dom.js').Child[]} */
@@ -333,7 +339,7 @@ export function createHere() {
               row({
                 lead: h('span', { class: 'door-no' }, String(d.no)),
                 title: d.owner.id === me.me.id ? `${d.owner.name}（我家）` : `${d.owner.name} 家`,
-                sub: d.owner.id === me.me.id ? '自己的家' : d.canEnter ? '有邀请，可以进' : '没有邀请，不能进',
+                sub: `${d.lane}${d.owner.id === me.me.id ? ' · 自己的家' : d.canEnter ? ' · 有邀请，可以进' : ' · 没有邀请，不能进'}`,
                 aside: btn('进去', () => moveTo(d.home, `${d.owner.name}家`), { small: true, variant: 'soft', disabled: !d.canEnter, why: '需要主人的邀请才能进别人家。' }),
               }),
             ),
@@ -351,10 +357,10 @@ export function createHere() {
         h(
           'div',
           { class: 'action-grid' },
-          here.exits.map((x) => btn(`${x.name} · ${x.seconds} 秒`, () => moveTo(x.id, x.name), { icon: 'walk', variant: 'soft', disabled: Boolean(me.game) })),
+          here.exits.map((x) => btn(x.seconds ? `${x.name} · 约 ${x.seconds} 秒` : x.name, () => moveTo(x.id, x.name), { icon: 'walk', variant: 'soft', disabled: Boolean(me.game) })),
           here.kind !== 'home' || !here.home?.mine ? btn('回家', () => moveTo('home', '家'), { icon: 'home', variant: 'ghost' }) : null,
         ),
-        { hint: '相邻一段 10 秒，进出门 3 秒，路上不能做现场的事。' },
+        { hint: '走在路上也可以说话、做事；用桌子、书架这类公共物件要先走到它旁边。' },
       ),
     );
     aroundPane.append(...blocks.map((b) => b));
@@ -364,23 +370,37 @@ export function createHere() {
     const me = state.me;
     if (!me) return;
     const here = me.here;
-    const moving = me.location.moving;
+    const nav = me.location.navigation;
     const ro = state.readOnly ? 'ro' : '';
     // 头部
-    const hk = JSON.stringify([me.location.name, here?.blurb, here?.residents.length, moving, ro]);
+    const hk = JSON.stringify([me.location.name, here?.blurb, here?.residents.length, ro]);
     if (head.dataset.memo !== hk) {
       head.dataset.memo = hk;
       fill(head,
-        h('div', null, h('p', { class: 'eyebrow' }, moving ? '在路上' : here?.kind === 'home' ? (here.home?.mine ? '我的家' : '做客') : here?.kind === 'street' ? '住宅街' : '公共场所'), h('h2', null, moving ? `去往${moving.toName}` : (here?.name ?? me.location.name)), h('p', { class: 'hint' }, moving ? '路上不能做现场的事，到了就能继续。' : (here?.blurb ?? ''))),
+        h('div', null, h('p', { class: 'eyebrow' }, here?.kind === 'home' ? (here.home?.mine ? '我的家' : '做客') : here?.kind === 'residential' ? '住宅区' : '公共场所'), h('h2', null, here?.name ?? me.location.name), h('p', { class: 'hint' }, here?.blurb ?? '')),
         here ? h('div', { class: 'head-count' }, icon('people', 16), `${here.residents.length + 1} 人`) : null,
       );
     }
     // 在途
-    const sk = JSON.stringify([moving, me.interaction?.id]);
+    const sk = JSON.stringify([nav, me.interaction?.id]);
     if (status.dataset.memo !== sk) {
       status.dataset.memo = sk;
       status.replaceChildren();
-      if (moving) status.appendChild(h('div', { class: 'moving-card' }, h('div', { class: 'moving-top' }, icon('walk', 20), h('b', null, `正在去${moving.toName}`)), travel(moving.startedAt, moving.arriveAt), h('p', { class: 'hint' }, '服务器确认的行程：到达时间由程序决定，画面只是跟着走。')));
+      if (nav) {
+        if (navSeen.id !== nav.navigationId) {
+          navSeen.id = nav.navigationId;
+          navSeen.t0 = serverNow();
+        }
+        status.appendChild(
+          h(
+            'div',
+            { class: 'moving-card' },
+            h('div', { class: 'moving-top' }, icon('walk', 20), h('b', null, `正在走向${nav.to.name}`), btn('停下', () => act({ type: 'stop_navigation' }), { small: true, variant: 'ghost', always: true })),
+            travel(navSeen.t0, nav.arriveAt),
+            h('p', { class: 'hint' }, '走路时可以照常说话、做事；到达时间由程序决定。'),
+          ),
+        );
+      }
     }
     // 报价
     const ok = JSON.stringify([me.offers, ro]);
@@ -444,7 +464,7 @@ export function createHere() {
     const canSpeak = Boolean(here) && !state.readOnly;
     input.disabled = !canSpeak;
     sendBtn.disabled = !canSpeak;
-    input.placeholder = !me.me.present ? '正在重新进入小镇……' : moving ? '在路上，到了再说' : state.readOnly ? '只读：另一个页面握着控制权' : here && !here.residents.length ? '这里没有别人，说的话没人听到……' : '说点什么……';
+    input.placeholder = !me.me.present ? '正在重新进入小镇……' : state.readOnly ? '只读：另一个页面握着控制权' : here && !here.residents.length ? '这里没有别人，说的话没人听到……' : '说点什么……';
     input.maxLength = state.config?.limits.chatMaxChars ?? 120;
   }
 

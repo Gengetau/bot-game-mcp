@@ -60,11 +60,14 @@ export async function moveTo(to, name) {
     const ok = await confirmDialog({ title: '现在走开？', text: '这件事还没做完，走开等于中途退出：这一次不会有收获，投入的东西也不退。', ok: '走开', danger: true });
     if (!ok) return { ok: false };
   }
-  const r = await act({ type: 'move', to });
+  const r = await act({ type: 'navigate', to });
   if (r.ok) {
-    const mv = /** @type {{ toName?: string, arriveAt?: number } | undefined} */ (r.move);
-    const sec = mv?.arriveAt ? Math.max(1, Math.round((mv.arriveAt - serverNow()) / 1000)) : null;
-    toast(`出发去${mv?.toName ?? name ?? '目的地'}${sec ? `，大约 ${sec} 秒` : ''}。`, 'ok', 2800);
+    const nav = /** @type {import('./types.js').Navigation | undefined} */ (r.navigation);
+    if (r.status === 'completed') toast(`已经在${name ?? '那里'}旁边了。`, 'info', 2200);
+    else {
+      const sec = nav?.arriveAt ? Math.max(1, Math.round((nav.arriveAt - serverNow()) / 1000)) : null;
+      toast(`出发去${nav?.to.name ?? name ?? '目的地'}${sec ? `，大约 ${sec} 秒` : ''}。`, 'ok', 2800);
+    }
   }
   return r;
 }
@@ -264,7 +267,7 @@ export function openPlace(id) {
   const isRes = id === 'residential';
   const name = isRes ? '住宅区' : (place?.name ?? spaceLabel(id));
   const residents = isRes ? (pub?.residential.residents ?? []) : (place?.residents ?? []);
-  const here = me ? (isRes ? Boolean(me.location.space && (me.location.space.startsWith('home:') || me.location.space.startsWith('street_'))) : me.location.space === id) : false;
+  const here = me ? (isRes ? Boolean(me.location.space === 'residential' || me.location.space.startsWith('home:')) : me.location.space === id) : false;
   const events = (pub?.events ?? []).filter((e) => e.place === id);
   const acts = place?.activities ?? [];
   const body = h(
@@ -289,11 +292,9 @@ export function openPlace(id) {
   if (me && !me.game) {
     if (isRes) {
       actions.push(btn('回家', async () => (sh.close(), moveTo('home', '家')), { variant: 'primary', icon: 'home' }));
-      actions.push(btn('去东灯巷', async () => (sh.close(), moveTo('street_east', '东灯巷')), { variant: 'ghost' }));
-      actions.push(btn('去西灯巷', async () => (sh.close(), moveTo('street_west', '西灯巷')), { variant: 'ghost' }));
+      if (me.location.space !== 'residential') actions.push(btn('去灯巷会馆', async () => (sh.close(), moveTo('residential', '灯巷会馆')), { variant: 'ghost' }));
       for (const inv of me.invites.received) actions.push(btn(`去${inv.host.name}家`, async () => (sh.close(), moveTo(inv.home, `${inv.host.name}家`)), { variant: 'soft', icon: 'home' }));
     } else if (here) actions.push(h('p', { class: 'hint' }, '你就在这里。'));
-    else if (me.location.moving) actions.push(h('p', { class: 'hint' }, '你正在路上，到了再决定下一步。'));
     else actions.push(btn(`前往${name}`, async () => (sh.close(), moveTo(id, name)), { variant: 'primary', icon: 'walk' }));
   } else if (me?.game) actions.push(h('p', { class: 'hint' }, '你正在一局游戏里，先打完或退出这局才能走动。'));
   else actions.push(h('p', { class: 'hint' }, '进入小镇之后，点这里可以前往。'));

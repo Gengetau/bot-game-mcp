@@ -174,7 +174,7 @@ function renderTown() {
   wasGame = inGame;
   root.dataset.game = inGame ? '1' : '0';
   root.dataset.tab = tab;
-  root.dataset.moving = me.location.moving ? '1' : '0';
+  root.dataset.moving = me.location.navigation ? '1' : '0';
 
   const hm = hourMinute(serverNow(), tz());
   const pub = state.pub;
@@ -191,7 +191,7 @@ function renderTown() {
   sh.connDot.title = state.conn === 'ok' ? '已连接' : state.conn === 'connecting' ? '正在重新连接' : '连接断开';
   sh.connDot.setAttribute('role', 'img');
   sh.connDot.setAttribute('aria-label', sh.connDot.title);
-  sh.stateChip.hidden = !(me.location.moving || inGame);
+  sh.stateChip.hidden = !(me.location.navigation || inGame);
   sh.stateChip.textContent = inGame ? '对局中' : '在路上';
   sh.stateChip.className = `state-chip ${inGame ? 'game' : 'walk'}`;
 
@@ -250,14 +250,14 @@ function renderTown() {
   if (inGame) sh.game.update();
 
   // 地图栏下方：此刻
-  const hk = JSON.stringify([pub?.events, pub?.places.map((p) => [p.id, p.residents.length, p.activities.length]), me.suggestions, me.location.space, tab]);
+  const hk = JSON.stringify([pub?.events, pub?.places.map((p) => [p.id, p.residents.length, p.activities.length]), me.suggestions, me.location.space, me.location.navigation?.to.name, tab]);
   if (sh.brief.dataset.memo !== hk && pub) {
     sh.brief.dataset.memo = hk;
     fill(sh.brief,
-      me.location.moving ? h('div', { class: 'hint' }, `正在去${me.location.moving.toName}……`) : h('div', { class: 'where' }, icon('walk', 16), h('b', null, me.location.name), h('span', { class: 'hint' }, '点地图上的地点可以前往')),
+      me.location.navigation ? h('div', { class: 'where' }, icon('walk', 16), h('b', null, `正在走向${me.location.navigation.to.name}`), h('span', { class: 'hint' }, `现在在${me.location.name}`)) : h('div', { class: 'where' }, icon('walk', 16), h('b', null, me.location.name), h('span', { class: 'hint' }, '点地图上的地点可以前往')),
       pub.events.length ? section('今天的公共事件', h('div', { class: 'stack' }, pub.events.map((e) => h('div', { class: `ev ${e.status}` }, h('div', { class: 'ev-top' }, h('b', null, e.title), chip(e.status === 'open' ? '进行中' : e.status === 'scheduled' ? '待开始' : e.status === 'missed' ? '错过了' : '已结束', e.status === 'open' ? 'moss' : 'dim')), h('p', { class: 'hint' }, `${pub.places.find((p) => p.id === e.place)?.name ?? ''} · ${clockOf(e.opensAt, tz())}~${clockOf(e.closesAt, tz())}${e.target ? ` · 共同进度 ${e.progress ?? 0}/${e.target}` : ''}`))))) : null,
       me.suggestions.length ? section('小建议', h('ul', { class: 'bullets' }, me.suggestions.map((t) => h('li', null, t)))) : null,
-      h('details', { class: 'place-list' }, h('summary', null, '地点一览（也可以用键盘 Tab 在地图上选）'), h('div', { class: 'stack' }, pub.places.map((p) => h('button', { type: 'button', class: 'row clickable', onclick: () => openPlace(p.id) }, h('div', { class: 'row-main' }, h('div', { class: 'row-title' }, p.name), h('div', { class: 'row-sub' }, `${p.residents.length} 人在场${p.activities.length ? ` · ${p.activities.length} 桌游` : ''}`)), h('div', { class: 'row-aside' }, icon('chevron', 16)))), h('button', { type: 'button', class: 'row clickable', onclick: () => openPlace('residential') }, h('div', { class: 'row-main' }, h('div', { class: 'row-title' }, '住宅区'), h('div', { class: 'row-sub' }, `${pub.residential.residents.length} 人在住宅区`)), h('div', { class: 'row-aside' }, icon('chevron', 16))))),
+      h('details', { class: 'place-list' }, h('summary', null, '地点一览（也可以用键盘 Tab 在地图上选）'), h('div', { class: 'stack' }, pub.places.filter((p) => !p.through).map((p) => h('button', { type: 'button', class: 'row clickable', onclick: () => openPlace(p.id) }, h('div', { class: 'row-main' }, h('div', { class: 'row-title' }, p.name), h('div', { class: 'row-sub' }, `${p.residents.length} 人在场${p.activities.length ? ` · ${p.activities.length} 桌游` : ''}`)), h('div', { class: 'row-aside' }, icon('chevron', 16)))), h('button', { type: 'button', class: 'row clickable', onclick: () => openPlace('residential') }, h('div', { class: 'row-main' }, h('div', { class: 'row-title' }, '住宅区'), h('div', { class: 'row-sub' }, `${pub.residential.residents.length} 人在住宅区`)), h('div', { class: 'row-aside' }, icon('chevron', 16))))),
     );
   }
 

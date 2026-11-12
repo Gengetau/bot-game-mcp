@@ -31,11 +31,16 @@ npm run world:recovery                                         # 栖灯镇：故
 
 小镇在 `packages/engine/src/world/`，说明和接口契约见 `docs/TOWN.md`。改它之前先读那份文档。
 
-- 所有写入只走 `WorldService.command()`（居民动作）或定时任务处理器，并且都在 `w.commit()` 的同一个 SQLite 事务里：状态、账本、事件、回执、定时任务一起提交或一起回滚。处理过程必须同步，不等模型、不等网络。
-- 订阅者（SSE、长轮询）只在提交之后被唤醒。不要在事务里直接往外发东西。
+- 所有写入只走 `WorldService.command()`（居民动作）或定时任务处理器，并且都在 `w.commit()` 的同一个 SQLite 事务里：状态、账本、事件、回执、定时任务一起提交或一起回滚。处理过程必须同步，不等模型、不等网络。例外只有两类不是「动作」的写入：在场心跳和导航控制租约的续期（`renewNavigation`），它们同样在 `w.commit()` 里，但没有回执。
+- 订阅者（SSE、长轮询、WebSocket）只在提交之后被唤醒。不要在事务里直接往外发东西。
 - 硬币只通过 `property.ts` 的 `ledger()` 变动，每笔分录平衡、原因键唯一；物品只通过 `addStack` / `takeStack` / `reserve` / `release` 变动。不要直接改余额或数量。
 - 关系、愿望、日报只读 `w.fact()` 记录的结构化事实，不读聊天文字。
-- 投影只有一套（`views.ts` / `project.ts`）：网页、MCP、观战、日报、回顾都用它。公开层面位置只到「住宅区」；别人的信件、背包、需要、愿望、关系、屋内情况不出现在任何别人能拿到的投影和事件里。新增字段先想清楚谁能看。
+- 投影只有一套（`views.ts` / `project.ts`，空间快照是 `space.ts` 的 `sceneView`）：网页、MCP、观战、日报、回顾都用它。公开层面位置只到区域（公共地点、路上、「住宅区」）；别人的信件、背包、需要、愿望、关系、屋内情况不出现在任何别人能拿到的投影和事件里。新增字段先想清楚谁能看。
+- 位置只由空间模块（`space.ts`）写：`world_actors`（场景、实例、x、z、导航）和 `residents.location_id`（区域标签）都不能被别的模块直接改。要挪人就发起导航或用 `sendToDoor`；别的模块按区域标签判断「在不在一起」，按 `requireReach` 判断够不够得着公共物件。
+- 读位置用 `posOf` / `positionOfResident`：位置按折线和时间现算，永远截断在导航控制租约的截止时刻。不要自己插值，不要存每帧坐标。
+- 导航的每次变化（开始、改道、停止、穿过门口、结束）都递增 `nav_revision`；`nav_step` 任务必须对上导航编号和版本才生效。
+- 坐标只出现在两处：本人视图里自己的位置、`sceneView` 里同一场景实例中在场的人。事件（`w.emitTo` / `w.emitPublic`）、公开投影、日报里不能有坐标、折线、到达时间。私宅实例的快照只给屋里的人。
+- 地图（`spatial/town-map.ts`）发布后不原地改：动了可走范围、落脚点或物件位置就换 `mapVersion`。`spatial/` 下的模块是纯函数：不读数据库、不取时间、不用随机数。
 - 给居民的私有事件用 `w.emitTo()`，公开事件用 `w.emitPublic()`；固定模板的通知不要拼进别人的私密信息。
 - 小游戏是原来的游戏定义，由 `GameRunner`（`src/core/runner.ts`）推进；嵌入的记录在世界数据库的 `game_records` 里，公共 `GameManager` 不持有。只有 `embeddable: true` 且通过接入检查的游戏能在镇上开。
 - 时间用 `w.now()`，随机用 `w.rng` / `w.gameRng`，不要用 `Date.now()` 和 `Math.random()`。
@@ -51,7 +56,7 @@ npm run world:recovery                                         # 栖灯镇：故
   - `src/core/game.ts`：BaseGame 基类。参考实现是 `src/games/number-bomb/index.ts`。
   - `src/mcp/server.ts`：工具、资源、提示词。`src/mcp/guides.ts` 是给 agent 的指南文本。`src/mcp/town.ts` 是小镇的工具和世界上下文路由。
   - `src/core/runner.ts`：GameRunner，从 GameManager 抽出来的「推进一局」，公共对局和小镇的嵌入小游戏共用。
-  - `src/world/`：持续世界「栖灯镇」（`service.ts` 命令管线与调度，`db.ts` SQLite，其余按模块：identity、life、property、mail、interact、social、games、reports、views、http）。页面在 `town/`（静态文件，无构建）。
+  - `src/world/`：持续世界「栖灯镇」（`service.ts` 命令管线与调度，`db.ts` SQLite，`space.ts` 空间权威，`spatial/` 地图、寻路、运动的纯函数，其余按模块：identity、life、property、mail、interact、social、games、reports、views、http、ws）。旧页面在 `town/`（静态文件，无构建；会被 Godot 网页客户端取代）。
   - `src/server/`：HTTP、SSE、stdio、bridge 传输。
   - 测试：`test/helpers.ts` 提供 FakeClock、`startGame`、`playToEnd`。
 - `packages/referee-onebot`（`bot-game-mcp-referee-onebot`，命令 `bot-game-referee`）：代码裁判，OneBot v11 正向 WebSocket。只能通过 MCP 协议和引擎说话。

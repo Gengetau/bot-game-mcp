@@ -29,6 +29,10 @@ describe('栖灯镇：主流程冒烟', () => {
     expect(b.qty('tea_leaves')).toBe(3);
 
     const table = a.view().here!.objects.find((o) => o.type === 'tea_table')!;
+    expect(table.near).toBe(false);
+    a.go(table.id);
+    b.go(table.id);
+    expect(a.view().here!.objects.find((o) => o.id === table.id)!.near).toBe(true);
     const ix = a.act('start_interaction', { objectId: table.id });
     expect(ix.interaction.status).toBe('open');
     b.act('join_interaction', { interactionId: ix.interaction.id });

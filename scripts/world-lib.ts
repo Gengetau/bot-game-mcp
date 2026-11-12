@@ -8,6 +8,7 @@
  * 随机一律走注入的 SeededRng；这里不用 Math.random，也不读系统时间做决策。
  */
 import { createHash } from 'node:crypto';
+import type { Row } from '../packages/engine/src/world/db.js';
 import {
   SeededRng,
   WorldError,
@@ -29,8 +30,13 @@ import {
   type WorldService,
 } from '../packages/engine/src/index.js';
 import { BOOKS, PLACES } from '../packages/engine/src/world/content.js';
+import { renewNavigation, sceneView, whereabouts } from '../packages/engine/src/world/index.js';
+import { actorOf, posOf, positionOfResident } from '../packages/engine/src/world/space.js';
+import { distance, isWalkable, zoneAt } from '../packages/engine/src/world/spatial/grid.js';
+import { arrivalAt, positionAt } from '../packages/engine/src/world/spatial/motion.js';
+import type { NavState } from '../packages/engine/src/world/types.js';
 
-export { WorldError, townMeView, townAgentView, townPublicView };
+export { WorldError, townMeView, townAgentView, townPublicView, renewNavigation, sceneView, whereabouts, actorOf, posOf, positionOfResident, positionAt, arrivalAt, distance, isWalkable, zoneAt };
 export type { WorldService };
 
 // ───────────────────────── 时钟与随机 ─────────────────────────
@@ -326,6 +332,61 @@ export class Conn {
   }
 }
 
+// ───────────────────────── 导航客户端（续租） ─────────────────────────
+
+/** 客户端手里的一条导航：和真实页面 / 运行器一样，只记回执里给的那几个字段，每 renewEveryMs 续一次租约。 */
+export interface NavTrack {
+  conn: Conn;
+  navigationId: string;
+  revision: number;
+  arriveAt: number;
+  continues: boolean;
+  leaseUntil: number;
+  renewEveryMs: number;
+  /** 下一次该续的时刻（逻辑时间） */
+  renewAt: number;
+}
+
+interface NavBriefLike {
+  navigationId: string;
+  revision: number;
+  arriveAt: number;
+  continues: boolean;
+  leaseUntil: number;
+  renewEveryMs: number;
+}
+
+export function trackNav(conn: Conn, b: NavBriefLike, now: number, jitterMs = 0): NavTrack {
+  return { conn, navigationId: b.navigationId, revision: b.revision, arriveAt: b.arriveAt, continues: b.continues, leaseUntil: b.leaseUntil, renewEveryMs: b.renewEveryMs, renewAt: now + Math.max(500, b.renewEveryMs - jitterMs) };
+}
+
+/**
+ * 续一次租约。返回：ok 续上了；done 这一趟已经结束；lost 没有控制权 / 世界在恢复（导航已作废）。
+ * 过了一段（穿过门口接着走）版本号会变：按返回的新版本再续一次，和真实客户端一样。
+ */
+export function renewTrack(w: WorldService, t: NavTrack, now: number, jitterMs = 0): { result: 'ok' | 'done' | 'lost'; ms: number; adopted: boolean } {
+  const t0 = performance.now();
+  let adopted = false;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    let out: ReturnType<typeof renewNavigation>;
+    try {
+      out = renewNavigation(w, t.conn.auth, { navigationId: t.navigationId, revision: t.revision });
+    } catch (e) {
+      if (e instanceof WorldError) return { result: 'lost', ms: performance.now() - t0, adopted };
+      throw e;
+    }
+    if (out.ok && out.navigation) {
+      Object.assign(t, { revision: out.navigation.revision, arriveAt: out.navigation.arriveAt, continues: out.navigation.continues, leaseUntil: out.navigation.leaseUntil, renewAt: now + Math.max(500, t.renewEveryMs - jitterMs) });
+      return { result: 'ok', ms: performance.now() - t0, adopted };
+    }
+    if (!out.navigation) return { result: 'done', ms: performance.now() - t0, adopted };
+    // 版本换了（过了一段）或换成了别的路线：采用现在这条再续一次
+    adopted = true;
+    Object.assign(t, { navigationId: out.navigation.navigationId, revision: out.navigation.revision, arriveAt: out.navigation.arriveAt, continues: out.navigation.continues, leaseUntil: out.navigation.leaseUntil });
+  }
+  return { result: 'ok', ms: performance.now() - t0, adopted };
+}
+
 // ───────────────────────── 不变量检查 ─────────────────────────
 
 export interface Violation {
@@ -356,6 +417,8 @@ export class Invariants {
   private readonly prevLoaned = new Map<string, string>();
   private readonly reportHash = new Map<string, string>();
   private prevBooks = 0;
+  /** 各轮检查里「正在走路」的居民人次（覆盖度） */
+  navSamples = 0;
   readonly agentViewBytes: number[] = [];
   readonly meViewBytes: number[] = [];
   readonly publicViewBytes: number[] = [];
@@ -410,18 +473,13 @@ export class Invariants {
     this.pass('presence_limit');
     if (present > w.params.activeResidentLimit) this.fail('presence_limit', `在场人数 ${present} 超过上限 ${w.params.activeResidentLimit}`, null, now);
 
-    const residents = db.all('SELECT resident_id, location_id, move_json, activity_id, present_since FROM residents');
+    const residents = db.all('SELECT resident_id, location_id, activity_id, present_since FROM residents');
     const homeOk = (spaceId: string) => spaceId.startsWith('home:') && Boolean(db.get('SELECT 1 AS x FROM residents WHERE resident_id = ?', spaceId.slice(5)));
     const spaceOk = (spaceId: string) => placeIds.has(spaceId) || homeOk(spaceId);
     const badLoc: unknown[] = [];
     const badHome: unknown[] = [];
     for (const r of residents) {
       if (!spaceOk(r.location_id)) badLoc.push({ r: r.resident_id, loc: r.location_id });
-      if (r.move_json) {
-        const mv = JSON.parse(r.move_json) as { from: string; to: string; path: string[]; arriveAt: number };
-        if (!spaceOk(mv.to) || mv.from !== r.location_id || mv.path.some((p) => !spaceOk(p))) badLoc.push({ r: r.resident_id, move: mv, loc: r.location_id });
-        continue;
-      }
       if (r.location_id.startsWith('home:') && r.location_id !== `home:${r.resident_id}`) {
         const g = db.get(
           `SELECT grant_id FROM home_access_grants WHERE home_id = ? AND guest_id = ? AND revoked_at IS NULL AND learned_at IS NOT NULL
@@ -434,7 +492,7 @@ export class Invariants {
         if (!g) badHome.push({ r: r.resident_id, home: r.location_id, present: r.present_since !== null });
       }
     }
-    bad('location_valid', badLoc, '居民位置不合法（空间不存在 / 路径非法 / 在途时出发地不符）');
+    bad('location_valid', badLoc, '居民区域标签不合法（空间不存在）');
     bad('home_access', badHome, '居民待在别人家里，却没有当时有效的邀请');
 
     // 活动 / 小游戏占座一致性
@@ -446,9 +504,9 @@ export class Invariants {
         if (!a || a.status !== 'running' || !p || p.active !== 1 || p.game_seat === null) actBad.push({ r: r.resident_id, activity: r.activity_id, status: a?.status, part: p });
       }
     }
-    for (const p of db.all("SELECT p.activity_id, p.resident_id, a.status, a.venue_id, r.activity_id AS ract, r.location_id, r.present_since, r.move_json FROM activity_participants p JOIN activities a ON a.activity_id = p.activity_id JOIN residents r ON r.resident_id = p.resident_id WHERE p.active = 1")) {
+    for (const p of db.all("SELECT p.activity_id, p.resident_id, a.status, a.venue_id, r.activity_id AS ract, r.location_id, r.present_since FROM activity_participants p JOIN activities a ON a.activity_id = p.activity_id JOIN residents r ON r.resident_id = p.resident_id WHERE p.active = 1")) {
       if (p.status === 'running' && p.ract !== p.activity_id) actBad.push({ part: p.resident_id, activity: p.activity_id, residentActivity: p.ract });
-      if (p.status === 'forming' && (p.present_since === null || p.move_json !== null || p.location_id !== p.venue_id || p.ract !== null)) actBad.push({ lobby: p.activity_id, r: p.resident_id, loc: p.location_id, present: p.present_since !== null });
+      if (p.status === 'forming' && (p.present_since === null || p.location_id !== p.venue_id || p.ract !== null)) actBad.push({ lobby: p.activity_id, r: p.resident_id, loc: p.location_id, present: p.present_since !== null });
       if (p.status !== 'running' && p.status !== 'forming') actBad.push({ part: p.resident_id, activity: p.activity_id, status: p.status, why: '终态的局里还有活跃座位' });
     }
     const running = db.scalar("SELECT COUNT(*) FROM activities WHERE status = 'running'");
@@ -585,7 +643,6 @@ export class Invariants {
     }
     bad('stuck_games', stuckGames, '小游戏阶段超过截止时间仍未结算');
     bad('stuck_letters', db.all('SELECT letter_id, deliver_at FROM letters WHERE delivered_at IS NULL AND deliver_at <= ? LIMIT 5', now), '到点没送到的信');
-    bad('stuck_moves', residents.filter((r) => r.move_json && (JSON.parse(r.move_json) as { arriveAt: number }).arriveAt <= now).map((r) => ({ r: r.resident_id })), '到点还没到达的移动');
     bad('stuck_events', db.all("SELECT instance_id, status, opens_at, closes_at FROM public_event_instances WHERE (status = 'scheduled' AND opens_at <= ?) OR (status = 'open' AND closes_at <= ?)", now, now), '公共事件没有按时开始 / 结束');
 
     // ── 结算只发生一次 ──
@@ -666,9 +723,110 @@ export class Invariants {
     bad('mailbox_cap', db.all('SELECT recipient_id, COUNT(*) n FROM letters WHERE recipient_deleted_at IS NULL GROUP BY recipient_id HAVING n > ?', w.params.mailboxCapacity), '信箱超过容量');
     bad('stock_nonneg', db.all('SELECT shop_id, sku, stock FROM shop_stock WHERE stock < 0'), '库存为负');
 
+    // ── 空间（连续位置、区域标签、导航任务） ──
+    this.space(w, now);
+
     // ── 隐私抽查 + 视图大小 ──
     if (ctx.rnd && (ctx.privacySamples ?? 0) > 0) this.privacy(w, ctx.rnd, ctx.privacySamples!, now);
     return this.totalViolations - before;
+  }
+
+  /** 空间这一层：位置、区域标签、导航任务、租约截止。只读。 */
+  private space(w: WorldService, now: number): void {
+    const db = w.db;
+    const fail = (name: string, message: string, detail: unknown) => this.fail(name, message, detail, now);
+    const actors = db.all('SELECT * FROM world_actors WHERE world_id = ?', w.worldId);
+    const byResident = new Map<string, Row[]>();
+    for (const a of actors) {
+      const k = String(a.resident_id ?? a.actor_id);
+      byResident.set(k, [...(byResident.get(k) ?? []), a]);
+    }
+    const pendingNav = new Map<string, number>();
+    for (const j of db.all("SELECT dedupe_key FROM scheduled_jobs WHERE kind = 'nav_step' AND status = 'pending'")) pendingNav.set(String(j.dedupe_key), (pendingNav.get(String(j.dedupe_key)) ?? 0) + 1);
+    let navigating = 0;
+    // 每位居民恰好一条角色行
+    for (const r of db.all('SELECT resident_id, location_id, present_since FROM residents')) {
+      const rid = String(r.resident_id);
+      this.pass('actor_one_row');
+      const rows = byResident.get(rid) ?? [];
+      if (rows.length !== 1) fail('actor_one_row', `居民 ${rid} 有 ${rows.length} 条 world_actors`, { rid, rows: rows.length });
+      const row = rows[0];
+      if (!row) continue;
+      const scene = w.map.scenes.get(String(row.scene_id));
+      this.pass('actor_walkable');
+      if (!scene) {
+        fail('actor_walkable', `居民 ${rid} 所在场景 ${row.scene_id} 不存在`, { rid });
+        continue;
+      }
+      if (!isWalkable(scene, Number(row.x), Number(row.z))) fail('actor_walkable', `居民 ${rid} 的锚点 (${row.x}, ${row.z}) 不在 ${row.scene_id} 的可走格子上`, { rid, x: row.x, z: row.z, scene: row.scene_id });
+      const a = actorOf(w, rid)!;
+      const p = posOf(a, now);
+      this.pass('actor_walkable');
+      if (!isWalkable(scene, p.x, p.z)) fail('actor_walkable', `居民 ${rid} 此刻的位置 (${p.x.toFixed(2)}, ${p.z.toFixed(2)}) 不在 ${row.scene_id} 的可走格子上`, { rid, x: p.x, z: p.z, scene: row.scene_id, moving: p.moving });
+      // 区域标签与脚下的区域一致
+      const label = String(r.location_id);
+      if (scene.instanced) {
+        this.pass('zone_label_home');
+        if (label !== `home:${row.instance_id}` || !db.get('SELECT 1 AS x FROM residents WHERE resident_id = ?', row.instance_id)) {
+          fail('zone_label_home', `居民 ${rid} 在私宅实例 ${row.instance_id} 里，标签却是 ${label}（或房主不存在）`, { rid, label, instance: row.instance_id });
+        }
+      } else {
+        this.pass('zone_label_public');
+        const zone = zoneAt(scene, p.x, p.z).id;
+        // 毫秒取整：正好踩在分界线上的前后 1 毫秒内，标签算对
+        const near = new Set([zone, zoneAt(scene, posOf(a, now - 1).x, posOf(a, now - 1).z).id, zoneAt(scene, posOf(a, now + 1).x, posOf(a, now + 1).z).id]);
+        if (!near.has(label) || row.instance_id !== '') fail('zone_label_public', `居民 ${rid} 脚下是 ${zone}，标签却是 ${label}`, { rid, label, zone, x: p.x, z: p.z, nav: Boolean(a.nav) });
+      }
+      // 导航任务：有 nav_json 的人恰好一条 pending nav_step，没有的没有；离线的没有导航
+      const key = `nav:${rid}`;
+      const jobs = pendingNav.get(key) ?? 0;
+      this.pass('nav_job_match');
+      if (a.nav ? jobs !== 1 : jobs !== 0) fail('nav_job_match', `居民 ${rid} ${a.nav ? '在走路' : '没在走路'}，却有 ${jobs} 条待办 nav_step`, { rid, jobs });
+      pendingNav.delete(key);
+      this.pass('nav_offline_clean');
+      if (a.nav && r.present_since === null) fail('nav_offline_clean', `离线的居民 ${rid} 还有导航`, { rid });
+      if (!a.nav) continue;
+      navigating++;
+      this.checkNav(w, rid, a.nav, now, fail);
+    }
+    this.pass('nav_job_orphan');
+    if (pendingNav.size > 0) fail('nav_job_orphan', `有 ${pendingNav.size} 条待办 nav_step 对不上任何居民`, [...pendingNav.keys()].slice(0, 5));
+    this.navSamples += navigating;
+    // 旧模型的残留
+    this.pass('no_legacy_move');
+    const legacy = db.scalar("SELECT COUNT(*) FROM scheduled_jobs WHERE kind = 'move_arrive' AND status = 'pending'");
+    if (legacy > 0) fail('no_legacy_move', `还有 ${legacy} 条待办 move_arrive`, null);
+    const legacyJson = db.scalar('SELECT COUNT(*) FROM residents WHERE move_json IS NOT NULL');
+    if (legacyJson > 0) fail('no_legacy_move', `${legacyJson} 位居民的 move_json 不是 NULL`, null);
+    // 事件流里没有坐标 / 路线（所有人的私有事件也不带）
+    this.pass('events_no_coords');
+    const coordRe = /"x":|"z":|"points"|polyline|navigationId/;
+    for (const e of db.all("SELECT resident_id, type, projection FROM recipient_events WHERE type IN ('nav_stopped','you_arrived','left','arrived','notice') ORDER BY cursor DESC LIMIT 1500")) {
+      if (coordRe.test(String(e.projection))) fail('events_no_coords', `居民 ${e.resident_id} 的 ${e.type} 事件里有坐标 / 路线`, String(e.projection).slice(0, 200));
+    }
+  }
+
+  /** 一条导航的租约截止：位置不会越过截止时刻对应的点，也不会因为时间往后拨而前进。 */
+  private checkNav(w: WorldService, rid: string, nav: NavState, now: number, fail: (name: string, message: string, detail: unknown) => void): void {
+    const motion = { points: nav.points, speed: nav.speed, startedAt: nav.startedAt };
+    const cap = positionAt({ ...motion, until: nav.leaseUntil }, nav.leaseUntil);
+    this.pass('nav_lease_cap');
+    for (const dt of [1, 1000, 60_000, 3_600_000]) {
+      const later = positionOfResident(w, rid, Math.max(now, nav.leaseUntil) + dt);
+      if (!later || Math.hypot(later.x - cap.x, later.z - cap.z) > 1e-6) fail('nav_lease_cap', `居民 ${rid} 把时钟拨到租约截止之后 ${dt} 毫秒，位置还在前进`, { rid, cap, later });
+    }
+    // 现在到租约截止之间最多走 速度 × 剩余时间
+    const here = positionOfResident(w, rid, now);
+    const ahead = positionOfResident(w, rid, now + 120_000);
+    this.pass('nav_lease_cap');
+    if (here && ahead) {
+      const room = (Math.max(0, nav.leaseUntil - now) / 1000) * nav.speed + 1e-6;
+      if (distance(here, ahead) > room) fail('nav_lease_cap', `居民 ${rid} 往后拨两分钟，位移 ${distance(here, ahead).toFixed(2)} 米，超过租约剩余时间能走的 ${room.toFixed(2)} 米`, { rid, leaseUntil: nav.leaseUntil, now });
+    }
+    // 到点没处理的导航（结算任务没跑）
+    this.pass('nav_not_stuck');
+    const arrive = arrivalAt(motion);
+    if (nav.leaseUntil <= now || arrive <= now) fail('nav_not_stuck', `居民 ${rid} 的导航已过${nav.leaseUntil <= now ? '租约截止' : '到达时刻'}，却还没结算`, { rid, leaseUntil: nav.leaseUntil, arrive, now });
   }
 
   /** 把别人的秘密和 A 能看到的所有出口的 JSON 做不包含检查。 */
@@ -685,6 +843,11 @@ export class Invariants {
       const m = /home:|street_east|street_west|东灯巷|西灯巷/.exec(text);
       if (m) this.fail('public_no_home', `${label}里出现了住宅 / 巷子信息：${m[0]}`, null, now);
     }
+    this.pass('public_no_coords');
+    for (const [label, text] of [['公开地图', pubView], ['公开事件流', pubEvents]] as const) {
+      const m = /"x":|"z":|"points"|polyline|navigationId|"nav":|leaseUntil/.exec(text);
+      if (m) this.fail('public_no_coords', `${label}里出现了坐标 / 折线：${m[0]}`, text.slice(Math.max(0, m.index - 60), m.index + 80), now);
+    }
     for (let s = 0; s < samples; s++) {
       const a = rnd.pick(all);
       const aId = a.resident_id as string;
@@ -696,6 +859,27 @@ export class Invariants {
       this.meViewBytes.push(utf8Bytes(meJson));
       this.agentViewBytes.push(utf8Bytes(agentJson));
       if (me.game) this.gameViewBytes.push(utf8Bytes(me.game));
+      // 场景视图：只含同一场景实例里在场的人；公共场景的视图里没有任何私宅的信息
+      if (ar.present_since !== null) {
+        this.pass('scene_view_isolation');
+        const mine = actorOf(w, aId);
+        if (mine) {
+          const sv = sceneView(w, ar, now);
+          const want = db
+            .all(
+              'SELECT a.actor_id FROM world_actors a JOIN residents r ON r.resident_id = a.resident_id WHERE a.world_id = ? AND a.scene_id = ? AND a.instance_id = ? AND (r.present_since IS NOT NULL OR a.actor_id = ?) ORDER BY a.actor_id',
+              w.worldId,
+              mine.scene_id,
+              mine.instance_id,
+              aId,
+            )
+            .map((x) => x.actor_id as string);
+          const got = sv.actors.map((x) => x.id).sort();
+          if (JSON.stringify(want) !== JSON.stringify(got)) this.fail('scene_view_isolation', '场景视图里的人与同一场景实例里在场的人不一致', { viewer: aId, want, got }, now);
+          if (mine.instance_id === '' && JSON.stringify(sv).includes('home:')) this.fail('scene_view_isolation', `公共场景的场景视图里出现了私宅信息（观看者 ${aId}）`, null, now);
+          if (mine.instance_id !== '' && sv.actors.some((x) => x.id !== aId && actorOf(w, x.id)?.instance_id !== mine.instance_id)) this.fail('scene_view_isolation', '私宅场景视图里出现了别的实例的人', { viewer: aId }, now);
+        }
+      }
       const ownRows = db.all('SELECT projection FROM recipient_events WHERE resident_id = ? ORDER BY cursor DESC LIMIT 400', aId).map((e) => e.projection as string);
       // 报价事件只发给当事人，其中的物品编号是正当知情的
       const ownEvents = ownRows.filter((p) => !p.startsWith('{"offer":')).join('\n');
@@ -719,7 +903,7 @@ export class Invariants {
       }
       // 曾经被邀请进过那间屋子的人，事件流里留有当时的物件编号（正当）
       const visited = db.scalar('SELECT COUNT(*) FROM home_access_grants WHERE home_id = ? AND guest_id = ? AND entered_at IS NOT NULL', `home:${oId}`, aId) > 0;
-      const inHome = ar.location_id === `home:${oId}` && !ar.move;
+      const inHome = ar.location_id === `home:${oId}`;
       if (!inHome) {
         for (const o of db.all('SELECT object_id FROM placed_objects WHERE space_id = ?', `home:${oId}`)) {
           this.pass('privacy_home');
@@ -727,11 +911,11 @@ export class Invariants {
         }
         // 3) 屋内发言：不在受众里的人看不到
       }
-      // 4) 现场名单：我视图里的「身边的人」必须正是此刻同空间、在场、不在途、不在小游戏里的人
+      // 4) 现场名单：我视图里的「身边的人」必须正是此刻同空间、在场、不在小游戏里的人（走在路上的人属于脚下的区域，照样在名单里）
       if (me.here && ar.present_since !== null) {
         this.pass('roster_matches');
         const want = db
-          .all("SELECT resident_id FROM residents WHERE location_id = ? AND present_since IS NOT NULL AND move_json IS NULL AND activity_id IS NULL AND resident_id <> ? ORDER BY resident_id", ar.location_id, aId)
+          .all("SELECT resident_id FROM residents WHERE location_id = ? AND present_since IS NOT NULL AND activity_id IS NULL AND resident_id <> ? ORDER BY resident_id", ar.location_id, aId)
           .map((x) => x.resident_id as string);
         const got = me.here.residents.map((x) => x.id).sort();
         if (JSON.stringify(want) !== JSON.stringify(got)) this.fail('roster_matches', '视图里的现场名单与数据库里同一空间的在场居民不一致', { viewer: aId, want, got }, now);

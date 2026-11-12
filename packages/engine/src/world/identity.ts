@@ -371,13 +371,16 @@ export function heartbeat(w: WorldService, auth: Auth, presenceEpoch: unknown): 
 
 /**
  * 主动离开小镇：立即失去在场资格，撤销这位居民的全部在场租约和控制权，两个代数都递增。
- * 已经提交的移动、制作照常完成；之后不会替她发起任何新动作。
+ * 正在走的路立即停步（停在离开那一刻的位置，回来时人就在那里）；已经提交的制作照常完成；之后不会替她发起任何新动作。
  */
 export function leaveWorld(w: WorldService, principalId: string): { ok: true; presenceEpoch: number } {
   const out = w.commit(() => {
     const now = w.now();
-    const r = w.residentOfPrincipal(principalId);
-    if (!r) throw new WorldError('unauthenticated', '还没有居民身份。', 'no_resident');
+    const found = w.residentOfPrincipal(principalId);
+    if (!found) throw new WorldError('unauthenticated', '还没有居民身份。', 'no_resident');
+    // 先结算走过的区域并停步：离开通知要发在人此刻所在的区域，而不是出发时的区域
+    if (found.present_since !== null) stopNav(w, found.resident_id, now, 'offline');
+    const r = w.mustResident(found.resident_id);
     r.presence_epoch += 1;
     r.control_epoch += 1;
     r.controller_client = null;
@@ -429,7 +432,7 @@ export function claimControl(w: WorldService, auth: Auth): { control: { epoch: n
 export function installIdentity(w: WorldService): void {
   // 在场租约到期：没有任何有效租约了才转为离线，离线时刻记为租约到期的那一刻
   w.jobHandlers.set('presence_expire', (payload, job, now) => {
-    const r = w.resident(String(payload.residentId));
+    let r = w.resident(String(payload.residentId));
     if (!r) return;
     const latest = maxLeaseExpiry(w, r);
     if (latest > now) {
@@ -439,6 +442,9 @@ export function installIdentity(w: WorldService): void {
     w.db.run('DELETE FROM presence_leases WHERE resident_id = ? AND expires_at <= ?', r.resident_id, now);
     if (r.present_since !== null) {
       const at = Math.max(r.present_since, latest || job.due_at);
+      // 还在走的路先结算到离线那一刻并停步，离线通知发在人当时所在的区域
+      stopNav(w, r.resident_id, at, 'offline');
+      r = w.mustResident(r.resident_id);
       announceAway(w, r, at);
       w.goOffline(r, at, 'lease_expired');
     }

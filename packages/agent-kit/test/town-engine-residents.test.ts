@@ -29,7 +29,7 @@ beforeAll(async () => {
         { key: KEY_B, id: '2002', name: '乙' },
       ],
     },
-    town: { enabled: true, dbFile: join(dir, 'town.db'), params: { moveDurationMs: 40, doorDurationMs: 20, chatPerMinute: 600, chatBurst: 100 } },
+    town: { enabled: true, dbFile: join(dir, 'town.db'), params: { chatPerMinute: 600, chatBurst: 100 } },
   });
   rt = createRuntime(config, () => undefined);
   await rt.world!.start();

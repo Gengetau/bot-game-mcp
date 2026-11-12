@@ -28,7 +28,8 @@ const APPROACH_GAP = 1.0;
 /** 点地时允许点偏多远（米）：点在墙上、桌子上、喷泉上时取最近的可走点。 */
 const CLICK_SNAP = 2.5;
 
-export type StopReason = 'stop' | 'reroute' | 'lease' | 'offline' | 'control' | 'disconnect' | 'interaction' | 'activity' | 'eject' | 'blocked';
+/** 停步的原因。lease / control / activity 会通知本人（nav_stopped）；blocked、eject 由各自的流程通知；其余是本人自己的动作或离线，不通知。 */
+export type StopReason = 'stop' | 'reroute' | 'lease' | 'offline' | 'control' | 'disconnect' | 'interaction' | 'activity';
 
 // ───────────────────────── 地图布局 ─────────────────────────
 
@@ -236,10 +237,20 @@ function reconcileLabel(w: WorldService, a: ActorRow, at: number): void {
   if (zone !== w.mustResident(a.resident_id).location_id) changeSpace(w, a.resident_id, zone, at);
 }
 
-/** 把一位居民直接安置到某处（穿过进出口、被请出门）。正在走的先停下。 */
-function relocate(w: WorldService, residentId: string, dest: { scene: string; instance: string; x: number; z: number; heading: number }, label: string, at: number, reason: StopReason): ActorRow {
+/**
+ * 把一位居民直接安置到某处（穿过进出口、被请出门）。正在走的先在原地停下（不发通知），
+ * 返回被打断的那一趟，由调用方决定怎么告诉本人。
+ */
+function relocate(w: WorldService, residentId: string, dest: { scene: string; instance: string; x: number; z: number; heading: number }, label: string, at: number): { actor: ActorRow; interrupted: NavState | null } {
   let a = actorOf(w, residentId) ?? ensureActor(w, w.mustResident(residentId), at);
-  if (a.nav) a = halt(w, settle(w, a, at), at, reason);
+  let interrupted: NavState | null = null;
+  if (a.nav) {
+    a = settle(w, a, at);
+    if (a.nav) {
+      interrupted = a.nav;
+      a = halt(w, a, at, 'reroute');
+    }
+  }
   w.bumpSpace(sceneKeyOf(a));
   a.scene_id = dest.scene;
   a.instance_id = dest.instance;
@@ -251,13 +262,15 @@ function relocate(w: WorldService, residentId: string, dest: { scene: string; in
   saveActor(w, a);
   w.bumpSpace(sceneKeyOf(a));
   changeSpace(w, residentId, label, at);
-  return actorOf(w, residentId)!;
+  return { actor: actorOf(w, residentId)!, interrupted };
 }
 
 /** 把一位居民请到会馆门口（邀请到期或被撤销时，把还在屋里的客人送出来）。 */
 export function sendToDoor(w: WorldService, residentId: string, at: number): void {
   const L = layout(w);
-  relocate(w, residentId, { scene: L.town.id, instance: '', ...L.doorOut }, zoneAt(L.town, L.doorOut.x, L.doorOut.z).id, at, 'eject');
+  const { interrupted } = relocate(w, residentId, { scene: L.town.id, instance: '', ...L.doorOut }, zoneAt(L.town, L.doorOut.x, L.doorOut.z).id, at);
+  const r = w.mustResident(residentId);
+  if (interrupted && r.present_since !== null) w.emitTo([residentId], 'nav_stopped', { reason: 'eject', target: interrupted.target, space: r.location_id }, at);
 }
 
 // ───────────────────────── 导航的结算 ─────────────────────────
@@ -304,7 +317,7 @@ function halt(w: WorldService, a: ActorRow, at: number, reason: StopReason): Act
   if (reason === 'reroute') return a;
   const rid = a.resident_id!;
   noteArrival(w, rid, nav.fromSpace, a.anchor_at);
-  if (reason === 'lease' || reason === 'control' || reason === 'eject' || reason === 'blocked' || reason === 'activity') {
+  if (reason === 'lease' || reason === 'control' || reason === 'activity') {
     const r = w.mustResident(rid);
     if (r.present_since !== null) w.emitTo([rid], 'nav_stopped', { reason, target: nav.target, space: r.location_id }, a.anchor_at);
   }
@@ -332,7 +345,7 @@ function finishLeg(w: WorldService, a: ActorRow, at: number): ActorRow {
     const step = steps.shift()!;
     const r = w.mustResident(rid);
     if (step.op === 'exit') {
-      a = relocate(w, rid, { scene: L.town.id, instance: '', ...L.doorOut }, zoneAt(L.town, L.doorOut.x, L.doorOut.z).id, at, 'blocked');
+      a = relocate(w, rid, { scene: L.town.id, instance: '', ...L.doorOut }, zoneAt(L.town, L.doorOut.x, L.doorOut.z).id, at).actor;
       continue;
     }
     if (step.op === 'enter') {
@@ -346,7 +359,7 @@ function finishLeg(w: WorldService, a: ActorRow, at: number): ActorRow {
         noteArrival(w, rid, nav.fromSpace, at);
         return actorOf(w, rid)!;
       }
-      a = relocate(w, rid, { scene: L.home!.id, instance: homeOwner(step.home), ...L.doorIn }, step.home, at, 'blocked');
+      a = relocate(w, rid, { scene: L.home!.id, instance: homeOwner(step.home), ...L.doorIn }, step.home, at).actor;
       continue;
     }
     // 在新场景里接着走

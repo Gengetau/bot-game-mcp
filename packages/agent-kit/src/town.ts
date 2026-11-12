@@ -24,6 +24,9 @@ export interface TownAction {
 
 /** 小镇里每个动作类型（docs/TOWN.md 动作一览）。 */
 export const TOWN_ACTION_TYPES = [
+  'navigate',
+  'stop_navigation',
+  /** navigate 的旧名，仍可用 */
   'move',
   'speak',
   'ask_hobby',
@@ -57,6 +60,30 @@ export const TOWN_ACTION_TYPES = [
   'quit_game',
 ] as const;
 
+/** navigate 的去处：地点编号 | 'home' | 'home:<居民编号>' | 公共物件编号 | 居民编号 | 地图点 {x,z}。 */
+export type NavigateTarget = string | { x: number; z: number };
+
+/** 一条正在走的导航（navigate 的回执、续租的返回、视图里的 location.walking 都能凑出这几个字段）。 */
+export interface NavigationBrief {
+  navigationId: string;
+  revision: number;
+  to?: { kind?: string; id?: string; name?: string };
+  /** 这一段预计走完的时刻 */
+  arriveAt?: number;
+  continues?: boolean;
+  leaseUntil?: number;
+  /** 多久续一次租约（毫秒），缺省 3000 */
+  renewEveryMs?: number;
+}
+
+/** 续导航控制租约的结果（heartbeat 的 navigation 字段）。 */
+export interface NavigationRenewal {
+  /** true：续上了。false 且 navigation 为 null：已经没有在走的路；false 且 navigation 不为 null：续的是已换掉的旧路线，navigation 是现在这条 */
+  ok: boolean;
+  leaseUntil?: number;
+  navigation: NavigationBrief | null;
+}
+
 export interface TownEvent {
   type: string;
   at: number;
@@ -79,11 +106,15 @@ export interface TownView {
   context: { version: number; activityId: string | null };
   action_window: string;
   cursor: string;
-  location: { space?: string; name?: string; moving_to?: string; arrive_at?: number };
+  location: { space?: string; name?: string; walking?: { to: string; navigation_id: string; revision: number; arrive_at: number; lease_until: number } };
   here: {
-    kind: string;
+    /** public 公共地点 | residential 灯巷会馆 | home 私宅 */
+    kind: 'public' | 'residential' | 'home' | string;
     blurb: string;
     residents: { id: string; name: string; kind: string; mood?: string }[];
+    /** 物件够不着时带 far:true：先 navigate 到它旁边 */
+    objects?: { id: string; label: string; far?: true; can?: string; active?: unknown }[];
+    /** 所有可去的目的地（navigate 的 to） */
     exits: { to: string; name: string }[];
     activities: { id: string; name: string; status: string; players: string[]; need: number }[];
     games: { type: string; name: string; players: string }[];
@@ -135,6 +166,8 @@ export interface ActResult {
   contextVersion: number;
   activityId: string | null;
   cursor: string;
+  /** navigate 被接受（status:'accepted'）时的导航信息 */
+  navigation?: NavigationBrief;
   /** 同一个请求号第二次提交：返回的是第一次的结果，没有再执行 */
   replayed?: boolean;
   [k: string]: unknown;
@@ -525,6 +558,15 @@ export class TownClient {
     return this.raw('heartbeat', {});
   }
 
+  /**
+   * 续导航控制租约（走路时每 renewEveryMs 一次，普通程序做，不经过模型）。顺带续了在场。
+   * 没有控制权抛 ControlLostError；结果见 NavigationRenewal。
+   */
+  async renewNavigation(nav: { navigationId: string; revision?: number }, opts: { signal?: AbortSignal } = {}): Promise<NavigationRenewal> {
+    const r = await this.raw<{ navigation?: NavigationRenewal }>('heartbeat', { navigation_id: nav.navigationId, ...(nav.revision !== undefined ? { revision: nav.revision } : {}) }, { ...(opts.signal ? { signal: opts.signal } : {}) });
+    return r.navigation ?? { ok: false, navigation: null };
+  }
+
   /** 接管控制权：别的客户端之后发来的动作会被拒绝。 */
   claim(): Promise<{ ok: true; control: { epoch: number; mine: boolean } }> {
     return this.raw('claim_control', {});
@@ -577,6 +619,18 @@ export class TownClient {
   }
 
   // 常用动作的便捷写法（都走 act，参数同 ActOptions）
+  /** 去某处（一条动作走到底，服务器规划路线）。返回 accepted 时运行器会自动续租；直接用 TownClient 的人要自己定时 renewNavigation。 */
+  navigate(to: NavigateTarget, o?: ActOptions) {
+    return this.act({ type: 'navigate', to }, o);
+  }
+  /** 走到某位居民身边。 */
+  approach(residentId: string, o?: ActOptions) {
+    return this.act({ type: 'navigate', approach: residentId }, o);
+  }
+  stopNavigation(o?: ActOptions) {
+    return this.act({ type: 'stop_navigation' }, o);
+  }
+  /** navigate 的旧名。 */
   move(to: string, o?: ActOptions) {
     return this.act({ type: 'move', to }, o);
   }

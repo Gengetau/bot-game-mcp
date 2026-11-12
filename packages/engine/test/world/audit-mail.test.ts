@@ -24,8 +24,7 @@ describe('第 2 条：撤销邀请要告知不在屋里的受邀者', () => {
     const { a, b, all } = setup();
     const out = a.act('send_letter', { to: b.residentId, body: '来坐坐', invite: {} });
     stay(all, out.deliverAt - a.t.clock.t + 1000);
-    b.act('move', { to: 'home' });
-    stay(all, 20_000);
+    b.go('home');
     b.act('read_letter', { letterId: out.letterId });
     b.go('tea_house');
     const cursor = b.view().cursor;
@@ -47,13 +46,12 @@ describe('第 2 条：撤销邀请要告知不在屋里的受邀者', () => {
   it('屋里的受邀者仍然只收到一条通知', () => {
     const { a, b, all } = setup();
     a.act('invite', { to: b.residentId });
-    b.act('move', { to: `home:${a.residentId}` });
-    stay(all, 30_000);
+    b.go(`home:${a.residentId}`);
     expect(b.row().location_id).toBe(`home:${a.residentId}`);
     const cursor = b.view().cursor;
     const grantId = String(a.t.w.db.get('SELECT grant_id FROM home_access_grants WHERE owner_id = ?', a.residentId)!.grant_id);
     a.act('revoke_invite', { grantId });
-    expect(noticeTexts(b, cursor)).toEqual(['阿灯结束了这次邀请，你回到了门外的巷子里。']);
+    expect(noticeTexts(b, cursor)).toEqual(['阿灯结束了这次邀请，你回到了灯巷会馆门口。']);
   });
 });
 

@@ -4,6 +4,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { listLetters } from '../../src/world/mail.js';
+import { actorOf } from '../../src/world/space.js';
 import { chatHistory, publicView } from '../../src/world/views.js';
 import { Actor, makeTown, tempDb, type Town } from './helpers.js';
 
@@ -34,7 +35,7 @@ function stay(t: Town, ms: number, actors: Actor[]): void {
 
 const roster = new WeakMap<Town, Actor[]>();
 
-/** 阿灯和小满住东灯巷，小岚住西灯巷；都在广场。 */
+/** 阿灯、小岚、小满都在广场（门牌只是地址标签，进出住宅都经过灯巷会馆门口）。 */
 function town3() {
   const t = makeTown();
   const a = t.join('阿灯');
@@ -42,6 +43,17 @@ function town3() {
   const c = t.join('小满');
   roster.set(t, [a, b, c]);
   return { t, a, b, c };
+}
+
+const nav = (a: Actor) => actorOf(a.t.w, a.residentId)?.nav ?? null;
+const eventsOf = (a: Actor, cursor: string, type: string) => a.events(cursor).events.filter((e) => e.type === type).map((e) => e.data as Record<string, any>);
+
+/** 从广场走到会馆门口要多少毫秒（让一个临时居民试走一次再停下）：用来把「到门口的那一刻」对准邀请到期。 */
+function msToDoor(t: Town): number {
+  const probe = t.join('探路');
+  const out = probe.act('navigate', { to: 'home' }); // 自己家：第一段正好是走到会馆门口那扇门
+  probe.act('stop_navigation');
+  return out.navigation.arriveAt - t.clock.t;
 }
 
 /** a 当面邀请 b，返回 grantId。 */
@@ -62,22 +74,26 @@ describe('栖灯镇住宅：没有邀请进不了别人的家', () => {
     const err = b.fail('move', { to: homeOf(a) });
     expect(err.code).toBe('precondition_failed');
     expect(err.reason).toBe('no_access');
-    expect(b.row().move).toBeNull();
+    expect(nav(b)).toBeNull();
     expect(loc(b)).toBe('plaza');
-    expect(t.w.db.scalar("SELECT COUNT(*) FROM scheduled_jobs WHERE kind = 'move_arrive'")).toBe(0);
-    // 站在巷子里也一样
-    b.go('street_east');
+    expect(t.w.db.scalar("SELECT COUNT(*) FROM scheduled_jobs WHERE kind = 'nav_step' AND status = 'pending'")).toBe(0);
+    // 站在会馆门口也一样
+    b.go('residential');
     expect(b.fail('move', { to: homeOf(a) }).reason).toBe('no_access');
   });
 
-  it('当面邀请立刻生效：受邀者出发（广场到东灯巷 10 秒 + 进门 3 秒）、到达，邀请本身不移动任何人', () => {
+  it('当面邀请立刻生效：受邀者先走到会馆门口、再进门，邀请本身不移动任何人', () => {
     const { t, a, b } = town3();
     const grantId = invitePersonally(a, b);
+    expect(loc(b)).toBe('plaza');
     const out = b.act('move', { to: homeOf(a) });
-    expect(out.move.arriveAt - t.clock.t).toBe(13_000);
-    t.advanceTo(out.move.arriveAt);
+    expect(out.status).toBe('accepted');
+    expect(out.navigation.continues).toBe(true);
+    expect(out.navigation.to).toMatchObject({ kind: 'home', id: homeOf(a) });
+    expect(grantRow(t, grantId).entered_at).toBeNull(); // 还在路上，没进门
+    b.walk();
     expect(loc(b)).toBe(homeOf(a));
-    expect(Number(grantRow(t, grantId).entered_at)).toBe(out.move.arriveAt);
+    expect(Number(grantRow(t, grantId).entered_at)).toBe(t.clock.t);
     expect(loc(a)).toBe('plaza');
   });
 
@@ -118,44 +134,55 @@ describe('栖灯镇住宅：没有邀请进不了别人的家', () => {
     expect(b.fail('move', { to: homeOf(a) }).reason).toBe('no_access');
   });
 
-  it('到达时才过期（恰好同一时刻）：停在门外的巷子里，只收到固定说明', () => {
+  it('走到门口的那一刻才过期（恰好同一时刻）：停在会馆门口，只收到固定说明', () => {
     const { t, a, b } = town3();
-    invitePersonally(a, b);
-    stay(t, DAY - 13_000, [a, b]);
+    const grantId = invitePersonally(a, b);
+    const ms = msToDoor(t);
+    const expiresAt = Number(grantRow(t, grantId).expires_at);
+    stay(t, expiresAt - ms - t.clock.t, [a, b]);
     const cursor = b.view().cursor;
     const out = b.act('move', { to: homeOf(a) }); // 出发时仍有效
     expect(out.status).toBe('accepted');
-    stay(t, 13_000, [a, b]);
-    expect(loc(b)).toBe('street_east');
+    expect(out.navigation.arriveAt).toBe(expiresAt);
+    b.walk();
+    expect(loc(b)).toBe('residential');
+    expect(b.pos().scene).toBe('town');
     expect(noticeTexts(b, cursor)).toEqual(['你走到了阿灯的家门口，但没能进去：需要主人当前有效的邀请。']);
+    expect(eventsOf(b, cursor, 'nav_stopped')).toMatchObject([{ reason: 'blocked', space: 'residential' }]);
+    expect(eventsOf(b, cursor, 'you_arrived')).toEqual([]);
   });
 
-  it('到达前 1 毫秒还有效：进了屋，随后在到期那一刻被送到门外', () => {
+  it('到门口前 1 毫秒还有效：进了屋，随后在到期那一刻被送到会馆门口', () => {
     const { t, a, b } = town3();
-    invitePersonally(a, b);
-    stay(t, DAY - 13_001, [a, b]);
+    const grantId = invitePersonally(a, b);
+    const ms = msToDoor(t);
+    const expiresAt = Number(grantRow(t, grantId).expires_at);
+    stay(t, expiresAt - ms - 1 - t.clock.t, [a, b]);
     const out = b.act('move', { to: homeOf(a) });
     const cursor = b.view().cursor;
-    t.advanceTo(out.move.arriveAt); // 到期前 1 毫秒到达：在屋里
-    expect(t.clock.t).toBe(Number(grantRow(t, a.view().invites.sent[0]!.grantId).expires_at) - 1);
+    expect(out.navigation.arriveAt).toBe(expiresAt - 1);
+    b.walk(); // 到期前 1 毫秒到门口：进了屋
+    expect(t.clock.t).toBe(expiresAt - 1);
     expect(loc(b)).toBe(homeOf(a));
     stay(t, 1, [a, b]); // 到期那一刻被送到门外
-    expect(loc(b)).toBe('street_east');
-    expect(noticeTexts(b, cursor)).toEqual(['在阿灯家做客的时间到了，你回到了门外的巷子里。']);
+    expect(loc(b)).toBe('residential');
+    expect(noticeTexts(b, cursor)).toEqual(['在阿灯家做客的时间到了，你回到了灯巷会馆门口。']);
   });
 
-  it('邀请在路上被撤销：出发时合法，到门口时挡住（停在巷子里）', () => {
+  it('邀请在路上被撤销：出发时合法，走到会馆门口时挡住', () => {
     const { t, a, b } = town3();
     const grantId = invitePersonally(a, b);
     const cursor = b.view().cursor;
     b.act('move', { to: homeOf(a) });
-    stay(t, 5_000, [a, b]);
+    stay(t, 2_000, [a, b]);
+    expect(nav(b)).not.toBeNull(); // 还在路上
     a.act('revoke_invite', { grantId });
-    stay(t, 8_000, [a, b]);
-    expect(loc(b)).toBe('street_east');
-    expect(b.row().move).toBeNull();
+    b.walk();
+    expect(loc(b)).toBe('residential');
+    expect(nav(b)).toBeNull();
     // 撤销通知（审计第 2 条：人不在屋里也要告知）+ 到门口被拒的通知
     expect(noticeTexts(b, cursor)).toHaveLength(2);
+    expect(eventsOf(b, cursor, 'nav_stopped')).toMatchObject([{ reason: 'blocked' }]);
     expect(grantRow(t, grantId).entered_at).toBeNull();
   });
 
@@ -211,7 +238,7 @@ describe('栖灯镇住宅：reentry（离开后能否再进）', () => {
     const { a, b } = town3();
     invitePersonally(a, b);
     b.go(homeOf(a));
-    b.go('street_east');
+    b.go('residential');
     b.go(homeOf(a));
     expect(loc(b)).toBe(homeOf(a));
   });
@@ -224,7 +251,7 @@ describe('栖灯镇住宅：reentry（离开后能否再进）', () => {
     expect(b.view().invites.received).toHaveLength(1);
     stay(t, HOUR, [a, b]); // 在屋里待多久都行
     expect(loc(b)).toBe(homeOf(a));
-    b.go('street_east');
+    b.go('residential');
     expect(b.fail('move', { to: homeOf(a) }).reason).toBe('no_access');
     expect(b.view().invites.received).toEqual([]);
     expect(grantRow(t, grantId).revoked_at).toBeNull(); // 没有撤销，只是用掉了
@@ -248,7 +275,7 @@ describe('栖灯镇住宅：撤销 / 过期时屋里的客人被送到门口', (
     return { ...s, grantId };
   }
 
-  it('撤销：客人被送到房主那条巷子的门口，只收到固定模板通知；公开层面没有任何变化', () => {
+  it('撤销：客人被送到会馆门口，只收到固定模板通知；公开层面没有任何变化', () => {
     const { t, a, b, grantId } = inHome();
     expect(a.view().here?.residents.map((r) => r.name)).toEqual(['小岚']);
     b.act('speak', { text: '屋里说的话' });
@@ -258,11 +285,12 @@ describe('栖灯镇住宅：撤销 / 过期时屋里的客人被送到门口', (
 
     a.act('revoke_invite', { grantId });
 
-    expect(loc(b)).toBe('street_east');
-    expect(b.row().move).toBeNull();
-    expect(noticeTexts(b, cursor)).toEqual(['阿灯结束了这次邀请，你回到了门外的巷子里。']);
-    // 客人只收到：自己到了巷子 + 固定通知，没有别的
-    expect(b.events(cursor).events.map((e) => e.type)).toEqual(['you_arrived', 'notice']);
+    expect(loc(b)).toBe('residential');
+    expect(b.pos().scene).toBe('town');
+    expect(nav(b)).toBeNull();
+    expect(noticeTexts(b, cursor)).toEqual(['阿灯结束了这次邀请，你回到了灯巷会馆门口。']);
+    // 客人只收到：自己被请到门口 + 固定通知，没有别的
+    expect(b.events(cursor).events.map((e) => e.type)).toEqual(['notice']);
     // 公开事件流没有「谁被请出了家门」；住宅区的人没变
     expect(publicCount(t)).toBe(pubBefore);
     expect(publicView(t.w).residential.residents.map((r) => r.id).sort()).toEqual(where);
@@ -281,16 +309,16 @@ describe('栖灯镇住宅：撤销 / 过期时屋里的客人被送到门口', (
     expect(heard.sort()).toEqual(['请出之前主人说的', '请出之前说的'].sort());
   });
 
-  it('离线的客人（显式离开）也被送到门口；回来时就在巷子里，并能看到固定通知', () => {
+  it('离线的客人（显式离开）也被送到门口；回来时就在会馆门口，并能看到固定通知', () => {
     const { t, a, b, grantId } = inHome();
     b.leave();
     const cursor = b.view().cursor;
     a.act('revoke_invite', { grantId });
-    expect(loc(b)).toBe('street_east');
+    expect(loc(b)).toBe('residential');
     expect(present(b)).toBe(false);
     b.enter();
-    expect(b.view().here?.space).toBe('street_east');
-    expect(noticeTexts(b, cursor)).toEqual(['阿灯结束了这次邀请，你回到了门外的巷子里。']);
+    expect(b.view().here?.space).toBe('residential');
+    expect(noticeTexts(b, cursor)).toEqual(['阿灯结束了这次邀请，你回到了灯巷会馆门口。']);
     void t;
   });
 
@@ -303,10 +331,10 @@ describe('栖灯镇住宅：撤销 / 过期时屋里的客人被送到门口', (
     expect(present(b)).toBe(false);
     expect(loc(b)).toBe(homeOf(a)); // 还没到期，仍在屋里
     stay(t, 1, [a]);
-    expect(loc(b)).toBe('street_east');
+    expect(loc(b)).toBe('residential');
     b.enter();
-    expect(b.view().here?.space).toBe('street_east');
-    expect(noticeTexts(b, cursor)).toEqual(['在阿灯家做客的时间到了，你回到了门外的巷子里。']);
+    expect(b.view().here?.space).toBe('residential');
+    expect(noticeTexts(b, cursor)).toEqual(['在阿灯家做客的时间到了，你回到了灯巷会馆门口。']);
     expect(b.fail('move', { to: homeOf(a) }).reason).toBe('no_access');
   });
 
@@ -314,7 +342,7 @@ describe('栖灯镇住宅：撤销 / 过期时屋里的客人被送到门口', (
     const { t, a, b, grantId } = inHome();
     const expiresAt = Number(grantRow(t, grantId).expires_at);
     stay(t, expiresAt - t.clock.t, [a, b]);
-    expect(loc(b)).toBe('street_east');
+    expect(loc(b)).toBe('residential');
     expect(present(b)).toBe(true);
   });
 
@@ -324,8 +352,35 @@ describe('栖灯镇住宅：撤销 / 过期时屋里的客人被送到门口', (
     a.act('revoke_invite', { grantId });
     expect(loc(b)).toBe(homeOf(a));
     a.act('revoke_invite', { grantId: g2 });
-    expect(loc(b)).toBe('street_east');
+    expect(loc(b)).toBe('residential');
     void t;
+  });
+
+  it('被请出门：门口的路人只看到有人走到会馆门口，看不出是从谁家出来的；屋里的人只看到他离开', () => {
+    const { t, a, b, c, grantId } = inHome();
+    c.go('residential');
+    expect(c.view().here?.residents.map((r) => r.name)).not.toContain('小岚');
+    const cb = b.view().cursor;
+    const cc = c.view().cursor;
+    const ca = a.view().cursor;
+    const pubCursor = t.w.publicCursor();
+    a.act('revoke_invite', { grantId });
+    // 门口的路人：只收到一条 arrived{小岚, residential}，没有房主、没有门牌、没有坐标
+    expect(c.events(cc).events.map((e) => e.type)).toEqual(['arrived']);
+    expect(eventsOf(c, cc, 'arrived')).toEqual([{ resident: { id: b.residentId, name: '小岚', kind: 'agent' }, space: 'residential' }]);
+    const dumpC = JSON.stringify(c.events(cc).events) + JSON.stringify(t.w.readPublicEvents(pubCursor).events);
+    for (const secret of [a.residentId, '阿灯', 'home:', '"x":', '"z":']) expect(dumpC).not.toContain(secret);
+    // 门口的视图里看得到小岚在会馆，但没有任何字段说明他从哪一户出来
+    expect(c.view().here?.residents.map((r) => r.name)).toContain('小岚');
+    expect(JSON.stringify(c.view().here?.residents)).not.toMatch(/home|阿灯/);
+    // 屋里的房主：只看到他离开（left），之后屋里没有他
+    expect(eventsOf(a, ca, 'left')).toEqual([{ resident: { id: b.residentId, name: '小岚', kind: 'agent' }, space: homeOf(a) }]);
+    expect(a.view().here?.residents).toEqual([]);
+    // 客人自己：落在会馆门口，位置在公共场景
+    expect(loc(b)).toBe('residential');
+    expect(b.pos().scene).toBe('town');
+    expect(b.view().location).toMatchObject({ space: 'residential', scene: 'town', navigation: null });
+    expect(b.events(cb).events.some((e) => e.type === 'nav_stopped')).toBe(false); // 没在走路，不会有 nav_stopped
   });
 
   it('主人自己不会被自己的撤销请出家门', () => {
@@ -334,7 +389,7 @@ describe('栖灯镇住宅：撤销 / 过期时屋里的客人被送到门口', (
     expect(loc(a)).toBe(homeOf(a));
   });
 
-  it('客人在路上要离开（正在走出屋）时撤销：不会被拽回，也不会重复通知', () => {
+  it('客人已经出了门、正走向广场时撤销：不会被拽回，也不会重复通知', () => {
     const { t, a, b, grantId } = inHome();
     const cursor = b.view().cursor;
     b.act('move', { to: 'plaza' });
@@ -478,8 +533,10 @@ describe('栖灯镇信件：首次阅读要回自己家', () => {
     const { letterId } = sendAndDeliver(a, b, '机密正文Q7X\n第二行');
     expect(b.fail('read_letter', { letterId }).reason).toBe('not_home');
     b.act('move', { to: 'home' });
-    expect(b.fail('read_letter', { letterId }).reason).toBe('not_home'); // 在路上
-    stay(t, 13_000, [a, b]);
+    stay(t, 2_000, [a, b]);
+    expect(b.fail('read_letter', { letterId }).reason).toBe('not_home'); // 在路上：走在公共区域，不算在家
+    b.walk();
+    expect(loc(b)).toBe(homeOf(b));
     expect(b.view().mail.unread).toBe(1);
 
     const first = b.act('read_letter', { letterId });

@@ -32,6 +32,9 @@ import {
   fmtDuration,
   makePrincipal,
   openWorld,
+  positionAt,
+  renewTrack,
+  trackNav,
   personName,
   percentile,
   randomProfile,
@@ -44,10 +47,13 @@ import {
   townPublicView,
   utf8Bytes,
   type Kind,
+  type NavTrack,
   type Outcome,
   type Person,
   type WorldService,
 } from './world-lib.js';
+import { PUBLIC_OBJECTS } from '../packages/engine/src/world/content.js';
+import { actorOf } from '../packages/engine/src/world/space.js';
 import { exchangeTicket, issueTicket, sessionPrincipal } from '../packages/engine/src/index.js';
 
 type MeView = ReturnType<typeof townMeView>;
@@ -123,7 +129,19 @@ interface Ag {
   ring: { conn: Conn; req: ReturnType<Conn['build']>; out: Record<string, any>; at: number }[];
   lastSpeak: number;
   firstSeen: boolean;
+  /** 走路时的“性格”：steady 正常续租；stingy 不续租（模拟断线）；fickle 走到一半改道；halter 走到一半停下；ghost 走到一半离线 */
+  walk: WalkStyle;
+  /** 手里这一趟导航（客户端视角，只靠回执和续租回包） */
+  nav: NavTrack | null;
+  /** 这一趟导航里还会续几次租约（stingy 用完就不再续），null = 一直续 */
+  renewsLeft: number | null;
+  /** 这一趟走到一半要做的事 */
+  walkPlan: { kind: 'reroute' | 'halt' | 'ghost' | 'chat'; at: number } | null;
+  /** 走到物件旁边之后要去用的物件 */
+  useObject: string | null;
 }
+
+type WalkStyle = 'steady' | 'stingy' | 'fickle' | 'halter' | 'ghost';
 
 interface Anomaly {
   kind: string;
@@ -205,6 +223,12 @@ class Sim {
         ring: [],
         lastSpeak: -1e15,
         firstSeen: true,
+        // 固定分配几种“不守规矩”的走路方式，保证小规模模拟里每种路径都会走到
+        walk: (['steady', 'steady', 'stingy', 'fickle', 'halter', 'ghost', 'steady'] as const)[i % 7]!,
+        nav: null,
+        renewsLeft: null,
+        walkPlan: null,
+        useObject: null,
       };
       this.planSessions(ag);
       this.ags.push(ag);
@@ -407,6 +431,8 @@ class Sim {
     ag.decideAt = now + ag.rnd.range(1, 8) * 1000;
     ag.dropUntil = 0;
     ag.reclaimAt = 0;
+    ag.nav = null;
+    ag.walkPlan = null;
     this.bump('sessions');
   }
 
@@ -482,6 +508,8 @@ class Sim {
     ag.clients = [];
     ag.ctrl = null;
     ag.decideAt = Infinity;
+    ag.nav = null;
+    ag.walkPlan = null;
   }
 
   private heartbeat(ag: Ag, cli: Cli): void {
@@ -523,6 +551,7 @@ class Sim {
     t = Math.min(t, ag.decideAt);
     for (const c of ag.clients) t = Math.min(t, c.hbAt);
     if (ag.reclaimAt > 0) t = Math.min(t, ag.reclaimAt);
+    if (ag.nav) t = Math.min(t, ag.nav.renewAt);
     return t;
   }
 
@@ -563,6 +592,8 @@ class Sim {
         }
       }
     }
+    if (ag.nav && ag.nav.renewAt <= now) this.renewNav(ag);
+    if (!ag.online) return;
     if (ag.decideAt <= now) {
       try {
         const delay = this.decide(ag);

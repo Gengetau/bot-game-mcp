@@ -459,6 +459,24 @@ describe('进出私宅', () => {
     expect(b.pos()).toMatchObject({ scene: 'town', instance: '', x: door.x, z: door.z });
   });
 
+  it('客人正在屋里走动时被请出门：停下、落在会馆门口，本人收到 nav_stopped（eject）', () => {
+    const t = makeTown();
+    const a = t.join('阿灯');
+    const b = t.join('小岚');
+    a.act('invite', { to: b.residentId });
+    const grant = t.w.db.get('SELECT grant_id FROM home_access_grants')!;
+    b.go(`home:${a.residentId}`);
+    b.act('navigate', { to: { x: 2, z: 2 } });
+    t.advance(500);
+    const cur = b.events().cursor;
+    a.act('revoke_invite', { grantId: grant.grant_id });
+    expect(nav(b)).toBeNull();
+    expect(loc(b)).toBe('residential');
+    expect(b.pos().scene).toBe('town');
+    expect(eventsOf(b, cur, 'nav_stopped')).toMatchObject([{ reason: 'eject', space: 'residential' }]);
+    expect(t.w.db.scalar("SELECT COUNT(*) FROM scheduled_jobs WHERE kind = 'nav_step' AND status = 'pending'")).toBe(0);
+  });
+
   it('场景快照：公共场景里看不到任何私宅里的人；私宅里只看得到同一户里的人', () => {
     const t = makeTown();
     const a = t.join('阿灯');
@@ -614,6 +632,64 @@ describe('重启与迁移', () => {
     a.enter();
     a.go('garden');
     expect(loc(a)).toBe('garden');
+  });
+
+  it('从 schema v2 的库升级：建出空间角色表，旧街道编号迁到住宅接入点，旧的到达任务作废，之后能正常走', () => {
+    const file = tempDb();
+    cleanups.push(file.cleanup);
+    const clock = new FakeClock();
+    const t = makeTown({ dbPath: file.path, clock });
+    const a = t.join('阿灯');
+    const b = t.join('小岚');
+    a.act('speak', { text: '旧版里说的话' });
+    const now = t.clock.t;
+    // 把库改回 v2 的样子
+    const raw = t.w.db.db;
+    raw.exec('DROP TABLE world_actors');
+    raw.exec('PRAGMA user_version = 2');
+    raw.prepare("UPDATE residents SET location_id = 'street_east' WHERE resident_id = ?").run(a.residentId);
+    raw.prepare("UPDATE chat_messages SET space_id = 'street_west'").run();
+    raw.prepare("INSERT INTO scheduled_jobs(dedupe_key, due_at, priority, kind, payload, status, created_at) VALUES ('move:legacy:1', ?, 1, 'move_arrive', '{}', 'pending', ?)").run(now + 5000, now);
+    t.clock.advance(10_000);
+    t.restart();
+    expect(t.w.db.userVersion()).toBe(3);
+    expect(t.logs.join('\n')).not.toContain('迁移');
+    expect(a.row().location_id).toBe('residential');
+    expect(b.row().location_id).toBe('plaza');
+    for (const x of [a, b]) {
+      const row = actorOf(t.w, x.residentId)!;
+      expect(row.map_version).toBe(t.w.map.mapVersion);
+      expect(zoneAt(town(t), row.x, row.z).id).toBe(x.row().location_id);
+    }
+    expect(t.w.db.all('SELECT DISTINCT space_id FROM chat_messages').map((m) => m.space_id)).toEqual(['residential']);
+    expect(t.w.db.get("SELECT status FROM scheduled_jobs WHERE dedupe_key = 'move:legacy:1'")!.status).toBe('cancelled');
+    a.enter();
+    a.go('plaza');
+    expect(loc(a)).toBe('plaza');
+    a.go('home');
+    expect(loc(a)).toBe(`home:${a.residentId}`);
+  });
+
+  it('地图换了版本：位置在新地图上不合法的人挪到所在区域的落脚点，合法的不动', () => {
+    const file = tempDb();
+    cleanups.push(file.cleanup);
+    const clock = new FakeClock();
+    const t = makeTown({ dbPath: file.path, clock });
+    const a = t.join('阿灯');
+    const b = t.join('小岚');
+    b.go('tea_house');
+    const before = b.pos();
+    const raw = t.w.db.db;
+    // 假装这两条记录是旧地图留下的：a 站在如今是喷泉的地方，b 的位置在新地图上仍然合法
+    const fountain = town(t).source.obstacles.find((o) => o.id === 'plaza.fountain')!;
+    raw.prepare("UPDATE world_actors SET map_version = 'old', x = ?, z = ? WHERE actor_id = ?").run(fountain.x + fountain.w / 2, fountain.z + fountain.d / 2, a.residentId);
+    raw.prepare("UPDATE world_actors SET map_version = 'old' WHERE actor_id = ?").run(b.residentId);
+    t.restart();
+    const plaza = town(t).anchors.get('plaza')!;
+    expect(actorOf(t.w, a.residentId)).toMatchObject({ x: plaza.x, z: plaza.z, map_version: t.w.map.mapVersion });
+    expect(actorOf(t.w, b.residentId)).toMatchObject({ x: before.x, z: before.z, map_version: t.w.map.mapVersion });
+    expect(a.row().location_id).toBe('plaza');
+    expect(b.row().location_id).toBe('tea_house');
   });
 
   it('旧版留下的在途移动：截止前该到的按旧规则到达，没到的留在出发地；之后每个人都有合法位置', () => {

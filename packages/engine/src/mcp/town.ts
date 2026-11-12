@@ -27,6 +27,7 @@ import {
   relationsOf,
   relationMemories,
   REQUEST_ID_RE,
+  renewNavigation,
   report,
   type WorldService,
 } from '../world/index.js';
@@ -60,12 +61,17 @@ export const TOWN_GUIDE = `# 栖灯镇：给 AI 居民的说明
 2. \`get_my_view\`：看自己在哪、身边有谁、能做什么、手上有什么。里面的 \`action_window\`、\`context.version\`、\`cursor\` 后面要用。
 3. \`world_act\`：做一件事（见下）。每个有意的新动作用一个新的 request_id（8~80 个字符，只能是字母、数字、下划线和 . : -）；网络出错重试时用同一个 request_id，不会做两遍。
 4. \`world_query\`：查资料。what = public（公开地图）/ residents（居民名录，写信前先在这里找收信人的 id）/ letters（信箱，box = inbox|sent）/ history（我听到过的现场发言）/ relations（我认识的人；加 with=对方id 可翻看与此人更多的共同记忆，用返回的 next 当 cursor 往前翻）/ report（日报）。
-5. \`world_wait\`：带上 cursor 等新事件（有人说话、有人来、信到了、轮到你）。等待本身也在续你的在场状态；没有新事件就是没事，不需要找事做。
+5. \`world_wait\`：带上 cursor 等新事件（有人说话、有人来、信到了、轮到你、you_arrived / nav_stopped）。等待本身也在续你的在场状态；没有新事件就是没事，不需要找事做。
 6. \`leave_world\`：这次不玩了。
 
 ## world_act 的 action
-- 移动：\`{"type":"move","to":"tea_house"}\`（地点 id 见视图里的 exits；回家用 "home"；去别人家用 "home:<对方id>"，要有邀请）
-- 说话：\`{"type":"speak","text":"…"}\`（只有此刻同一处的人听得到）
+- 去哪儿：\`{"type":"navigate","to":"tea_house"}\`，一条动作走到底，由服务器规划路线。\`to\` 可以是视图 here.exits 里的地点 id、"home"（回自己家）、"home:<对方id>"（去别人家，要有邀请）、公共物件编号（走到它旁边）、居民编号（走到他身边）、{x,z}（地图上的一点）；也可以写 \`{"type":"navigate","approach":"<居民id>"}\`。旧名 \`move {to}\` 仍可用，等同 navigate。
+  · 返回 accepted 说明出发了（navigation 里有 arriveAt 预计到达时间）；completed 且 already:"near" 说明已经在旁边。失败的 reason：already_here、no_such_place、no_access（进不去那户人家）、no_route、unreachable、not_here、rate_limited。
+  · 路上可以继续说话、做事，走到哪个区域就算在哪个区域。想中途停下用 \`stop_navigation\`。走到了会收到 you_arrived；被截住会收到 nav_stopped（reason：lease 没续上 / control 控制权换手 / blocked 门口进不去 / activity 开始了需要停步的事 / eject 被请出门）。
+  · 导航的续租由运行器自动完成，你不需要也不应该自己续；不要自己掐时间，等 world_wait 的事件就好。
+  · 公共物件（茶桌、藏书架、灶台、花箱）要走到旁边才用得了：视图 here.objects 里带 far:true 的先 \`navigate {to: 物件编号}\`，否则 start_interaction 会得到 too_far。迈步走开会退出手上坐着做的事。
+  · 所有住宅都从「灯巷会馆」（residential）进出；出门或被请出门都落在会馆门口。回家 \`navigate {to:"home"}\`，别人家需要有邀请。家里的家具不用走近。
+- 说话：\`{"type":"speak","text":"…"}\`（只有此刻同一处的人听得到；走在路上也能说）
 - 买东西：\`{"type":"buy","shop":"tea_counter","sku":"tea_leaves","qty":1}\`
 - 共同活动：\`start_interaction {objectId, wait?, itemId?}\`（读书时 itemId 是手上的某本书） → 别人 \`join_interaction {interactionId}\` → 发起人 \`begin_interaction {interactionId}\`；\`leave_interaction\`
 - 赠送/交换/出借：\`offer {kind:"gift"|"trade"|"loan", to, give:{coins?,items:[{type,qty}|{itemId}]}, want?}\`；对方 \`accept_offer\`/\`decline_offer {offerId}\`；\`cancel_offer\`
@@ -257,13 +263,13 @@ export function registerTownTools(tool: ToolFn, deps: TownDeps, ctx: SessionCont
     {
       title: '在小镇里做一件事',
       description:
-        '提交一条结构化动作（移动、说话、买东西、送礼、发起共同活动、寄信、凑一桌游戏……）。action 的写法见 prompts「resident」或资源 botgame://guide/town。request_id：每个有意的新动作用一个新的；因为网络出错重试时用同一个，服务器保证只做一次。action_window 和 context_version 来自最近一次 get_my_view。',
+        '提交一条结构化动作（去某处 navigate / 停步 stop_navigation、说话、买东西、送礼、发起共同活动、寄信、凑一桌游戏……）。action 的写法见 prompts「resident」或资源 botgame://guide/town。request_id：每个有意的新动作用一个新的；因为网络出错重试时用同一个，服务器保证只做一次。action_window 和 context_version 来自最近一次 get_my_view。',
       inputSchema: {
         request_id: z.string().min(8).max(80).regex(REQUEST_ID_RE, '8~80 个字符，只能是字母、数字、下划线和 . : -').describe('这次动作的幂等编号（8~80 个字符，只能是字母、数字、下划线和 . : -）'),
         action_window: z.string().describe('get_my_view 返回的 action_window'),
         context_version: z.number().int().describe('get_my_view 返回的 context.version'),
         activity_id: z.string().nullable().optional().describe('你所在小游戏的 activityId；不在游戏里不用填'),
-        action: z.record(z.string(), z.unknown()).describe('动作，例如 {"type":"move","to":"tea_house"}'),
+        action: z.record(z.string(), z.unknown()).describe('动作，例如 {"type":"navigate","to":"tea_house"}（move 是旧名）、{"type":"stop_navigation"}'),
       },
     },
     (a) => command(deps, ctx, me(), a, a.action, true),
@@ -274,7 +280,7 @@ export function registerTownTools(tool: ToolFn, deps: TownDeps, ctx: SessionCont
     {
       title: '等小镇里的新事件',
       description:
-        `带着 cursor 等到有你能看到的新事件（有人说话、到达、来信、轮到你……）或上下文变化，最多 ${MAX_WAIT_SECONDS} 秒。同一件待办一直没变不会反复唤醒你。等待会续你的在场状态；超时返回空列表就是没有新事。返回 resync=true 时请重新 get_my_view。`,
+        `带着 cursor 等到有你能看到的新事件（有人说话、到达、来信、轮到你、you_arrived / nav_stopped……）或上下文变化，最多 ${MAX_WAIT_SECONDS} 秒。同一件待办一直没变不会反复唤醒你。等待会续你的在场状态；超时返回空列表就是没有新事。返回 resync=true 时请重新 get_my_view。`,
       inputSchema: {
         cursor: z.string().describe('上一次 get_my_view / world_wait 返回的 cursor'),
         wait_seconds: z.number().int().min(0).max(MAX_WAIT_SECONDS).optional().describe(`最多等几秒（0~${MAX_WAIT_SECONDS}，默认 25）`),
@@ -308,14 +314,20 @@ export function registerTownTools(tool: ToolFn, deps: TownDeps, ctx: SessionCont
     'heartbeat',
     {
       title: '续在场（小镇）',
-      description: '只续这个会话在小镇里的在场租约，不做任何事、不产生事件。平时用 world_wait 等待就已经在续了；只有长时间不等待又想保持在场时才需要它。',
-      inputSchema: {},
+      description:
+        '续这个会话在小镇里的在场租约，不做任何事、不产生事件。平时用 world_wait 等待就已经在续了；只有长时间不等待又想保持在场时才需要它。带 navigation_id（和 revision）时，同一次调用里还会续导航控制租约（运行器的普通程序每 3 秒左右做一次，不经过模型；模型自己不需要调）：返回 navigation:{ok, leaseUntil?, navigation}，ok:false 且 navigation 为 null 说明已经没有在走的路了，navigation 不为 null 说明续的是已被换掉的旧路线（改道了）；这个会话没有控制权时报 CONTROL_LOST。',
+      inputSchema: {
+        navigation_id: z.string().max(80).optional().describe('要续租的导航编号（navigate 返回的 navigation.navigationId）'),
+        revision: z.number().int().optional().describe('导航版本（navigation.revision）；对不上说明已经改道'),
+      },
       idempotent: true,
     },
-    () =>
+    (a) =>
       wrap(() => {
         const { auth, r } = residentOf(deps, ctx, me());
-        return { ok: true, ...heartbeat(w, auth, r.presence_epoch) };
+        const hb = heartbeat(w, auth, r.presence_epoch);
+        if (a.navigation_id === undefined) return { ok: true, ...hb };
+        return { ok: true, ...hb, navigation: renewNavigation(w, auth, { navigationId: a.navigation_id, revision: a.revision }) };
       }),
   );
 
@@ -334,7 +346,7 @@ export function registerTownTools(tool: ToolFn, deps: TownDeps, ctx: SessionCont
     'leave_world',
     {
       title: '离开栖灯镇',
-      description: '主动离开小镇：立刻不再在场，撤销这位居民所有客户端的在场和控制权；已经在路上的移动和已经开始的制作照常完成。这个会话回到普通桌游上下文。居民、房子和东西都会保留。',
+      description: '主动离开小镇：立刻不再在场，撤销这位居民所有客户端的在场和控制权；正在走的路会立刻停下，已经开始的制作照常完成。这个会话回到普通桌游上下文。居民、房子和东西都会保留。',
       inputSchema: {},
       idempotent: true,
     },

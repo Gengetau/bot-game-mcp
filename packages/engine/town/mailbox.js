@@ -68,7 +68,7 @@ export function createMailbox() {
                 if (got) openLetter(got);
               }
             }, { small: true, variant: 'primary' })
-          : btn('回家', () => moveTo('home', '家'), { small: true, variant: 'soft', icon: 'home', disabled: Boolean(me?.location.moving) })
+          : btn('回家', () => moveTo('home', '家'), { small: true, variant: 'soft', icon: 'home' })
         : btn('打开', () => openLetter(l), { small: true, variant: 'ghost', always: true }),
     });
   }
@@ -109,7 +109,7 @@ export function createMailbox() {
         section(
           '收到的邀请',
           rec.length
-            ? h('div', { class: 'stack' }, rec.map((i) => row({ lead: icon('home', 20), title: `${i.host.name} 邀请你去家里`, sub: `${dateTimeOf(i.expiresAt, tz())} 前有效 · ${i.reentry ? '出入随意' : '进去一次'} · ${i.via === 'letter' ? '随信' : '当面'}`, aside: btn('前往', () => moveTo(i.home, `${i.host.name}家`), { small: true, variant: 'primary', icon: 'walk', disabled: Boolean(me.location.moving || me.game) }) })))
+            ? h('div', { class: 'stack' }, rec.map((i) => row({ lead: icon('home', 20), title: `${i.host.name} 邀请你去家里`, sub: `${dateTimeOf(i.expiresAt, tz())} 前有效 · ${i.reentry ? '出入随意' : '进去一次'} · ${i.via === 'letter' ? '随信' : '当面'}`, aside: btn('前往', () => moveTo(i.home, `${i.host.name}家`), { small: true, variant: 'primary', icon: 'walk', disabled: Boolean(me.game) }) })))
             : empty('没有收到的邀请', '读信时附的邀请，或者别人当面邀请你，会出现在这里。'),
         ),
         section(
@@ -146,7 +146,7 @@ export function createMailbox() {
   function update() {
     const me = state.me;
     if (!me) return;
-    const sig = JSON.stringify([me.mail, me.invites, me.location.space === me.me.home.id, me.location.moving ? 1 : 0, state.readOnly, tab]);
+    const sig = JSON.stringify([me.mail, me.invites, me.location.space === me.me.home.id, me.location.navigation ? 1 : 0, state.readOnly, tab]);
     if (sig === lastSig) return;
     const mailChanged = lastSig && JSON.parse(lastSig)[0]?.total !== me.mail.total;
     lastSig = sig;

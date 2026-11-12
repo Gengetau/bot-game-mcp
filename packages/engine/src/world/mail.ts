@@ -30,7 +30,7 @@ function validGrant(w: WorldService, guestId: string, home: string, now: number)
   );
 }
 
-/** 我手上「已得知且已生效」的邀请对应的主人（与 validGrant 同一套条件，供街道门牌使用） */
+/** 我手上「已得知且已生效」的邀请对应的主人（与 validGrant 同一套条件，供会馆门口的门牌使用） */
 export function activeInviteOwners(w: WorldService, guestId: string, now: number, limit: number): string[] {
   return w.db
     .all(
@@ -102,7 +102,7 @@ function createGrant(w: WorldService, owner: ResidentRow, guest: ResidentRow, vi
 /** 把一位客人请到会馆门口（邀请到期或被撤销）。离线的客人也会被挪到门外，回来时就在会馆门前。 */
 function eject(w: WorldService, guestId: string, home: string, at: number, text: string): boolean {
   const guest = w.resident(guestId);
-  // 还在去的路上的客人不用动：走到门口时会再查一次权限
+  // 不在屋里的客人不用动：还在走的人到会馆门口时会再查一次权限
   if (!guest || guest.location_id !== home) return false;
   sendToDoor(w, guestId, at);
   // 固定模板：不透露屋里之后发生了什么
@@ -118,7 +118,7 @@ function endGrant(w: WorldService, g: Row, at: number, revoked: boolean): void {
   let ejected = false;
   // 还有别的有效邀请就不用出门
   if (!validGrant(w, g.guest_id, g.home_id, at)) {
-    ejected = eject(w, g.guest_id, g.home_id, at, revoked ? `${ownerName}结束了这次邀请，你回到了门外的巷子里。` : `在${ownerName}家做客的时间到了，你回到了门外的巷子里。`);
+    ejected = eject(w, g.guest_id, g.home_id, at, revoked ? `${ownerName}结束了这次邀请，你回到了灯巷会馆门口。` : `在${ownerName}家做客的时间到了，你回到了灯巷会馆门口。`);
   }
   // 撤销要明确告知已得知邀请的人；不在屋里时 eject 不发通知，这里补一条固定模板。
   // 还没读信（learned_at 为空）的人不通知，免得借通知泄露信里的邀请。

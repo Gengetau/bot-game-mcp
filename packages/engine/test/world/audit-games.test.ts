@@ -4,7 +4,7 @@ import { Actor, makeTown, tempDb, type Town } from './helpers.js';
 
 function openTable(t: Town, actors: Actor[]): string {
   for (const a of actors) a.enter();
-  for (const a of actors) if (a.view().here?.space !== 'arcade') a.act('move', { to: 'arcade' });
+  for (const a of actors) if (a.view().here?.space !== 'arcade') a.go('arcade');
   t.advanceAlive(40_000, actors);
   const p = actors[0]!.act('propose_game', { game: 'number_bomb' });
   const id = p.activity.id as string;

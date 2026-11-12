@@ -7,6 +7,8 @@
  *  - 决策去重：一次决策 = 一个 decisionId，每一步动作的请求号由它稳定派生，网络失败重试不会重复执行；
  *    决策期间世界变了（context_stale / phase_stale / precondition_failed …）就丢弃，不盲目重试；
  *  - 小游戏：进入小游戏后只在「轮到我」时决策；阶段超时前没决策出来就放弃，让引擎托管，不抢答；
+ *  - 走路：navigate 被接受后，运行器用普通程序（不经过模型）按 renewEveryMs 续导航控制租约，直到到了 / 被截住 / 停下；
+ *    续租出错（网络抖动）下个周期再试，连续失败由租约自然到期兜底；
  *  - 在场：等待本身续在场；被别的客户端接管（control_lost）后停止一切写入，可选自动接管；
  *    断线指数退避重连并用游标续传，resync 时重读视图；
  *  - 模型出错 / 超时只记一次失败，退避后再试，不影响在场。
@@ -15,7 +17,7 @@
  * 时钟与等待函数可注入（clock），测试可以用假时钟。
  */
 import { createHash, randomUUID } from 'node:crypto';
-import { isDiscardError, toTownError, TownError, type ActOptions, type ActResult, type EnterProfile, type EnterResult, type TownAction, type TownEvent, type TownView, type WaitOptions, type WaitResult } from './town.js';
+import { isDiscardError, toTownError, TownError, type ActOptions, type ActResult, type EnterProfile, type EnterResult, type NavigationBrief, type NavigationRenewal, type TownAction, type TownEvent, type TownView, type WaitOptions, type WaitResult } from './town.js';
 
 // ───────────────────────── 接口 ─────────────────────────
 
@@ -26,6 +28,10 @@ export interface TownPort {
   wait(opts?: WaitOptions): Promise<WaitResult>;
   act(action: TownAction, opts?: ActOptions): Promise<ActResult>;
   heartbeat(): Promise<unknown>;
+  /** 续导航控制租约（走路时运行器定时调，不经过模型）。没有这个方法的端口不续租 */
+  renewNavigation?(nav: { navigationId: string; revision?: number }, opts?: { signal?: AbortSignal }): Promise<NavigationRenewal>;
+  /** 停下正在走的路（运行器正常退出时用） */
+  stopNavigation?(opts?: ActOptions): Promise<unknown>;
   claim(): Promise<unknown>;
   leave(): Promise<unknown>;
   close?(): Promise<void>;
@@ -91,6 +97,7 @@ export function defaultClassify(ev: TownEvent, c: ClassifyContext): EventClass {
     case 'asked_hobby':
       return inGame ? 'ignore' : 'urgent';
     case 'you_arrived':
+    case 'nav_stopped':
     case 'arrived':
     case 'left':
     case 'mail':
@@ -480,6 +487,9 @@ class Resident implements ResidentHandle {
   private rejectDone!: (e: unknown) => void;
   private pendingResume: PendingDecision | null = null;
   private autoClaimClaimedAt = 0;
+  /** 正在续租的那条导航（没有在走就是 null）。后台循环用 navAc 取消 */
+  private nav: { navigationId: string; revision: number; everyMs: number } | null = null;
+  private navAc: AbortController | null = null;
 
   constructor(
     private readonly spec: ResidentSpec,
@@ -520,11 +530,13 @@ class Resident implements ResidentHandle {
   start(): void {
     void this.main().then(
       () => {
+        this.stopRenewing();
         if (this.status !== 'left') this.status = 'stopped';
         this.onEnd();
         this.resolveDone();
       },
       (e) => {
+        this.stopRenewing();
         this.status = 'stopped';
         this.onEnd();
         this.log(`异常退出：${errText(e)}`);
@@ -541,7 +553,15 @@ class Resident implements ResidentHandle {
       } catch (e) {
         this.log(`离开小镇失败：${errText(e)}`);
       }
+    } else if (this.nav && this.status === 'running') {
+      // 不 leave 就退出：别让居民带着一条没人续的路站在半路，先停步
+      try {
+        await this.town.stopNavigation?.();
+      } catch (e) {
+        this.log(`退出前停步失败（租约到期后会自己停）：${errText(e)}`);
+      }
     }
+    this.stopRenewing();
     this.ac.abort();
     for (const w of this.resumeWaiters.splice(0)) w();
     await this.done.catch(() => undefined);
@@ -592,9 +612,11 @@ class Resident implements ResidentHandle {
     const saved = await this.journal.load();
     if (saved) this.js = { cursor: saved.cursor ?? null, seen: saved.seen ?? [], calls: saved.calls ?? [], claims: saved.claims ?? [], pending: saved.pending ?? null };
     for (const k of this.js.seen) this.seen.add(k);
+    let entered: EnterResult | null = null;
     for (let attempt = 0; !this.stopped; attempt++) {
       try {
         const r = await this.town.enter(this.spec.profile);
+        entered = r;
         this.adopt(r, true);
         this.residentId = r.resident_id ?? r.me.id;
         this.name = r.me.name;
@@ -612,6 +634,9 @@ class Resident implements ResidentHandle {
     }
     if (this.stopped) return;
     this.status = 'running';
+    // 重启时居民还在路上：接着续租
+    const walking = entered?.location?.walking;
+    if (walking?.navigation_id) this.startRenewing({ navigationId: walking.navigation_id, revision: walking.revision });
     this.lastActivityAt = this.lastIdleTickAt = this.clock.now();
     if (this.js.pending && this.js.pending.done < this.js.pending.actions.length) {
       if (this.resumeTooOld(this.js.pending)) {
@@ -628,6 +653,70 @@ class Resident implements ResidentHandle {
     this.ctxVersion = v.context?.version ?? this.ctxVersion;
     this.mode = v.context?.activityId ? 'game' : 'world';
     if (initial) this.residentId = v.me?.id ?? this.residentId;
+    const w = v.location?.walking;
+    if (w?.navigation_id) this.startRenewing({ navigationId: w.navigation_id, revision: w.revision });
+  }
+
+  // ── 导航续租（普通程序，不调用模型） ──
+
+  /** 开始（或改道后换成新的一条）续租。同一条（编号 + 版本都一样）不重复起。 */
+  private startRenewing(nav: NavigationBrief): void {
+    if (this.stopped || this.status !== 'running' || !this.town.renewNavigation) return;
+    const everyMs = Math.max(200, nav.renewEveryMs ?? this.nav?.everyMs ?? 3_000);
+    if (this.nav && this.navAc && this.nav.navigationId === nav.navigationId) {
+      this.nav.revision = nav.revision;
+      this.nav.everyMs = everyMs;
+      return;
+    }
+    this.stopRenewing();
+    this.nav = { navigationId: nav.navigationId, revision: nav.revision, everyMs };
+    const ac = (this.navAc = new AbortController());
+    const onStop = () => ac.abort();
+    this.ac.signal.addEventListener('abort', onStop, { once: true });
+    void this.renewLoop(ac.signal).finally(() => {
+      this.ac.signal.removeEventListener('abort', onStop);
+      if (this.navAc === ac) {
+        this.navAc = null;
+        this.nav = null;
+      }
+    });
+  }
+
+  private stopRenewing(): void {
+    this.navAc?.abort();
+    this.navAc = null;
+    this.nav = null;
+  }
+
+  private async renewLoop(signal: AbortSignal): Promise<void> {
+    while (!signal.aborted) {
+      const cur = this.nav;
+      if (!cur) return;
+      try {
+        await this.clock.sleep(cur.everyMs, signal);
+      } catch {
+        return;
+      }
+      const n = this.nav;
+      if (signal.aborted || !n || !this.town.renewNavigation) return;
+      try {
+        const r = await this.town.renewNavigation({ navigationId: n.navigationId, revision: n.revision }, { signal });
+        if (signal.aborted) return;
+        if (!r.navigation) return; // 已经没有在走的路（到了 / 被截住 / 停下）
+        if (!r.ok && r.navigation.navigationId === n.navigationId && r.navigation.revision === n.revision) return;
+        // 改道或者版本前进：以服务器说的现在这条为准
+        this.nav = { navigationId: r.navigation.navigationId, revision: r.navigation.revision, everyMs: Math.max(200, r.navigation.renewEveryMs ?? n.everyMs) };
+      } catch (e) {
+        if (signal.aborted || isAbort(e)) return;
+        const te = toTownError(e, 'heartbeat');
+        if (te instanceof TownError && (te.code === 'control_lost' || te.code === 'unauthenticated')) {
+          this.log(`导航续租停止：${te.code}`);
+          return;
+        }
+        // 网络抖动等：下个周期再试，连续失败由租约自然到期兜底
+        this.log(`导航续租出错（下个周期再试）：${errText(e)}`);
+      }
+    }
   }
 
   private async saveJournal(): Promise<void> {
@@ -751,6 +840,7 @@ class Resident implements ResidentHandle {
         this.verifyControl = true;
         continue;
       }
+      if (ev.type === 'you_arrived' || ev.type === 'nav_stopped') this.stopRenewing();
       if (ev.type === 'game_started') this.mode = 'game';
       if (ev.type === 'game_ended' || ev.type === 'game_out') this.mode = 'world';
       const own = ev.type === 'chat' && (ev.from as { id?: string } | undefined)?.id === this.residentId;
@@ -776,6 +866,7 @@ class Resident implements ResidentHandle {
     if (this.clock.now() - this.lastActivityAt >= this.t.idleLeaveMs) {
       this.log(`空闲 ${this.t.idleLeaveMs} 毫秒，离开小镇`);
       void this.town.leave().catch((e) => this.log(`离开小镇失败：${errText(e)}`));
+      this.stopRenewing();
       this.status = 'left';
     }
   }
@@ -785,6 +876,7 @@ class Resident implements ResidentHandle {
   private setPassive(reason: 'control_lost' | 'away'): void {
     if (this.status === reason) return;
     this.status = reason;
+    this.stopRenewing();
     if (reason === 'control_lost') this.stats.controlLost++;
     this.pending = null;
     this.log(reason === 'control_lost' ? '被别的客户端接管，停止写入' : '不在场，停止写入');
@@ -1075,6 +1167,7 @@ class Resident implements ResidentHandle {
       if ('result' in act) {
         results.push(act.result);
         this.stats.actions++;
+        this.afterAct(action, act.result);
         pending.done = i + 1;
         this.js.pending = pending;
         await this.saveJournal();
@@ -1107,6 +1200,14 @@ class Resident implements ResidentHandle {
       await this.saveJournal();
     }
     return { outcome, ...(error ? { error } : {}) };
+  }
+
+  /** 动作成功之后：导航被接受就开始续租，停步 / 进了小游戏就收掉。 */
+  private afterAct(action: TownAction, result: ActResult): void {
+    if (action.type === 'navigate' || action.type === 'move') {
+      if (result.status === 'accepted' && result.navigation?.navigationId) this.startRenewing(result.navigation);
+      else if (result.status === 'completed') this.stopRenewing();
+    } else if (action.type === 'stop_navigation') this.stopRenewing();
   }
 
   /** game_act 没写 phaseId 就用决策时视图里的阶段编号。 */

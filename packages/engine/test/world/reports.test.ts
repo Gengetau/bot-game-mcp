@@ -28,6 +28,8 @@ function scenario() {
   b.go('tea_house');
   a.act('buy', { shop: 'tea_counter', sku: 'tea_leaves', qty: 1 });
   const table = a.view().here!.objects.find((o) => o.type === 'tea_table')!;
+  a.go(table.id);
+  b.go(table.id);
   const ix = a.act('start_interaction', { objectId: table.id });
   b.act('join_interaction', { interactionId: ix.interaction.id });
   a.act('begin_interaction', { interactionId: ix.interaction.id });
@@ -68,6 +70,27 @@ describe('公开日报：只含公开事实的聚合句子', () => {
     expect(text).toMatch(/新来了 3 位居民/);
     // 句子里不写人名对人名的关系（公开日报只写聚合）
     expect(text).not.toMatch(/和.*一起/);
+  });
+
+  it('走来走去（路过灯笼路、进出私宅）不进日报：没有路、坐标、路线，也没有谁家', () => {
+    const { t, a, b, c, day0 } = scenario();
+    // 走一圈：茶馆 -> 花园 -> 回家 -> 会馆；路过灯笼路，进出私宅
+    a.go('garden');
+    a.go('home');
+    a.go('residential');
+    b.go('bookshop');
+    for (const x of [a, b, c]) x.enter(); // 走动期间别人的在场租约可能过期，重新登记
+    toNextDay(t, day0, [a, b, c]);
+    for (const scope of ['public', { residentId: a.residentId }, { residentId: b.residentId }] as const) {
+      const text = report(t.w, scope, day0, t.clock.t).lines.join('\n');
+      expect(text).not.toContain('灯笼路');
+      expect(text).not.toMatch(/road|home:|坐标|路线|\d+\.\d+/);
+      expect(text).not.toContain(a.residentId);
+    }
+    const day0Start = t.clock.t - 3 * DAY;
+    const recapText = JSON.stringify(recap(t.w, a.residentId, day0Start, t.clock.t));
+    expect(recapText).not.toContain('灯笼路');
+    expect(recapText).not.toMatch(/"(x|z)":/);
   });
 
   it('个人日报只来自本人是当事人的事实', () => {
