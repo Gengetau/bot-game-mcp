@@ -9,7 +9,7 @@
 ## 目录
 
 - `build_resident.py`：原始角色 GLB -> `town/assets/models/characters/resident.glb`（bpy，可重复运行）。
-- `convert_sfx.sh`：Kenney 的 ogg -> `town/assets/audio/sfx/*.wav`（ffmpeg）。
+- `audio/`：音频的再生成脚本（`build_audio.py`，调用同目录的 `loop.py`、`segpick.py`；需要 ffmpeg + numpy）。输出 `town/stream/music/`（音乐，不进 pck）、`town/assets/audio/ambience/`、`town/assets/audio/sfx/`。原始素材体积大不进仓库，来源和 sha256 见 `../ASSETS.md`，许可证据见 `third_party/opengameart/`。
 - `check_resident.gd`：Godot 里检查导入结果的脚本（验收用，不属于游戏工程）。
 - `source/`：脚本的输入。`kenney_mini_character_male_a.glb` 和它引用的 `Textures/colormap.png`（导入 Blender 时需要这张贴图在原位置）、`audio/*.ogg`。
 - `third_party/<包名>/License.txt`：随素材放的许可证原文。

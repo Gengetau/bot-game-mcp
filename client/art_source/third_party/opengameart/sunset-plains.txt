@@ -1,0 +1,8 @@
+来源页面: https://opengameart.org/content/sunset-plains
+标题: Sunset Plains
+Author: Yoiyami Thursday, November 27, 2025 - 03:41
+页面上标注的许可证 (License(s) 一栏，2026-11-13 读取): CC0
+Copyright/Attribution Notice: CC0 — Free to use in any project (no attribution required)
+下载日期: 2026-11-13
+下载的原始文件及 sha256:
+  f3750f8eda8bf42662b12f5726404675689b50f05ccaa968c5cb2e33d9172a62  sunset_plains.wav
