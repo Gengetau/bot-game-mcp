@@ -10,9 +10,10 @@ import { sanitizeUserText } from '../core/text.js';
 import { homeId, homeOwner, isHome, placeDef } from './content.js';
 import { type Row } from './db.js';
 import { badRequest, precondition } from './errors.js';
-import { bumpCounter, counter, placeAt, setHomeAccessCheck, spaceName, takeToken } from './life.js';
+import { bumpCounter, counter, setHomeAccessCheck, spaceName, takeToken } from './life.js';
 import { card } from './project.js';
 import type { WorldService } from './service.js';
+import { sendToDoor } from './space.js';
 import type { ResidentRow } from './types.js';
 
 // ───────────────────────── 邀请 ─────────────────────────
@@ -98,22 +99,12 @@ function createGrant(w: WorldService, owner: ResidentRow, guest: ResidentRow, vi
   return grantId;
 }
 
-/** 把一位客人请到门口（邀请到期或被撤销）。离线的客人也会被挪到门外，回来时就在巷子里。 */
+/** 把一位客人请到会馆门口（邀请到期或被撤销）。离线的客人也会被挪到门外，回来时就在会馆门前。 */
 function eject(w: WorldService, guestId: string, home: string, at: number, text: string): boolean {
   const guest = w.resident(guestId);
-  if (!guest) return false;
-  const owner = w.resident(homeOwner(home));
-  const street = owner?.street_id ?? guest.street_id;
-  if (guest.move) {
-    // 还在路上：到门口时会再查一次权限，这里不用动
-    return false;
-  }
-  if (guest.location_id !== home) return false;
-  for (const h of w.hooks.leaveSpace) h(guest, home, at);
-  const fresh = w.mustResident(guestId);
-  const others = w.audienceIn(home).filter((x) => x.resident_id !== guestId);
-  w.emitTo(others.map((x) => x.resident_id), 'left', { resident: card(fresh), space: home }, at);
-  placeAt(w, fresh, street, at);
+  // 还在去的路上的客人不用动：走到门口时会再查一次权限
+  if (!guest || guest.location_id !== home) return false;
+  sendToDoor(w, guestId, at);
   // 固定模板：不透露屋里之后发生了什么
   w.emitTo([guestId], 'notice', { text }, at);
   return true;

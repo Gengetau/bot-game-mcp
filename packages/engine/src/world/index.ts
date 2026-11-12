@@ -12,12 +12,14 @@ import { installProperty } from './property.js';
 import { installReports } from './reports.js';
 import { WorldService, type Auth, type WorldOptions } from './service.js';
 import { installSocial, onReturn } from './social.js';
+import { installSpace } from './space.js';
 import { agentView, meView, type MeView } from './views.js';
 
 export function createWorld(opts: WorldOptions): WorldService {
   const w = new WorldService(opts);
   installIdentity(w);
   installLife(w);
+  installSpace(w);
   installProperty(w);
   installMail(w);
   installInteract(w);
@@ -71,3 +73,5 @@ export { REQUEST_ID_RE } from './service.js';
 export { outboxAck, outboxPending, recap, report } from './reports.js';
 export { TownDb, verifyBackup } from './db.js';
 export * as townContent from './content.js';
+export { controlDisconnected, mapManifest, renewNavigation, sceneKeyOfResident, sceneView, whereabouts, type ActorView, type NavBrief, type SceneView, type Whereabouts } from './space.js';
+export type { MapManifest, MapSource } from './spatial/types.js';

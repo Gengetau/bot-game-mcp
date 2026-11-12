@@ -16,7 +16,7 @@ import {
   type SceneSource,
 } from '../../src/world/spatial/index.js';
 
-export function sceneSrc(over: Partial<SceneSource> = {}): SceneSource {
+function sceneSrc(over: Partial<SceneSource> = {}): SceneSource {
   return {
     id: 's',
     name: '场景',
@@ -34,7 +34,7 @@ export function sceneSrc(over: Partial<SceneSource> = {}): SceneSource {
   };
 }
 
-export function mapSrc(scene: SceneSource | SceneSource[] = sceneSrc(), over: Partial<MapSource> = {}): MapSource {
+function mapSrc(scene: SceneSource | SceneSource[] = sceneSrc(), over: Partial<MapSource> = {}): MapSource {
   const scenes = Array.isArray(scene) ? scene : [scene];
   return {
     mapVersion: 'test-1',
@@ -49,7 +49,7 @@ export function mapSrc(scene: SceneSource | SceneSource[] = sceneSrc(), over: Pa
   };
 }
 
-export function compileScene(s: SceneSource, over: Partial<MapSource> = {}): CompiledScene {
+function compileScene(s: SceneSource, over: Partial<MapSource> = {}): CompiledScene {
   return compileMap(mapSrc(s, over)).scenes.get(s.id)!;
 }
 

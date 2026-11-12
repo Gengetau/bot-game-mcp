@@ -17,6 +17,7 @@ import { addMood, applyNeeds, bumpCounter } from './life.js';
 import { card } from './project.js';
 import { mint } from './property.js';
 import { sha256, type WorldService } from './service.js';
+import { stopNav } from './space.js';
 import type { ResidentRow } from './types.js';
 
 interface Loaded {
@@ -366,7 +367,8 @@ export function installGames(w: WorldService): void {
     w.cancelJob(`al:${act.activity_id}`);
     w.schedule('activity_deadline', `ad:${act.activity_id}`, deadline, { activityId: act.activity_id });
     for (const m of members) {
-      // 进入小游戏前收尾：没完成的交换撤销、手上的共同活动退出
+      // 进入小游戏前收尾：正在走的站住，没完成的交换撤销、手上的共同活动退出
+      stopNav(w, m.resident_id, now, 'activity');
       for (const h of w.hooks.leaveSpace) h(m, act.venue_id, now);
       const fresh = w.mustResident(m.resident_id);
       const seat = rec.players.find((p) => p.id === m.resident_id)!.seat;

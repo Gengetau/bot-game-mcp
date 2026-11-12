@@ -1,16 +1,15 @@
 /**
- * 日常生活：移动、现场发言、询问爱好、三项软需要、短期情绪。
+ * 日常生活：现场发言、询问爱好、三项软需要、短期情绪。（走路在 space.ts。）
  *
- * - 移动：提交时算好路径和到达时间，到达由定时任务结算（保留应到达时间）。在途的人不属于任何地点。
- * - 现场发言：受众在提交那一刻固定（同一空间、在场、不在途、不在小游戏里），之后进来的人看不到这句。
+ * - 现场发言：受众在提交那一刻固定（同一区域、在场、不在小游戏里），之后进来的人看不到这句。边走边说也可以。
  * - 需要是软的：数值低不会禁止任何动作，只影响建议和效果的大小。社交、兴趣按有效在场时间惰性下降，离线不掉。
  */
 import { sanitizeUserText } from '../core/text.js';
-import { INTERESTS, MOODS, STREETS, homeId, homeOwner, isHome, placeDef, shortestPath } from './content.js';
+import { INTERESTS, MOODS, homeOwner, isHome, placeDef } from './content.js';
 import { badRequest, precondition, WorldError } from './errors.js';
-import { card, publicSpot, zoneOf } from './project.js';
+import { card, zoneOf } from './project.js';
 import type { WorldService } from './service.js';
-import type { MoveState, NeedsState, ResidentRow } from './types.js';
+import type { NeedsState, ResidentRow } from './types.js';
 
 const clamp = (v: number) => Math.max(0, Math.min(100, Math.round(v * 10) / 10));
 
@@ -132,26 +131,6 @@ export function spaceName(w: WorldService, spaceId: string, viewerId?: string): 
   return placeDef(spaceId)?.name ?? spaceId;
 }
 
-/** 住宅门口在哪条街。 */
-export function streetOfHome(w: WorldService, homeSpace: string): string {
-  return w.resident(homeOwner(homeSpace))?.street_id ?? STREETS[0]!;
-}
-
-/** 两个空间之间的路径（含起点终点）。住宅挂在主人所在的那条街上。 */
-export function routeBetween(w: WorldService, from: string, to: string): string[] | null {
-  const fromNode = isHome(from) ? streetOfHome(w, from) : from;
-  const toNode = isHome(to) ? streetOfHome(w, to) : to;
-  const mid = shortestPath(fromNode, toNode);
-  if (!mid) return null;
-  return [...(isHome(from) ? [from] : []), ...mid, ...(isHome(to) ? [to] : [])];
-}
-
-export function routeDurationMs(w: WorldService, path: string[]): number {
-  let ms = 0;
-  for (let i = 1; i < path.length; i++) ms += isHome(path[i]!) || isHome(path[i - 1]!) ? w.params.doorDurationMs : w.params.moveDurationMs;
-  return ms;
-}
-
 /** 进门权限检查由信件模块注册（主人永远可以；客人要有当前有效、已经得知的邀请）。 */
 export type HomeAccessCheck = (r: ResidentRow, homeSpace: string, now: number) => { ok: true; grantId?: string } | { ok: false; why: string };
 const homeAccess = new WeakMap<WorldService, HomeAccessCheck>();
@@ -169,82 +148,12 @@ export function pairScope(a: string, b: string): string {
   return a < b ? `pair:${a}:${b}` : `pair:${b}:${a}`;
 }
 
-/** 把一位居民安置到某个空间（到达、被请出门都走这里）：通知现场的人、更新公开位置、触发到达钩子。 */
-export function placeAt(w: WorldService, r: ResidentRow, spaceId: string, at: number, opts: { silent?: boolean } = {}): void {
-  const beforeZone = publicSpot(r);
-  r.location_id = spaceId;
-  r.move = null;
-  w.saveResident(r);
-  if (r.present_since !== null && !opts.silent) {
-    const others = w.audienceIn(spaceId).filter((x) => x.resident_id !== r.resident_id);
-    w.emitTo(others.map((x) => x.resident_id), 'arrived', { resident: card(r), space: spaceId }, at);
-    w.emitTo([r.resident_id], 'you_arrived', { space: spaceId, name: spaceName(w, spaceId, r.resident_id) }, at);
-  }
-  const after = publicSpot(r);
-  if (r.present_since !== null && (beforeZone.at !== after.at || beforeZone.moving)) w.emitPublic('place', { resident: after }, at);
-  for (const h of w.hooks.arrive) h(w.mustResident(r.resident_id), spaceId, at);
-}
-
 // ───────────────────────── 安装 ─────────────────────────
 
 export function installLife(w: WorldService): void {
-  // ── 移动 ──
-  w.handlers.set('move', ({ r, action, now }) => {
-    if (r.move) throw precondition('你正在路上，到了再说。', 'moving');
-    let to = String(action.to ?? '');
-    if (to === 'home') to = homeId(r.resident_id);
-    if (isHome(to)) {
-      if (!w.resident(homeOwner(to))) throw precondition('没有这户人家。', 'no_such_place');
-      const access = checkHomeAccess(w, r, to, now);
-      if (!access.ok) throw precondition(`进不去：${access.why}`, 'no_access');
-    } else if (!placeDef(to)) {
-      throw precondition('没有这个地方。', 'no_such_place');
-    }
-    if (to === r.location_id) throw precondition('你已经在这里了。', 'already_here');
-    const path = routeBetween(w, r.location_id, to);
-    if (!path) throw precondition('走不到那里。', 'no_route');
-    const from = r.location_id;
-    const move: MoveState = { from, to, path, startedAt: now, arriveAt: now + routeDurationMs(w, path) };
-    // 离开原地：先让各模块收尾（撤销没完成的交换、退出共同活动），再通知现场的人
-    for (const h of w.hooks.leaveSpace) h(r, from, now);
-    const fresh = w.mustResident(r.resident_id);
-    const others = w.audienceIn(from).filter((x) => x.resident_id !== r.resident_id);
-    const spotBefore = JSON.stringify(publicSpot(fresh));
-    fresh.move = move;
-    w.saveResident(fresh);
-    w.emitTo(others.map((x) => x.resident_id), 'left', { resident: card(fresh), space: from }, now);
-    // 公开位置真的变了才进公开流：住宅区内部的走动、从住宅区出发的那一刻都不出现
-    // （公开层面只到「住宅区」，出发和到达的时间差会暴露巷子和门）
-    const spotAfter = publicSpot(fresh);
-    if (JSON.stringify(spotAfter) !== spotBefore) w.emitPublic('place', { resident: spotAfter }, now);
-    w.schedule('move_arrive', `move:${r.resident_id}:${now}`, move.arriveAt, { residentId: r.resident_id, startedAt: now });
-    return { status: 'accepted', move: { to, path, arriveAt: move.arriveAt, toName: spaceName(w, to, r.resident_id) } };
-  });
-
-  w.jobHandlers.set('move_arrive', (payload) => {
-    const r = w.resident(String(payload.residentId));
-    if (!r || !r.move || r.move.startedAt !== payload.startedAt) return;
-    const at = r.move.arriveAt;
-    let dest = r.move.to;
-    let blocked: string | null = null;
-    if (isHome(dest)) {
-      // 到门口时再查一次：路上邀请过期或被撤销，就停在门外
-      const access = checkHomeAccess(w, r, dest, at);
-      if (!access.ok) {
-        blocked = access.why;
-        dest = streetOfHome(w, dest);
-      }
-    }
-    const target = r.move.to;
-    placeAt(w, r, dest, at);
-    if (blocked) w.emitTo([r.resident_id], 'notice', { text: `你走到了${spaceName(w, target, r.resident_id)}门口，但没能进去：${blocked}` }, at);
-    if (!isHome(dest)) w.fact('arrived', [{ id: r.resident_id, role: 'self' }], { place: dest }, { occurredAt: at });
-  });
-
   // ── 现场发言 ──
   w.handlers.set('speak', ({ r, action, now }) => {
     const space = w.spaceOf(r);
-    if (!space) throw precondition('你正在路上，到了地方再说话。', 'moving');
     const raw = typeof action.text === 'string' ? action.text : '';
     const text = [...sanitizeUserText(raw).replace(/\s+/g, ' ').trim()].slice(0, w.params.chatMaxChars).join('');
     if (!text) throw badRequest('说点什么吧。');
@@ -286,7 +195,7 @@ export function installLife(w: WorldService): void {
   w.handlers.set('ask_hobby', ({ r, action, now }) => {
     const space = w.spaceOf(r);
     const target = w.resident(String(action.target ?? ''));
-    if (!space || !target || target.resident_id === r.resident_id || !w.interactive(target) || w.spaceOf(target) !== space) {
+    if (!target || target.resident_id === r.resident_id || !w.interactive(target) || w.spaceOf(target) !== space) {
       throw precondition('对方不在你身边。', 'not_here');
     }
     if (!target.state.settings.allowAskHobby) throw precondition(`${target.name}现在不太想聊这个。`, 'declined');

@@ -26,13 +26,58 @@ export interface ResidentState {
   };
 }
 
-export interface MoveState {
-  from: string;
-  to: string;
-  /** 经过的节点（含起点和终点） */
-  path: string[];
+/** 导航的目标（给本人和运行器看的说明；路径另算）。 */
+export interface NavTarget {
+  kind: 'place' | 'home' | 'object' | 'resident' | 'point';
+  /** 地点编号、物件编号、居民编号；地图点没有 */
+  id?: string;
+  name: string;
+}
+
+/** 走完当前这一段之后要做的事：穿过进出口，或者在新场景里接着走。 */
+export type NavStep = { op: 'exit' } | { op: 'enter'; home: string } | { op: 'walk'; to: string | { x: number; z: number } };
+
+/**
+ * 一段进行中的导航（world_actors.nav_json）。位置不存每帧坐标：points + speed + startedAt 就是全部，
+ * 任何时刻的位置用 positionAt 现算，并且截断在 leaseUntil。
+ */
+export interface NavState {
+  navigationId: string;
+  revision: number;
+  points: { x: number; z: number }[];
+  speed: number;
   startedAt: number;
-  arriveAt: number;
+  /** 导航控制租约截止：过了这一刻不再前进 */
+  leaseUntil: number;
+  /** 最近一次耐久确认「这一刻人还在走」（续租、本人提交了别的动作）。重启后停在这一刻的位置 */
+  checkpointAt: number;
+  /** 沿路还没结算的区域变化 */
+  crossings: { at: number; zone: string }[];
+  target: NavTarget;
+  /** 出发时所在的区域标签 */
+  fromSpace: string;
+  after: NavStep[];
+}
+
+/** world_actors 的一行：一个有位置的角色（居民，以后还有 NPC）。 */
+export interface ActorRow {
+  actor_id: string;
+  world_id: string;
+  kind: 'resident' | 'npc';
+  resident_id: string | null;
+  scene_id: string;
+  instance_id: string;
+  /** 锚点：站着的时候就是当前位置；走着的时候是这一段的起点 */
+  x: number;
+  z: number;
+  heading: number;
+  anchor_at: number;
+  pos_version: number;
+  nav_revision: number;
+  nav_json: string | null;
+  map_version: string;
+  // 解析后的字段
+  nav: NavState | null;
 }
 
 export interface ResidentRow {
@@ -43,9 +88,11 @@ export interface ResidentRow {
   kind: 'human' | 'agent';
   street_id: string;
   house_no: number;
-  /** 最后一个合法位置。在途时仍是出发地，到达后才改 */
+  /**
+   * 所在的区域标签：公共地点编号、'road'（路上）、'residential'（住宅接入点）或 home:<房主>。
+   * 只由空间模块（space.ts）在跨区域时改写；精确位置在 world_actors 里。
+   */
   location_id: string;
-  move_json: string | null;
   activity_id: string | null;
   context_version: number;
   control_epoch: number;
@@ -60,7 +107,6 @@ export interface ResidentRow {
   last_seen_at: number;
   // 解析后的字段
   state: ResidentState;
-  move: MoveState | null;
 }
 
 export interface Principal {

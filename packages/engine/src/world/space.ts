@@ -1,0 +1,861 @@
+/**
+ * 空间权威：谁在哪、怎么走、够不够得着。位置只在这个模块里写。
+ *
+ * - 权威位置是「场景 + 实例 + x + z」（world_actors）。走路时不存每帧坐标：导航存折线、速度和出发时刻，
+ *   任何时刻的位置用 positionAt 现算，并且截断在导航控制租约的截止时刻。
+ * - residents.location_id 是区域标签（公共地点、'road'、'residential'、home:<房主>），只在跨区域的那一刻由这里改写，
+ *   同一事务里触发离开 / 到达钩子和现场事件。别的模块按区域判断「在不在一起」，按 requireReach 判断够不够得着物件。
+ * - 导航开始、改道、停止、跨场景、结束都是耐久变化：每次变化 navigationRevision 加一，定时任务对不上编号和版本就作废。
+ * - 导航控制租约：只在走路时有，由客户端或运行器的普通程序续（不调用模型）。到期没续就停在租约截止那一刻的位置。
+ *   离线、控制权被接管、控制连接断开，都立即停步。服务器重启后停在最后一个耐久检查点。
+ * - 私宅是独立实例：进出只经过公共住宅接入点的会馆门口；门口再查一次权限。别人只看到有人走到会馆门口。
+ */
+import { homeId, homeOwner, isHome, placeDef } from './content.js';
+import { parseJson, type Row } from './db.js';
+import { WorldError, precondition } from './errors.js';
+import { checkHomeAccess, spaceName, takeToken } from './life.js';
+import { card, publicSpot } from './project.js';
+import type { ActionHandler, Auth, WorldService } from './service.js';
+import { manifestOf } from './spatial/compile.js';
+import { distance, nearestWalkable, zoneAt } from './spatial/grid.js';
+import { arrivalAt, positionAt, zoneCrossings } from './spatial/motion.js';
+import { findPath, pathLength } from './spatial/path.js';
+import type { CompiledScene, MapManifest, Motion, Vec2 } from './spatial/types.js';
+import type { ActorRow, NavState, NavStep, NavTarget, ResidentRow } from './types.js';
+
+/** 接近一位居民时停在离对方多远的地方（米）。 */
+const APPROACH_GAP = 1.0;
+/** 点地时允许点偏多远（米）：点在墙上、桌子上、喷泉上时取最近的可走点。 */
+const CLICK_SNAP = 2.5;
+
+export type StopReason = 'stop' | 'reroute' | 'lease' | 'offline' | 'control' | 'disconnect' | 'interaction' | 'activity' | 'eject' | 'blocked';
+
+// ───────────────────────── 地图布局 ─────────────────────────
+
+interface Layout {
+  town: CompiledScene;
+  home: CompiledScene | null;
+  /** 公共场景里的会馆门口（进出私宅的唯一位置） */
+  doorOut: { x: number; z: number; heading: number };
+  /** 私宅里进门落脚的位置 */
+  doorIn: { x: number; z: number; heading: number };
+  manifest: MapManifest;
+}
+const layouts = new WeakMap<WorldService, Layout>();
+
+function layout(w: WorldService): Layout {
+  let l = layouts.get(w);
+  if (l) return l;
+  const town = w.map.scenes.get(w.map.spawn.scene)!;
+  const home = [...w.map.scenes.values()].find((s) => s.instanced) ?? null;
+  const spawn = town.anchors.get(w.map.spawn.anchor)!;
+  let doorOut = { x: spawn.x, z: spawn.z, heading: spawn.facing ?? 0 };
+  let doorIn = { x: 0, z: 0, heading: 0 };
+  if (home) {
+    const out = [...town.portals.values()].find((p) => p.toScene === home.id);
+    const back = [...home.portals.values()].find((p) => p.toScene === town.id);
+    const a = out ? town.anchors.get(out.anchor) : undefined;
+    const b = back ? home.anchors.get(back.anchor) : out ? home.anchors.get(out.toAnchor) : undefined;
+    if (a) doorOut = { x: a.x, z: a.z, heading: a.facing ?? 0 };
+    if (b) doorIn = { x: b.x, z: b.z, heading: b.facing ?? 0 };
+  }
+  l = { town, home, doorOut, doorIn, manifest: manifestOf(w.map) };
+  layouts.set(w, l);
+  return l;
+}
+
+const travelCache = new WeakMap<WorldService, Map<string, number | null>>();
+
+/**
+ * 两个地点之间大概要走多少秒（落脚点到落脚点，只是给人看的估计）。
+ * 起点可以是任何区域标签：在家里按会馆门口算；在路上没有落脚点，返回 null。
+ */
+export function travelSeconds(w: WorldService, from: string, to: string): number | null {
+  const L = layout(w);
+  const a = w.map.aliases[isHome(from) ? 'residential' : from];
+  const b = w.map.aliases[isHome(to) ? 'residential' : to];
+  if (!a || !b || a.scene !== L.town.id || b.scene !== L.town.id) return null;
+  if (a.anchor === b.anchor) return 0;
+  let cache = travelCache.get(w);
+  if (!cache) travelCache.set(w, (cache = new Map()));
+  const key = a.anchor < b.anchor ? `${a.anchor}|${b.anchor}` : `${b.anchor}|${a.anchor}`;
+  if (!cache.has(key)) {
+    const path = findPath(L.town, L.town.anchors.get(a.anchor)!, L.town.anchors.get(b.anchor)!);
+    cache.set(key, path ? Math.ceil(path.length / w.map.speed) : null);
+  }
+  return cache.get(key) ?? null;
+}
+
+/** 发给客户端的地图清单（地图源 + 栅格化后的网格 + 校验值）。 */
+export function mapManifest(w: WorldService): MapManifest {
+  return layout(w).manifest;
+}
+
+const sceneKeyOf = (a: { scene_id: string; instance_id: string }): string => `${a.scene_id}|${a.instance_id}`;
+const round3 = (v: number): number => Math.round(v * 1000) / 1000;
+
+// ───────────────────────── 角色行 ─────────────────────────
+
+function hydrate(row: Row): ActorRow {
+  return { ...(row as ActorRow), nav: parseJson<NavState | null>(row.nav_json, null) };
+}
+
+export function actorOf(w: WorldService, residentId: string): ActorRow | undefined {
+  const row = w.db.get('SELECT * FROM world_actors WHERE actor_id = ? AND world_id = ?', residentId, w.worldId);
+  return row ? hydrate(row) : undefined;
+}
+
+function saveActor(w: WorldService, a: ActorRow): void {
+  a.pos_version += 1;
+  w.db.run(
+    'UPDATE world_actors SET scene_id = ?, instance_id = ?, x = ?, z = ?, heading = ?, anchor_at = ?, pos_version = ?, nav_revision = ?, nav_json = ?, map_version = ? WHERE actor_id = ?',
+    a.scene_id,
+    a.instance_id,
+    a.x,
+    a.z,
+    a.heading,
+    a.anchor_at,
+    a.pos_version,
+    a.nav_revision,
+    a.nav ? JSON.stringify(a.nav) : null,
+    a.map_version,
+    a.actor_id,
+  );
+}
+
+/** 一个区域标签对应的落脚点。不认识的标签落到出生点，并返回修正后的标签。 */
+function spotFor(w: WorldService, label: string): { scene: string; instance: string; x: number; z: number; heading: number; label: string } {
+  const L = layout(w);
+  if (isHome(label) && L.home && w.resident(homeOwner(label))) {
+    return { scene: L.home.id, instance: homeOwner(label), ...L.doorIn, label };
+  }
+  const alias = w.map.aliases[label] ?? w.map.spawn;
+  const scene = w.map.scenes.get(alias.scene)!;
+  const anchor = scene.anchors.get(alias.anchor)!;
+  return { scene: scene.id, instance: '', x: anchor.x, z: anchor.z, heading: anchor.facing ?? 0, label: zoneAt(scene, anchor.x, anchor.z).id };
+}
+
+/** 保证这位居民有空间角色行（新居民、从旧版迁移过来的居民）。没有就按区域标签落到对应的落脚点。 */
+export function ensureActor(w: WorldService, r: ResidentRow, at: number): ActorRow {
+  const existing = actorOf(w, r.resident_id);
+  if (existing) return existing;
+  const spot = spotFor(w, r.location_id);
+  w.db.run(
+    `INSERT INTO world_actors(actor_id, world_id, kind, resident_id, scene_id, instance_id, x, z, heading, anchor_at, map_version)
+     VALUES (?,?,'resident',?,?,?,?,?,?,?,?)`,
+    r.resident_id,
+    w.worldId,
+    r.resident_id,
+    spot.scene,
+    spot.instance,
+    spot.x,
+    spot.z,
+    spot.heading,
+    at,
+    w.map.mapVersion,
+  );
+  if (spot.label !== r.location_id) {
+    const fresh = w.mustResident(r.resident_id);
+    fresh.location_id = spot.label;
+    w.saveResident(fresh);
+    r.location_id = spot.label;
+  }
+  return actorOf(w, r.resident_id)!;
+}
+
+// ───────────────────────── 位置 ─────────────────────────
+
+const motionOf = (nav: NavState): Motion => ({ points: nav.points, speed: nav.speed, startedAt: nav.startedAt, until: nav.leaseUntil });
+const legArrival = (nav: NavState): number => arrivalAt({ points: nav.points, speed: nav.speed, startedAt: nav.startedAt });
+
+export interface Pos {
+  scene: string;
+  instance: string;
+  x: number;
+  z: number;
+  heading: number;
+  moving: boolean;
+}
+
+/** 这一刻的权威位置。走路时按折线现算，截断在租约截止时刻。 */
+export function posOf(a: ActorRow, now: number): Pos {
+  if (!a.nav) return { scene: a.scene_id, instance: a.instance_id, x: a.x, z: a.z, heading: a.heading, moving: false };
+  const s = positionAt(motionOf(a.nav), now);
+  return { scene: a.scene_id, instance: a.instance_id, x: s.x, z: s.z, heading: s.heading, moving: !s.arrived && !s.halted };
+}
+
+/** 一位居民这一刻的位置；还没有角色行的（刚迁移）返回 null。只读，不写库。 */
+export function positionOfResident(w: WorldService, residentId: string, now: number): Pos | null {
+  const a = actorOf(w, residentId);
+  return a ? posOf(a, now) : null;
+}
+
+/** 两位居民之间的距离（米）。不在同一个场景实例里返回 null。 */
+export function distanceBetween(w: WorldService, aId: string, bId: string, now: number): number | null {
+  const a = positionOfResident(w, aId, now);
+  const b = positionOfResident(w, bId, now);
+  if (!a || !b || a.scene !== b.scene || a.instance !== b.instance) return null;
+  return distance(a, b);
+}
+
+// ───────────────────────── 区域变化 ─────────────────────────
+
+/**
+ * 区域标签变了：先让各模块收尾（撤销没完成的交换、退出报名），通知两边在场的人，更新公开位置，再触发到达钩子。
+ * 位置本身由调用方先写好。不在场的居民只改标签，不产生任何现场或公开事件。
+ */
+function changeSpace(w: WorldService, residentId: string, to: string, at: number): void {
+  let r = w.mustResident(residentId);
+  const from = r.location_id;
+  if (from === to) return;
+  for (const h of w.hooks.leaveSpace) h(r, from, at);
+  r = w.mustResident(residentId);
+  const visible = r.present_since !== null && !r.activity_id;
+  if (visible) {
+    const others = w.audienceIn(from).filter((x) => x.resident_id !== residentId);
+    w.emitTo(others.map((x) => x.resident_id), 'left', { resident: card(r), space: from }, at);
+  }
+  const before = publicSpot(r);
+  r.location_id = to;
+  w.saveResident(r);
+  if (visible) {
+    const others = w.audienceIn(to).filter((x) => x.resident_id !== residentId);
+    w.emitTo(others.map((x) => x.resident_id), 'arrived', { resident: card(r), space: to }, at);
+  }
+  // 公开层面只到「住宅区」：在住宅区内部进出家门，公开位置不变，也就不进公开流
+  const after = publicSpot(r);
+  if (r.present_since !== null && before.at !== after.at) w.emitPublic('place', { resident: after }, at);
+  for (const h of w.hooks.arrive) h(w.mustResident(residentId), to, at);
+}
+
+/** 站定之后核对一次：区域标签必须等于脚下的区域（防止毫秒取整让标签和坐标差一格）。 */
+function reconcileLabel(w: WorldService, a: ActorRow, at: number): void {
+  const scene = w.map.scenes.get(a.scene_id);
+  if (!scene || scene.instanced || !a.resident_id) return;
+  const zone = zoneAt(scene, a.x, a.z).id;
+  if (zone !== w.mustResident(a.resident_id).location_id) changeSpace(w, a.resident_id, zone, at);
+}
+
+/** 把一位居民直接安置到某处（穿过进出口、被请出门）。正在走的先停下。 */
+function relocate(w: WorldService, residentId: string, dest: { scene: string; instance: string; x: number; z: number; heading: number }, label: string, at: number, reason: StopReason): ActorRow {
+  let a = actorOf(w, residentId) ?? ensureActor(w, w.mustResident(residentId), at);
+  if (a.nav) a = halt(w, settle(w, a, at), at, reason);
+  w.bumpSpace(sceneKeyOf(a));
+  a.scene_id = dest.scene;
+  a.instance_id = dest.instance;
+  a.x = dest.x;
+  a.z = dest.z;
+  a.heading = dest.heading;
+  a.anchor_at = at;
+  a.nav = null;
+  saveActor(w, a);
+  w.bumpSpace(sceneKeyOf(a));
+  changeSpace(w, residentId, label, at);
+  return actorOf(w, residentId)!;
+}
+
+/** 把一位居民请到会馆门口（邀请到期或被撤销时，把还在屋里的客人送出来）。 */
+export function sendToDoor(w: WorldService, residentId: string, at: number): void {
+  const L = layout(w);
+  relocate(w, residentId, { scene: L.town.id, instance: '', ...L.doorOut }, zoneAt(L.town, L.doorOut.x, L.doorOut.z).id, at, 'eject');
+}
+
+// ───────────────────────── 导航的结算 ─────────────────────────
+
+const jobKey = (actorId: string): string => `nav:${actorId}`;
+
+function scheduleStep(w: WorldService, a: ActorRow): void {
+  const nav = a.nav;
+  if (!nav) return;
+  const next = Math.min(nav.crossings[0]?.at ?? Infinity, legArrival(nav), nav.leaseUntil);
+  w.reschedule('nav_step', jobKey(a.actor_id), next, { actorId: a.actor_id, navigationId: nav.navigationId, revision: nav.revision });
+}
+
+function sameNav(a: ActorRow | undefined, nav: NavState): a is ActorRow & { nav: NavState } {
+  return Boolean(a?.nav && a.nav.navigationId === nav.navigationId && a.nav.revision === nav.revision);
+}
+
+/** 这一趟结束了（到了、停了、被截住了）：换了地方就记一条「到过某处」。路过不算，路上不算，住宅不算。 */
+function noteArrival(w: WorldService, residentId: string, fromSpace: string, at: number): void {
+  const r = w.mustResident(residentId);
+  const here = r.location_id;
+  if (here === fromSpace || isHome(here) || placeDef(here)?.through) return;
+  w.fact('arrived', [{ id: residentId, role: 'self' }], { place: here }, { occurredAt: at });
+}
+
+/**
+ * 把导航停在 at 这一刻的位置（不会超过租约截止）。调用前应先 settle 到 at。
+ * reroute 不记「到过某处」、不发通知：紧接着就会装上新的路线。
+ */
+function halt(w: WorldService, a: ActorRow, at: number, reason: StopReason): ActorRow {
+  const nav = a.nav;
+  if (!nav) return a;
+  const s = positionAt(motionOf(nav), at);
+  a.x = s.x;
+  a.z = s.z;
+  a.heading = s.heading;
+  a.anchor_at = Math.min(at, nav.leaseUntil);
+  a.nav = null;
+  a.nav_revision += 1;
+  saveActor(w, a);
+  w.cancelJob(jobKey(a.actor_id));
+  w.bumpSpace(sceneKeyOf(a));
+  reconcileLabel(w, a, a.anchor_at);
+  if (reason === 'reroute') return a;
+  const rid = a.resident_id!;
+  noteArrival(w, rid, nav.fromSpace, a.anchor_at);
+  if (reason === 'lease' || reason === 'control' || reason === 'eject' || reason === 'blocked' || reason === 'activity') {
+    const r = w.mustResident(rid);
+    if (r.present_since !== null) w.emitTo([rid], 'nav_stopped', { reason, target: nav.target, space: r.location_id }, a.anchor_at);
+  }
+  return actorOf(w, rid)!;
+}
+
+/** 走完一段：穿过进出口、接着走下一段，或者真的到了。 */
+function finishLeg(w: WorldService, a: ActorRow, at: number): ActorRow {
+  const nav = a.nav!;
+  const rid = a.resident_id!;
+  const L = layout(w);
+  const end = nav.points[nav.points.length - 1]!;
+  a.heading = positionAt(motionOf(nav), at).heading;
+  a.x = end.x;
+  a.z = end.z;
+  a.anchor_at = at;
+  a.nav = null;
+  a.nav_revision += 1;
+  saveActor(w, a);
+  w.cancelJob(jobKey(a.actor_id));
+  w.bumpSpace(sceneKeyOf(a));
+  reconcileLabel(w, a, at);
+  const steps = [...nav.after];
+  while (steps.length > 0) {
+    const step = steps.shift()!;
+    const r = w.mustResident(rid);
+    if (step.op === 'exit') {
+      a = relocate(w, rid, { scene: L.town.id, instance: '', ...L.doorOut }, zoneAt(L.town, L.doorOut.x, L.doorOut.z).id, at, 'blocked');
+      continue;
+    }
+    if (step.op === 'enter') {
+      // 到门口时再查一次：路上邀请过期或被撤销，就停在门外
+      const access = L.home && w.resident(homeOwner(step.home)) ? checkHomeAccess(w, r, step.home, at) : { ok: false as const, why: '没有这户人家。' };
+      if (!access.ok) {
+        if (r.present_since !== null) {
+          w.emitTo([rid], 'notice', { text: `你走到了${spaceName(w, step.home, rid)}门口，但没能进去：${access.why}` }, at);
+          w.emitTo([rid], 'nav_stopped', { reason: 'blocked', target: nav.target, space: r.location_id }, at);
+        }
+        noteArrival(w, rid, nav.fromSpace, at);
+        return actorOf(w, rid)!;
+      }
+      a = relocate(w, rid, { scene: L.home!.id, instance: homeOwner(step.home), ...L.doorIn }, step.home, at, 'blocked');
+      continue;
+    }
+    // 在新场景里接着走
+    let next: Plan;
+    try {
+      next = plan(w, r, a, step.to, at);
+    } catch (e) {
+      if (e instanceof WorldError && e.reason === 'already_here') break;
+      if (!(e instanceof WorldError)) throw e;
+      if (r.present_since !== null) w.emitTo([rid], 'nav_stopped', { reason: 'blocked', target: nav.target, space: r.location_id }, at);
+      noteArrival(w, rid, nav.fromSpace, at);
+      return actorOf(w, rid)!;
+    }
+    if (next.already) break;
+    return install(w, a, next.points, { navigationId: nav.navigationId, target: nav.target, after: [...next.after, ...steps], fromSpace: nav.fromSpace, startedAt: at, leaseUntil: nav.leaseUntil, checkpointAt: Math.max(at, nav.checkpointAt) });
+  }
+  const r = w.mustResident(rid);
+  if (r.present_since !== null) w.emitTo([rid], 'you_arrived', { space: r.location_id, name: spaceName(w, r.location_id, rid), target: nav.target }, at);
+  noteArrival(w, rid, nav.fromSpace, at);
+  return actorOf(w, rid)!;
+}
+
+/**
+ * 把导航推进到 upTo：按时间顺序结算沿路的区域变化、到达、租约到期。返回时导航可能已经结束。
+ * 结算用的是事件各自应该发生的时刻（保留应到达时间），不是处理的时刻。
+ */
+function settle(w: WorldService, a: ActorRow, upTo: number): ActorRow {
+  for (let guard = 0; a.nav && guard < 64; guard++) {
+    const nav = a.nav;
+    const limit = Math.min(upTo, nav.leaseUntil);
+    const arrive = legArrival(nav);
+    const crossing = nav.crossings[0];
+    if (crossing && crossing.at <= limit && crossing.at <= arrive) {
+      nav.crossings.shift();
+      // 区域变化已经被业务用过：重启后不能退回到这之前
+      nav.checkpointAt = Math.max(nav.checkpointAt, crossing.at);
+      saveActor(w, a);
+      changeSpace(w, a.resident_id!, crossing.zone, crossing.at);
+      const fresh = actorOf(w, a.actor_id);
+      // 钩子里有人动了这位居民的路线（比如被请出门）：以数据库里的为准
+      if (!sameNav(fresh, nav)) return fresh ?? a;
+      a = fresh;
+      continue;
+    }
+    if (arrive <= limit) {
+      a = finishLeg(w, a, arrive);
+      continue;
+    }
+    if (upTo >= nav.leaseUntil) a = halt(w, a, nav.leaseUntil, 'lease');
+    break;
+  }
+  if (a.nav) scheduleStep(w, a);
+  return a;
+}
+
+/** 让一位居民停步。没在走返回 false。 */
+export function stopNav(w: WorldService, residentId: string, at: number, reason: StopReason): boolean {
+  let a = actorOf(w, residentId);
+  if (!a?.nav) return false;
+  a = settle(w, a, at);
+  if (!a.nav) return true;
+  halt(w, a, at, reason);
+  return true;
+}
+
+// ───────────────────────── 规划路线 ─────────────────────────
+
+interface Plan {
+  points: Vec2[];
+  target: NavTarget;
+  after: NavStep[];
+  /** 不用走：已经在旁边了 */
+  already?: 'near';
+}
+
+function install(
+  w: WorldService,
+  a: ActorRow,
+  points: Vec2[],
+  o: { navigationId?: string; target: NavTarget; after: NavStep[]; fromSpace: string; startedAt: number; leaseUntil: number; checkpointAt?: number },
+): ActorRow {
+  const scene = w.map.scenes.get(a.scene_id)!;
+  a.nav_revision += 1;
+  a.x = points[0]!.x;
+  a.z = points[0]!.z;
+  a.anchor_at = o.startedAt;
+  const motion: Motion = { points, speed: w.map.speed, startedAt: o.startedAt };
+  a.nav = {
+    navigationId: o.navigationId ?? w.id('nav'),
+    revision: a.nav_revision,
+    points,
+    speed: w.map.speed,
+    startedAt: o.startedAt,
+    leaseUntil: o.leaseUntil,
+    checkpointAt: o.checkpointAt ?? o.startedAt,
+    crossings: scene.instanced ? [] : zoneCrossings(scene, motion).map((c) => ({ at: c.at, zone: c.zone })),
+    target: o.target,
+    fromSpace: o.fromSpace,
+    after: o.after,
+  };
+  saveActor(w, a);
+  scheduleStep(w, a);
+  w.bumpSpace(sceneKeyOf(a));
+  return a;
+}
+
+/** 折线从末尾往回收 gap 米（接近一个人时不踩到对方身上）。 */
+function trimEnd(points: Vec2[], gap: number): Vec2[] {
+  let left = Math.max(0, pathLength(points) - gap);
+  const out: Vec2[] = [points[0]!];
+  for (let i = 1; i < points.length; i++) {
+    const a = points[i - 1]!;
+    const b = points[i]!;
+    const seg = distance(a, b);
+    if (seg >= left) {
+      const t = seg === 0 ? 0 : left / seg;
+      out.push({ x: a.x + (b.x - a.x) * t, z: a.z + (b.z - a.z) * t });
+      return out;
+    }
+    out.push(b);
+    left -= seg;
+  }
+  return out;
+}
+
+function pathOrThrow(scene: CompiledScene, from: Vec2, to: Vec2): Vec2[] {
+  const path = findPath(scene, from, to);
+  if (!path) throw precondition('走不到那里。', 'no_route');
+  return path.points;
+}
+
+/**
+ * 把一个目标变成第一段路线和之后的步骤。目标可以是：
+ *   - 地图点 {x, z}（当前场景里，点偏了取最近的可走点）
+ *   - 'home' / home:<居民编号>（要有进门的权限）
+ *   - 地点编号（plaza、tea_house …，旧版的地点编号都还认）
+ *   - 公共物件编号（走到离自己最近、走得到的使用位置）
+ *   - 居民编号（走到对方身边；对方得在同一个场景里看得见）
+ */
+function plan(w: WorldService, r: ResidentRow, a: ActorRow, to: unknown, now: number): Plan {
+  const L = layout(w);
+  const here = w.map.scenes.get(a.scene_id)!;
+  const inHome = here.instanced;
+  const from: Vec2 = { x: a.x, z: a.z };
+
+  if (to && typeof to === 'object') {
+    const p = to as { x?: unknown; z?: unknown };
+    if (typeof p.x !== 'number' || typeof p.z !== 'number' || !Number.isFinite(p.x) || !Number.isFinite(p.z)) throw precondition('没有这个地方。', 'no_such_place');
+    const spot = nearestWalkable(here, { x: p.x, z: p.z }, CLICK_SNAP);
+    if (!spot) throw precondition('那里走不过去。', 'unreachable');
+    return { points: pathOrThrow(here, from, spot), target: { kind: 'point', name: '那边' }, after: [] };
+  }
+
+  let id = typeof to === 'string' ? to : '';
+  if (id === 'home') id = homeId(r.resident_id);
+
+  if (isHome(id)) {
+    if (!L.home || !w.resident(homeOwner(id))) throw precondition('没有这户人家。', 'no_such_place');
+    if (inHome && a.instance_id === homeOwner(id)) throw precondition('你已经在这里了。', 'already_here');
+    const access = checkHomeAccess(w, r, id, now);
+    if (!access.ok) throw precondition(`进不去：${access.why}`, 'no_access');
+    const target: NavTarget = { kind: 'home', id, name: spaceName(w, id, r.resident_id) };
+    if (inHome) return { points: pathOrThrow(here, from, L.doorIn), target, after: [{ op: 'exit' }, { op: 'enter', home: id }] };
+    return { points: pathOrThrow(here, from, L.doorOut), target, after: [{ op: 'enter', home: id }] };
+  }
+
+  // 公共场景里的目标。人在家里的话：先走到门口出门，出了门再按同一个目标接着走
+  const start: Vec2 = inHome ? L.doorOut : from;
+  let goal: Vec2;
+  let target: NavTarget;
+  let already = false;
+  const alias = w.map.aliases[id];
+  const object = L.town.interactables.get(id);
+  const other = id && id !== r.resident_id ? w.resident(id) : undefined;
+  if (alias && alias.scene === L.town.id) {
+    const anchor = L.town.anchors.get(alias.anchor)!;
+    const zone = zoneAt(L.town, anchor.x, anchor.z).id;
+    if (!inHome && r.location_id === zone) throw precondition('你已经在这里了。', 'already_here');
+    goal = { x: anchor.x, z: anchor.z };
+    target = { kind: 'place', id: zone, name: placeDef(zone)?.name ?? zone };
+  } else if (object) {
+    const spots = [...object.useAnchors].sort((p, q) => distance(start, p) - distance(start, q));
+    const reachable = spots.find((p) => findPath(L.town, start, p));
+    if (!reachable) throw precondition('走不到那里。', 'no_route');
+    goal = reachable;
+    target = { kind: 'object', id, name: object.name };
+    already = !inHome && distance(from, object) <= (object.reach ?? w.map.interactDistance);
+  } else if (other) {
+    const oa = actorOf(w, other.resident_id);
+    if (!oa || other.present_since === null || oa.scene_id !== a.scene_id || oa.instance_id !== a.instance_id) throw precondition('这个人不在你看得见的地方。', 'not_here');
+    const p = posOf(oa, now);
+    target = { kind: 'resident', id: other.resident_id, name: other.name };
+    if (distance(from, p) <= APPROACH_GAP + 0.25) return { points: [from, from], target, after: [], already: 'near' };
+    return { points: trimEnd(pathOrThrow(here, from, { x: p.x, z: p.z }), APPROACH_GAP), target, after: [] };
+  } else {
+    throw precondition('没有这个地方。', 'no_such_place');
+  }
+  if (inHome) return { points: pathOrThrow(here, from, L.doorIn), target, after: [{ op: 'exit' }, { op: 'walk', to: id }] };
+  if (already) return { points: [from, from], target, after: [], already: 'near' };
+  return { points: pathOrThrow(L.town, from, goal), target, after: [] };
+}
+
+// ───────────────────────── 给别的模块用的判定 ─────────────────────────
+
+/**
+ * 够不够得着一件公共物件：按这一刻的权威位置量距离。够不着返回 too_far（附带可以 navigate 的目标）。
+ * 够得着而且正在走，就先在这里站住——坐下来做的事需要人不动。地图上没有位置的物件（家里的）不按距离算。
+ */
+export function requireReach(w: WorldService, r: ResidentRow, objectId: string, now: number): void {
+  const L = layout(w);
+  const it = L.town.interactables.get(objectId);
+  if (!it) return;
+  const a = ensureActor(w, r, now);
+  const p = posOf(a, now);
+  if (a.scene_id !== L.town.id || distance(p, it) > (it.reach ?? w.map.interactDistance) + 0.01) {
+    throw precondition(`离${it.name}太远了，先走到它旁边。`, 'too_far', { navigateTo: objectId });
+  }
+  if (a.nav) stopNav(w, r.resident_id, now, 'interaction');
+}
+
+/** 物件在地图上的位置（没有就是 null）；视图用它告诉居民够不够得着。 */
+export function objectReach(w: WorldService, residentId: string, objectId: string, now: number): { near: boolean; distance: number } | null {
+  const L = layout(w);
+  const it = L.town.interactables.get(objectId);
+  if (!it) return null;
+  const p = positionOfResident(w, residentId, now);
+  if (!p || p.scene !== L.town.id) return { near: false, distance: Infinity };
+  const d = distance(p, it);
+  return { near: d <= (it.reach ?? w.map.interactDistance) + 0.01, distance: d };
+}
+
+// ───────────────────────── 视图 ─────────────────────────
+
+export interface NavBrief {
+  navigationId: string;
+  revision: number;
+  to: NavTarget;
+  /** 这一段预计走完的时刻；continues 为 true 时之后还要穿过门口接着走 */
+  arriveAt: number;
+  continues: boolean;
+  leaseUntil: number;
+  /** 多久续一次租约（毫秒） */
+  renewEveryMs: number;
+}
+
+function navBrief(w: WorldService, nav: NavState): NavBrief {
+  return {
+    navigationId: nav.navigationId,
+    revision: nav.revision,
+    to: nav.target,
+    arriveAt: legArrival(nav),
+    continues: nav.after.length > 0,
+    leaseUntil: nav.leaseUntil,
+    renewEveryMs: w.params.navRenewEveryMs,
+  };
+}
+
+export interface Whereabouts {
+  /** 区域标签（和 location_id 一样） */
+  space: string;
+  scene: string;
+  x: number;
+  z: number;
+  navigation: NavBrief | null;
+}
+
+/** 本人此刻在哪、有没有在走。只读。 */
+export function whereabouts(w: WorldService, r: ResidentRow, now: number): Whereabouts {
+  const a = actorOf(w, r.resident_id);
+  if (!a) {
+    const spot = spotFor(w, r.location_id);
+    return { space: r.location_id, scene: spot.scene, x: spot.x, z: spot.z, navigation: null };
+  }
+  const p = posOf(a, now);
+  // navigation 跟着耐久状态走：走到了、或者租约到期了，但结算任务还没处理的那一小会儿，它还在（位置已经不动了）
+  return { space: r.location_id, scene: a.scene_id, x: round3(p.x), z: round3(p.z), navigation: a.nav ? navBrief(w, a.nav) : null };
+}
+
+export interface ActorView {
+  id: string;
+  name: string;
+  kind: 'human' | 'agent' | 'npc';
+  x: number;
+  z: number;
+  heading: number;
+  /** 正在一局小游戏里（人在，但不参与现场互动） */
+  busy?: 'game';
+  /** 正在走：客户端按这条折线和服务器时间插值，走到 until 为止 */
+  nav?: { id: string; revision: number; points: Vec2[]; speed: number; startedAt: number; until: number };
+}
+
+export interface SceneView {
+  protocol: 1;
+  mapVersion: string;
+  checksum: string;
+  scene: string;
+  /** 所在的区域标签；在私宅里是 home:<房主> */
+  space: string;
+  serverTime: number;
+  self: string;
+  actors: ActorView[];
+}
+
+/**
+ * 一位居民此刻看得见的场景：同一个场景实例里在场的人（含自己）。
+ * 私宅实例里的人和坐标只给屋里的人；公共场景的人看不到任何私宅里的角色。
+ */
+export function sceneView(w: WorldService, viewer: ResidentRow, now: number): SceneView {
+  const me = actorOf(w, viewer.resident_id);
+  const spot = me ?? { ...spotFor(w, viewer.location_id), scene_id: '', instance_id: '' };
+  const sceneId = me ? me.scene_id : (spot as { scene: string }).scene;
+  const instanceId = me ? me.instance_id : (spot as { instance: string }).instance;
+  const rows = w.db.all(
+    `SELECT a.*, r.name AS r_name, r.kind AS r_kind, r.activity_id AS r_activity FROM world_actors a JOIN residents r ON r.resident_id = a.resident_id
+     WHERE a.world_id = ? AND a.scene_id = ? AND a.instance_id = ? AND (r.present_since IS NOT NULL OR a.actor_id = ?) ORDER BY a.actor_id`,
+    w.worldId,
+    sceneId,
+    instanceId,
+    viewer.resident_id,
+  );
+  const actors: ActorView[] = rows.map((row) => {
+    const a = hydrate(row);
+    const p = posOf(a, now);
+    const view: ActorView = { id: a.actor_id, name: String(row.r_name), kind: row.r_kind as 'human' | 'agent', x: round3(p.x), z: round3(p.z), heading: round3(p.heading) };
+    if (row.r_activity) view.busy = 'game';
+    if (a.nav && p.moving) {
+      view.nav = { id: a.nav.navigationId, revision: a.nav.revision, points: a.nav.points.map((q) => ({ x: round3(q.x), z: round3(q.z) })), speed: a.nav.speed, startedAt: a.nav.startedAt, until: Math.min(a.nav.leaseUntil, legArrival(a.nav)) };
+    }
+    return view;
+  });
+  return { protocol: 1, mapVersion: w.map.mapVersion, checksum: w.map.checksum, scene: sceneId, space: viewer.location_id, serverTime: now, self: viewer.resident_id, actors };
+}
+
+/** 这位居民所在的场景实例的订阅键（和 w.onSpace 收到的键对应）。 */
+export function sceneKeyOfResident(w: WorldService, residentId: string): string | null {
+  const a = actorOf(w, residentId);
+  return a ? sceneKeyOf(a) : null;
+}
+
+// ───────────────────────── 续租与断开 ─────────────────────────
+
+/**
+ * 续导航控制租约。只有握着控制权的客户端能续，而且只能续当前这一条（编号和版本都对得上）。
+ * 不走回执管线：这是普通程序每几秒发一次的心跳，不是居民的动作。过期的路线续不回来。
+ */
+export function renewNavigation(w: WorldService, auth: Auth, body: { navigationId?: unknown; revision?: unknown }): { ok: boolean; leaseUntil?: number; navigation: NavBrief | null } {
+  if (w.status !== 'running') throw new WorldError('recovering', '小镇正在恢复，请稍后再试。');
+  w.runDue();
+  return w.commit(() => {
+    const now = w.now();
+    const r = w.residentOfPrincipal(auth.principalId);
+    if (!r) throw new WorldError('unauthenticated', '还没有居民身份，请先进入小镇。', 'no_resident');
+    if (r.present_since === null || r.controller_client !== auth.clientId || r.controller_until <= now) {
+      throw new WorldError('control_lost', '这个页面（或运行器）现在没有这位居民的控制权。');
+    }
+    let a = actorOf(w, r.resident_id);
+    if (!a?.nav) return { ok: false, navigation: null };
+    if (a.nav.navigationId !== String(body.navigationId ?? '') || (body.revision !== undefined && a.nav.revision !== Number(body.revision))) {
+      // 续的是一条已经换掉的路线：不动现在这条，把现在这条告诉对方
+      return { ok: false, navigation: navBrief(w, a.nav) };
+    }
+    a = settle(w, a, now);
+    if (!a.nav) return { ok: false, navigation: null };
+    a.nav.leaseUntil = now + w.params.navLeaseMs;
+    a.nav.checkpointAt = now;
+    saveActor(w, a);
+    scheduleStep(w, a);
+    w.bumpSpace(sceneKeyOf(a));
+    return { ok: true, leaseUntil: a.nav.leaseUntil, navigation: navBrief(w, a.nav) };
+  });
+}
+
+/** 控制连接明确断开（页面关了、运行器退出）：握着控制权的那个客户端断开，立即停步。别的页面断开不影响。 */
+export function controlDisconnected(w: WorldService, auth: Auth): void {
+  if (w.status !== 'running') return;
+  w.commit(() => {
+    const r = w.residentOfPrincipal(auth.principalId);
+    if (!r || r.controller_client !== auth.clientId) return;
+    stopNav(w, r.resident_id, w.now(), 'disconnect');
+  });
+}
+
+// ───────────────────────── 安装 ─────────────────────────
+
+export function installSpace(w: WorldService): void {
+  layout(w);
+
+  w.hooks.registered.push((r, now) => {
+    ensureActor(w, r, now);
+  });
+
+  const navigate: ActionHandler = ({ r, action, now }) => {
+    takeToken(w, r.resident_id, 'nav', w.params.navBurst, w.params.navPerMinute, now, '改路线');
+    let a = ensureActor(w, r, now);
+    let fromSpace = r.location_id;
+    if (a.nav) {
+      // 改道：先算出这一刻的合法位置，旧路线作废，再从这里出发
+      fromSpace = a.nav.fromSpace;
+      a = settle(w, a, now);
+      if (a.nav) a = halt(w, a, now, 'reroute');
+      else fromSpace = w.mustResident(r.resident_id).location_id;
+    }
+    const me = w.mustResident(r.resident_id);
+    const to = action.approach !== undefined ? String(action.approach) : (action.to ?? action.target);
+    const p = plan(w, me, a, to, now);
+    if (p.already) return { status: 'completed', already: p.already, to: p.target };
+    for (const h of w.hooks.walk) h(w.mustResident(r.resident_id), now);
+    a = install(w, actorOf(w, r.resident_id)!, p.points, { target: p.target, after: p.after, fromSpace, startedAt: now, leaseUntil: now + w.params.navLeaseMs });
+    // 人就站在门口时第一段路是零长度：当场穿过门口，接上下一段
+    a = settle(w, a, now);
+    if (!a.nav) return { status: 'completed', to: p.target, space: w.mustResident(r.resident_id).location_id };
+    return { status: 'accepted', navigation: navBrief(w, a.nav) };
+  };
+  w.handlers.set('navigate', navigate);
+  // 旧名字：move {to} 就是 navigate {to}
+  w.handlers.set('move', navigate);
+
+  w.handlers.set('stop_navigation', ({ r, now }) => {
+    const stopped = stopNav(w, r.resident_id, now, 'stop');
+    const here = whereabouts(w, w.mustResident(r.resident_id), now);
+    return { status: 'completed', stopped, at: { space: here.space, x: here.x, z: here.z } };
+  });
+
+  w.jobHandlers.set('nav_step', (payload, job) => {
+    const a = actorOf(w, String(payload.actorId));
+    // 必须对上导航编号和版本：改道、停止之后，旧任务不能再挪动角色
+    if (!a?.nav || a.nav.navigationId !== payload.navigationId || a.nav.revision !== payload.revision) return;
+    settle(w, a, job.due_at);
+  });
+  // 旧版的到达任务：迁移时已经全部作废，留一个空处理器，免得漏网的旧任务反复报错
+  w.jobHandlers.set('move_arrive', () => undefined);
+
+  // 本人提交了别的动作：这一刻的位置已经被业务用过，记成耐久检查点（重启后不会退回到这之前）
+  w.hooks.afterCommand.push((r, at) => {
+    const a = actorOf(w, r.resident_id);
+    if (!a?.nav || a.nav.checkpointAt >= at) return;
+    a.nav.checkpointAt = at;
+    w.db.run('UPDATE world_actors SET nav_json = ? WHERE actor_id = ?', JSON.stringify(a.nav), a.actor_id);
+  });
+
+  // 离线（明确离开、在场租约到期、服务器重启）：立即停步。重启时停在最后一个耐久检查点
+  w.hooks.offline.push((r, at, reason) => {
+    const a = actorOf(w, r.resident_id);
+    if (!a?.nav) return;
+    stopNav(w, r.resident_id, reason === 'restart' ? Math.max(at, a.nav.checkpointAt) : at, 'offline');
+  });
+
+  w.hooks.recover.push((_downtime, now) => {
+    settleLegacyMoves(w, now);
+    for (const row of w.db.all('SELECT r.resident_id FROM residents r LEFT JOIN world_actors a ON a.actor_id = r.resident_id WHERE r.world_id = ? AND a.actor_id IS NULL', w.worldId)) {
+      ensureActor(w, w.mustResident(String(row.resident_id)), now);
+    }
+    revalidatePositions(w, now);
+  });
+}
+
+/**
+ * 从旧版（地点节点 + 固定用时）迁移过来的在途移动，按截止时刻结清一次：
+ * 截止前已经该到的，按旧规则到达（进门前再查权限，进不去就留在会馆门口）；还没到的，停在出发的地方。
+ * 新系统不根据旧地图的绘图坐标猜人走到了哪里。旧的到达任务在 schema 迁移时已经全部作废。
+ */
+function settleLegacyMoves(w: WorldService, cutoff: number): void {
+  const rows = w.db.all('SELECT resident_id, move_json FROM residents WHERE world_id = ? AND move_json IS NOT NULL', w.worldId);
+  for (const row of rows) {
+    const move = parseJson<{ to?: string; arriveAt?: number } | null>(row.move_json, null);
+    const rid = String(row.resident_id);
+    w.db.run('UPDATE residents SET move_json = NULL WHERE resident_id = ?', rid);
+    if (!move || typeof move.to !== 'string' || typeof move.arriveAt !== 'number' || move.arriveAt > cutoff) continue;
+    const r = w.mustResident(rid);
+    let dest = move.to;
+    if (isHome(dest)) {
+      const ok = w.resident(homeOwner(dest)) ? checkHomeAccess(w, r, dest, move.arriveAt).ok : false;
+      if (!ok) dest = 'residential';
+    } else {
+      dest = spotFor(w, dest).label;
+    }
+    if (dest === r.location_id) continue;
+    r.location_id = dest;
+    w.saveResident(r);
+    for (const h of w.hooks.arrive) h(w.mustResident(rid), dest, move.arriveAt);
+    if (!isHome(dest) && !placeDef(dest)?.through) w.fact('arrived', [{ id: rid, role: 'self' }], { place: dest }, { occurredAt: move.arriveAt });
+  }
+}
+
+/** 地图换了版本：位置在新地图上不合法的人，挪到所在区域的落脚点。不拿新地图去猜旧路线。 */
+function revalidatePositions(w: WorldService, now: number): void {
+  const stale = w.db.all('SELECT * FROM world_actors WHERE world_id = ? AND map_version <> ?', w.worldId, w.map.mapVersion).map(hydrate);
+  for (const a of stale) {
+    const scene = w.map.scenes.get(a.scene_id);
+    const r = a.resident_id ? w.resident(a.resident_id) : undefined;
+    const ownerOk = !scene?.instanced || Boolean(w.resident(a.instance_id));
+    const spot = scene && ownerOk ? nearestWalkable(scene, { x: a.x, z: a.z }, 0) : null;
+    a.nav = null;
+    a.nav_revision += 1;
+    a.map_version = w.map.mapVersion;
+    if (!spot && r) {
+      const safe = spotFor(w, r.location_id);
+      a.scene_id = safe.scene;
+      a.instance_id = safe.instance;
+      a.x = safe.x;
+      a.z = safe.z;
+      a.heading = safe.heading;
+      a.anchor_at = now;
+      if (safe.label !== r.location_id) {
+        r.location_id = safe.label;
+        w.saveResident(r);
+      }
+    }
+    saveActor(w, a);
+    w.cancelJob(jobKey(a.actor_id));
+  }
+}

@@ -14,6 +14,7 @@ import { ENTRY_PLACE, INTERESTS, STREETS, TRAITS } from './content.js';
 import { WorldError, badRequest, precondition } from './errors.js';
 import { card, publicSpot } from './project.js';
 import { sha256, type Auth, type WorldService } from './service.js';
+import { stopNav } from './space.js';
 import type { Principal, ResidentRow, ResidentState } from './types.js';
 
 export interface ProfileInput {
@@ -291,12 +292,18 @@ export function enter(w: WorldService, auth: Auth, input: { clientKind?: 'web' |
       w.bootId,
     );
     // 控制权：没人握着、握着的人租约过期、或者本来就是这个客户端 → 归这个客户端
+    let tookOver = false;
     if (!r.controller_client || r.controller_until <= now || r.controller_client === auth.clientId) {
-      if (r.controller_client !== auth.clientId) r.control_epoch += 1;
+      if (r.controller_client !== auth.clientId) {
+        r.control_epoch += 1;
+        tookOver = true;
+      }
       r.controller_client = auth.clientId;
       r.controller_until = expires;
     }
     w.saveResident(r);
+    // 控制权换了手：原来那个客户端安排的路线不再有人续，立即站住
+    if (tookOver && stopNav(w, r.resident_id, now, 'control')) r = w.mustResident(r.resident_id);
     comeOnline(w, r, now);
     w.reschedule('presence_expire', presenceJobKey(r.resident_id), maxLeaseExpiry(w, r), { residentId: r.resident_id });
     return {
@@ -404,13 +411,16 @@ export function claimControl(w: WorldService, auth: Auth): { control: { epoch: n
     if (!r) throw new WorldError('unauthenticated', '还没有居民身份，请先进入小镇。', 'no_resident');
     const lease = w.db.get('SELECT epoch, expires_at FROM presence_leases WHERE resident_id = ? AND client_id = ?', r.resident_id, auth.clientId);
     if (!lease || lease.epoch !== r.presence_epoch || lease.expires_at <= now) throw precondition('在场状态已经失效，请重新进入小镇。', 'presence_lost');
-    if (r.controller_client !== auth.clientId) {
+    const tookOver = r.controller_client !== auth.clientId;
+    if (tookOver) {
       r.control_epoch += 1;
       r.controller_client = auth.clientId;
     }
     // 控制权不比握着它的这条租约活得更久：这个客户端掉线，控制权就跟着过期
     r.controller_until = Number(lease.expires_at);
     w.saveResident(r);
+    // 接管：原来那个客户端安排的路线立即站住，新的控制者自己决定往哪走
+    if (tookOver) stopNav(w, r.resident_id, now, 'control');
     w.emitTo([r.resident_id], 'control', { epoch: r.control_epoch }, now);
     return { control: { epoch: r.control_epoch, mine: true as const } };
   });

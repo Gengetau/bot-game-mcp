@@ -29,6 +29,7 @@ import { addMood, applyNeeds, bumpCounter, counter, settledNeeds } from './life.
 import { card } from './project.js';
 import { addStack, mint, release, reserve, takeStack } from './property.js';
 import { sha256, type WorldService } from './service.js';
+import { requireReach } from './space.js';
 import { localParts, localToUtc, nextDate } from './time.js';
 import type { ResidentRow } from './types.js';
 
@@ -264,14 +265,19 @@ export function installInteract(w: WorldService): void {
   };
 
   w.hooks.leaveSpace.push((r, _space, at) => void leave(r.resident_id, at, '离开了'));
+  // 迈步走开：坐着做的事（喝茶、看书、照料花箱）就算退出了，哪怕还没走出这片区域
+  w.hooks.walk.push((r, at) => void leave(r.resident_id, at, '走开了'));
   // 离线：还没开始的席位让出来；已经开始的照常完成
   w.hooks.offline.push((r, at) => void leave(r.resident_id, at, '离线了', true));
 
   // ── 发起 ──
   w.handlers.set('start_interaction', ({ r, action, now }) => {
-    const space = w.spaceOf(r);
     const obj = w.db.get('SELECT * FROM placed_objects WHERE object_id = ?', String(action.objectId ?? ''));
-    if (!space || !obj || obj.space_id !== space) throw precondition('这件东西不在你身边。', 'not_here');
+    if (!obj) throw precondition('这件东西不在你身边。', 'not_here');
+    // 公共物件按距离算：要先走到它旁边（够得着就在这里站住）。家里的物件在屋里就够得着
+    requireReach(w, r, String(obj.object_id), now);
+    const space = w.spaceOf(w.mustResident(r.resident_id));
+    if (obj.space_id !== space) throw precondition('这件东西不在你身边。', 'not_here');
     const def = INTERACTIONS.find((i) => i.objectType === obj.type && (action.interaction === undefined || i.id === action.interaction));
     if (!def) throw precondition('这件东西现在没有可以做的事。', 'no_interaction');
     if (def.permission === 'own_home' && space !== homeId(r.resident_id)) throw precondition(`${def.name}只能在自己家。`, 'not_home');
@@ -318,7 +324,9 @@ export function installInteract(w: WorldService): void {
 
   w.handlers.set('join_interaction', ({ r, action, now }) => {
     const row = w.db.get('SELECT * FROM interactions WHERE interaction_id = ?', String(action.interactionId ?? ''));
-    if (!row || row.space_id !== w.spaceOf(r)) throw precondition('这件事不在你身边。', 'not_here');
+    if (!row) throw precondition('这件事不在你身边。', 'not_here');
+    requireReach(w, r, String(row.object_id), now);
+    if (row.space_id !== w.spaceOf(w.mustResident(r.resident_id))) throw precondition('这件事不在你身边。', 'not_here');
     if (row.status !== 'open') throw precondition(row.status === 'running' ? '已经开始了，等下一次吧。' : '这件事已经结束了。', 'not_open');
     const def = parseJson<StoredDef>(row.def_json, {} as StoredDef);
     if (myInteraction(w, r.resident_id)) throw precondition('你手上还有一件事没做完。', 'already_busy');

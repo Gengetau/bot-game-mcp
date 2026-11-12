@@ -2,12 +2,12 @@
  * 视图投影：每个出口（网页、MCP、SSE 重同步）看到的内容都从这里生成。
  *
  * 三种权限层级：
- *  - 公开投影：任何人可看。位置只到「住宅区」这一层，不含信件、背包、屋内、聊天内容。
- *  - 现场投影：只有此刻在同一空间、有权在场的居民可看（屋里有谁、桌上在做什么）。
+ *  - 公开投影：任何人可看。位置只到区域这一层（公共地点、路上、住宅区），没有坐标，不含信件、背包、屋内、聊天内容。
+ *  - 现场投影：只有此刻在同一区域、有权在场的居民可看（屋里有谁、桌上在做什么）。
  *  - 本人投影：背包、硬币、需要、愿望、关系、信箱。只给认证后的本人。
  * 不把内部状态整个返回；每个字段都是点名加进来的。
  */
-import { INTERESTS, PLACES, STREETS, TRAITS, homeId, homeOwner, isHome, neighbors, placeDef } from './content.js';
+import { DESTINATIONS, INTERESTS, PLACES, RESIDENTIAL_PLACE, TRAITS, homeId, homeOwner, isHome, laneName, placeDef } from './content.js';
 import { parseJson } from './db.js';
 import { activitiesAt, gameViewFor, gamesOfferedAt, type ActivityView } from './games.js';
 import { myInteraction, objectsIn, publicEventsToday, weatherAt } from './interact.js';
@@ -18,6 +18,7 @@ import { inventoryOf, itemLabel, openOffers, shopsAt } from './property.js';
 import { recap, type Recap } from './reports.js';
 import type { WorldService } from './service.js';
 import { goalsOf, relationsOf, titlesOf } from './social.js';
+import { objectReach, travelSeconds, whereabouts, type NavBrief } from './space.js';
 import { localClock } from './time.js';
 import type { ResidentRow } from './types.js';
 
@@ -30,11 +31,10 @@ function worldHeader(w: WorldService, now: number) {
 
 export interface PublicView {
   world: ReturnType<typeof worldHeader>;
-  places: { id: string; name: string; kind: string; blurb: string; indoor: boolean; residents: PublicSpot[]; activities: { id: string; name: string; status: string; players: number }[] }[];
-  /** 住宅区：只有人数和名字，不分哪条巷子、谁家 */
+  /** 公共区域。through 为 true 的是路上（只是经过的地方，不能当目的地） */
+  places: { id: string; name: string; kind: string; blurb: string; indoor: boolean; through: boolean; residents: PublicSpot[]; activities: { id: string; name: string; status: string; players: number }[] }[];
+  /** 住宅区：只有人数和名字，不分在会馆门前还是谁家里 */
   residential: { residents: PublicSpot[] };
-  moving: PublicSpot[];
-  edges: (readonly [string, string])[];
   events: ReturnType<typeof publicEventsToday>;
   counts: { residents: number; present: number; capacity: number };
   cursor: string;
@@ -45,18 +45,6 @@ export function publicView(w: WorldService): PublicView {
   const spots = w.db
     .all('SELECT resident_id FROM residents WHERE world_id = ? AND present_since IS NOT NULL ORDER BY resident_id', w.worldId)
     .map((row) => publicSpot(w.mustResident(String(row.resident_id))));
-  const edges: (readonly [string, string])[] = [];
-  const seen = new Set<string>();
-  for (const p of PLACES) {
-    for (const n of neighbors(p.id)) {
-      const a = zoneOf(p.id);
-      const b = zoneOf(n);
-      const key = [a, b].sort().join('|');
-      if (a === b || seen.has(key)) continue;
-      seen.add(key);
-      edges.push([a, b]);
-    }
-  }
   return {
     world: worldHeader(w, now),
     places: PLACES.filter((p) => p.kind === 'public').map((p) => ({
@@ -65,12 +53,11 @@ export function publicView(w: WorldService): PublicView {
       kind: p.kind,
       blurb: p.blurb,
       indoor: p.indoor,
+      through: Boolean(p.through),
       residents: spots.filter((s) => s.at === p.id),
       activities: activitiesAt(w, p.id).map((a) => ({ id: a.id, name: a.name, status: a.status, players: a.players.length })),
     })),
     residential: { residents: spots.filter((s) => s.at === RESIDENTIAL) },
-    moving: spots.filter((s) => s.moving),
-    edges,
     events: publicEventsToday(w, now),
     counts: { residents: w.db.scalar('SELECT COUNT(*) FROM residents WHERE world_id = ?', w.worldId), present: spots.length, capacity: w.params.activeResidentLimit },
     cursor: w.publicCursor(),
@@ -94,16 +81,18 @@ function neighborCard(w: WorldService, r: ResidentRow, now: number) {
 export interface HereView {
   space: string;
   name: string;
-  kind: 'public' | 'street' | 'home';
+  kind: 'public' | 'residential' | 'home';
   blurb: string;
   residents: ReturnType<typeof neighborCard>[];
-  objects: ReturnType<typeof objectsIn>;
+  /** near：此刻够得着（公共物件按距离算，要先走到旁边；家里的物件在屋里就够得着） */
+  objects: (ReturnType<typeof objectsIn>[number] & { near: boolean })[];
   shops: ReturnType<typeof shopsAt>;
   activities: ActivityView[];
   games: ReturnType<typeof gamesOfferedAt>;
-  exits: { id: string; name: string; seconds: number }[];
-  /** 住宅街：这条巷子上的门牌 */
-  doors?: { home: string; owner: ReturnType<typeof card>; no: number; canEnter: boolean }[];
+  /** 可以去的地方（navigate 的目的地）。seconds 是大概要走多久，在路上时没有 */
+  exits: { id: string; name: string; seconds?: number }[];
+  /** 会馆门前：从这里进各家的门 */
+  doors?: { home: string; owner: ReturnType<typeof card>; lane: string; no: number; canEnter: boolean }[];
   /** 住宅里：主人和摆出来的东西 */
   home?: { owner: ReturnType<typeof card>; mine: boolean; decor: string[] };
   /** 书屋：藏书架上现在能借的书 */
@@ -114,41 +103,37 @@ export interface HereView {
 function hereView(w: WorldService, r: ResidentRow, space: string, now: number): HereView {
   const def = placeDef(space);
   const home = isHome(space);
-  const sec = (ms: number) => Math.round(ms / 1000);
   const exits: HereView['exits'] = [];
-  if (home) {
-    const street = w.resident(homeOwner(space))?.street_id ?? r.street_id;
-    exits.push({ id: street, name: placeDef(street)?.name ?? street, seconds: sec(w.params.doorDurationMs) });
-  } else {
-    for (const n of neighbors(space)) exits.push({ id: n, name: placeDef(n)?.name ?? n, seconds: sec(w.params.moveDurationMs) });
+  for (const d of DESTINATIONS) {
+    if (d.id === space) continue;
+    const seconds = travelSeconds(w, space, d.id);
+    exits.push({ id: d.id, name: d.name, ...(seconds !== null ? { seconds } : {}) });
   }
   const others = w.audienceIn(space).filter((x) => x.resident_id !== r.resident_id);
   const view: HereView = {
     space,
     name: spaceName(w, space, r.resident_id),
-    kind: home ? 'home' : def?.kind === 'street' ? 'street' : 'public',
+    kind: home ? 'home' : def?.kind === 'residential' ? 'residential' : 'public',
     blurb: home ? '住宅是私密的：屋里说的话只有屋里的人听得到。' : (def?.blurb ?? ''),
     residents: others.map((x) => neighborCard(w, x, now)),
-    objects: objectsIn(w, space),
+    objects: objectsIn(w, space).map((o) => ({ ...o, near: objectReach(w, r.resident_id, o.id, now)?.near ?? true })),
     shops: home ? [] : shopsAt(w, space, now),
     activities: home ? [] : activitiesAt(w, space),
     games: home ? [] : gamesOfferedAt(w, space),
     exits,
     chat: hereChat(w, r.resident_id, space, now),
   };
-  if (def?.kind === 'street') {
+  if (space === RESIDENTIAL_PLACE) {
     // 只列够用的门：自己家、我手上有效邀请对应的家、此刻在场的邻居的家（不遍历全部注册居民）
     const DOOR_CAP = 60;
     const ids = new Set<string>([r.resident_id]);
     for (const id of activeInviteOwners(w, r.resident_id, now, DOOR_CAP)) ids.add(id);
-    // 住在这条街上、此刻在场的邻居（不管人在屋里还是在街上）
-    for (const x of w.db.all('SELECT resident_id FROM residents WHERE world_id = ? AND street_id = ? AND present_since IS NOT NULL ORDER BY house_no LIMIT ?', w.worldId, space, DOOR_CAP)) ids.add(String(x.resident_id));
+    for (const x of w.db.all('SELECT resident_id FROM residents WHERE world_id = ? AND present_since IS NOT NULL ORDER BY street_id, house_no LIMIT ?', w.worldId, DOOR_CAP)) ids.add(String(x.resident_id));
     view.doors = [...ids]
       .map((id) => w.mustResident(id))
-      .filter((owner) => owner.street_id === space)
       .slice(0, DOOR_CAP)
-      .map((owner) => ({ home: homeId(owner.resident_id), owner: card(owner), no: owner.house_no, canEnter: checkHomeAccess(w, r, homeId(owner.resident_id), now).ok }))
-      .sort((x, y) => x.no - y.no);
+      .map((owner) => ({ home: homeId(owner.resident_id), owner: card(owner), lane: laneName(owner.street_id), no: owner.house_no, canEnter: checkHomeAccess(w, r, homeId(owner.resident_id), now).ok }))
+      .sort((x, y) => x.lane.localeCompare(y.lane) || x.no - y.no);
   }
   if (home) {
     const owner = w.mustResident(homeOwner(space));
@@ -209,7 +194,11 @@ export interface MeView {
   /** 带在动作请求里；过期后重新读视图会拿到新的 */
   actionWindow: string;
   cursor: string;
-  location: { space: string | null; name: string; moving: { from: string; to: string; toName: string; path: string[]; startedAt: number; arriveAt: number } | null };
+  /**
+   * 我在哪：区域（space）和场景里的坐标（米）。navigation 是正在走的那一趟：
+   * 要按 renewEveryMs 续租（普通程序做，不用模型），leaseUntil 之前没续上就会停在半路。
+   */
+  location: { space: string; name: string; scene: string; x: number; z: number; navigation: NavBrief | null };
   here: HereView | null;
   inventory: ReturnType<typeof inventoryOf>;
   goals: ReturnType<typeof goalsOf>;
@@ -227,6 +216,7 @@ export function meView(w: WorldService, r: ResidentRow, clientId: string, opts: 
   const now = w.now();
   const needs = settledNeeds(w, r, now);
   const space = w.spaceOf(r);
+  const where = whereabouts(w, r, now);
   const mail = mailboxSummary(w, r.resident_id);
   return {
     world: worldHeader(w, now),
@@ -238,7 +228,7 @@ export function meView(w: WorldService, r: ResidentRow, clientId: string, opts: 
       traits: r.state.traits.map((id) => ({ id, name: TRAITS.find((t) => t.id === id)?.name ?? id })),
       interests: r.state.interests.map((id) => ({ id, name: INTERESTS.find((t) => t.id === id)?.name ?? id })),
       titles: titlesOf(w, r.resident_id, false),
-      home: { id: homeId(r.resident_id), street: r.street_id, streetName: placeDef(r.street_id)?.name ?? r.street_id, no: r.house_no },
+      home: { id: homeId(r.resident_id), street: r.street_id, streetName: laneName(r.street_id), no: r.house_no },
       needs: { energy: needs.energy, social: needs.social, interest: needs.interest },
       mood: currentMood(w, r, now, true),
       settings: r.state.settings,
@@ -248,13 +238,9 @@ export function meView(w: WorldService, r: ResidentRow, clientId: string, opts: 
     context: { version: r.context_version, activityId: r.activity_id },
     actionWindow: w.issueActionWindow(r.resident_id, now),
     cursor: w.cursorOf(r.resident_id),
-    location: {
-      space,
-      name: r.move ? '路上' : spaceName(w, r.location_id, r.resident_id),
-      moving: r.move ? { from: r.move.from, to: r.move.to, toName: spaceName(w, r.move.to, r.resident_id), path: r.move.path, startedAt: r.move.startedAt, arriveAt: r.move.arriveAt } : null,
-    },
-    // 在途、或者在小游戏里：不属于任何地点的现场
-    here: space && !r.activity_id && r.present_since !== null ? hereView(w, r, space, now) : null,
+    location: { space, name: spaceName(w, space, r.resident_id), scene: where.scene, x: where.x, z: where.z, navigation: where.navigation },
+    // 在小游戏里、或者不在场：不属于任何地点的现场。走在路上的人照样看得见身边
+    here: !r.activity_id && r.present_since !== null ? hereView(w, r, space, now) : null,
     inventory: inventoryOf(w, r.resident_id),
     goals: goalsOf(w, r.resident_id),
     mail,
@@ -282,13 +268,19 @@ export function agentView(w: WorldService, r: ResidentRow, clientId: string, opt
     context: v.context,
     action_window: v.actionWindow,
     cursor: v.cursor,
-    location: v.location.moving ? { moving_to: v.location.moving.toName, arrive_at: v.location.moving.arriveAt } : { space: v.location.space, name: v.location.name },
+    location: {
+      space: v.location.space,
+      name: v.location.name,
+      ...(v.location.navigation
+        ? { walking: { to: v.location.navigation.to.name, navigation_id: v.location.navigation.navigationId, revision: v.location.navigation.revision, arrive_at: v.location.navigation.arriveAt, lease_until: v.location.navigation.leaseUntil } }
+        : {}),
+    },
     here: here
       ? {
           kind: here.kind,
           blurb: here.blurb,
           residents: here.residents.map((x) => ({ id: x.id, name: x.name, kind: x.kind, ...(x.mood ? { mood: x.mood } : {}) })),
-          objects: here.objects.map((o) => ({ id: o.id, label: o.label, ...(o.action ? { can: `${o.action.name}（${o.action.cost}）` } : {}), ...(o.active ? { active: { id: o.active.id, status: o.active.status, people: o.active.participants.map((p) => p.name), ends_at: o.active.endsAt } } : {}) })),
+          objects: here.objects.map((o) => ({ id: o.id, label: o.label, ...(o.near ? {} : { far: true }), ...(o.action ? { can: `${o.action.name}（${o.action.cost}）` } : {}), ...(o.active ? { active: { id: o.active.id, status: o.active.status, people: o.active.participants.map((p) => p.name), ends_at: o.active.endsAt } } : {}) })),
           shops: here.shops.map((s) => ({ id: s.id, name: s.name, goods: s.goods.filter((g) => g.stock > 0).map((g) => ({ sku: g.sku, name: g.name, price: g.price })) })),
           activities: here.activities.map((a) => ({ id: a.id, name: a.name, status: a.status, players: a.players.map((p) => p.name), need: a.min })),
           games: here.games.map((g) => ({ type: g.type, name: g.name, players: `${g.min}~${g.max}` })),
@@ -380,4 +372,4 @@ export function chatHistory(w: WorldService, residentId: string, before: number 
   return { messages, next: rows.length > lim ? top - (page.length - 1) : null };
 }
 
-export { relationsOf, STREETS };
+export { relationsOf };

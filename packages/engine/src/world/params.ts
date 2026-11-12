@@ -18,10 +18,13 @@ export const townParamsSchema = z.object({
   activeResidentLimit: int(30, 1, 500),
   /** 同时进行的小游戏局数上限 */
   concurrentGames: int(3, 0, 50),
-  /** 每条公共边的移动用时 */
-  moveDurationMs: ms(10_000),
-  /** 住宅门口进出屋的用时 */
-  doorDurationMs: ms(3_000),
+  /** 点地导航的控制租约：最后一次续租之后还能走多久。到期没续就停在原地（和在场宽限是两回事） */
+  navLeaseMs: ms(10_000, 1000),
+  /** 导航续租间隔（告诉客户端和运行器的建议值）。续租由普通程序发，不调用模型 */
+  navRenewEveryMs: ms(3_000, 500),
+  /** 改路线的频率上限：每分钟几次、突发几次 */
+  navPerMinute: int(120, 1, 6000),
+  navBurst: int(8, 1, 600),
   /** 信件从寄出到进信箱 */
   letterDeliveryDelayMs: ms(60_000),
   /** 住宅邀请有效期 */
