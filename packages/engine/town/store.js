@@ -49,6 +49,8 @@ export const state = {
   /** @type {string} */
   entryNote: '',
   leftNote: '',
+  /** 公开信息读不到（入口页据此显示「正在重试」） */
+  pubDown: false,
 };
 
 // ───────────────────────── 订阅 ─────────────────────────
@@ -158,18 +160,79 @@ export async function http(method, path, body) {
 // ───────────────────────── 启动 ─────────────────────────
 
 export async function boot() {
-  const cfg = await http('GET', '/config').catch(() => null);
-  if (cfg && cfg.status === 200) state.config = cfg.data;
-  // 登录票据在 URL 片段里：读到就兑换，然后立刻把片段清掉
-  const m = /(?:^|[#&])ticket=([^&]+)/.exec(location.hash);
-  if (m) {
-    const ticket = decodeURIComponent(m[1] ?? '');
-    history.replaceState(null, '', location.pathname + location.search);
-    const r = await http('POST', '/auth/exchange', { ticket }).catch(() => null);
-    if (!r || !r.data.ok) state.entryNote = r?.data?.message ?? '登录链接无效或已过期，请重新向裁判索取。';
+  try {
+    await loadConfig();
+    await consumeTicket();
+  } catch (e) {
+    console.error(e);
   }
+  window.addEventListener('hashchange', () => void onHashChange());
   await loadSession();
   await afterSession();
+}
+
+let cfgTimer = 0;
+let cfgTry = 0;
+/**
+ * 读小镇设置；失败按退避自动重试，成功后通知界面重绘。
+ * @param {boolean} [now] 立即重试（手动点「重试」）
+ * @returns {Promise<boolean>}
+ */
+export async function loadConfig(now = false) {
+  if (state.config) return true;
+  if (now) clearTimeout(cfgTimer);
+  const r = await http('GET', '/config').catch(() => null);
+  if (r && r.status === 200) {
+    state.config = r.data;
+    cfgTry = 0;
+    emit('pub');
+    return true;
+  }
+  cfgTry = Math.min(cfgTry + 1, 4);
+  clearTimeout(cfgTimer);
+  cfgTimer = window.setTimeout(() => void loadConfig(), Math.min(15000, 2000 * 2 ** (cfgTry - 1)));
+  return false;
+}
+
+let ticketBusy = false;
+/**
+ * 登录票据在 URL 片段里：读到就先把片段清掉，再兑换。畸形的票据只给提示，不抛错。
+ * @returns {Promise<boolean>} 有没有处理过票据
+ */
+async function consumeTicket() {
+  const m = /(?:^|[#&])ticket=([^&]*)/.exec(location.hash);
+  if (!m) return false;
+  history.replaceState(null, '', location.pathname + location.search);
+  state.entryNote = '';
+  let ticket = '';
+  try {
+    ticket = decodeURIComponent(m[1] ?? '').trim();
+  } catch {
+    /* 链接被截断或转义错了 */
+  }
+  if (!ticket) {
+    state.entryNote = '登录链接无效或已过期，请重新向裁判索取。';
+    return true;
+  }
+  const r = await http('POST', '/auth/exchange', { ticket }).catch(() => null);
+  if (!r || !r.data.ok) state.entryNote = r?.data?.message ?? (r ? '登录链接无效或已过期，请重新向裁判索取。' : '网络不通，没能用登录链接登录。');
+  return true;
+}
+
+/** 页面已经打开时又粘贴了带票据的链接 */
+async function onHashChange() {
+  if (ticketBusy || state.phase === 'boot' || !/(?:^|[#&])ticket=/.test(location.hash)) return;
+  ticketBusy = true;
+  try {
+    if (await consumeTicket()) {
+      await loadSession();
+      await afterSession();
+    }
+  } catch (e) {
+    console.error(e);
+  } finally {
+    ticketBusy = false;
+  }
 }
 
 export async function loadSession() {
@@ -185,7 +248,14 @@ export async function afterSession() {
       return;
     }
     const ok = await enter();
-    if (ok) return;
+    if (ok === true) return;
+    if (typeof ok === 'string' && ok) state.entryNote = ok;
+    // 失败了：别停在启动画面，回到带提示和重试入口的页面
+    if (state.phase === 'boot') {
+      await goPublic('left');
+      return;
+    }
+    if (state.phase !== 'public') return;
   } else if (state.session.loggedIn) {
     await goPublic('register');
     return;
@@ -196,6 +266,7 @@ export async function afterSession() {
 /** @param {Phase} phase */
 async function goPublic(phase) {
   stopRuntime();
+  lastCursor = '';
   state.me = null;
   state.phase = phase;
   emit('phase');
@@ -212,9 +283,11 @@ export async function devLogin(name) {
   if (!r) return { ok: false, message: '网络不通，稍后再试。' };
   if (!r.data.ok) return { ok: false, message: r.data.message ?? '登录失败。' };
   flagSet('town.left', null);
+  state.entryNote = '';
   await loadSession();
   await afterSession();
-  return { ok: true, message: '' };
+  if (state.phase === 'town' || state.phase === 'register') return { ok: true, message: '' };
+  return { ok: false, message: state.entryNote || '没能进入小镇，稍后再试。' };
 }
 
 export async function logout() {
@@ -223,6 +296,8 @@ export async function logout() {
   stopRuntime();
   state.session = { loggedIn: false };
   state.me = null;
+  lastCursor = '';
+  lastPcursor = '';
   state.chat = [];
   state.entryNote = '';
   await goPublic('public');
@@ -267,6 +342,9 @@ export async function enter(profile) {
   state.lastGameEnd = null;
   state.recap = d.view?.recap ?? null;
   applyMe(/** @type {MeView} */ (d.view));
+  // 事件游标以刚读到的视图为准：离开期间的事件已经在回顾里，不再重放
+  lastCursor = state.me?.cursor ?? '';
+  lastPcursor = '';
   presenceEpoch = d.presenceEpoch ?? state.me?.control.presenceEpoch ?? 0;
   state.taken = false;
   state.readOnly = !state.me?.control.mine;
@@ -287,6 +365,8 @@ export async function leaveTown() {
   flagSet('town.leftNote', '你离开了小镇。你的家、背包和朋友都留着，随时可以回来。');
   state.leftNote = '你离开了小镇。你的家、背包和朋友都留着，随时可以回来。';
   state.me = null;
+  lastCursor = '';
+  lastPcursor = '';
   await goPublic('left');
   return true;
 }
@@ -372,25 +452,42 @@ async function sessionLost(note) {
   stopRuntime();
   state.session = { loggedIn: false };
   state.me = null;
+  lastCursor = '';
+  lastPcursor = '';
   state.entryNote = note;
   await goPublic('public');
 }
 
 let pubInflight = false;
+let pubRetry = 0;
+let pubRetryTimer = 0;
 export async function refreshPub() {
   if (pubInflight) return;
   pubInflight = true;
+  clearTimeout(pubRetryTimer);
+  let ok = false;
   try {
     const r = await http('GET', '/public');
     if (r.status === 200) {
+      ok = true;
+      pubRetry = 0;
+      state.pubDown = false;
       state.pub = r.data;
       if (state.phase !== 'town') state.clockOffset = r.data.world.time - Date.now();
       emit('pub');
     }
   } catch {
-    if (state.phase !== 'town') setConn('offline');
+    /* 下面按失败处理 */
   } finally {
     pubInflight = false;
+  }
+  if (!ok && state.phase !== 'town') {
+    setConn('offline');
+    state.pubDown = true;
+    emit('pub');
+    // 入口页读不到公开信息：按退避自己重试，不等 30 秒的轮询
+    pubRetry = Math.min(pubRetry + 1, 4);
+    pubRetryTimer = window.setTimeout(() => void refreshPub(), Math.min(15000, 2000 * 2 ** (pubRetry - 1)));
   }
 }
 let pubTimer = 0;
@@ -558,9 +655,11 @@ let hbTimer = 0;
 let running = false;
 let hbBackoff = 0;
 
+/** @returns {Promise<boolean>} */
 async function reenter() {
   const r = await enter();
   if (r !== true) toast(typeof r === 'string' ? r : '没能重新进入。', 'error');
+  return r === true;
 }
 
 function startRuntime() {
@@ -577,6 +676,7 @@ export function stopRuntime() {
   clearTimeout(meTimer);
   clearTimeout(pubTimer);
   clearTimeout(pubPoll);
+  clearTimeout(pubRetryTimer);
   closeStream();
   stopPublicStream();
 }
@@ -608,6 +708,8 @@ async function heartbeatOnce() {
           emit('flags');
           scheduleRefreshMe(0);
         }
+        // 服务重启后心跳会让服务端恢复在场，但这三个值不变：本地还显示不在场就重读
+        if (!me.me.present) scheduleRefreshMe(0);
         if (d.contextVersion !== me.context.version || (d.activityId ?? null) !== me.context.activityId || d.control?.epoch !== me.control.epoch) scheduleRefreshMe(0);
       }
       if (!streamOpen) connectPrivateStream();
@@ -618,8 +720,10 @@ async function heartbeatOnce() {
       await sessionLost(d.message ?? '登录已失效，请重新进入。');
       return;
     } else if (d.reason === 'presence_lost') {
-      await reenter();
-      return;
+      // 成功时 enter 已经重排心跳；失败也要继续按退避排下一次，别让心跳循环停掉
+      if (await reenter()) return;
+      hbBackoff = Math.min(hbBackoff + 1, 4);
+      next = Math.min(15000, 2000 * 2 ** hbBackoff);
     }
   } catch {
     setConn('offline');
@@ -792,8 +896,11 @@ function offerToast(o) {
     return;
   }
   const mine = o.from.id === myId;
-  const label = { accepted: '已接受', declined: '被婉拒了', cancelled: '已撤销', expired: '过期了' }[o.status] ?? o.status;
-  toast(`${mine ? '你发起的' : '对你的'}报价${label}${o.reason && o.status !== 'accepted' ? `（${o.reason}）` : ''}。`, o.status === 'accepted' ? 'ok' : 'info', 5500);
+  /** @type {Record<string, string>} */
+  const texts = mine
+    ? { accepted: '你发起的报价被接受了。', declined: '你发起的报价被婉拒了。', cancelled: '你撤销了这份报价。', expired: `你发起的报价过期了${o.reason ? `（${o.reason}）` : ''}。` }
+    : { accepted: '你接受了这份报价。', declined: '你婉拒了这份报价。', cancelled: '对方撤销了给你的报价。', expired: `给你的报价过期了${o.reason ? `（${o.reason}）` : ''}。` };
+  toast(texts[o.status] ?? `报价${o.status}。`, o.status === 'accepted' ? 'ok' : 'info', 5500);
 }
 
 /** 地点 id → 名字 */

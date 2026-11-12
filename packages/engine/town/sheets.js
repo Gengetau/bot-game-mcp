@@ -27,11 +27,39 @@ const WANT_TYPES = [
 ];
 
 /**
+ * 表单提交的防重复：处理期间禁用提交按钮，同一时刻只放行一次。
+ * 失败后可再次提交（act 自己会按网络重试复用 requestId）。
+ * @param {(e: SubmitEvent) => Promise<void>} fn
+ */
+function guarded(fn) {
+  let busy = false;
+  return async (/** @type {SubmitEvent} */ e) => {
+    e.preventDefault();
+    if (busy) return;
+    busy = true;
+    const form = /** @type {HTMLFormElement | null} */ (e.currentTarget);
+    const submit = /** @type {HTMLButtonElement | null} */ (form?.querySelector('button[type=submit]') ?? null);
+    if (submit) submit.disabled = true;
+    try {
+      await fn(e);
+    } finally {
+      busy = false;
+      if (submit) submit.disabled = state.readOnly;
+    }
+  };
+}
+
+/**
  * 出发去某处。
  * @param {string} to
  * @param {string} [name]
  */
 export async function moveTo(to, name) {
+  // 活动进行中走开等于中途退出：先确认，文案与「中途退出」一致
+  if (state.me?.interaction?.status === 'running') {
+    const ok = await confirmDialog({ title: '现在走开？', text: '这件事还没做完，走开等于中途退出：这一次不会有收获，投入的东西也不退。', ok: '走开', danger: true });
+    if (!ok) return { ok: false };
+  }
   const r = await act({ type: 'move', to });
   if (r.ok) {
     const mv = /** @type {{ toName?: string, arriveAt?: number } | undefined} */ (r.move);
@@ -171,7 +199,7 @@ export function openOfferComposer(kind, target) {
       class: 'stack',
       oninput: refresh,
       onchange: refresh,
-      onsubmit: async (/** @type {SubmitEvent} */ e) => {
+      onsubmit: guarded(async (e) => {
         e.preventDefault();
         const { give, want, parts, wparts } = collect();
         err.textContent = '';
@@ -192,7 +220,7 @@ export function openOfferComposer(kind, target) {
           toast(`报价已发给${target.name}，等 TA 回应。`, 'ok');
           sh.close();
         } else err.textContent = r.message ?? '没能发出。';
-      },
+      }),
     },
     h('p', { class: 'hint' }, `当面${verb}${target.name}。对方要在你身边才能收到。`),
     kind !== 'loan' ? h('div', { class: 'field inline' }, h('label', null, '硬币'), coinsIn, h('span', { class: 'hint' }, `可用 ${inv.coins.available} 枚（已预留 ${inv.coins.reserved}）`)) : null,
@@ -295,7 +323,7 @@ export async function openLetterComposer(to = null) {
     'form',
     {
       class: 'stack',
-      onsubmit: async (/** @type {SubmitEvent} */ e) => {
+      onsubmit: guarded(async (e) => {
         e.preventDefault();
         err.textContent = '';
         if (!select.value) {
@@ -308,7 +336,7 @@ export async function openLetterComposer(to = null) {
           sh.close();
           window.dispatchEvent(new CustomEvent('town:letters-changed'));
         } else err.textContent = res.message ?? '没能寄出。';
-      },
+      }),
     },
     field('收信人', select, others.length ? undefined : '镇上还没有别的居民。'),
     field('信的内容', text),
@@ -399,7 +427,7 @@ export function openProfileEditor() {
     'form',
     {
       class: 'stack',
-      onsubmit: async (/** @type {SubmitEvent} */ e) => {
+      onsubmit: guarded(async (e) => {
         e.preventDefault();
         err.textContent = '';
         const r = await act({ type: 'update_profile', name: name.value, bio: bio.value, traits: [...traitSet], interests: [...intSet] });
@@ -407,7 +435,7 @@ export function openProfileEditor() {
           toast('资料已更新。', 'ok');
           sh.close();
         } else err.textContent = r.message ?? '没能保存。';
-      },
+      }),
     },
     field('名字', name, '最多 16 个字，镇上不能重名。'),
     field('简介', bio, '最多 80 字，同一处的人点开你就能看到。'),
@@ -428,11 +456,11 @@ export function openMoodEditor() {
     'form',
     {
       class: 'stack',
-      onsubmit: async (/** @type {SubmitEvent} */ e) => {
+      onsubmit: guarded(async (e) => {
         e.preventDefault();
         const r = await act({ type: 'update_profile', mood: input.value.trim() || null });
         if (r.ok) sh.close();
-      },
+      }),
     },
     field('我的情绪（别人看到的）', input, '留空就交回给程序，由你做的事情决定。'),
     h('div', { class: 'row-end' }, btn('取消', () => sh.close(), { variant: 'ghost', always: true }), h('button', { class: 'btn primary', type: 'submit', disabled: state.readOnly }, '保存')),

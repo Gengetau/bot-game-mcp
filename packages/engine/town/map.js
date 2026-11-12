@@ -6,7 +6,7 @@ import { s } from './dom.js';
 /** @typedef {import('./types.js').PublicSpot} PublicSpot */
 
 const W = 640;
-const H = 600;
+const H = 640;
 
 /** 节点在画面里的位置。dotDy：居民小灯点相对节点的纵向偏移。 */
 const NODES = {

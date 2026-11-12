@@ -1,5 +1,5 @@
 // 「我」面板：资料、硬币、三项需要、愿望、背包、设置。
-import { avatar, confirmDialog, dateTimeOf, fill, h, icon } from './dom.js';
+import { avatar, confirmDialog, dateTimeOf, fill, h, icon, toast } from './dom.js';
 import { openMoodEditor, openProfileEditor } from './sheets.js';
 import { act, leaveTown, logout, state } from './store.js';
 import { cycleTheme, getTheme, themeName } from './theme.js';
@@ -14,6 +14,16 @@ const tz = () => state.config?.world.timezone ?? 'Asia/Tokyo';
 const USABLE = new Set(['soup', 'cookie']);
 
 /**
+ * 背包动作：成功后把服务端的回执文字弹出来。
+ * @param {Parameters<typeof act>[0]} action
+ */
+async function actToast(action) {
+  const r = await act(action);
+  if (r.ok) toast(String(r.text ?? '好了。'), 'ok');
+  return r;
+}
+
+/**
  * @param {InvItem} it
  * @param {MeView} me
  */
@@ -22,19 +32,20 @@ function itemRow(it, me) {
   /** @type {import('./dom.js').Child[]} */
   const btns = [];
   if (it.borrowedFrom) {
-    btns.push(btn('归还', () => act({ type: 'return_item', itemId: it.itemId }), { small: true, variant: 'soft' }));
+    btns.push(btn('归还', () => actToast({ type: 'return_item', itemId: it.itemId }), { small: true, variant: 'soft' }));
   } else {
-    if (USABLE.has(it.type) && it.available > 0) btns.push(btn('用掉一份', () => act({ type: 'use_item', itemType: it.type }), { small: true, variant: 'soft' }));
+    if (USABLE.has(it.type) && it.available > 0) btns.push(btn('用掉一份', () => actToast({ type: 'use_item', itemType: it.type }), { small: true, variant: 'soft' }));
     if (it.category === 'decor') {
-      if (it.available > 0) btns.push(btn('摆出一份', () => act({ type: 'display_item', itemType: it.type, qty: 1, on: true }), { small: true, variant: 'soft', disabled: !atHome, why: '回到自己家才能布置。' }));
-      if (it.shelved > 0) btns.push(btn('收起一份', () => act({ type: 'display_item', itemType: it.type, qty: 1, on: false }), { small: true, variant: 'ghost', disabled: !atHome, why: '回到自己家才能布置。' }));
+      if (it.available > 0) btns.push(btn('摆出一份', () => actToast({ type: 'display_item', itemType: it.type, qty: 1, on: true }), { small: true, variant: 'soft', disabled: !atHome, why: '回到自己家才能布置。' }));
+      if (it.shelved > 0) btns.push(btn('收起一份', () => actToast({ type: 'display_item', itemType: it.type, qty: 1, on: false }), { small: true, variant: 'ghost', disabled: !atHome, why: '回到自己家才能布置。' }));
     }
-    if (it.category === 'furniture') btns.push(btn('摆进家里', () => act({ type: 'place_furniture', itemId: it.itemId }), { small: true, variant: 'soft', disabled: !atHome, why: '回到自己家才能摆家具。' }));
+    if (it.category === 'furniture') btns.push(btn('摆进家里', () => actToast({ type: 'place_furniture', itemId: it.itemId }), { small: true, variant: 'soft', disabled: !atHome, why: '回到自己家才能摆家具。' }));
   }
+  const needHome = !atHome && !it.borrowedFrom && (it.category === 'decor' || it.category === 'furniture');
   return row({
     lead: icon(it.category === 'decor' ? 'lantern' : it.type === 'book' ? 'book' : it.category === 'furniture' ? 'home' : 'bag', 20),
     title: h('span', null, it.name, it.qty > 1 ? h('em', { class: 'qty' }, ` ×${it.qty}`) : null),
-    sub: [it.borrowedFrom ? `借自${it.borrowedFrom}${it.dueAt ? `，${dateTimeOf(it.dueAt, tz())} 前还` : ''}` : it.use, it.shelved ? `已摆出 ${it.shelved}` : ''].filter(Boolean).join(' · '),
+    sub: [it.borrowedFrom ? `借自${it.borrowedFrom}${it.dueAt ? `，${dateTimeOf(it.dueAt, tz())} 前还` : ''}` : it.use, it.shelved ? `已摆出 ${it.shelved}` : '', needHome ? '回到自己家才能布置' : ''].filter(Boolean).join(' · '),
     aside: btns.length ? h('div', { class: 'row-wrap end' }, btns) : null,
   });
 }
@@ -54,9 +65,9 @@ export function createSelf() {
     const inv = me.inventory;
     const groups = [
       ['消耗品', inv.items.filter((i) => i.category === 'consumable' && !i.borrowedFrom)],
-      ['书与用品', inv.items.filter((i) => i.category === 'usable')],
-      ['装饰', inv.items.filter((i) => i.category === 'decor')],
-      ['家具', inv.items.filter((i) => i.category === 'furniture')],
+      ['书与用品', inv.items.filter((i) => i.category === 'usable' && !i.borrowedFrom)],
+      ['装饰', inv.items.filter((i) => i.category === 'decor' && !i.borrowedFrom)],
+      ['家具', inv.items.filter((i) => i.category === 'furniture' && !i.borrowedFrom)],
     ];
     fill(el,
       h(

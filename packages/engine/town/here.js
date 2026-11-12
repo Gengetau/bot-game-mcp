@@ -231,13 +231,14 @@ export function createHere() {
     );
     let lastSpace = '';
     for (const c of lines) {
+      // 系统提示也带地点：换了地点就先插分隔线（路上没有地点的提示不插）
+      if (c.space !== lastSpace && !(c.sys && !c.space)) {
+        lastSpace = c.space;
+        chatLog.appendChild(h('p', { class: 'place-line' }, h('span', null, c.spaceName || '')));
+      }
       if (c.sys) {
         chatLog.appendChild(h('p', { class: 'sys-line' }, c.text));
         continue;
-      }
-      if (c.space !== lastSpace) {
-        lastSpace = c.space;
-        chatLog.appendChild(h('p', { class: 'place-line' }, h('span', null, c.spaceName || '')));
       }
       const mine = c.from.id === me?.me.id;
       chatLog.appendChild(h('div', { class: `msg ${mine ? 'mine' : 'other'}` }, mine ? null : avatar(c.from.name, c.from.kind), h('div', { class: 'bubble' }, mine ? null : h('div', { class: 'who' }, c.from.name, c.from.kind === 'agent' ? h('small', null, ' AI') : null), h('p', null, c.text), h('time', null, clockOf(c.at, tz())))));
@@ -440,7 +441,7 @@ export function createHere() {
     const canSpeak = Boolean(here) && !state.readOnly;
     input.disabled = !canSpeak;
     sendBtn.disabled = !canSpeak;
-    input.placeholder = moving ? '在路上，到了再说' : state.readOnly ? '只读：另一个页面握着控制权' : here && !here.residents.length ? '这里没有别人，说的话没人听到……' : '说点什么……';
+    input.placeholder = !me.me.present ? '正在重新进入小镇……' : moving ? '在路上，到了再说' : state.readOnly ? '只读：另一个页面握着控制权' : here && !here.residents.length ? '这里没有别人，说的话没人听到……' : '说点什么……';
     input.maxLength = state.config?.limits.chatMaxChars ?? 120;
   }
 

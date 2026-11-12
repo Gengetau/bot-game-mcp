@@ -263,6 +263,8 @@ export function openSheet(opts) {
   const backdrop = h('div', { class: 'backdrop', onclick: () => api.close() });
   const root = h('div', { class: 'sheet-root' }, backdrop, panel);
   let closed = false;
+  /** @type {((e: KeyboardEvent) => void) | null} */
+  let onTab = null;
   const api = {
     el: root,
     body: bodyBox,
@@ -271,6 +273,7 @@ export function openSheet(opts) {
       closed = true;
       const i = sheets.findIndex((x) => x.el === root);
       if (i >= 0) sheets.splice(i, 1);
+      if (onTab) document.removeEventListener('keydown', onTab);
       root.classList.add('out');
       setTimeout(() => root.remove(), 180);
       prevFocus?.focus?.({ preventScroll: true });
@@ -281,22 +284,33 @@ export function openSheet(opts) {
     if (e.key === 'Escape') {
       e.stopPropagation();
       api.close();
-    } else if (e.key === 'Tab') {
+    }
+  });
+  // Tab 圈定挂在 document 上：焦点跑到弹层外时，root 上的监听收不到。只管最上面那一层。
+  onTab = (e) => {
+    if (e.key === 'Tab' && sheets[sheets.length - 1]?.el === root) {
       const focusables = /** @type {HTMLElement[]} */ ([...panel.querySelectorAll('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])')]).filter((x) => !x.hasAttribute('disabled') && x.offsetParent !== null);
       if (focusables.length === 0) return;
       const first = focusables[0];
       const last = focusables[focusables.length - 1];
       if (first && last) {
-        if (e.shiftKey && document.activeElement === first) {
+        const cur = document.activeElement;
+        const inside = cur instanceof Node && panel.contains(cur) && cur !== panel;
+        if (!inside) {
+          // 焦点在面板本身，或已经跑到弹层外：拉回弹层内
+          e.preventDefault();
+          (e.shiftKey ? last : first).focus();
+        } else if (e.shiftKey && cur === first) {
           e.preventDefault();
           last.focus();
-        } else if (!e.shiftKey && document.activeElement === last) {
+        } else if (!e.shiftKey && cur === last) {
           e.preventDefault();
           first.focus();
         }
       }
     }
-  });
+  };
+  document.addEventListener('keydown', onTab);
   document.body.appendChild(root);
   sheets.push({ el: root, close: api.close });
   const firstField = /** @type {HTMLElement | null} */ (panel.querySelector('input, textarea, select'));

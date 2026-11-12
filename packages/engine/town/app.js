@@ -82,7 +82,7 @@ function createShell() {
   const mainPane = h('main', { class: 'pane-main', 'aria-label': '内容' }, ...Object.values(panes));
   const el = h('div', { class: 'town-shell' }, topbar, banners, nav, mapPane, mainPane);
 
-  return { el, map, here, me, mail, people, game, clock, clockDate, weatherSlot, coins, connDot, stateChip, banners, tabBtns, brief, panes, mapPane };
+  return { el, map, here, me, mail, people, game, clock, clockDate, weatherSlot, coins, connDot, stateChip, banners, tabBtns, brief, panes, mapPane, mainPane };
 }
 
 /** @param {string} t */
@@ -126,6 +126,7 @@ function render() {
     landing = null;
     renderTown();
   } else {
+    shell?.mail.destroy();
     shell = null;
     renderLanding();
   }
@@ -237,6 +238,8 @@ function renderTown() {
   });
   for (const [id, el] of Object.entries(sh.panes)) el.hidden = id !== pane;
   sh.mapPane.hidden = !wide.matches && tab !== 'map';
+  // 手机的「小镇」页只有地图和此刻，现场面板不进来
+  sh.mainPane.hidden = !wide.matches && tab === 'map';
   sh.mapPane.classList.toggle('dim', false);
 
   // 面板
@@ -337,4 +340,4 @@ window.addEventListener('keydown', (e) => {
 });
 
 root.replaceChildren(h('div', { class: 'splash' }, h('span', { class: 'brand-mark big' }, icon('lantern', 40)), h('p', null, '正在点灯……')));
-void boot().then(scheduleRender);
+boot().catch(console.error).then(scheduleRender);

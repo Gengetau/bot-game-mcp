@@ -2,7 +2,7 @@
 import { dateTimeOf, fill, h, hourMinute, icon, toast } from './dom.js';
 import { createMap } from './map.js';
 import { openPlace } from './sheets.js';
-import { devLogin, enter, http, logout, serverNow, state } from './store.js';
+import { devLogin, enter, http, loadConfig, logout, serverNow, state } from './store.js';
 import { openSpectate } from './game.js';
 import { btn, chip, empty, field, section } from './ui.js';
 import { cycleTheme, getTheme, themeName } from './theme.js';
@@ -17,10 +17,15 @@ export function weatherIcon(/** @type {string} */ id) {
   return m[id] ?? 'sun';
 }
 
+/** 设置还没读到：说明在重试，也给一个立即重试的按钮 */
+function configPending() {
+  return h('div', { class: 'stack' }, h('p', { class: 'hint', role: 'status' }, '正在读取小镇的设置……读不到会自动重试。'), btn('马上重试', () => void loadConfig(true), { small: true, always: true }));
+}
+
 /** 注册表单 */
 function registerForm() {
   const cfg = state.config;
-  if (!cfg) return h('p', { class: 'err' }, '没能读到小镇的设置。');
+  if (!cfg) return configPending();
   const name = h('input', { type: 'text', maxLength: 16, required: true, class: 'text-input', value: state.session.name ?? '', autocomplete: 'off', placeholder: '给自己起个名字' });
   const bio = h('textarea', { rows: 2, maxLength: 80, class: 'text-input', placeholder: '一句话介绍自己（可以不写）' });
   /** @type {Set<string>} */
@@ -78,7 +83,9 @@ function loginCard() {
     { class: 'stack' },
     h('p', { class: 'para' }, '真人居民通过群里裁判私聊发来的一次性登录链接进入。打开链接，页面会自动登录。'),
     h('div', { class: 'note' }, icon('lock', 16), ' 登录链接 5 分钟有效，只能用一次；打开后地址栏里的票据会立刻清掉。'),
-    cfg?.devLogin
+    !cfg
+      ? configPending()
+      : cfg.devLogin
       ? h(
           'form',
           {
@@ -135,19 +142,28 @@ export function createLanding() {
   let lastPhase = '';
   /** @type {Report | null} */
   let pubReport = null;
-  let reportFetched = false;
+  let reportBusy = false;
+  let reportFailed = false;
+  let reportTriedAt = 0;
 
   async function loadReport() {
+    reportBusy = true;
+    reportTriedAt = Date.now();
     const r = await http('GET', '/public/report').catch(() => null);
+    reportBusy = false;
     if (r && r.status === 200) {
       pubReport = r.data;
-      renderExtra();
-    }
+      reportFailed = false;
+    } else reportFailed = true;
+    renderExtra();
   }
 
   function renderExtra() {
     const pub = state.pub;
-    if (!pub) return;
+    if (!pub) {
+      fill(extra, h('p', { class: 'hint', role: 'status' }, state.pubDown ? '暂时连不上小镇，正在重试……' : '正在读取小镇的情况……'));
+      return;
+    }
     const running = pub.places.flatMap((p) => p.activities.filter((a) => a.status === 'running').map((a) => ({ ...a, place: p.name })));
     fill(extra,
       section(
@@ -169,7 +185,7 @@ export function createLanding() {
         : null,
       section(
         '公开日报',
-        pubReport && pubReport.lines.length ? h('ul', { class: 'bullets report' }, pubReport.lines.map((l) => h('li', null, l))) : h('p', { class: 'hint' }, pubReport ? '今天还没有可记的事。' : '正在取日报……'),
+        pubReport && pubReport.lines.length ? h('ul', { class: 'bullets report' }, pubReport.lines.map((l) => h('li', null, l))) : h('p', { class: 'hint' }, pubReport ? '今天还没有可记的事。' : reportFailed ? '暂时取不到日报，稍后会自动重试。' : '正在取日报……'),
         { hint: pubReport && !pubReport.final ? `${pubReport.date} 的稿子还没定，明天会更完整。` : undefined },
       ),
     );
@@ -177,16 +193,18 @@ export function createLanding() {
 
   function update() {
     const pub = state.pub;
-    if (!pub) return;
     const phase = state.phase;
-    const hh = hourMinute(serverNow(), tz());
-    map.update({ pub, me: null, now: serverNow(), hour: hh.h + hh.m / 60 });
-    facts.replaceChildren(
-      h('div', { class: 'fact' }, icon('clock', 17), h('b', null, pub.world.clock), h('span', null, pub.world.date)),
-      h('div', { class: 'fact' }, icon(weatherIcon(pub.world.weather.id), 17), h('b', null, pub.world.weather.name)),
-      h('div', { class: 'fact' }, icon('people', 17), h('b', null, `${pub.counts.present}`), h('span', null, `位在镇上 · 共 ${pub.counts.residents} 位居民`)),
-    );
-    const sig = `${phase}|${state.session.loggedIn}|${state.entryNote}|${state.leftNote}`;
+    if (pub) {
+      const hh = hourMinute(serverNow(), tz());
+      map.update({ pub, me: null, now: serverNow(), hour: hh.h + hh.m / 60 });
+      facts.replaceChildren(
+        h('div', { class: 'fact' }, icon('clock', 17), h('b', null, pub.world.clock), h('span', null, pub.world.date)),
+        h('div', { class: 'fact' }, icon(weatherIcon(pub.world.weather.id), 17), h('b', null, pub.world.weather.name)),
+        h('div', { class: 'fact' }, icon('people', 17), h('b', null, `${pub.counts.present}`), h('span', null, `位在镇上 · 共 ${pub.counts.residents} 位居民`)),
+      );
+    }
+    // 入口卡不等公开信息：登录、注册、回到小镇都不依赖它
+    const sig = `${phase}|${state.session.loggedIn}|${state.entryNote}|${state.leftNote}|${state.config ? 1 : 0}`;
     if (sig !== lastPhase) {
       lastPhase = sig;
       if (phase === 'register') {
@@ -200,10 +218,8 @@ export function createLanding() {
         cardBody.replaceChildren(loginCard());
       }
     }
-    if (!reportFetched) {
-      reportFetched = true;
-      void loadReport();
-    }
+    // 日报：取不到就隔一阵再试
+    if (pub && !pubReport && !reportBusy && Date.now() - reportTriedAt > (reportFailed ? 15000 : 0)) void loadReport();
     renderExtra();
   }
 

@@ -183,6 +183,8 @@ ol {
 }
 .sr {
   position: absolute;
+  top: 0;
+  left: 0;
   width: 1px;
   height: 1px;
   overflow: hidden;
@@ -484,6 +486,7 @@ legend {
   font-size: 14px;
 }
 .toggle {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 12px;
@@ -492,7 +495,16 @@ legend {
 }
 .toggle input {
   position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
   opacity: 0;
+  cursor: pointer;
+}
+.toggle input:focus-visible + .toggle-track {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
 }
 .toggle-track {
   width: 46px;

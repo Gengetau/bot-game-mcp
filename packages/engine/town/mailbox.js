@@ -14,15 +14,16 @@ export function createMailbox() {
   /** @type {Record<string, { letters: Letter[], next: number | null, loaded: boolean }>} */
   const boxes = { inbox: { letters: [], next: null, loaded: false }, sent: { letters: [], next: null, loaded: false } };
   let lastSig = '';
-  let loading = false;
+  /** 两个信箱各自独立加载，互不丢请求。 */
+  const loading = { inbox: false, sent: false };
 
   /**
    * @param {'inbox' | 'sent'} box
    * @param {boolean} more
    */
   async function load(box, more = false) {
-    if (loading) return;
-    loading = true;
+    if (loading[box]) return;
+    loading[box] = true;
     try {
       const b = boxes[box];
       if (!b) return;
@@ -31,13 +32,17 @@ export function createMailbox() {
         toast(r.data?.message ?? '没能读到信箱。', 'warn');
         return;
       }
-      b.letters = more ? [...b.letters, ...r.data.letters] : r.data.letters;
+      if (more) {
+        // 翻页间隔里若发生清理，序号会前移，下一页可能重复上一页的信：按 id 去重。
+        const seen = new Set(b.letters.map((l) => l.id));
+        b.letters = [...b.letters, ...r.data.letters.filter((/** @type {Letter} */ l) => !seen.has(l.id))];
+      } else b.letters = r.data.letters;
       b.next = r.data.next;
       b.loaded = true;
     } catch {
       toast('网络不通，信箱没刷新。', 'warn');
     } finally {
-      loading = false;
+      loading[box] = false;
       render();
     }
   }
@@ -149,14 +154,19 @@ export function createMailbox() {
     if (mailChanged || !boxes.inbox?.loaded) void Promise.all([load('inbox'), tab === 'sent' ? load('sent') : Promise.resolve()]);
   }
 
-  window.addEventListener('town:letters-changed', () => {
+  const onLettersChanged = () => {
     void load('inbox');
     void load('sent');
-  });
+  };
+  window.addEventListener('town:letters-changed', onLettersChanged);
 
   return {
     el,
     update,
+    /** 外壳销毁时移除 window 监听。 */
+    destroy() {
+      window.removeEventListener('town:letters-changed', onLettersChanged);
+    },
     activate() {
       lastSig = '';
       update();
