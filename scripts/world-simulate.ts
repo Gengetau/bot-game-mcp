@@ -519,7 +519,9 @@ class Sim {
       cli.conn.heartbeat();
     } catch (e) {
       if (e instanceof WorldError && e.reason === 'presence_lost') {
-        // 掉线太久租约过期：重新进入
+        // 掉线太久租约过期：重新进入（走到一半的路线早已被服务器停下）
+        ag.nav = null;
+        ag.walkPlan = null;
         if (!this.doEnter(ag, cli.conn, true)) {
           ag.clients = ag.clients.filter((c) => c !== cli);
           if (ag.clients.length === 0) {
@@ -859,8 +861,11 @@ class Sim {
 
     // 在小游戏里
     if (v.game) return this.gameTurn(ag, conn, v);
-    // 在路上
-    if (v.location.moving) return Math.max(1000, v.location.moving.arriveAt - now + ag.rnd.range(0, 3000));
+    // 在路上：走路的人属于脚下的区域，可以说话，但多数时候等走完
+    const nav = v.location.navigation;
+    if (nav) return this.walkingTurn(ag, conn, v, nav);
+    ag.nav = null;
+    ag.walkPlan = null;
     return this.idleDecision(ag, conn, v);
   }
 
@@ -1061,11 +1066,129 @@ class Sim {
     return rnd.range(15, 60) * 1000;
   }
 
-  private moveTo(ag: Ag, conn: Conn, to: string): number | null {
-    const o = this.exec(ag, conn, 'move', { to });
+  /**
+   * 发 navigate 并接管后面的续租。to 可以是地点 / 物件 / 居民编号 / 地图点；approach 走到某个居民身边。
+   * 返回下次决策前等多久；失败返回 null（调用方换别的事做）。
+   */
+  private moveTo(ag: Ag, conn: Conn, to: string | { x: number; z: number }, mode: 'to' | 'approach' = 'to'): number | null {
+    const now = this.clock.t;
+    // 旧名字 move 偶尔也用一下（它就是 navigate 的别名）
+    const type = ag.rnd.chance(0.1) ? 'move' : 'navigate';
+    const o = this.exec(ag, conn, type, mode === 'approach' ? { approach: to } : { to });
     if (!o.ok) return null;
-    const arrive = Number((o.out.move as { arriveAt: number }).arriveAt);
-    return Math.max(1000, arrive - this.clock.t + ag.rnd.range(0, 3000));
+    const out = o.out as { status?: string; navigation?: Parameters<typeof trackNav>[1] };
+    if (out.status !== 'accepted' || !out.navigation) {
+      // completed：已经在旁边 / 当场走完（站在门口时穿过门）
+      this.bump(`nav_${out.status ?? 'unknown'}`);
+      ag.nav = null;
+      ag.walkPlan = null;
+      return ag.rnd.range(2, 8) * 1000;
+    }
+    this.bump('nav_accepted');
+    ag.nav = trackNav(conn, out.navigation, now, ag.rnd.range(0, 400));
+    ag.renewsLeft = null;
+    ag.walkPlan = null;
+    const remaining = Math.max(1000, out.navigation.arriveAt - now);
+    const r = ag.rnd;
+    // 这一趟的“性格”：什么时候不续租、走到一半做什么
+    if (ag.walk === 'stingy' && r.chance(0.7)) ag.renewsLeft = r.range(0, 2);
+    const half = now + Math.round(remaining / 2) + r.range(0, 500);
+    if (ag.walk === 'fickle' && r.chance(0.6)) ag.walkPlan = { kind: 'reroute', at: half };
+    else if (ag.walk === 'halter' && r.chance(0.6)) ag.walkPlan = { kind: 'halt', at: half };
+    else if (ag.walk === 'ghost' && r.chance(0.5)) ag.walkPlan = { kind: 'ghost', at: half };
+    else if (ag.walk === 'steady' && r.chance(0.12)) ag.walkPlan = { kind: r.chance(0.7) ? 'chat' : 'reroute', at: half };
+    if (ag.walkPlan) return Math.max(1000, ag.walkPlan.at - now);
+    return Math.max(1000, remaining + r.range(0, 3000));
+  }
+
+  /** 到了续租的时间：像真实客户端一样发一次续租（不走回执管线）。 */
+  private renewNav(ag: Ag): void {
+    const nav = ag.nav!;
+    const now = this.clock.t;
+    if (ag.renewsLeft !== null && ag.renewsLeft <= 0) {
+      // 不守规矩的客户端：不再续租，让服务器按租约把人停在截止那一刻的位置
+      nav.renewAt = Infinity;
+      this.bump('renew_abandoned');
+      return;
+    }
+    if (ag.renewsLeft !== null) ag.renewsLeft--;
+    const t0 = this.clock.t;
+    const fp = this.fingerprint(ag.p.residentId);
+    const res = renewTrack(this.w, nav, now, ag.rnd.range(0, 400));
+    void t0;
+    void fp;
+    this.bump(`renew_${res.result}`);
+    if (res.adopted) this.bump('renew_adopted');
+    if (res.result !== 'ok') {
+      ag.nav = null;
+      ag.walkPlan = null;
+    }
+  }
+
+  /** 走在路上的决策：到了计划里的时刻做点出格的事；否则等到走完。 */
+  private walkingTurn(ag: Ag, conn: Conn, v: MeView, nav: NonNullable<MeView['location']['navigation']>): number {
+    const now = this.clock.t;
+    const rnd = ag.rnd;
+    // 页面重新读了视图：手里没有这条导航就接过来（不守规矩的客户端除外：它是故意不续的）
+    if (!ag.nav && ag.renewsLeft === null) ag.nav = trackNav(conn, nav, now, rnd.range(0, 400));
+    const plan = ag.walkPlan;
+    if (plan && plan.at <= now) {
+      ag.walkPlan = null;
+      switch (plan.kind) {
+        case 'reroute': {
+          this.bump('walk_reroute');
+          const d = this.moveTo(ag, conn, this.wanderTarget(ag, v), 'to');
+          return d ?? 2000;
+        }
+        case 'halt': {
+          this.bump('walk_halt');
+          const o = this.exec(ag, conn, 'stop_navigation');
+          ag.nav = null;
+          if (o.ok) {
+            const at = (o.out as { at?: { space: string } }).at;
+            this.rejectChecks.run++;
+            if (!at || at.space !== this.w.mustResident(ag.p.residentId).location_id) {
+              this.rejectChecks.failed++;
+              this.inv.fail('stop_nav_receipt', 'stop_navigation 回执里的区域与居民当前区域不符', { at }, now);
+            }
+          }
+          return rnd.range(2, 6) * 1000;
+        }
+        case 'ghost': {
+          this.bump('walk_ghost');
+          ag.sessionEnd = now;
+          ag.endMode = rnd.chance(0.5) ? 'leave' : 'drop';
+          return 1000;
+        }
+        case 'chat': {
+          this.bump('walk_chat');
+          if (now - ag.lastSpeak >= 12_000) {
+            ag.lastSpeak = now;
+            this.exec(ag, conn, 'speak', { text: this.chatText(ag) });
+          }
+          break;
+        }
+      }
+    }
+    return Math.max(1000, nav.arriveAt - now + rnd.range(0, 3000));
+  }
+
+  /** 随便走去哪：地点 / 物件旁边 / 地图上的一个点 / 某个人身边 / 回家。 */
+  private wanderTarget(ag: Ag, v: MeView): string | { x: number; z: number } {
+    const rnd = ag.rnd;
+    const space = v.location.space ?? '';
+    const atHome = space === `home:${v.me.id}`;
+    const kind = rnd.weighted<'place' | 'object' | 'point' | 'person'>([['place', 6], ['object', 3], ['point', 1.5], ['person', 1]])!;
+    if (kind === 'object') return rnd.pick(PUBLIC_OBJECTS).id;
+    if (kind === 'point') {
+      const town = this.w.map.scenes.get(this.w.map.spawn.scene)!;
+      return { x: town.originX + rnd.float() * town.cols * town.cell, z: town.originZ + rnd.float() * town.rows * town.cell };
+    }
+    if (kind === 'person') {
+      const others = this.w.db.all("SELECT resident_id FROM residents WHERE present_since IS NOT NULL AND resident_id <> ? AND location_id = ?", v.me.id, space);
+      if (others.length > 0) return String(rnd.pick(others).resident_id);
+    }
+    return rnd.pick(['plaza', 'tea_house', 'bookshop', 'kitchen', 'garden', 'arcade', 'residential', 'home'].filter((d) => d !== space && !(d === 'home' && atHome)));
   }
 
   private intent(ag: Ag, conn: Conn, v: MeView, intent: string, c: { lm: number; openEvent: MeView['events'][number] | undefined; residentsHere: NonNullable<MeView['here']>['residents']; atHome: boolean; space: string }): number | null {
@@ -1198,12 +1321,13 @@ class Sim {
         }
         const owner = this.w.resident(loan.owner_id);
         if (!owner) return null;
-        if (c.residentsHere.some((x) => x.id === owner.resident_id) || c.space === owner.street_id) {
+        if (c.residentsHere.some((x) => x.id === owner.resident_id) || c.space === 'residential') {
           this.exec(ag, conn, 'return_item', { itemId: item.itemId });
           return short();
         }
-        // 去主人所在的地方，或者主人家门口的归还箱
-        return this.moveTo(ag, conn, rnd.chance(0.5) ? owner.street_id : (owner.location_id.startsWith('home:') ? owner.street_id : owner.location_id));
+        // 去主人所在的地方（走到他身边），或者会馆门口的归还箱
+        if (!owner.location_id.startsWith('home:') && owner.location_id === c.space) return this.moveTo(ag, conn, owner.resident_id, 'approach');
+        return this.moveTo(ag, conn, rnd.chance(0.5) || owner.location_id.startsWith('home:') ? 'residential' : owner.location_id);
       }
       case 'letter': {
         const others = this.ags.filter((a) => a.registered && a.p.idx !== ag.p.idx);
@@ -1240,9 +1364,8 @@ class Sim {
         return short();
       }
       case 'wander': {
-        const dests = ['plaza', 'tea_house', 'bookshop', 'kitchen', 'garden', 'arcade', 'street_east', 'street_west', 'home'].filter((d) => d !== c.space && !(d === 'home' && c.atHome));
-        // 倾向于去有人的地方、以及自己的兴趣所在
-        return this.moveTo(ag, conn, rnd.pick(dests));
+        const to = this.wanderTarget(ag, v);
+        return this.moveTo(ag, conn, to, 'to');
       }
     }
     void me;
@@ -1417,8 +1540,11 @@ class Sim {
       case 'illegal_params': {
         const others = this.w.db.get("SELECT offer_id FROM offers WHERE to_id <> ? AND from_id <> ? AND status = 'open' LIMIT 1", ag.p.residentId, ag.p.residentId);
         const cases: [string, Record<string, unknown>, string[]][] = [
-          ['move', { to: 'the_moon' }, ['precondition_failed']],
+          ['navigate', { to: 'the_moon' }, ['precondition_failed']],
           ['move', { to: 'home:nobody' }, ['precondition_failed']],
+          ['navigate', { to: { x: 'a', z: 1 } }, ['precondition_failed']],
+          ['navigate', { to: { x: 1e9, z: 1e9 } }, ['precondition_failed']],
+          ['navigate', { approach: 'r_nobody' }, ['precondition_failed']],
           ['buy', { shop: 'stall', sku: 'cookie', qty: 99 }, ['bad_request', 'precondition_failed']],
           ['buy', { shop: 'nowhere', sku: 'x' }, ['bad_request', 'precondition_failed']],
           ['accept_offer', { offerId: 'f_nonexistent' }, ['not_available']],
@@ -1448,7 +1574,7 @@ class Sim {
         return;
       }
       case 'burst': {
-        if (v.game || v.location.moving || r.move) return;
+        if (v.game || v.location.navigation) return;
         const outs: Outcome[] = [];
         for (let i = 0; i < 8; i++) outs.push(this.exec(ag, conn, 'speak', { text: this.chatText(ag) }, { neg: ['x'] }));
         ag.lastSpeak = now;
@@ -1472,7 +1598,7 @@ class Sim {
         return;
       }
       case 'non_game_in_game': {
-        const o = this.exec(ag, conn, rnd.pick(['move', 'speak', 'buy']), { to: 'plaza', text: 'hi', shop: 'stall', sku: 'cookie' }, nf);
+        const o = this.exec(ag, conn, rnd.pick(['navigate', 'move', 'stop_navigation', 'speak', 'buy']), { to: 'plaza', text: 'hi', shop: 'stall', sku: 'cookie' }, nf);
         this.expectReject(ag, '在小游戏里做世界动作', o, ['precondition_failed']);
         return;
       }
