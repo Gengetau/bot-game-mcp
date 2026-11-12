@@ -1,7 +1,7 @@
 // 「信箱」面板：收件、已发、邀请。没读过的信要回家才能拆。
 import { dateTimeOf, h, icon, toast } from './dom.js';
 import { moveTo, openLetter, openLetterComposer } from './sheets.js';
-import { act, http, state } from './store.js';
+import { act, http, refreshMe, state } from './store.js';
 import { btn, chip, empty, row, section, segmented } from './ui.js';
 
 /** @typedef {import('./types.js').Letter} Letter */
@@ -58,7 +58,7 @@ export function createMailbox() {
           ? btn('拆信', async () => {
               const r = await act({ type: 'read_letter', letterId: l.id });
               if (r.ok) {
-                await Promise.all([load('inbox'), load('sent')]);
+                await Promise.all([load('inbox'), load('sent'), refreshMe(true)]);
                 const got = /** @type {Letter | undefined} */ (r.letter);
                 if (got) openLetter(got);
               }

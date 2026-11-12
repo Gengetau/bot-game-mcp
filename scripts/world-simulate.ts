@@ -156,6 +156,7 @@ class Sim {
   readonly anomalies = new Map<string, Anomaly>();
   readonly rejectChecks = { run: 0, failed: 0, samples: [] as string[] };
   readonly negCount = new Map<string, number>();
+  readonly failBy = new Map<string, number>();
   readonly counters = new Map<string, number>();
   readonly gameStarted = new Map<string, number>();
   readonly sizes = { agent: [] as number[], me: [] as number[] };
@@ -309,6 +310,10 @@ class Sim {
       if (out.code === 'INTERNAL') this.recordInternal(type, fields, out.internal);
       else if (this.fingerprint(ag.p.residentId) !== fp) this.rejectEffect(type, fields, out.code);
       if (!o.neg) this.classify(type, fields, out);
+      if (!o.neg && out.code === 'precondition_failed') {
+        const k = `${type}/${out.reason ?? ''}`;
+        this.failBy.set(k, (this.failBy.get(k) ?? 0) + 1);
+      }
     } else if (out.out.replayed && this.fingerprint(ag.p.residentId) !== fp) this.rejectEffect(type, fields, 'replayed');
     if (out.ok && !out.out.replayed && !o.neg) {
       ag.ring.push({ conn, req, out: JSON.parse(JSON.stringify(out.out)), at: this.clock.t });
@@ -1110,7 +1115,7 @@ class Sim {
         }
         const shelved = inv.items.find((i) => i.shelved > 0);
         if (shelved && rnd.chance(0.4)) {
-          this.exec(ag, conn, 'display_item', { itemType: shelved.type, qty: 1, on: false });
+          this.exec(ag, conn, 'display_item', shelved.category === 'decor' ? { itemType: shelved.type, qty: 1, on: false } : { itemId: shelved.itemId, on: false });
           return short();
         }
         const book = inv.items.find((i) => i.type === 'book' && !i.borrowedFrom && i.available > 0);
@@ -1604,6 +1609,8 @@ const reasonRows = [...sim.stats.reasons].filter(([k]) => k.startsWith('precondi
 console.log('\n拒绝原因 Top（precondition_failed 细分）：');
 console.log(table([['原因', '次数'], ...reasonRows]));
 const typeRows = [...sim.stats.byType].sort((a, b) => b[1].ok + b[1].err - (a[1].ok + a[1].err)).map(([k, v]) => [k, String(v.ok), String(v.err)]);
+console.log('\n正常流程里被拒绝的动作 × 原因（Top 16，非故意发错）：');
+console.log(table([['动作/原因', '次数'], ...[...sim.failBy].sort((a, b) => b[1] - a[1]).slice(0, 16).map(([k, v]) => [k, String(v)])]));
 console.log('\n各类动作（成功 / 被拒绝）：');
 console.log(table([['动作', '成功', '被拒绝'], ...typeRows]));
 if (sim.anomalies.size > 0) {

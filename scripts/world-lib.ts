@@ -658,9 +658,9 @@ export class Invariants {
       'relation_symmetric',
       db.all(
         `SELECT a.resident_id, a.other_id FROM relationships a LEFT JOIN relationships b ON b.resident_id = a.other_id AND b.other_id = a.resident_id
-         WHERE b.resident_id IS NULL OR a.familiarity <> b.familiarity OR a.closeness <> b.closeness LIMIT 5`,
+         WHERE b.resident_id IS NULL OR a.familiarity <> b.familiarity LIMIT 5`,
       ),
-      '关系两边的数值不对称',
+      '关系两边的熟悉度不对称（亲近度按设计可以单向：送礼只加送的人，见 social.ts closenessFor）',
     );
     bad('memory_bound', db.all('SELECT owner_id, other_id, COUNT(*) n FROM memory_refs WHERE other_id IS NOT NULL GROUP BY owner_id, other_id HAVING n > ?', w.params.activeMemoryItems * 3), '共同经历条数超过上限');
     bad('mailbox_cap', db.all('SELECT recipient_id, COUNT(*) n FROM letters WHERE recipient_deleted_at IS NULL GROUP BY recipient_id HAVING n > ?', w.params.mailboxCapacity), '信箱超过容量');

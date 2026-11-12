@@ -157,7 +157,6 @@ async function submit(v, input) {
     return { ok: false };
   }
   const r = await act({ type: 'game_act', gameId: v.game_id, phaseId: v.phase_id, input });
-  if (r.ok && r.text) toast(r.text, 'ok', 3000);
   return r;
 }
 
@@ -190,6 +189,7 @@ function bombBoard(v, mySeat) {
     { class: 'board bomb' },
     h('div', { class: 'bomb-range' }, h('span', { class: 'cap' }, '炸弹藏在'), h('div', { class: 'bomb-nums' }, h('b', null, String(from)), h('span', { class: 'bomb-dash' }, icon('lantern', 22)), h('b', null, String(to))), h('span', { class: 'cap' }, str(pub.mode) === 'elimination' ? '淘汰制：踩雷出局，程序重新埋雷' : '一次爆炸定胜负')),
     track,
+    h('div', { class: 'bomb-ends' }, h('span', null, String(lo)), h('span', { class: 'cap' }, '刻度范围'), h('span', null, String(hi))),
     h('div', { class: 'bomb-legend' }, h('span', { class: 'lg lowside' }, '猜小了'), h('span', { class: 'lg highside' }, '猜大了'), h('span', { class: 'lg boom' }, '爆炸')),
     playersStrip(v, turn, mySeat),
     hist.length

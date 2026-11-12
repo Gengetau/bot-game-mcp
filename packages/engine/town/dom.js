@@ -234,9 +234,10 @@ export function dateTimeOf(ms, tz) {
 export function toast(text, kind = 'info', ms = 4200) {
   const box = document.getElementById('toasts');
   if (!box) return;
+  for (const old of [...box.children]) if (old.textContent === text) old.remove();
   const el = h('div', { class: `toast ${kind}`, role: kind === 'error' ? 'alert' : 'status' }, text);
   box.appendChild(el);
-  while (box.children.length > 4) box.firstElementChild?.remove();
+  while (box.children.length > 3) box.firstElementChild?.remove();
   setTimeout(() => {
     el.classList.add('out');
     setTimeout(() => el.remove(), 260);

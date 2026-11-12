@@ -339,6 +339,15 @@ export function openLetter(l) {
       'div',
       { class: 'action-grid' },
       grant ? btn(`去${grant.host.name}家`, async () => (sh.close(), moveTo(grant.home, `${grant.host.name}家`)), { variant: 'primary', icon: 'walk' }) : null,
+      !grant && l.invite?.active && !mine
+        ? btn(`去${other.name}家`, async () => {
+            await refreshMe(true);
+            const g = state.me?.invites.received.find((i) => i.grantId === l.invite?.grantId);
+            if (!g) return void toast('这份邀请现在还不能用，读过信、回家之后会生效。', 'warn');
+            sh.close();
+            moveTo(g.home, `${g.host.name}家`);
+          }, { variant: 'primary', icon: 'walk' })
+        : null,
       !mine ? btn('回信', () => (sh.close(), openLetterComposer(other)), { icon: 'mail', variant: 'soft', always: true }) : null,
       btn(
         '删除',
