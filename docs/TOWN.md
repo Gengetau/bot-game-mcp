@@ -99,7 +99,7 @@ packages/engine/town/             旧的网页前端（静态文件；会被 God
 
 **位置**。权威位置是「场景 + 实例 + x + z」，单位米，x 向东、z 向南（和 Godot 的 x / z 一致），存在 `world_actors` 表里。画面是三维的，判定是平面的。公共场景叫 `town`；私宅是场景 `home` 的私有实例，实例编号就是房主的居民编号。
 
-**地图**。一份地图源（`spatial/town-map.ts`）：可走范围、障碍、区域、落脚点、可互动物件的位置和使用位置、进出口。启动时编译成 0.5 米的可行走网格（障碍按角色半径外扩），并算出校验值。客户端通过 `GET /map` 拿到地图源和**服务器栅格化之后的同一份网格**，不自己栅格化，所以两边不会对同一堵墙有不同看法。地图发布后不原地改：改了可走范围、落脚点或物件位置就换 `mapVersion`；启动时位置在新地图上不合法的人会被挪到所在区域的落脚点。后端不需要安装 Blender 或 Godot。
+**地图**。一份地图源（`spatial/town-map.ts`）：可走范围、障碍、区域、落脚点、可互动物件的位置和使用位置、进出口。启动时编译成 0.5 米的可行走网格（障碍按角色半径外扩），并算出校验值。客户端通过 `GET /map` 拿到地图源和**服务器栅格化之后的同一份网格**，不自己栅格化，所以两边不会对同一堵墙有不同看法。地图发布后不原地改：改了可走范围、落脚点或物件位置就换 `mapVersion`；启动时位置在新地图上不合法的人会被挪到所在区域的落脚点，位置还合法但区域划分变了的，区域标签改成脚下的区域。后端不需要安装 Blender 或 Godot。
 
 **导航**。居民（真人和 AI 一样）只提交目的地，路线由服务器用 A* 规划：
 
@@ -109,8 +109,9 @@ packages/engine/town/             旧的网页前端（静态文件；会被 God
 - 开始、改道、停止、穿过门口、结束都是耐久变化：每次变化 `revision` 加一。定时任务（`nav_step`，一趟导航一条）必须对上导航编号和版本，否则作废。
 - 立即停步：`stop_navigation`、离线、控制权换手、控制连接正常关闭、开始一局小游戏、发起或加入需要够得着的共同活动。租约到期则停在截止那一刻。
 - 改路线有频率上限（每分钟 120 次，突发 8 次）。
+- 导航控制租约 10 秒，由客户端或运行器的普通程序每 3 秒续一次（`POST /nav/renew`、WebSocket 的 `renew`、MCP `heartbeat` 带 `navigation_id` + `revision`）。续租要同时对上导航编号和版本；对不上就不动现在这条，并把现在这条的编号和版本还回来（过了门口、换了一段时就是这样，照着新的接着续）。
 
-**区域**。地图把可走范围划成区域：六个公共地点、`road`（灯笼路，只是路过的地方）、`residential`（灯巷会馆：进出所有私宅的唯一公共接入点）。`residents.location_id` 是区域标签，只在跨区域那一刻由空间模块改写，同一事务里触发各模块的离开 / 到达处理（撤销没完成的交换、退出报名、记录登门）并通知两边在场的人。**走在路上的人属于脚下的区域**：能说话、能被听见、能做事。别的模块按区域判断「在不在一起」。
+**区域**。地图把可走范围划成区域：六个公共地点、`road`（灯笼路，只是路过的地方）、`residential`（灯巷会馆：进出所有私宅的唯一公共接入点）。`residents.location_id` 是区域标签，只在跨区域那一刻由空间模块改写，同一事务里触发各模块的离开 / 到达处理（撤销没完成的交换、退出报名、记录登门）并通知两边在场的人。**走在路上的人属于脚下的区域**：能说话、能被听见、能做事。别的模块按区域判断「在不在一起」。走路的人自己跨区域时不收事件（模型不该为每一步路被叫醒）：续租的回答和场景快照里都带着此刻的 `space`，客户端看到它变了就重读现场。
 
 **够得着**。公共物件（茶桌、藏书架、灶台、花箱）在地图上有位置：发起或加入它上面的共同活动，人要在 1.8 米内（藏书架 3.6 米），否则 `too_far`。`navigate {to: 物件编号}` 走到最近的使用位置。坐下之后迈步走开就算退出，哪怕没走出这片区域。家里的家具在屋里就够得着。人和人之间的当面互动（邀请、交换、询问）现阶段仍按「同一个区域」判定。
 
@@ -141,8 +142,8 @@ packages/engine/town/             旧的网页前端（静态文件；会被 God
 | `POST /actions` | 提交动作（见下） |
 | `POST /heartbeat` `{clientId, presenceEpoch}` | 续在场租约。返回里有 `control`、`contextVersion`、`activityId`、`nextHeartbeatMs` |
 | `POST /claim` `{clientId}` | 接管控制权（原来那个客户端安排的路线立即停下） |
-| `GET /scene` | 场景快照（`SceneView`）：我所在的场景实例里在场的人、坐标，正在走的人的折线、速度、出发时刻 |
-| `POST /nav/renew` `{clientId, navigationId, revision}` | 续导航控制租约。返回 `{ok, leaseUntil?, navigation}`；`ok: false` 表示这条路线已经结束或被换掉 |
+| `GET /scene` | 场景快照（`SceneView`）：我所在的场景实例里在场的人、坐标，正在走的人的折线、速度、出发时刻。自己不在场时只有自己停在哪里 |
+| `POST /nav/renew` `{clientId, navigationId, revision}` | 续导航控制租约（编号和版本都要给）。返回 `{ok, leaseUntil?, navigation, space}`；`ok: false` 且 `navigation: null` 表示已经没有在走的路，`navigation` 不为空表示续的不是现在这一段（把它当成新的接着续）。`space` 是此刻脚下的区域。不是控制方返回 409 `control_lost` |
 | `POST /ws-ticket` `{clientId}` | 取一张一次性的 WebSocket 连接票据，返回 `{ticket, expiresAt}`（30 秒有效，每个登录身份最多留 8 张没用过的）。票据是凭据，不要写进日志 |
 | `POST /leave` | 主动离开小镇 |
 | `GET /events?clientId=&cursor=&pcursor=` | SSE：本人的事件和公开事件 |
@@ -294,7 +295,7 @@ packages/engine/town/             旧的网页前端（静态文件；会被 God
 | → 客户端 | `{t:"hello", v:1, serverTime, resident, map:{mapVersion, checksum}, renewEveryMs, cursor}` | |
 | → 客户端 | `{t:"scene", …SceneView}` | 完整快照：`scene`、`space`、`serverTime`、`self`、`actors[]`（`id, name, kind, x, z, heading, busy?, nav?`）。`nav: {id, revision, points, speed, startedAt, until}`：客户端按这条折线和服务器时间插值，走到 `until` 为止。所在场景里有位置变化、或者自己换了场景时重发，同一条连接每秒最多 10 次 |
 | → 客户端 | `{t:"events", events, cursor}` / `{t:"resync", cursor}` | 耐久私有事件，同 SSE 的 `private` |
-| → 客户端 | `{t:"pong", n, serverTime}` / `{t:"renewed", ok, leaseUntil?, navigation}` / `{t:"error", code, message}` | |
+| → 客户端 | `{t:"pong", n, serverTime}` / `{t:"renewed", ok, leaseUntil?, navigation, space}` / `{t:"error", code, message}` | |
 
 没带 `cursor` 就从当前水位开始，不回放历史；游标无效或已被裁剪时收到 `resync`。坏消息（不是 JSON、不认识的类型、重复 hello）只回 `error`，不断开。
 
@@ -320,7 +321,7 @@ packages/engine/town/             旧的网页前端（静态文件；会被 God
 - `MeView`：`world`、`me`（资料、需要、情绪、称号、家）、`control`、`context`、`actionWindow`、`cursor`、`location`（`space, name, scene, x, z, navigation`：只有自己的坐标）、`here`（现场：身边的人、物件、商店、凑桌、可去的地方、门牌、最近的发言）、`inventory`、`goals`、`mail`、`invites`、`offers`、`interaction`、`game`、`events`、`suggestions`、`recap?`。
 - 在小游戏里时 `here` 为 `null`。走路时 `here` 是脚下区域的现场。
 - `here.exits` 是所有可去的目的地（带大概要走多少秒）；`here.objects[].near` 表示此刻够不够得着。
-- `SceneView`（`space.ts`）：同一个场景实例里在场的人。公共场景的快照里没有任何私宅里的人；私宅的快照只给屋里的人。
+- `SceneView`（`space.ts`）：同一个场景实例里在场的人。公共场景的快照里没有任何私宅里的人；私宅的快照只给屋里的人；自己不在场（离线）时快照里只有自己。
 - AI 用的紧凑视图 `agentView` 是同样的权限、去掉了展示用的冗余：`location: {space, name, walking?}`，够不着的物件带 `far: true`。
 - 门牌（`here.doors`，只在灯巷会馆）只列：自己家、已经得知且已经生效的邀请对应的家、此刻在场的邻居的家。信还在路上、送达了没读、生效时间没到的邀请都不会让寄信人的门出现。
 - 背包条目带 `stackable`（只有本人看得到）。可叠放的东西（消耗品、鲜花、灯笼之类）一律用 `itemType`（报价里是 `type`）加 `qty` 指定；只有不可叠放的东西（书、家具、借来的东西）才用 `itemId`。`agentView` 只给后者带 `itemId`。
@@ -336,7 +337,7 @@ packages/engine/town/             旧的网页前端（静态文件；会被 God
 | `world_act` | 提交结构化动作（`request_id`、`action_window`、`context_version`、`action`）。去哪儿用 `navigate`：AI 只给目的地，不发连续的方向输入 |
 | `world_wait` | 带 `cursor` 长轮询新事件（最多 50 秒）。等待本身续在场 |
 | `world_query` | `public` / `residents` / `letters` / `history` / `relations`（带 `with` 对方id、`cursor` 翻看共同记忆，同 `GET /relations`）/ `report` |
-| `heartbeat` / `claim_control` / `leave_world` | 续在场、接管控制、主动离开 |
+| `heartbeat` / `claim_control` / `leave_world` | 续在场、接管控制、主动离开。`heartbeat` 带上 `navigation_id` 和 `revision` 时同一次调用里续导航控制租约，多返回 `navigation: {ok, leaseUntil?, navigation, space}`；这是运行器（`ResidentRunner`）每 3 秒自动做的事，不经过模型 |
 | `town_issue_ticket` | 【可信账号】给真人签发登录票据。只有管理员或 `refereeIds` 里的账号能调；已经绑定 AI 密钥的号码不能当真人 |
 | `town_outbox` | 【可信账号】取待发到群里的稀疏公告（公共活动开场、每日小报），发完确认 |
 
