@@ -1,14 +1,21 @@
 class_name TRig
 extends Node3D
 ## 固定朝向和俯角的斜俯视镜头：平滑跟随目标，有限缩放（不做自由旋转）。
+## 靠近、俯角放低一点，让人物的头发、衣服、朝向看得清；横屏（桌面）和竖屏（手机）各有适合的距离和俯角。
 
-const PITCH_DEG := 52.0
-const DIST_MIN := 9.0
-const DIST_MAX := 42.0
+const PITCH_LANDSCAPE := 40.0
+const PITCH_PORTRAIT := 46.0
+const DIST_MIN := 6.5
+const DIST_MAX := 36.0
+const DIST_LANDSCAPE := 17.0
+const DIST_PORTRAIT := 14.0
 
 var cam: Camera3D
 var focus: Vector3 = Vector3.ZERO
-var dist: float = 24.0
+var dist: float = DIST_LANDSCAPE
+var pitch_deg: float = PITCH_LANDSCAPE
+var _portrait: bool = false
+var _aspect_set: bool = false
 
 
 func _ready() -> void:
@@ -21,14 +28,21 @@ func _ready() -> void:
 	_update()
 
 
-## 竖屏（手机）时按宽度定视野，免得只看得到脚边一小块。
+## 竖屏（手机）时按宽度定视野，免得只看得到脚边一小块；第一次、以及横竖屏切换时，换成该方向的默认距离和俯角。
 func set_aspect(a: float) -> void:
-	if a < 1.0:
+	var portrait: bool = a < 1.0
+	if portrait:
 		cam.keep_aspect = Camera3D.KEEP_WIDTH
 		cam.fov = 55.0
 	else:
 		cam.keep_aspect = Camera3D.KEEP_HEIGHT
 		cam.fov = 40.0
+	if not _aspect_set or portrait != _portrait:
+		_aspect_set = true
+		_portrait = portrait
+		dist = DIST_PORTRAIT if portrait else DIST_LANDSCAPE
+		pitch_deg = PITCH_PORTRAIT if portrait else PITCH_LANDSCAPE
+		_update()
 
 
 func snap(p: Vector3) -> void:
@@ -49,7 +63,7 @@ func zoom_mul(f: float) -> void:
 func _update() -> void:
 	if cam == null:
 		return
-	var pitch: float = deg_to_rad(PITCH_DEG)
+	var pitch: float = deg_to_rad(pitch_deg)
 	cam.position = focus + Vector3(0.0, sin(pitch), cos(pitch)) * dist
 	cam.look_at_from_position(cam.position, focus, Vector3.UP)
 

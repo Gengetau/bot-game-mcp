@@ -132,6 +132,96 @@
     if (soundOn && window.TownHost) window.TownHost.unlockAudio();
   });
 
+  /* ── 画质：高 = 实时阴影；低 = 只有脚下的软影（手机默认低）。选择记在本机 ── */
+  var qualityHigh = (function () {
+    var v = lsGet('town3d.quality');
+    if (v === 'high') return true;
+    if (v === 'low') return false;
+    if (window.matchMedia && window.matchMedia('(pointer: coarse)').matches) return false;
+    // 软件渲染（SwiftShader / llvmpipe）开实时阴影只会更卡
+    try {
+      var gl = document.createElement('canvas').getContext('webgl2');
+      var ext = gl && gl.getExtension('WEBGL_debug_renderer_info');
+      var rn = ext ? String(gl.getParameter(ext.UNMASKED_RENDERER_WEBGL)) : '';
+      if (/swiftshader|llvmpipe|software/i.test(rn)) return false;
+    } catch (e) {
+      /* 取不到就按桌面默认 */
+    }
+    return true;
+  })();
+  function renderQuality() {
+    $('qualityBtn').textContent = qualityHigh ? '画质：高' : '画质：低';
+  }
+  renderQuality();
+  $('qualityBtn').addEventListener('click', function () {
+    qualityHigh = !qualityHigh;
+    lsSet('town3d.quality', qualityHigh ? 'high' : 'low');
+    renderQuality();
+    emit('quality', qualityHigh ? 'high' : 'low');
+  });
+  /* ── 音量设置：音乐 / 环境声 / 音效三条独立音量 + 切后台静音，记在 localStorage（读写都包 try/catch，读不到用默认值） ── */
+  var AUDIO_DEFAULT = { music: 60, amb: 70, sfx: 80, bg: true };
+  var audioPrefs = (function () {
+    var out = { music: AUDIO_DEFAULT.music, amb: AUDIO_DEFAULT.amb, sfx: AUDIO_DEFAULT.sfx, bg: AUDIO_DEFAULT.bg };
+    try {
+      var j = JSON.parse(lsGet('town3d.audio') || 'null');
+      if (j && typeof j === 'object') {
+        ['music', 'amb', 'sfx'].forEach(function (k) {
+          var v = Number(j[k]);
+          if (isFinite(v)) out[k] = Math.max(0, Math.min(100, Math.round(v)));
+        });
+        if (typeof j.bg === 'boolean') out.bg = j.bg;
+      }
+    } catch (e) {
+      /* 损坏就用默认值 */
+    }
+    return out;
+  })();
+  var VOL_IDS = { music: 'volMusic', amb: 'volAmb', sfx: 'volSfx' };
+  function renderAudioPrefs() {
+    Object.keys(VOL_IDS).forEach(function (k) {
+      $(VOL_IDS[k]).value = String(audioPrefs[k]);
+      $(VOL_IDS[k] + 'V').textContent = audioPrefs[k] + '%';
+    });
+    $('bgMute').checked = audioPrefs.bg;
+  }
+  function emitAudioPrefs() {
+    Object.keys(VOL_IDS).forEach(function (k) {
+      emit('vol', k + ':' + audioPrefs[k] / 100);
+    });
+    emit('bgmute', audioPrefs.bg ? '1' : '0');
+  }
+  renderAudioPrefs();
+  Object.keys(VOL_IDS).forEach(function (k) {
+    $(VOL_IDS[k]).addEventListener('input', function () {
+      audioPrefs[k] = Math.max(0, Math.min(100, parseInt(this.value, 10) || 0));
+      $(VOL_IDS[k] + 'V').textContent = audioPrefs[k] + '%';
+      lsSet('town3d.audio', JSON.stringify(audioPrefs));
+      emit('vol', k + ':' + audioPrefs[k] / 100);
+    });
+  });
+  $('bgMute').addEventListener('change', function () {
+    audioPrefs.bg = this.checked;
+    lsSet('town3d.audio', JSON.stringify(audioPrefs));
+    emit('bgmute', audioPrefs.bg ? '1' : '0');
+  });
+  function setSoundPanel(on) {
+    $('soundPanel').hidden = !on;
+    $('soundSetBtn').setAttribute('aria-expanded', on ? 'true' : 'false');
+    emit('sfx', on ? 'panel_open' : 'panel_close');
+  }
+  $('soundSetBtn').addEventListener('click', function () {
+    if (window.TownHost) window.TownHost.unlockAudio();
+    setSoundPanel($('soundPanel').hidden);
+  });
+  document.addEventListener(
+    'pointerdown',
+    function (e) {
+      if (!$('soundPanel').hidden && !$('soundPanel').contains(e.target) && e.target !== $('soundSetBtn')) setSoundPanel(false);
+    },
+    true,
+  );
+
   /* ── 面板 ── */
   var state = {};
   var dead = false;
@@ -175,6 +265,8 @@
   $('enterBtn').addEventListener('click', function () {
     if (window.TownHost) window.TownHost.unlockAudio();
     emit('sound', soundOn ? '1' : '0');
+    emit('quality', qualityHigh ? 'high' : 'low');
+    emitAudioPrefs();
     emit('enter');
   });
   $('retryBtn').addEventListener('click', function () {
@@ -210,8 +302,83 @@
     emit(state.inHome ? 'leave_home' : 'home');
   });
   $('destBtn').addEventListener('click', function () {
+    emit('sfx', $('destMenu').hidden ? 'panel_open' : 'panel_close');
     show($('destMenu'), $('destMenu').hidden);
   });
+
+  /* ── 键盘：WASD / 方向键移动，E 互动，Esc 关面板或停步 ──
+   * 在网页层处理：焦点在输入框里时一律不响应；窗口失焦、切后台、焦点进输入框都当成全部松开（Godot 会据此发零向量）。
+   * 只发「现在按着哪几个方向」，方向到世界坐标的换算和协议在 main.gd。 */
+  var KEYMAP = { KeyW: 'up', ArrowUp: 'up', KeyS: 'down', ArrowDown: 'down', KeyA: 'left', ArrowLeft: 'left', KeyD: 'right', ArrowRight: 'right' };
+  var held = {}; // e.code -> true
+  var lastKeys = '';
+  function isTyping(t) {
+    if (!t || !t.tagName) return false;
+    var n = t.tagName.toLowerCase();
+    return n === 'input' || n === 'textarea' || n === 'select' || !!t.isContentEditable;
+  }
+  function playing() {
+    return state.phase === 'playing';
+  }
+  function emitKeys() {
+    var dirs = {};
+    for (var c in held) if (held[c]) dirs[KEYMAP[c]] = true;
+    var j = ['up', 'down', 'left', 'right'].filter(function (d) { return dirs[d]; }).join(',');
+    // 末尾的编号是「按下沿」计数：只有新按下一个方向键才会加一，客户端靠它决定要不要解除"点地后的抑制"
+    var out = j + '|' + pressEdge;
+    if (out === lastKeys) return;
+    lastKeys = out;
+    emit('keys', out);
+  }
+  var pressEdge = 0;
+  function releaseAll() {
+    held = {};
+    emitKeys();
+  }
+  window.addEventListener(
+    'keydown',
+    function (e) {
+      // macOS 上 Cmd 按着时，其他键的 keyup 不会送到页面：一见到修饰键就全部松开，免得粘键一直走
+      if (e.ctrlKey || e.metaKey || e.altKey || e.key === 'Meta' || e.key === 'Control' || e.key === 'Alt') {
+        releaseAll();
+        return;
+      }
+      if (isTyping(e.target) || !playing()) return;
+      var code = e.code;
+      if (KEYMAP[code]) {
+        e.preventDefault();
+        if (!held[code] && !e.repeat) pressEdge++;
+        held[code] = true;
+        emitKeys();
+      } else if (code === 'KeyE') {
+        e.preventDefault();
+        if (!e.repeat) emit('interact');
+      } else if (code === 'Escape') {
+        if (e.repeat) return;
+        if (!$('destMenu').hidden) show($('destMenu'), false);
+        else emit('esc');
+      }
+    },
+    true,
+  );
+  window.addEventListener(
+    'keyup',
+    function (e) {
+      if (!KEYMAP[e.code]) return;
+      held[e.code] = false;
+      emitKeys();
+    },
+    true,
+  );
+  window.addEventListener('blur', releaseAll);
+  document.addEventListener('visibilitychange', function () {
+    if (document.visibilityState !== 'visible') releaseAll();
+  });
+  document.addEventListener('focusin', function (e) {
+    if (isTyping(e.target)) releaseAll();
+  });
+  // 触摸设备不显示键位提示（主要输入是手指，没有物理键盘）
+  var hasKeyboard = !!(window.matchMedia && window.matchMedia('(hover: hover) and (pointer: fine)').matches);
 
   /* ── 状态 ── */
   var lastActionsJson = '';
@@ -298,11 +465,14 @@
     renderPanel(s);
     lastPhase = s.phase;
     if (s.phase !== 'playing') {
+      releaseAll();
+      show($('keyHint'), false);
       document.body.setAttribute('data-phase', s.phase);
       clearTags(); // 重新登录 / 出错面板下不留旧姓名牌
       return;
     }
     document.body.setAttribute('data-phase', 'playing');
+    show($('keyHint'), hasKeyboard);
     $('space').textContent = s.space || s.sceneName || '栖灯镇';
     $('conn').className = 'dot ' + (s.conn || '');
     $('conn').title = s.conn === 'ok' ? '已连接' : s.conn === 'reconnecting' ? '重新连接中…' : '离线';
@@ -459,6 +629,7 @@
     d.canvasRect = { left: r.left, top: r.top, width: r.width, height: r.height };
     d.audio = window.TownHost ? window.TownHost.audioState() : [];
     d.soundOn = soundOn;
+    d.audioPrefs = audioPrefs;
     d.toasts = Array.prototype.map.call($('toasts').children, function (e) {
       return e.textContent;
     });
@@ -484,6 +655,9 @@
     setLoading: setLoading,
     fatal: fatal,
     debugSet: debugSet,
+    bgMute: function () {
+      return audioPrefs.bg;
+    },
     ready: ready,
   };
   setLoading(0, '正在加载客户端…');

@@ -663,14 +663,15 @@ describe('栖灯镇导航：用时由路程决定，路上属于脚下的区域'
     expect(a.row().location_id).toBe('bookshop');
   });
 
-  it('走过一片区域时听得到这里的话，走出去之后听不到；说话的受众是那一刻同一区域里在场的人', () => {
+  it('走过一片区域时听得到身边的话，走远之后听不到；说话的受众是那一刻交谈距离内的在场的人', () => {
     const t = makeTown();
     const a = t.join('阿灯');
     const b = t.join('小岚', 'agent');
     const c = t.join('小满');
     a.go('tea_house');
     c.go('garden');
-    // 阿灯从茶馆走向花园，途中路过广场（小岚在那里）
+    // 小岚站在广场西侧的入口附近；阿灯从茶馆走向花园，途中路过广场
+    b.go({ x: 23, z: 26 });
     a.act('navigate', { to: 'garden' });
     expect(a.row().location_id).toBe('tea_house');
     walkInto(t, 'plaza', [a, b, c], a);

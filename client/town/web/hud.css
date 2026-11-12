@@ -108,6 +108,17 @@ button.big { font-size: 18px; padding: 12px 28px; min-height: 48px; }
 }
 #destMenu button { min-height: 36px; padding: 6px 12px; }
 
+#hud #keyHint {
+  position: absolute; left: calc(12px + var(--safe-left)); bottom: calc(14px + var(--safe-bottom)); z-index: 1; pointer-events: none;
+  font-size: 13px; color: var(--muted); min-height: 30px; padding: 4px 10px; gap: 4px; flex-wrap: wrap;
+}
+#keyHint kbd {
+  font: inherit; font-size: 12px; font-weight: 700; color: var(--text); background: rgba(255, 255, 255, 0.12); border: 1px solid var(--line);
+  border-radius: 5px; padding: 0 5px; min-width: 20px; text-align: center;
+}
+#keyHint .sep { opacity: 0.5; }
+@media (max-width: 900px) { #keyHint { display: none !important; } }
+
 /* z-index:0 让 #tags 自成层叠上下文：里面 .tag 的 z-index 不再外泄、压到顶栏 / 按钮 / 遮罩上面 */
 #tags { position: absolute; inset: 0; overflow: hidden; pointer-events: none; z-index: 0; }
 .tag {
@@ -155,3 +166,15 @@ button.big { font-size: 18px; padding: 12px 28px; min-height: 48px; }
   #controls button { min-width: 64px; padding: 8px 10px; }
 }
 @media (prefers-reduced-motion: reduce) { .spin, .dot.reconnecting, .toast { animation: none; } }
+
+/* 音量设置（#soundPanel）：从顶栏的「音量」按钮展开，三条滑块 + 一个勾选 */
+#soundPanel {
+  position: absolute; top: calc(54px + var(--safe-top)); right: calc(12px + var(--safe-right)); z-index: 5; pointer-events: auto;
+  width: min(300px, calc(100vw - 24px - var(--safe-left) - var(--safe-right))); padding: 12px 14px; display: flex; flex-direction: column; gap: 10px;
+  background: var(--panel-solid); border: 1px solid var(--line); border-radius: 14px; box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+}
+#soundPanel .vol { display: grid; grid-template-columns: 4.2em 1fr 3em; align-items: center; gap: 10px; }
+#soundPanel input[type="range"] { width: 100%; min-height: 28px; accent-color: var(--accent); margin: 0; }
+#soundPanel output { text-align: right; color: var(--muted); font-variant-numeric: tabular-nums; }
+#soundPanel .chk { display: flex; align-items: center; gap: 8px; color: var(--muted); }
+#soundPanel .chk input { width: 18px; height: 18px; accent-color: var(--accent); }

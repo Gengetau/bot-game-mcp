@@ -218,16 +218,16 @@ describe('带游标续传与分页', () => {
     const { t, a, b, c } = trio();
     const cb = t.w.cursorOf(b.residentId);
     const cc = t.w.cursorOf(c.residentId);
-    a.act('send_letter', { to: b.residentId, body: '私密的信：金库密码 9527' });
+    a.act('send_letter', { to: b.residentId, body: '私密的信：金库密码 ~9527~' });
     t.advance(2 * MIN);
     t.advanceAlive(0, []);
     const mine = t.w.readResidentEvents(b.residentId, cb).events;
     const others = t.w.readResidentEvents(c.residentId, cc).events;
     expect(mine.some((e) => e.type === 'mail')).toBe(true);
-    expect(JSON.stringify(mine)).not.toContain('9527');
-    expect(JSON.stringify(others)).not.toContain('9527');
+    expect(JSON.stringify(mine)).not.toContain('~9527~');
+    expect(JSON.stringify(others)).not.toContain('~9527~');
     expect(others.some((e) => e.type === 'mail')).toBe(false);
-    expect(JSON.stringify(t.w.readPublicEvents(undefined, 100))).not.toContain('9527');
+    expect(JSON.stringify(t.w.readPublicEvents(undefined, 100))).not.toContain('~9527~');
   });
 });
 

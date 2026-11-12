@@ -2,7 +2,7 @@ import { createVerify, generateKeyPairSync } from 'node:crypto';
 import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { driveAssets, localAssets, splitAsset } from '../../src/core/assets.js';
 
 const PNG = Buffer.from('89504e470d0a1a0a0000000d49484452', 'hex');
@@ -107,8 +107,12 @@ describe('assets: Google Drive', () => {
     const logs: string[] = [];
     const s = driveAssets({ folderId: 'ROOT', credentials: creds, cacheDir: cache, fetch: d.fetch, log: (m) => logs.push(m) });
     s.prepare('JB-X', ['045/map.png', '045/none.png']);
-    await new Promise((r) => setTimeout(r, 50));
-    expect(existsSync(join(cache, 'JB-X', '045', 'map.png'))).toBe(true);
-    expect(logs.some((l) => l.includes('none.png'))).toBe(true);
+    await vi.waitFor(
+      () => {
+        expect(existsSync(join(cache, 'JB-X', '045', 'map.png'))).toBe(true);
+        expect(logs.some((l) => l.includes('none.png'))).toBe(true);
+      },
+      { timeout: 5000, interval: 10 },
+    );
   });
 });

@@ -1074,9 +1074,9 @@ describe('HTTP：SSE 事件流', () => {
     const hello = await pub.waitFor((e) => e.event === 'hello');
     expect(hello.data.pcursor).toMatch(/^p/);
     expect(hello.data.cursor).toBeUndefined();
-    await say(b, '这句话是私密的现场发言ZZZ');
-    c.act('send_letter', { to: b.residentId, body: '信件正文ZZZ' });
-    await a.act({ type: 'speak', text: '阿灯的话ZZZ' });
+    await say(b, '这句话是私密的现场发言~ZZZ~');
+    c.act('send_letter', { to: b.residentId, body: '信件正文~ZZZ~' });
+    await a.act({ type: 'speak', text: '阿灯的话~ZZZ~' });
     await step(61_000);
     // 公开事件：有人换了地方
     b.go('bookshop');
@@ -1085,7 +1085,7 @@ describe('HTTP：SSE 事件流', () => {
     expect(place.data.pcursor).toBe(place.id);
     await sleep(50);
     expect(new Set(pub.events.map((e) => e.event))).toEqual(new Set(['hello', 'public']));
-    expect(pub.raw()).not.toContain('ZZZ');
+    expect(pub.raw()).not.toContain('~ZZZ~');
     expect(pub.raw()).not.toMatch(/"type":"(chat|mail|offer|invite)"/);
     // 用公开游标续传
     const lastId = pub.events.filter((e) => e.event === 'public').at(-1)!.id!;
@@ -1103,13 +1103,13 @@ describe('HTTP：SSE 事件流', () => {
     const sse = await stream(app, a);
     await sse.waitFor((e) => e.event === 'hello');
     // c 在茶馆说话、被 b 寄信、收到 b 的报价……都与 a 无关
-    await say(c, '茶馆里的悄悄话QQQ');
-    b.act('send_letter', { to: c.residentId, body: '给远处的信QQQ' });
+    await say(c, '茶馆里的悄悄话~QQQ~');
+    b.act('send_letter', { to: c.residentId, body: '给远处的信~QQQ~' });
     await step(61_000);
     // 哨兵：之后给 a 发一个确实属于他的事件
     await say(b, '哨兵');
     await sse.waitFor((e) => e.event === 'private' && e.data.data?.text === '哨兵');
-    expect(sse.raw()).not.toContain('QQQ');
+    expect(sse.raw()).not.toContain('~QQQ~');
     const types = sse.events.filter((e) => e.event === 'private').map((e) => e.data.type);
     expect(types).not.toContain('mail');
     expect(types).not.toContain('offer');

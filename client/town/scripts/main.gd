@@ -105,6 +105,23 @@ var _tap_start: Dictionary = {}
 var _pinch_prev: float = 0.0
 var last_error: String = ""
 
+# 键盘方向输入（WASD / 方向键）。键位由网页层 hud.js 盯着（输入框里、窗口失焦、切后台都由它处理），这里只收「现在按着哪几个」。
+# 只发方向、序号、控制版本，不发坐标；服务器把它变成一段约 500 毫秒租约的短直线，所以按住时要定时重发，松手发零向量。
+const DIR_RESEND_MS := 175.0  # 按住时重发的间隔
+const DIR_MIN_GAP_MS := 100.0  # 方向变了也至少隔这么久才发（和服务器限频的稳态一致：每秒 10 条）
+const INTERACT_RANGE := 8.0
+var key_up: bool = false
+var key_down: bool = false
+var key_left: bool = false
+var key_right: bool = false
+var dir_seq: int = 0  # 只增不减，重连也不重置（服务器按连接序号区分新旧连接）
+var dir_last: Vector2 = Vector2.ZERO
+var dir_sent_ms: float = -1.0e9
+var dir_active: bool = false  # 已经发过非零方向、还没发零
+var dir_suppressed: bool = false  # 点了地面或物件、按了 Esc：不再发方向，直到出现新的按下沿（向量归零本身不解除）
+var key_edge: int = 0  # hud.js 给的按下沿计数
+var dir_conn: int = -1  # hello 里的连接序号，点地 / 停下时连同 dir_seq 一起作栅栏发给服务器
+var dir_toast_ms: float = -1.0e9
 var _dirty: bool = true
 var _state_timer: float = 0.0
 var _debug_timer: float = 0.0
@@ -116,6 +133,8 @@ func _ready() -> void:
 	add_child(world)
 	add_child(rig)
 	add_child(actors_root)
+	audio.bridge = bridge
+	audio.clock = clock
 	add_child(audio)
 	_build_environment()
 	_build_marker()
@@ -134,21 +153,26 @@ func _ready() -> void:
 	print("[town] 客户端已就绪")
 
 
+## 光照和昼夜在 daynight.gd（按服务器世界时间），画质档由界面按钮 / 默认值决定。
+var _fps_avg: float = 60.0
+var _drs: float = 1.0
+var _drs_t: float = 0.0
+var daynight: TDayNight = null
+var quality_high: bool = true
+
+
 func _build_environment() -> void:
-	var env := Environment.new()
-	env.background_mode = Environment.BG_COLOR
-	env.background_color = Color(0.62, 0.74, 0.86)
-	env.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
-	env.ambient_light_color = Color(0.72, 0.74, 0.8)
-	env.ambient_light_energy = 0.9
-	var we := WorldEnvironment.new()
-	we.environment = env
-	add_child(we)
-	var sun := DirectionalLight3D.new()
-	sun.rotation_degrees = Vector3(-58.0, -35.0, 0.0)
-	sun.light_energy = 0.9
-	sun.shadow_enabled = false
-	add_child(sun)
+	daynight = TDayNight.new()
+	add_child(daynight)
+	daynight.debug_hour = bridge.debug_hour
+	_set_quality(not DisplayServer.is_touchscreen_available())
+
+
+func _set_quality(high: bool) -> void:
+	quality_high = high
+	if daynight != null:
+		daynight.set_quality(high)
+	world.set_quality(high)
 
 
 func _build_marker() -> void:
@@ -182,10 +206,24 @@ func _on_ui(ev: String, arg: String) -> void:
 				_run_flow()
 		"login":
 			login_submitted.emit(arg)
+		"quality":
+			_set_quality(arg == "high")
 		"sound":
 			audio.set_enabled(arg == "1")
+		"vol":
+			audio.set_volume_text(arg)
+		"bgmute":
+			audio.set_bg_mute(arg == "1")
+		"sfx":
+			audio.ui_sfx(arg)
 		"stop":
 			_do_stop()
+		"keys":
+			_on_keys(arg)
+		"interact":
+			_do_interact()
+		"esc":
+			_do_esc()
 		"claim":
 			_do_claim()
 		"home":
@@ -213,6 +251,7 @@ func _on_ui(ev: String, arg: String) -> void:
 
 
 func _on_visibility(vis: bool) -> void:
+	audio.set_hidden(not vis)
 	if not vis or phase != Phase.PLAYING:
 		return
 	# 回到前台：马上对时、续心跳、要一份快照
@@ -239,6 +278,8 @@ func _start_probe(t: float) -> void:
 
 func _set_phase(p: int, msg: String = "", link: String = "") -> void:
 	phase = p
+	if p != Phase.PLAYING:
+		_dir_reset()
 	phase_msg = msg
 	phase_link = link
 	_dirty = true
@@ -247,6 +288,8 @@ func _set_phase(p: int, msg: String = "", link: String = "") -> void:
 
 func _toast(msg: String, kind: String = "info") -> void:
 	bridge.hud_toast(msg, kind)
+	if kind == "err":
+		audio.fail()
 
 
 # ───────────────────────── 启动流程 ─────────────────────────
@@ -303,6 +346,12 @@ func _flow_body() -> bool:
 	if int(cfg["status"]) == 200 and cfg["data"] is Dictionary:
 		dev_login = bool(cfg["data"].get("devLogin", false))
 		heartbeat_ms = int(cfg["data"].get("heartbeatMs", 20000))
+		var winfo = cfg["data"].get("world")
+		if winfo is Dictionary and daynight != null:
+			daynight.set_timezone(str(winfo.get("timezone", "")))
+		var wcfg = cfg["data"].get("world")
+		if wcfg is Dictionary and str(wcfg.get("timezone", "")) != "":
+			audio.world_tz = str(wcfg["timezone"])
 	var logged_in: bool = bool((sess["data"] as Dictionary).get("loggedIn", false))
 	if logged_in:
 		user_name = str((sess["data"] as Dictionary).get("name", ""))
@@ -529,6 +578,7 @@ func _on_ws_open() -> void:
 
 func _on_ws_closed(code: int, _reason: String) -> void:
 	ws_ready = false
+	dir_active = false  # 发不出零向量了；服务器最迟 500 毫秒后自己停
 	_dirty = true
 	if not want_net:
 		return
@@ -601,6 +651,7 @@ func _on_ws_message(msg: Dictionary) -> void:
 			clock.reset()
 			clock.rough(float(msg.get("serverTime", 0.0)))
 			renew_every_ms = maxf(1000.0, float(msg.get("renewEveryMs", 3000.0)))
+			dir_conn = int(msg.get("dirConn", -1))
 			ev_cursor = str(msg.get("cursor", ev_cursor))
 			next_ping = 0.0
 			var m = msg.get("map")
@@ -624,6 +675,8 @@ func _on_ws_message(msg: Dictionary) -> void:
 			last_pong_ms = clock.ticks_ms()
 		"renewed":
 			_on_renewed(msg)
+		"dir_dropped":
+			dir_last = Vector2.ZERO  # 丢了就当没发过：下一帧立刻重发（旧序号的丢弃由栅栏保证是对的）
 		"error":
 			var code: String = str(msg.get("code", ""))
 			if code == "revoked":
@@ -636,13 +689,16 @@ func _on_ws_message(msg: Dictionary) -> void:
 				_refresh_me()
 			elif code == "unauthenticated":
 				_relogin()
-			elif code != "rate_limited":
+			elif code == "precondition_failed" and str(msg.get("reason", "")) == "in_activity":
+				_dir_hint(str(msg.get("message", "")))
+			elif code != "rate_limited" and not (code == "precondition_failed" and str(msg.get("reason", "")) == "not_present"):
 				last_error = code + ": " + str(msg.get("message", ""))
 
 
 func _on_event(ev: Dictionary) -> void:
 	var t: String = str(ev.get("type", ""))
 	var data: Dictionary = ev.get("data", {}) if ev.get("data") is Dictionary else {}
+	audio.on_event(ev)  # 提示音：按事件编号去重，太旧的不补播
 	match t:
 		"you_arrived":
 			arrival_refresh_at = clock.ticks_ms() + 80.0
@@ -665,7 +721,6 @@ func _on_event(ev: Dictionary) -> void:
 			_toast(str(data.get("text", "")), "info")
 		"interaction_done":
 			_toast("%s：%s" % [str(data.get("name", "做完了")), str(data.get("text", ""))], "ok")
-			audio.confirm()
 			arrival_refresh_at = clock.ticks_ms() + 50.0
 		"interaction":
 			arrival_refresh_at = clock.ticks_ms() + 50.0
@@ -687,6 +742,7 @@ func _on_renewed(msg: Dictionary) -> void:
 	if sp != "" and sp != cur_space:
 		cur_space = sp
 		cur_space_name = world.space_name(cur_scene, sp)
+		audio.set_place(manifest, cur_scene, cur_space)
 		_dirty = true
 		arrival_refresh_at = clock.ticks_ms() + 50.0
 
@@ -719,9 +775,10 @@ func _on_scene(msg: Dictionary) -> void:
 		near_valid = false
 		_hide_marker()
 	var sp: String = str(msg.get("space", cur_space))
-	if sp != cur_space or switched:
+	if sp != cur_space or switched or not audio.place_known():
 		cur_space = sp
 		cur_space_name = world.space_name(sid, sp)
+		audio.set_place(manifest, cur_scene, cur_space)
 		arrival_refresh_at = clock.ticks_ms() + 50.0
 	var now: float = clock.server_now()
 	if msg.has("self"):
@@ -742,7 +799,9 @@ func _on_scene(msg: Dictionary) -> void:
 			actors[id] = act
 		act.apply(a, now)
 		if id == self_id:
-			if act.has_nav:
+			if act.has_nav and _dir_recent(clock.ticks_ms()):
+				renew_id = ""  # 方向输入的短租约只由方向输入续，不走 10 秒的续租
+			elif act.has_nav:
 				if act.nav_id != renew_id or act.nav_rev != renew_rev:
 					renew_id = act.nav_id
 					renew_rev = act.nav_rev
@@ -859,21 +918,28 @@ func _hide_marker() -> void:
 func _do_navigate(to: Dictionary, label: String, mark = null) -> void:
 	if not _can_control():
 		return
+	_dir_cancel()
 	nav_generation += 1
 	var gen: int = nav_generation
 	near_valid = false
 	if mark is Vector3:
 		_show_marker(mark, false)
-	var r: Dictionary = await _act({"type": "navigate"}.merged(to))
+	var r: Dictionary = await _act({"type": "navigate"}.merged(to).merged(_dir_fence()))
 	if gen != nav_generation:
-		return  # 之后又点了别处，这个回答不再代表现状
+		# 之后又点了别处或又按了方向键，这个回答不再代表现状，不画标记；但服务器的现状照记：谁生效由服务器的序号栅栏决定
+		if r["ok"] and r["data"] is Dictionary and r["data"].get("navigation") is Dictionary:
+			var nv0: Dictionary = r["data"]["navigation"]
+			renew_id = str(nv0.get("navigationId", ""))
+			renew_rev = int(nv0.get("revision", 0))
+			next_renew = clock.ticks_ms() + float(nv0.get("renewEveryMs", renew_every_ms))
+		return
 	if not r["ok"]:
 		_hide_marker()
 		_toast(str(r["message"]), "err")
 		arrival_refresh_at = clock.ticks_ms() + 50.0
 		return
 	var d: Dictionary = r["data"]
-	audio.confirm()
+	audio.tap()
 	if str(d.get("status", "")) == "completed":
 		_hide_marker()
 		arrival_refresh_at = clock.ticks_ms() + 50.0
@@ -892,8 +958,9 @@ func _do_navigate(to: Dictionary, label: String, mark = null) -> void:
 func _do_stop() -> void:
 	if not _can_control():
 		return
+	_dir_cancel()
 	nav_generation += 1
-	var r: Dictionary = await _act({"type": "stop_navigation"})
+	var r: Dictionary = await _act({"type": "stop_navigation"}.merged(_dir_fence()))
 	_hide_marker()
 	if r["ok"]:
 		audio.confirm()
@@ -939,7 +1006,7 @@ func _on_act_button(arg: String) -> void:
 			return
 		var r: Dictionary = await _act({"type": "start_interaction", "objectId": oid})
 		if r["ok"]:
-			audio.confirm()
+			audio.start()
 			var inter = r["data"].get("interaction")
 			var nm: String = str(inter.get("name", "")) if inter is Dictionary else ""
 			_toast("开始了：%s" % nm if nm != "" else "开始了。", "ok")
@@ -949,6 +1016,177 @@ func _on_act_button(arg: String) -> void:
 			if str(r.get("reason", "")) == "too_far":
 				near_valid = false
 				_dirty = true
+
+
+# ───────────────────────── 键盘 ─────────────────────────
+
+
+## 网页层报来现在按着的方向键（"up,left" 这样的列表，空串 = 都松开）。
+func _on_keys(arg: String) -> void:
+	var halves: PackedStringArray = arg.split("|")
+	var parts: PackedStringArray = halves[0].split(",", false)
+	var edge: int = int(halves[1]) if halves.size() > 1 else key_edge
+	var was_idle: bool = _key_vec() == Vector2.ZERO
+	key_up = "up" in parts
+	key_down = "down" in parts
+	key_left = "left" in parts
+	key_right = "right" in parts
+	if edge != key_edge:
+		key_edge = edge
+		if _key_vec() != Vector2.ZERO:
+			dir_suppressed = false  # 新按下了一个方向键：这才是新的一次起步
+	if phase != Phase.PLAYING:
+		return
+	if was_idle and _key_vec() != Vector2.ZERO and not control_mine:
+		_can_control()  # 只读：提示一次
+
+
+## 屏幕方向 -> 世界方向。镜头固定朝北俯视（向上 = -z，向右 = +x），所以不用旋转；斜向归一化。
+func _key_vec() -> Vector2:
+	var v := Vector2(float(key_right) - float(key_left), float(key_down) - float(key_up))
+	return v.normalized() if v != Vector2.ZERO else v
+
+
+func _key_vec_text() -> String:
+	var v: Vector2 = _key_vec()
+	return "%.3f,%.3f" % [v.x, v.y]
+
+
+func _send_dir(v: Vector2, now_t: float) -> void:
+	dir_seq += 1
+	dir_last = v
+	dir_sent_ms = now_t
+	net.send({"t": "dir", "seq": dir_seq, "epoch": control_epoch, "x": snappedf(v.x, 0.001), "z": snappedf(v.y, 0.001)})
+
+
+## 每帧：按住就定时重发，方向变了马上发，松手发零向量。
+func _tick_dir(now_t: float) -> void:
+	var v: Vector2 = _key_vec()
+	if v == Vector2.ZERO:
+		if dir_active:
+			dir_active = false
+			if net.is_open() and ws_ready:
+				_send_dir(Vector2.ZERO, now_t)
+		return
+	if dir_suppressed or not ws_ready or not net.is_open() or not control_mine or ctx_activity != null:
+		return
+	var gap: float = now_t - dir_sent_ms
+	if (v != dir_last and gap >= DIR_MIN_GAP_MS) or gap >= DIR_RESEND_MS:
+		if not dir_active:
+			# 起步：之后点地确认的回答不再代表现状，也不再显示"正在走向某处"的标记
+			nav_generation += 1
+			near_valid = false
+			_hide_marker()
+			_dirty = true
+		dir_active = true
+		_send_dir(v, now_t)
+
+
+## 点地、点物件、停下、Esc：方向输入让位。还按着键的话，这一次按住不再发方向（免得下一次重发把刚点的路线盖掉）。
+func _dir_cancel() -> void:
+	if dir_active and net.is_open() and ws_ready:
+		_send_dir(Vector2.ZERO, clock.ticks_ms())
+	dir_active = false
+	dir_sent_ms = -1.0e9
+	dir_suppressed = _key_vec() != Vector2.ZERO
+
+
+## 点地 / 停下时带上的序号栅栏：这个页面在这条连接上已经发出的最大方向序号。发在它之前、迟到的方向帧会被服务器丢弃。
+func _dir_fence() -> Dictionary:
+	if dir_conn < 0 or dir_seq <= 0:
+		return {}
+	return {"dirFence": {"conn": dir_conn, "seq": dir_seq}}
+
+
+## Esc（没有面板时）：只在确实在走的时候停下；只读页面、没在走都静默忽略。
+func _do_esc() -> void:
+	if phase != Phase.PLAYING or not control_mine:
+		return
+	var sa: TActor = actors.get(self_id)
+	if dir_active or (sa != null and sa.has_nav):
+		_do_stop()
+	elif _key_vec() != Vector2.ZERO:
+		dir_suppressed = true  # 没在走但键按着：Esc 也让这次按住作废
+
+
+func _dir_reset() -> void:
+	key_up = false
+	key_down = false
+	key_left = false
+	key_right = false
+	dir_active = false
+	dir_suppressed = false
+	dir_sent_ms = -1.0e9
+
+
+## 刚发过方向输入（或还在按着）：这时自己的路线是方向输入的短租约，不能走 10 秒的续租。
+func _dir_recent(now_t: float) -> bool:
+	return dir_active or now_t - dir_sent_ms < 1200.0
+
+
+func _dir_hint(msg: String) -> void:
+	var t: float = clock.ticks_ms()
+	if t - dir_toast_ms > 3000.0:
+		dir_toast_ms = t
+		_toast(msg, "warn")
+
+
+## E：和最近的可互动物件或人互动。复用点击的入口：够得着的物件直接开始动作，远的先走过去，人就走到身边。
+func _do_interact() -> void:
+	if phase != Phase.PLAYING or not _can_control():
+		return
+	var sa: TActor = actors.get(self_id)
+	if sa == null:
+		return
+	var guard: int = 0
+	while me_busy and guard < 150:
+		await get_tree().process_frame  # 有一次读取在路上：等它读完，别拿旧的"够不够得着"去判断
+		guard += 1
+	if phase != Phase.PLAYING:
+		return
+	if not near_valid:
+		await _refresh_me()  # 刚停下时"够不够得着"还是旧的：读一次再决定
+		if phase != Phase.PLAYING:
+			return
+	var me := Vector2(sa.disp.x, sa.disp.y)
+	var best_kind: String = ""
+	var best_id: String = ""
+	var best_d: float = INTERACT_RANGE
+	for ob in world.scene_objects(cur_scene):
+		var d: float = me.distance_to(Vector2((ob["pos"] as Vector3).x, (ob["pos"] as Vector3).z))
+		if d < best_d:
+			best_d = d
+			best_kind = "obj"
+			best_id = str(ob["id"])
+	for id in actors:
+		if id == self_id:
+			continue
+		var a: TActor = actors[id]
+		var d2: float = me.distance_to(a.disp)
+		if d2 < best_d:
+			best_d = d2
+			best_kind = "actor"
+			best_id = id
+	if best_kind == "":
+		_toast("附近没有可以互动的东西。", "info")
+		return
+	if best_kind == "actor":
+		selected_obj = ""
+		var a2: TActor = actors[best_id]
+		_do_navigate({"approach": best_id}, a2.actor_name, Vector3(a2.disp.x, 0.0, a2.disp.y))
+		return
+	selected_obj = best_id
+	_dirty = true
+	if near_valid and _is_near(best_id):
+		for o in here.get("objects", []):
+			if str(o.get("id", "")) == best_id and o.get("action") is Dictionary and o.get("active") == null:
+				_dir_cancel()
+				_on_act_button("do:" + best_id)
+				return
+		_toast("现在没有可以做的事。", "info")
+		return
+	var ob2: Dictionary = world.find_object(cur_scene, best_id)
+	_do_navigate({"to": best_id}, str(ob2.get("name", "")), Vector3(float(ob2["x"]), 0.0, float(ob2["z"])))
 
 
 # ───────────────────────── 输入 ─────────────────────────
@@ -1103,7 +1341,7 @@ func _process(dt: float) -> void:
 	var vs: Vector2 = get_viewport().get_visible_rect().size
 	if vs.y > 1.0:
 		rig.set_aspect(vs.x / vs.y)
-		_adapt_resolution(vs)
+		_adapt_resolution(vs, dt)
 
 	# 连接维护
 	if want_net:
@@ -1137,12 +1375,19 @@ func _process(dt: float) -> void:
 		next_heartbeat = now_t + float(heartbeat_ms)
 		_heartbeat()
 
+	_tick_dir(now_t)
+
 	# 角色
 	for id in actors:
-		(actors[id] as TActor).tick(dt, now_s)
+		var ta: TActor = actors[id]
+		ta.tick(dt, now_s)
+		_update_sitting(ta)
+		ta.set_shadow_visible(true)
+	_update_scenery(dt, now_s)
 	var sa: TActor = actors.get(self_id)
 	if sa != null:
 		rig.follow(Vector3(sa.disp.x, 0.0, sa.disp.y), dt)
+		audio.set_listener(sa.disp)
 		if sa.moving:
 			step_timer -= dt
 			if step_timer <= 0.0:
@@ -1174,10 +1419,52 @@ func _process(dt: float) -> void:
 			_push_debug()
 
 
+## 坐下：站在茶桌的座位锚点上、那张桌子正在被使用时坐着（自己的活动也算）。
+func _update_sitting(a: TActor) -> void:
+	if a.moving:
+		return
+	var spot: Dictionary = world.sit_spot(cur_scene, a.disp)
+	if spot.is_empty():
+		a.set_sitting(false)
+		return
+	var active: bool = false
+	for o in here.get("objects", []):
+		if str(o.get("id", "")) == str(spot["object"]) and o.get("active") != null:
+			active = true
+	if a.is_self and my_interaction is Dictionary and str(my_interaction.get("objectId", "")) == str(spot["object"]):
+		active = true
+	a.set_sitting(active, spot["center"])
+
+
+## 昼夜（服务器世界时间）、遮挡淡出（屋顶、树）。
+func _update_scenery(dt: float, now_s: float) -> void:
+	if daynight != null:
+		daynight.tick(now_s)
+		world.set_night(daynight.night)
+	var heads: Array = []
+	for id in actors:
+		var ha: TActor = actors[id]
+		heads.append(Vector3(ha.disp.x, 1.6, ha.disp.y))
+	world.update_view(rig.cam.global_position, heads, dt)
+
+
 ## 画面像素太多（高分屏手机）时降低 3D 渲染分辨率，保证帧率；界面是 DOM，不受影响。
-func _adapt_resolution(vs: Vector2) -> void:
+func _adapt_resolution(vs: Vector2, dt: float = 0.0) -> void:
 	var px: float = vs.x * vs.y
 	var scale: float = 1.0 if px <= 2500000.0 else sqrt(2500000.0 / px)
+	# 动态分辨率：帧率长期过低（软件渲染、老手机）就逐步降低 3D 渲染分辨率，恢复后慢慢升回去；界面是 DOM，文字不受影响
+	if dt > 0.0:
+		_fps_avg = lerpf(_fps_avg, 1.0 / maxf(dt, 0.0005), 1.0 - exp(-dt * 0.7))
+		if dt > 0.35 and _drs > 0.3:
+			_drs = maxf(0.3, _drs * 0.7)  # 一帧就超过 0.35 秒：马上降一档，不等平均值
+		_drs_t += dt
+		if _drs_t > 1.5:
+			_drs_t = 0.0
+			if _fps_avg < 24.0 and _drs > 0.3:
+				_drs = maxf(0.3, _drs * 0.85)
+			elif _fps_avg > 52.0 and _drs < 1.0:
+				_drs = minf(1.0, _drs * 1.08)
+	scale = minf(scale, _drs)
 	if absf(get_viewport().scaling_3d_scale - scale) > 0.01:
 		get_viewport().scaling_3d_scale = scale
 
@@ -1366,12 +1653,17 @@ func _push_debug() -> void:
 		"objects": ol,
 		"vp": m,
 		"zoom": rig.dist,
+		"drs": snappedf(_drs, 0.01),
+		"quality": "high" if quality_high else "low",
+		"hour": snappedf(daynight.hour, 0.01) if daynight != null else -1.0,
 		"serverNow": clock.server_now(),
 		"fps": Engine.get_frames_per_second(),
 		"checksum": str(manifest.get("checksum", "")),
 		"lastError": last_error,
 		"markerVisible": marker.visible,
 		"tapLimit": _tap_limit(),
+		"dir": {"conn": dir_conn, "seq": dir_seq, "active": dir_active, "suppressed": dir_suppressed, "keys": _key_vec_text()},
 		"screenScale": DisplayServer.screen_get_scale(),
+		"snd": audio.debug_info(),
 	}
 	bridge.hud_debug(JSON.stringify(d))

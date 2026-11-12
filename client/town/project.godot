@@ -26,3 +26,10 @@ pointing/emulate_touch_from_mouse=false
 renderer/rendering_method="gl_compatibility"
 renderer/rendering_method.mobile="gl_compatibility"
 environment/defaults/default_clear_color=Color(0.62, 0.74, 0.86, 1)
+
+[shader_globals]
+
+town_night={
+"type": "float",
+"value": 0.0
+}

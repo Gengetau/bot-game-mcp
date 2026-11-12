@@ -2,6 +2,7 @@
  * 空间权威（space.ts）：导航、停步、改道、导航控制租约、区域变化、进出私宅、够得着判定、重启冻结。
  */
 import { afterEach, describe, expect, it } from 'vitest';
+import { SCHEMA_VERSION } from '../../src/world/db.js';
 import { WorldError } from '../../src/world/errors.js';
 import { actorOf, controlDisconnected, mapManifest, renewNavigation, sceneView, whereabouts } from '../../src/world/space.js';
 import { zoneAt } from '../../src/world/spatial/grid.js';
@@ -889,13 +890,14 @@ describe('重启与迁移', () => {
     // 把库改回 v2 的样子
     const raw = t.w.db.db;
     raw.exec('DROP TABLE world_actors');
+    raw.exec('DROP TABLE town_chat_messages');
     raw.exec('PRAGMA user_version = 2');
     raw.prepare("UPDATE residents SET location_id = 'street_east' WHERE resident_id = ?").run(a.residentId);
     raw.prepare("UPDATE chat_messages SET space_id = 'street_west'").run();
     raw.prepare("INSERT INTO scheduled_jobs(dedupe_key, due_at, priority, kind, payload, status, created_at) VALUES ('move:legacy:1', ?, 1, 'move_arrive', '{}', 'pending', ?)").run(now + 5000, now);
     t.clock.advance(10_000);
     t.restart();
-    expect(t.w.db.userVersion()).toBe(3);
+    expect(t.w.db.userVersion()).toBe(SCHEMA_VERSION);
     expect(t.logs.join('\n')).not.toContain('迁移');
     expect(a.row().location_id).toBe('residential');
     expect(b.row().location_id).toBe('plaza');

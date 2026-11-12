@@ -42,7 +42,7 @@ export function loadSqlite(): SqliteModule {
 export type Row = Record<string, any>;
 export type Param = SQLInputValue;
 
-export const SCHEMA_VERSION = 4;
+export const SCHEMA_VERSION = 5;
 
 const MIGRATIONS: readonly string[] = [
   // ───── v1 ─────
@@ -599,7 +599,24 @@ const MIGRATIONS: readonly string[] = [
   UPDATE scheduled_jobs SET status = 'cancelled', processed_at = CAST(strftime('%s','now') AS INTEGER) * 1000
     WHERE kind = 'move_arrive' AND status = 'pending';
   `,
-  // ───── v4 ─────
+  // v4：全镇公屏（独立的频道和序号；附近聊天仍在 chat_messages / chat_audience）
+  `
+  CREATE TABLE town_chat_messages (
+    world_id TEXT NOT NULL,
+    -- 公屏自己的连续序号（stream_heads 里 tc:<world> 的高水位），不是别的表的自增号
+    seq INTEGER NOT NULL,
+    sender_id TEXT NOT NULL,
+    kind TEXT NOT NULL CHECK (kind IN ('chat','activity','help')),
+    body TEXT NOT NULL,
+    -- 活动 / 求助消息的位置提示：只存公共地点编号（区域级），没有坐标
+    place TEXT,
+    sent_at INTEGER NOT NULL,
+    PRIMARY KEY (world_id, seq)
+  ) STRICT, WITHOUT ROWID;
+  CREATE INDEX town_chat_time ON town_chat_messages(world_id, sent_at);
+  CREATE INDEX town_chat_sender ON town_chat_messages(world_id, sender_id, seq);
+  `,
+  // ───── v5 ─────
   // 小游戏按桌入局（地图 town-p1.0）：活动记在哪张游戏桌上。旧记录没有桌子（NULL），照常读、照常结算。
   // 同一张桌同时只能有一个凑桌中或进行中的局，由部分唯一索引兜底。
   `

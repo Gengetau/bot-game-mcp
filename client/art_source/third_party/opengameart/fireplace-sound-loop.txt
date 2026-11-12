@@ -1,0 +1,8 @@
+来源页面: https://opengameart.org/content/fireplace-sound-loop
+标题: Fireplace Sound loop
+Author: PagDev Saturday, March 13, 2021 - 10:15
+页面上标注的许可证 (License(s) 一栏，2026-11-13 读取): CC0
+Copyright/Attribution Notice: Credit is not required, but it is always appreciated.
+下载日期: 2026-11-13
+下载的原始文件及 sha256:
+  85ca0cc60d0c037fff8b185e31ad1fcdbda6ce45eee17c3ee1318d1b8f59e330  fire.wav

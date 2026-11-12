@@ -26,7 +26,16 @@ describe('引擎重启后接回会话', () => {
     await http.close();
     rt.close();
     rt = createRuntime(config(port), () => undefined);
-    http = await startHttpServer(rt, (l) => logs.push(l));
+    // 临时端口被别的进程抢走时（EADDRINUSE）少量重试
+    for (let i = 0; ; i++) {
+      try {
+        http = await startHttpServer(rt, (l) => logs.push(l));
+        break;
+      } catch (e) {
+        if (i >= 20 || (e as NodeJS.ErrnoException).code !== 'EADDRINUSE') throw e;
+        await new Promise((r) => setTimeout(r, 50));
+      }
+    }
     try {
       // 测试里客户端复用了连到旧进程的 keep-alive 连接，第一次可能直接断开；真实部署（隧道）每次是新连接
       expect(await whoami().catch(() => whoami())).toBe('2362232313');

@@ -3,6 +3,7 @@
  *
  * 装配顺序是固定的：注册钩子按这个顺序执行（先开账户发物资，再生成愿望）。
  */
+import { installChat } from './chat.js';
 import { installGames } from './games.js';
 import { enter, installIdentity, type EnterResult, type ProfileInput } from './identity.js';
 import { installInteract } from './interact.js';
@@ -19,6 +20,7 @@ export function createWorld(opts: WorldOptions): WorldService {
   const w = new WorldService(opts);
   installIdentity(w);
   installLife(w);
+  installChat(w);
   installSpace(w);
   installProperty(w);
   installMail(w);
@@ -65,6 +67,8 @@ export {
   type EnterResult,
   type ProfileInput,
 } from './identity.js';
+export { townChatPage, townChatSince, townChatHead, townChatDigest, nearbyHistory, filterEventsForAgent, type TownChatMessage, type TownChatPage } from './chat.js';
+export { canHear, nearbyAudience, roomOf } from './hearing.js';
 export { agentView, chatHistory, directory, meView, publicView, type MeView, type PublicView } from './views.js';
 export { publicGameView, gameViewFor } from './games.js';
 export { listLetters } from './mail.js';

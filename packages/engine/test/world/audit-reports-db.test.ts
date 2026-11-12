@@ -212,6 +212,7 @@ describe('复核新增：已有 v1 库升级后补上 event_parties 索引', () 
     first.db.exec('DROP INDEX event_parties_event');
     // v3 才有的空间表：模拟真正的 v1 库，让 v2、v3 迁移都重新跑一遍
     first.db.exec('DROP TABLE world_actors');
+    first.db.exec('DROP TABLE town_chat_messages');
     first.db.exec('PRAGMA user_version = 1');
     first.close();
     const again = new TownDb(tmp.path);
