@@ -21,7 +21,10 @@
     "docs": "npm run docs -w bot-game-mcp",
     "simulate": "npm run simulate -w bot-game-mcp --",
     "e2e": "tsx scripts/e2e.ts",
-    "load": "tsx scripts/load.ts"
+    "load": "tsx scripts/load.ts",
+    "world:simulate": "tsx scripts/world-simulate.ts",
+    "world:load": "tsx scripts/world-load.ts",
+    "world:recovery": "tsx scripts/world-recovery.ts"
   },
   "devDependencies": {
     "@modelcontextprotocol/sdk": "^1.32.2",

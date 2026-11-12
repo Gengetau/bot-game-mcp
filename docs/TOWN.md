@@ -31,10 +31,10 @@
 本机试一下：
 
 ```bash
-BOTGAME_TOWN=1 BOTGAME_TOWN_DEV_LOGIN=1 BOTGAME_TOWN_DB=./data/town-dev.db npm run dev -w bot-game-mcp
+BOTGAME_TOWN=1 BOTGAME_TOWN_DEV_LOGIN=1 BOTGAME_TOWN_DB=./data/town-dev.db npm run dev -w bot-game-mcp -- serve
 ```
 
-然后打开 `http://127.0.0.1:8787/town/`（端口以实际启动输出为准）。
+然后打开 `http://127.0.0.1:7700/town/`（端口以配置为准，默认 7700）。
 
 ## 结构
 
