@@ -7,7 +7,7 @@
  */
 import { precondition } from './errors.js';
 import type { WorldService } from './service.js';
-import { actorOf, posOf } from './space.js';
+import { interactivePos } from './hearing.js';
 import { distance } from './spatial/grid.js';
 import type { ResidentRow } from './types.js';
 
@@ -17,11 +17,12 @@ export type PersonReach = { ok: true; distance: number } | { ok: false; why: 'no
 const EPS = 0.01;
 
 export function personReach(w: WorldService, a: ResidentRow, b: ResidentRow, now: number = w.now()): PersonReach {
-  if (a.resident_id === b.resident_id || !w.interactive(a) || !w.interactive(b)) return { ok: false, why: 'not_here' };
-  const aa = actorOf(w, a.resident_id);
-  const ba = actorOf(w, b.resident_id);
-  if (!aa || !ba || aa.scene_id !== ba.scene_id || aa.instance_id !== ba.instance_id) return { ok: false, why: 'not_here' };
-  const d = distance(posOf(aa, now), posOf(ba, now));
+  if (a.resident_id === b.resident_id) return { ok: false, why: 'not_here' };
+  // 「有效在场、不在对局、现算位置」和附近聊天共用 hearing.ts 的 interactivePos
+  const pa = interactivePos(w, a, now);
+  const pb = interactivePos(w, b, now);
+  if (!pa || !pb || pa.scene !== pb.scene || pa.instance !== pb.instance) return { ok: false, why: 'not_here' };
+  const d = distance(pa, pb);
   return d <= w.params.personReach + EPS ? { ok: true, distance: d } : { ok: false, why: 'too_far' };
 }
 

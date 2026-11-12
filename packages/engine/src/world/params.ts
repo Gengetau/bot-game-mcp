@@ -24,6 +24,11 @@ export const townParamsSchema = z.object({
   navRenewEveryMs: ms(3_000, 500),
   /** 人和人当面互动（询问、邀请、报价、当面还东西）的最大距离（米）：大于物件的 interactDistance、小于听力距离。放在参数里，不放地图 */
   personReach: z.number().min(0.5).max(8).default(3.0),
+  /** 键盘方向输入的控制租约：最后一次有效方向输入之后还能走多久（设计稿约 500 毫秒）。只用于方向输入，不影响点地路线的 10 秒租约 */
+  dirLeaseMs: ms(500, 100, 5000),
+  /** 方向输入的频率上限（每位居民）：突发几条、每秒几条。客户端按住时约每 150~200 毫秒重发一次 */
+  dirBurst: int(10, 1, 100),
+  dirPerSecond: int(10, 1, 100),
   /** 改路线的频率上限：每分钟几次、突发几次 */
   navPerMinute: int(120, 1, 6000),
   navBurst: int(8, 1, 600),
@@ -74,6 +79,26 @@ export const townParamsSchema = z.object({
   chatPerMinute: int(6, 1, 600),
   chatBurst: int(3, 1, 100),
   chatMaxChars: int(120, 1, 1000),
+  /** 全镇公屏：保留期、每人每分钟几条、突发几条、重复内容的判定窗口 */
+  townChatRetentionMs: ms(7 * 24 * 3600_000, 60_000),
+  townChatPerMinute: int(6, 1, 600),
+  townChatBurst: int(2, 1, 100),
+  townChatDuplicateWindowMs: ms(5 * 60_000),
+  /** 公屏每页条数：首屏默认、分页上限 */
+  townChatPageSize: int(50, 1, 200),
+  townChatPageMax: int(100, 1, 500),
+  /** 公屏唤醒：每位居民的突发上限和每小时恢复条数（防止几个 AI 互相提及形成循环） */
+  townChatWakeBurst: int(6, 1, 100),
+  townChatWakePerHour: int(12, 1, 1000),
+  /** 同一个发言者对同一个接收者的唤醒：突发上限和每小时恢复条数（一个人刷不光别人的总额度） */
+  townChatWakePairBurst: int(3, 1, 100),
+  townChatWakePairPerHour: int(3, 1, 1000),
+  /** 公屏进入 AI 视图的摘要：窗口、最多几条、每条最多几个字符 */
+  townChatDigestWindowMs: ms(15 * 60_000),
+  townChatDigestLines: int(4, 0, 20),
+  townChatDigestChars: int(60, 10, 500),
+  /** 公屏过期清理任务的间隔 */
+  townChatPurgeEveryMs: ms(3600_000, 1000),
   /** 信件：每个世界日最多几封、每封最多几个字符、每人信箱最多几封 */
   lettersPerDay: int(20, 1, 1000),
   letterMaxChars: int(1000, 1, 10_000),

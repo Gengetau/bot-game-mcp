@@ -21,6 +21,7 @@ var _next_id: int = 1
 var _pending: Dictionary = {}
 var origin: String = ""
 var debug: bool = false
+var debug_hour: float = -1.0
 
 
 func setup() -> void:
@@ -35,6 +36,10 @@ func setup() -> void:
 	var loc = JavaScriptBridge.get_interface("location")
 	origin = str(loc.origin)
 	debug = "debug=1" in str(loc.search).trim_prefix("?").split("&")
+	# 截图 / 端到端用：?hour=20 把世界时间固定在某个钟点（只在调试模式下生效）
+	for kv in str(loc.search).trim_prefix("?").split("&"):
+		if debug and kv.begins_with("hour="):
+			debug_hour = float(kv.substr(5))
 
 
 func ws_origin() -> String:

@@ -81,11 +81,46 @@
         return c.state;
       });
     },
+    suspendAudio: function () {
+      audioCtxs.forEach(function (c) {
+        try {
+          if (c.state === 'running') {
+            var p = c.suspend();
+            if (p && p.catch) p.catch(function () {});
+          }
+        } catch (e) {
+          /* 忽略 */
+        }
+      });
+    },
+    /* 世界时区里的钟点（小数，如 18.5 = 18:30）。昼夜取自服务器世界时间，和设备时区无关。
+     * 调试：?debug=1&hour=21 强制钟点。出错返回 -1，由 Godot 一侧兜底。 */
+    worldHour: function (tz, ms) {
+      try {
+        var q = /[?&]debug=1(?:&|$)/.test(location.search) && /[?&]hour=(\d+(?:\.\d+)?)/.exec(location.search);
+        if (q) return parseFloat(q[1]);
+        var f = hourFmt[tz];
+        if (!f) f = hourFmt[tz] = new Intl.DateTimeFormat('en-GB', { timeZone: tz, hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
+        var parts = f.formatToParts(new Date(ms));
+        var h = 0;
+        var m = 0;
+        parts.forEach(function (x) {
+          if (x.type === 'hour') h = parseInt(x.value, 10);
+          if (x.type === 'minute') m = parseInt(x.value, 10);
+        });
+        return h + m / 60;
+      } catch (e) {
+        return -1;
+      }
+    },
   };
+  var hourFmt = {};
   window.TownHost = host;
 
   document.addEventListener('visibilitychange', function () {
     host.emit('vis', document.visibilityState === 'visible' ? '1' : '0');
+    /* 切到后台：按设置把声音整个挂起（回前台由下面的 unlockAudio 恢复，不会叠播） */
+    if (document.visibilityState !== 'visible' && (!window.TownHud || !window.TownHud.bgMute || window.TownHud.bgMute())) host.suspendAudio();
     /* 回前台先试一次（多数浏览器要用户手势才放行，不行就等下面的手势监听） */
     if (document.visibilityState === 'visible') host.unlockAudio();
   });

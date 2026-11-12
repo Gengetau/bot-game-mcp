@@ -45,6 +45,7 @@ import { report } from './reports.js';
 import { sha256, type WorldService } from './service.js';
 import { relationMemories, relationsOf } from './social.js';
 import { mapManifest, renewNavigation, sceneView } from './space.js';
+import { townChatPage } from './chat.js';
 import { chatHistory, directory, meView, publicView } from './views.js';
 import type { Principal } from './types.js';
 import { createTownWs, type TownWsOptions } from './ws.js';
@@ -639,8 +640,19 @@ export function mountTown(app: Express, w: WorldService, log: (msg: string) => v
     '/town/api/history',
     api((req) => {
       const { r } = residentOf(req);
-      const before = req.query.before ? Number(req.query.before) : null;
-      return chatHistory(w, r.resident_id, Number.isFinite(before) ? before : null, Number(req.query.limit ?? 50) || 50);
+      // before：上一页返回的 next（不透明游标）；旧客户端传的序号数字也认
+      const before = typeof req.query.before === 'string' && req.query.before ? req.query.before : null;
+      return chatHistory(w, r.resident_id, before, Number(req.query.limit ?? 50) || 50);
+    }),
+  );
+  // 全镇公屏的历史（已认证的居民，不要求在场；匿名读不到，也没有任何公开出口带它）。
+  // 不带游标：最近一页（默认 50 条）；before=<消息 id>：更早的一页；after=<消息 id 或 cursor>：追新。
+  app.get(
+    '/town/api/town-chat',
+    api((req) => {
+      const { r } = residentOf(req);
+      const str = (v: unknown) => (typeof v === 'string' && v ? v.slice(0, 80) : null);
+      return townChatPage(w, r.resident_id, { before: str(req.query.before), after: str(req.query.after), limit: Number(req.query.limit) || undefined });
     }),
   );
   app.get(

@@ -136,12 +136,14 @@ function planAction(round: number): Planned {
   const actor = forced ? who.find((x) => x.residentId === forced.to_id)! : pick(who);
   const r = w.mustResident(actor.residentId);
   const requestId = newRequestId(round);
-  const kind = forced ? pick(['accept', 'accept', 'accept', 'decline']) : pick(['speak', 'speak', 'move', 'move', 'move', 'buy', 'buy', 'offer', 'offer', 'accept', 'accept', 'decline', 'cancel', 'letter', 'use', 'profile', 'invite']);
+  const kind = forced ? pick(['accept', 'accept', 'accept', 'decline']) : pick(['speak', 'speak', 'town', 'move', 'move', 'move', 'buy', 'buy', 'offer', 'offer', 'accept', 'accept', 'decline', 'cancel', 'letter', 'use', 'profile', 'invite']);
   const here = r.location_id;
   const others = who.filter((o) => o !== actor);
   switch (kind) {
     case 'speak':
       return { actor, requestId, action: { type: 'speak', text: `第 ${round} 轮的一句话` } };
+    case 'town':
+      return { actor, requestId, action: { type: 'say_town', text: `第 ${round} 轮的公屏`, kind: pick(['chat', 'activity', 'help']) } };
     case 'move':
       return { actor, requestId, action: { type: 'navigate', to: chance(0.2) ? pick(['tea_house:table1', 'garden:planter1', 'bookshop:shelf']) : pick(PLACES) } };
     case 'buy': {

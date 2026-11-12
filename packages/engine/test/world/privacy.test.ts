@@ -558,7 +558,8 @@ describe('栖灯镇隐私：空间事件与场景快照', () => {
     for (const e of [...enterLeft, ...exitLeft]) {
       expect(e.data.space).toBe('residential');
       expect(Object.keys(e.data).sort()).toEqual(['resident', 'space']);
-      expectClean('left 事件', JSON.stringify(e), ['home:', 'street_', 'to', 'target', 'destination', homeOf(x), homeOf(z)]);
+      // 「没有目的地」查的是字段名（带引号）：居民编号是随机串，裸查 to 会被编号里碰巧出现的 "to" 误伤
+      expectClean('left 事件', JSON.stringify(e), ['home:', 'street_', '"to"', '"target"', '"destination"', homeOf(x), homeOf(z)]);
     }
     // 屋里的 x 没有出现在守门人的任何 arrived / presence 里
     expect(allEvents(w, cursor).filter((e) => e.type === 'arrived' && (e.data.resident as { id: string }).id === x.residentId)).toHaveLength(0);
@@ -630,7 +631,9 @@ describe('栖灯镇隐私：空间事件与场景快照', () => {
     for (const out of [web, JSON.stringify(agentView(t.w, a.row(), a.clientId)), JSON.stringify(a.events())]) {
       expect(out).not.toContain(`"x":${bp.x}`);
       expect(out).not.toContain(`"z":${bp.z}`);
-      expect(out).not.toContain(String(bp.x));
+      // 数值本身也不能出现（不管挂在哪个字段下）。按「独立的数」查：游标和动作窗口是「前缀.随机签名」，
+      // 前缀以 36 结尾、签名以 5 开头时会拼出 "36.5"，那不是坐标，前后都连着别的字符
+      expect(out).not.toMatch(new RegExp(`(?<![A-Za-z0-9_.-])${String(bp.x).replace('.', '\\.')}(?![A-Za-z0-9_-])`));
     }
     const agent = JSON.stringify(agentView(t.w, a.row(), a.clientId));
     expect(agent).not.toMatch(/"(x|z|heading|points|scene|instance)":/);
