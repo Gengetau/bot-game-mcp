@@ -569,7 +569,7 @@ export const GOALS: readonly GoalDef[] = [
     version: 1,
     kind: 'short',
     title: '玩一局小游戏',
-    description: '在游戏馆或广场参加一局并打完，输赢都算。',
+    description: '在游戏馆的桌边参加一局并打完，输赢都算。',
     count: 1,
     measure: 'times',
     paths: [{ fact: 'game_completed' }],

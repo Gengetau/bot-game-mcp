@@ -324,7 +324,7 @@ packages/engine/town/             旧的网页前端（静态文件；会被 God
 | `interaction` | `{interaction, reason?}` | 身边的共同活动有变化 |
 | `interaction_done` | `{interactionId, name, text}` | 我参与的活动完成了，`text` 是我的收获 |
 | `goal` | `{goal, completed?, reward?, title?}` | 愿望进度 / 完成 |
-| `activity` | `{activity, reason?, ended?}` | 身边凑桌的变化 |
+| `activity` | `{activity, reason?, ended?, dropped?}` | 身边凑桌的变化。`activity.tableId` 是占着的游戏桌；开局时有人不在桌边被剔除，`dropped` 是被剔除者的居民编号 |
 | `game_started` | `{activityId, gameId, name, seat}` | 我进了一局 |
 | `game` | `{activityId, gameId, phaseId, yourTurn, waiting?}` | 我所在的一局有新进展（内容去 `/game` 取） |
 | `game_out` | `{activityId, gameId, text}` | 我出局并回到了场所 |
@@ -375,7 +375,7 @@ packages/engine/town/             旧的网页前端（静态文件；会被 God
 - `PublicView`：`world`（时间、天气）、`places[]`（公共区域和在场居民；`through: true` 的是灯笼路）、`residential`（住宅区的人，不分在会馆门前还是谁家里）、`events`（今天的公共事件）、`counts`。没有坐标。
 - `MeView`：`world`、`me`（资料、需要、情绪、称号、家）、`control`、`context`、`actionWindow`、`cursor`、`location`（`space, name, scene, x, z, navigation`：只有自己的坐标）、`here`（现场：身边的人、物件、商店、凑桌、可去的地方、门牌、最近的发言）、`inventory`、`goals`、`mail`、`invites`、`offers`、`interaction`、`game`、`events`、`suggestions`、`recap?`。
 - 在小游戏里时 `here` 为 `null`。走路时 `here` 是脚下区域的现场。
-- `here.exits` 是所有可去的目的地（带大概要走多少秒）；`here.objects[].near` 表示此刻够不够得着。
+- `here.exits` 是所有可去的目的地（带大概要走多少秒）；`here.objects[].near` 表示此刻够不够得着。`here.tables[]`（`id, name, activityId, near`）是这个场所里的游戏桌和占着它的那一局，`here.activities[].tableId` 同理；AI 的精简视图里是 `here.tables[]`（`far: true` 表示还没走到桌边）和 `here.activities[].table`。公共场所里谁在哪张桌凑桌是公开信息，所以在这个场所里的人都看得到；公开视图各地点的 `activities[].tableId` 也带上。
 - `SceneView`（`space.ts`）：同一个场景实例里在场的人。公共场景的快照里没有任何私宅里的人；私宅的快照只给屋里的人；自己不在场（离线）时快照里只有自己。
 - AI 用的紧凑视图 `agentView` 是同样的权限、去掉了展示用的冗余：`location: {space, name, walking?}`（`walking: {to, navigation_id, revision, arrive_at, lease_until, renew_every_ms}`，接手一位正在走的居民时照这个立刻续一次租），够不着的物件带 `far: true`。
 - 门牌（`here.doors`，只在灯巷会馆）只列：自己家、已经得知且已经生效的邀请对应的家、此刻在场的邻居的家。信还在路上、送达了没读、生效时间没到的邀请都不会让寄信人的门出现。
