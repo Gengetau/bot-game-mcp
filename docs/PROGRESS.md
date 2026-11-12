@@ -1,5 +1,33 @@
 # 开发进度与测试记录
 
+## 2026-11-12：v2.0（开放世界）P0 —— 进行中
+
+主人给了设计文档 TOWN-DESIGN v2.0（「栖灯镇开放世界产品与技术方案」，完整替代 v1.1 的同范围要求）。PR #39 已合进 main，作为改造基线。上下文压缩后先读这一节。
+
+**主人已定的事**
+
+- PR #39 合并当基线（已合）。云环境已放开网络（Godot、素材站可达）。
+- 目标设备：安卓、苹果（iOS Safari 要早测）、Windows。
+- 外部 AI 一律带常驻运行器（agent-kit），由运行器每 3 秒续导航租约。
+- P0 拆两个 PR：先服务端空间切片，再 Godot 灰盒客户端。P0 之后再给 P1~P3 的工程估算。
+
+**环境实测（2026-11-12）**
+
+- Godot 4.7.2 标准版装在 `/opt/godot/godot`，网页导出模板在 `~/.local/share/godot/export_templates/4.7.2.stable/`（容器是临时的，换容器要重装；下载地址 `github.com/godotengine/godot-builds/releases/download/4.7.2-stable/`）。
+- 无头导出可用：先 `--headless --path <工程> --import`，再 `--headless --path <工程> --export-release "Web" <out>/index.html`。单线程导出（`variant/thread_support=false`）不需要 COOP/COEP 头，只要 `.wasm` 的 MIME 正确。空工程 wasm 39.5 MB，gzip 10.2 MB，brotli 7.1 MB。
+- 无头 Chromium（SwiftShader）里点地移动、WebSocket、手势后播放音频都跑通；这里量的帧率没有意义。容器里没有 WebKit / Firefox。
+- Blender：`pip install bpy`（5.3.0，Python 3.13）可用，能导出 GLB。
+
+**P0 服务端的设计决定**
+
+- 位置只有一个写入方：空间模块（`packages/engine/src/world/spatial/`）。权威位置是「场景 + 实例 + x + z」，存在 `world_actors` 表；走路时不存每帧坐标，用 `positionAt(运动, 时刻)` 现算。
+- 旧 `location_id` 降级为区域标签，由空间模块在跨区域的那一刻改写（同一事务里触发原来的离开 / 到达钩子和事件）。`move_json` 不再使用。旧的 `move {to}` 是 `navigate` 的别名。
+- 地图是一份数据（`MapSource`，带 `mapVersion` 和校验值），服务器栅格化成网格；客户端拿编译后的清单画灰盒，不自己栅格化。后端不依赖 Godot。
+- 一张公共场景 `town`（六个公共地点 + 路 + 住宅接入点都在同一张网格里，室内靠墙和门洞），一张私宅场景 `home`（每户一个实例，实例号 = 房主）。两条住宅巷合并成一个公共住宅接入点 `residential`；`street_id` / `house_no` 只剩门牌的意思。
+- 导航：`navigate`（目标可以是地点别名、物件、居民、地图点）和 `stop_navigation`；每次变化 `navigationRevision` 加一，定时任务 `nav_step` 必须对上导航编号和版本才生效。导航租约 10 秒、每 3 秒续一次（不走回执管线）；`positionAt` 截断在租约截止时刻。离线、被接管、控制连接断开都立即停步。重启后停在最后一个耐久检查点。
+- 走路时可以说话、可以做现场动作（按所在区域）。P0 里人与人的互动仍按「同一区域」，公共物件按距离（够不着返回 `too_far`，先 `navigate` 到物件）。按距离听见说话、公屏、NPC 是 P1。
+- 实时通道：WebSocket `/town/ws`（一次性连接票据），发空间快照和增量，也转发耐久事件；导航变更等耐久动作仍走 HTTP。SSE 保留给旧客户端。
+
 ## 2026-11-12：持续世界「栖灯镇」（后端 + 前端，PR #39，未部署）
 
 - 需求：主人给了设计文档 TOWN-DESIGN v1.1，要求按文档完成后端，前端自由发挥。说明和接口契约在 `docs/TOWN.md`，改小镇之前先读它；不变量在 `CLAUDE.md`。
