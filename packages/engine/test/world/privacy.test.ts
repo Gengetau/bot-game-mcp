@@ -558,7 +558,8 @@ describe('栖灯镇隐私：空间事件与场景快照', () => {
     for (const e of [...enterLeft, ...exitLeft]) {
       expect(e.data.space).toBe('residential');
       expect(Object.keys(e.data).sort()).toEqual(['resident', 'space']);
-      expectClean('left 事件', JSON.stringify(e), ['home:', 'street_', 'to', 'target', 'destination', homeOf(x), homeOf(z)]);
+      // 「没有目的地」查的是字段名（带引号）：居民编号是随机串，裸查 to 会被编号里碰巧出现的 "to" 误伤
+      expectClean('left 事件', JSON.stringify(e), ['home:', 'street_', '"to"', '"target"', '"destination"', homeOf(x), homeOf(z)]);
     }
     // 屋里的 x 没有出现在守门人的任何 arrived / presence 里
     expect(allEvents(w, cursor).filter((e) => e.type === 'arrived' && (e.data.resident as { id: string }).id === x.residentId)).toHaveLength(0);
