@@ -6,8 +6,8 @@
 | 包名（版本） | 作者 | 原始页面 | 取得日期 | 许可证 | 对应文件 | 修改说明 |
 |---|---|---|---|---|---|---|
 | Mini Characters (2.0) | Kenney (www.kenney.nl) | https://kenney.nl/assets/mini-characters | 2026-11-12 | CC0 1.0（包内 License.txt：`art_source/third_party/kenney_mini-characters/License.txt`） | 输入：`art_source/source/kenney_mini_character_male_a.glb`（原包 `character-male-a.glb`）、`art_source/source/Textures/colormap.png`；输出：`town/assets/models/characters/resident.glb`、`town/assets/models/characters/resident_colormap.png`（与输入的 `colormap.png` 逐字节相同，Kenney CC0 原图；resident.glb 导入后以外部资源引用它，删掉会报 `No loader found for resource` 并丢失角色贴图） | `art_source/build_resident.py` 整理：只留 `idle`、`walk` 两个动作（原包 34 个，其余删除）；整体放大到身高 1.7 米，缩放烘进顶点、骨骼和动作位移；脚底在 y=0；贴图同时随 glb 内嵌并在同目录放一份 PNG。网格、骨架、两个动作的内容和贴图是原作，没有重画 |
-| Interface Sounds (1.0) | Kenney (www.kenney.nl) | https://kenney.nl/assets/interface-sounds | 2026-11-12 | CC0 1.0（`art_source/third_party/kenney_interface-sounds/License.txt`） | 输入：`art_source/source/audio/kenney_interface_confirmation_001.ogg`；输出：`town/assets/audio/sfx/confirm.wav` | `art_source/convert_sfx.sh`：ogg 转单声道 44.1 kHz 16 位 wav，去开头静音，音量归一（峰值约 -3 dB） |
-| Impact Sounds (1.0) | Kenney (www.kenney.nl) | https://kenney.nl/assets/impact-sounds | 2026-11-12 | CC0 1.0（`art_source/third_party/kenney_impact-sounds/License.txt`） | 输入：`art_source/source/audio/kenney_impact_footstep_concrete_001.ogg`；输出：`town/assets/audio/sfx/footstep.wav` | 同上（峰值约 -4 dB，比确认音轻） |
+| Interface Sounds (1.0) | Kenney (www.kenney.nl) | https://kenney.nl/assets/interface-sounds | 2026-11-12 | CC0 1.0（`art_source/third_party/kenney_interface-sounds/License.txt`） | 输入：`art_source/source/audio/kenney_interface_confirmation_001.ogg`；输出：`town/assets/audio/sfx/confirm.ogg` | `art_source/audio/build_audio.py`：去开头静音，峰值归一到 -9 dBFS，末尾 15 ms 渐出，单声道 Ogg Vorbis（q3）。详见下面「音频台账」 |
+| Impact Sounds (1.0) | Kenney (www.kenney.nl) | https://kenney.nl/assets/impact-sounds | 2026-11-12 | CC0 1.0（`art_source/third_party/kenney_impact-sounds/License.txt`） | 输入：`art_source/source/audio/kenney_impact_footstep_concrete_001.ogg`；输出：`town/assets/audio/sfx/step.ogg` | 同上（峰值 -16 dBFS，比确认音轻） |
 | Godot Engine (4.7.2.stable) | Godot Engine contributors | https://godotengine.org | 以 `/opt/godot/godot --headless --version` 确认：`4.7.2.stable.official.ed1daf0bf` | MIT；引擎内置的第三方组件各有自己的许可（完整清单见 Godot 自带的 `COPYRIGHT.txt`，或引擎「第三方许可」页面） | 网页导出产物里的引擎 `index.wasm`、`index.js` 等（`client/town/build/web/`） | 引擎随网页导出一起分发；没有核对过是否用了官方模板、有无自行改动 |
 
 取得方式：用 Playwright 打开 Kenney 素材页，点页面自己的「Download」和「Continue without donating」按钮下载（正常访客流程），
@@ -23,7 +23,7 @@ CC0 不要求署名；按 Kenney 的建议，游戏的「关于」里可以写�
 - 骨架 `Skeleton3D`，7 根骨：`root`、`leg-left`、`leg-right`、`torso`、`arm-left`、`arm-right`、`head`；`AnimationPlayer` 在导入出的场景根下面。
 - 身高 1.698 米，脚底 y=0，原点在两脚中间；静止姿态是 T 字，所以左右宽约 1.9 米（只是两臂平伸，不是身体宽）。
 - 朝向：**正面朝 +Z**（Godot 里 glTF 的「前」，用渲染截图确认过：相机在 +Z 看到的是脸）。Godot 的「向前」约定是 -Z，所以客户端要让角色朝移动方向时，用 `atan2(dx, dz)` 作为绕 Y 轴的旋转，不要用 `look_at`（它让 -Z 指向目标）；或者给模型外面套一层旋转 180 度的节点。
-- 文件体积：resident.glb 约 109 KB；confirm.wav 约 25 KB；footstep.wav 约 9 KB。
+- 文件体积：resident.glb 约 109 KB（音频体积见下面「音频台账」）。
 - 材质：一张 colormap 调色板贴图（glb 里内嵌；Godot 导入后实际引用同目录的 `resident_colormap.png`，该文件不能删），一个 `StandardMaterial3D`。
 
 ## 怎么重新生成
@@ -35,8 +35,8 @@ python3.13 -m venv /tmp/bpyenv && /tmp/bpyenv/bin/pip install bpy
 # 居民模型（输入在 art_source/source/，输出 town/assets/models/characters/resident.glb）
 /tmp/bpyenv/bin/python client/art_source/build_resident.py
 
-# 音效（需要 ffmpeg）
-bash client/art_source/convert_sfx.sh
+# 音频（需要 ffmpeg 带 libvorbis、numpy；原始素材放进一个目录，布局见脚本开头的注释）
+python3 -I client/art_source/audio/build_audio.py <原始素材目录> [候选试听输出目录]
 
 # 用 Godot 验收导入结果，见 client/art_source/README.md 的「验收」
 ```
@@ -45,3 +45,55 @@ bash client/art_source/convert_sfx.sh
 
 Mini Characters 的这个角色是为 P0 验证「Blender -> GLB -> Godot -> 网页」链路选的，不是正式居民美术。
 设计文档里说的坐下、站起、挥手等动作，原包有 `sit`、`emote-yes`、`interact-*` 等，后续需要时可以从同一个原始文件里加回来（改 `KEEP_ACTIONS`）。
+
+## 音频台账（P1）
+
+下载日期都是 2026-11-13。**只用 CC0**。OpenGameArt 的许可是在每条素材的页面上读到的 `License(s)` 一栏（值为 CC0），页面文字、作者、发布时间和下载文件的 sha256 存成了
+`art_source/third_party/opengameart/<页面名>.txt`；Kenney 的两个包用包内 `License.txt`（`art_source/third_party/kenney_*/License.txt`）。
+原始文件体积大，不进仓库（`art_source/audio/build_audio.py` 的开头写了怎么摆放后重新生成）。CC0 不要求署名；「关于」里可以写一句 Kenney (www.kenney.nl)、Zane Little、neonarkade 等。
+
+### 进了游戏的音乐、环境声（运行时文件）
+
+| 用途 / 运行时文件 | 作者 | 来源页面 | 许可 | 原始文件与 sha256 | 我们做的处理 |
+|---|---|---|---|---|---|
+| 白天音乐 `town/stream/music/day.ogg` | neonarkade | https://opengameart.org/content/quaint-town | CC0 | `Quaint Town - LOOPABLE.wav`，`854ee773dbcad1b0b8d63af4f4a4c310b29da58e3f13616ed62ec6df7e4ea715` | `loop.py`：保留 0–75.43 秒（作者的「LOOPABLE」版共 102.8 秒，75.4 秒之后是空白尾巴，被剪掉；结束点按「最像开头」搜出，波形互相关 0.91），开头 1.5 秒与 75.43 秒处等功率交叉淡化；响度归一到 -23 LUFS（增益 -7.5 dB），限幅 -1 dBFS，立体声 80 kbps Ogg Vorbis |
+| 夜晚音乐 `town/stream/music/night.ogg` | Zane Little Music | https://opengameart.org/content/hush-hamlet | CC0 | `hush_hamlet_loop_0.wav`（页面上的 loop 版，96.0 秒，48 kHz float），`a0761ded88634442fec6e7f02c875ec9745692acd9089c715d73a51a38b883fa` | 不剪（作者给的循环版）；重采样 44.1 kHz，响度归一到 -23 LUFS（增益 -5.7 dB），限幅，立体声 80 kbps Ogg Vorbis |
+| 白天环境声 `town/assets/audio/ambience/day.ogg` | Thimras | https://opengameart.org/content/park-ambiences | CC0 | `park_ambience_birds.wav` `dc1a5ac34b89cab7f8f261b53a23da7c1c5e3cc895aae4cb6fb4a1a04001b2af`；`park_ambience_wind.wav` `5c381856745b4706e7eba55eb9271a61a530e90c05df8126adb2db89ecfa6c5a` | `segpick.py`：鸟声取第 140 秒起 36 秒（2–6 kHz 起伏最大），风声取第 195 秒起 36 秒（响度最平稳），各自首尾 3 秒等功率交叉淡化后按 1 : 0.5 混合；单声道，低通 11 kHz，-34 LUFS，40 kbps |
+| 喷泉定点声 `…/ambience/fountain.ogg` | Thimras | 同上 | CC0 | `park_ambience_river.wav` `da0c0c9b1249a83a1611cc116d5737b0864a8db9f45f1ae8dcc079d0f7c0bbbf`（小溪过低坎，带少量鸟蛙声） | 取第 1 秒起 24 秒（响度最平稳），首尾 3 秒交叉淡化；单声道，低通 10 kHz，-30 LUFS，40 kbps |
+| 夜晚环境声（虫鸣）`…/ambience/night.ogg` | Wolfgang_（页面版权栏写 Ted Kerr，署名可选） | https://opengameart.org/content/crickets-ambient-noise-loopable | CC0 | `crickets_1.mp3`（11.5 秒，作者标明可循环），`5b5bd1f744087888c5623543c3ff80be9c2ce106093993e7c8a8492b0280b2c0` | 不剪；单声道，-36 LUFS，40 kbps |
+| 室内环境声（茶馆等）`…/ambience/indoor.ogg` | PagDev + 自制 | https://opengameart.org/content/fireplace-sound-loop | CC0 | `fire.wav`（壁炉噼啪，29.3 秒），`85ca0cc60d0c037fff8b185e31ad1fcdbda6ce45eee17c3ee1318d1b8f59e330` | 与 ffmpeg 生成的棕噪声（低通 350 Hz，当房间底声，自制）按 1 : 0.5 混合；单声道，低通 9 kHz，-36 LUFS，40 kbps |
+
+### 只放在试听目录、没有进仓库的音乐候选
+
+均为 CC0（页面 License(s) 一栏读到），页面证据同在 `art_source/third_party/opengameart/`：
+Forget Me Not（Kistol，https://opengameart.org/content/forget-me-not ，`forget_me_not_in_f_major_0.ogg` `615761e410e828e344bbc94755c385f32e337f771f108e23710c3011ca4da874`，剪到 124.1 秒）；
+Hot Springs Town（Kistol，https://opengameart.org/content/hot-springs-town ，`hot_spring_town_1.ogg` `2a38145b9f898aab620ff6b70e2ceb7604fe01e3eeee1a2e34f885796d654869`，剪到 80.1 秒）；
+Sunset Plains（Yoiyami，https://opengameart.org/content/sunset-plains ，`sunset_plains.wav` `f3750f8eda8bf42662b12f5726404675689b50f05ccaa968c5cb2e33d9172a62`，取 90–196.6 秒）；
+Lonely Night（Centurion_of_war，https://opengameart.org/content/lonely-night ，`night_tune3_0.ogg` `ef0f3c69e41ee1aad842fdd98735c0b544c2ae68e554bf86aa9f032a27a71464`，剪到 38.7 秒）。
+要换曲就改 `build_audio.py` 里的 `FINAL`。
+
+### 操作音效（`town/assets/audio/sfx/*.ogg`，单声道 Ogg Vorbis q3，原件在 `art_source/source/audio/`，进仓库）
+
+处理都一样：去开头静音、截到最长秒数、峰值归一到下表 dBFS、末尾 15 ms 渐出。音乐 -23 LUFS 远低于音效峰值，再由三条总线的音量调。
+
+| 运行时文件（用途） | Kenney 包 | 原件（sha256） | 峰值 dBFS |
+|---|---|---|---|
+| `confirm.ogg`（通用确认、停下、接管） | Interface Sounds 1.0，https://kenney.nl/assets/interface-sounds ，CC0 | `confirmation_001.ogg`（`063564703b6094d70718a3e787a55cc9141611e4ecd6b6637f8828f79b4a8c3a`） | -9 |
+| `step.ogg`（脚步） | Impact Sounds 1.0，https://kenney.nl/assets/impact-sounds ，CC0 | `footstep_concrete_001.ogg`（`507a75eb19b897087855a3be3cf11a12d7fa37d143ad535eeebe0b8031c7325d`） | -16 |
+| `tap.ogg`（点地确认） | Interface Sounds | `select_005.ogg`（`ad09146e4ea33b931b2f5dfb4051a4f1fe4a36f1a48c42c5e9269c292ae21214`） | -12 |
+| `fail.ogg`（够不着、失败提示） | Interface Sounds | `error_005.ogg`（`3f75b11df5b06d68d2c25fbf0e9c9d9e7dd9250562a4007ee34856b8a309a2ae`） | -10 |
+| `start.ogg`（互动开始） | Interface Sounds | `confirmation_004.ogg`（`568967a3d9f8a8f6af54ea01729c4882284308f2a27d78c07ffd7ee0d6951661`） | -9 |
+| `mail.ogg`（收到信、聊天、邀请、交易提议） | Interface Sounds | `glass_001.ogg`（`183eebee20eb0a532b0b85104d139cbf2673eb66d95c3cc733ac9ea98362e7e8`） | -8 |
+| `panel_open.ogg` / `panel_close.ogg`（打开、关闭面板） | RPG Audio，https://kenney.nl/assets/rpg-audio ，CC0 | `bookOpen.ogg`（`953390534377222bee89ac8cd9e60a58fdc037c71a4d7c18c43cd647c7f34ba8`）/ `bookClose.ogg`（`81e976532565f4372abd14e83d2684195fa548d0a28d345de221e56052454f32`） | -12 |
+| `coin.ogg`（拿到硬币） | RPG Audio | `handleCoins2.ogg`（`4b857968d64f9ac9336a10ffac6694d7547e1f01566ad6857b30bc8db3ee6c32`） | -10 |
+| `door.ogg`（进门、出门） | RPG Audio | `doorOpen_1.ogg`（`4ab93bab96522d8eb109ff96dc57cb6765deb02448fe14c10472084be5bb2a0b`），截到 0.8 秒 | -12 |
+
+Kenney 压缩包（2026-11-13 用 Playwright 走页面自己的 Download 与「Continue without donating」按钮下载，解压在独立目录当不可信数据）：
+`kenney_interface-sounds.zip` `f2193d072726d6758a5f7871b2dcc54dcce0d5c35c6f0a62f92549b327c81232`，`kenney_rpg-audio.zip` `6dbeaf8544da958d8f2adcb4a4a4b76c1ade34a05f8ab9edccd327da7375f38b`。
+`confirm` 与 `step` 的原件是 P0 时（2026-11-12）取的，没有重新核对包内是否逐字节相同。
+
+### 体积（Ogg 实测，字节）
+
+音乐 day 617587 + night 789427 = 1407014（**不进 pck**，导出时拷到 `build/web/music/`，进游戏后才取）；
+环境声 day 178578 + fountain 126341 + indoor 161533 + night 58483 = 524935（进 pck）；音效 10 个合计约 58 KB（进 pck）。音频总计约 1.99 MB，目标 ≤ 3 MB。
+首屏要下载的 `index.pck` 的前后对比见 `client/README.md`「音频」。

@@ -131,6 +131,8 @@ func _ready() -> void:
 	add_child(world)
 	add_child(rig)
 	add_child(actors_root)
+	audio.bridge = bridge
+	audio.clock = clock
 	add_child(audio)
 	_build_environment()
 	_build_marker()
@@ -199,6 +201,12 @@ func _on_ui(ev: String, arg: String) -> void:
 			login_submitted.emit(arg)
 		"sound":
 			audio.set_enabled(arg == "1")
+		"vol":
+			audio.set_volume_text(arg)
+		"bgmute":
+			audio.set_bg_mute(arg == "1")
+		"sfx":
+			audio.ui_sfx(arg)
 		"stop":
 			_do_stop()
 		"keys":
@@ -232,6 +240,7 @@ func _on_ui(ev: String, arg: String) -> void:
 
 
 func _on_visibility(vis: bool) -> void:
+	audio.set_hidden(not vis)
 	if not vis or phase != Phase.PLAYING:
 		return
 	# 回到前台：马上对时、续心跳、要一份快照
@@ -268,6 +277,8 @@ func _set_phase(p: int, msg: String = "", link: String = "") -> void:
 
 func _toast(msg: String, kind: String = "info") -> void:
 	bridge.hud_toast(msg, kind)
+	if kind == "err":
+		audio.fail()
 
 
 # ───────────────────────── 启动流程 ─────────────────────────
@@ -324,6 +335,9 @@ func _flow_body() -> bool:
 	if int(cfg["status"]) == 200 and cfg["data"] is Dictionary:
 		dev_login = bool(cfg["data"].get("devLogin", false))
 		heartbeat_ms = int(cfg["data"].get("heartbeatMs", 20000))
+		var wcfg = cfg["data"].get("world")
+		if wcfg is Dictionary and str(wcfg.get("timezone", "")) != "":
+			audio.world_tz = str(wcfg["timezone"])
 	var logged_in: bool = bool((sess["data"] as Dictionary).get("loggedIn", false))
 	if logged_in:
 		user_name = str((sess["data"] as Dictionary).get("name", ""))
@@ -669,6 +683,7 @@ func _on_ws_message(msg: Dictionary) -> void:
 func _on_event(ev: Dictionary) -> void:
 	var t: String = str(ev.get("type", ""))
 	var data: Dictionary = ev.get("data", {}) if ev.get("data") is Dictionary else {}
+	audio.on_event(ev)  # 提示音：按事件编号去重，太旧的不补播
 	match t:
 		"you_arrived":
 			arrival_refresh_at = clock.ticks_ms() + 80.0
@@ -691,7 +706,6 @@ func _on_event(ev: Dictionary) -> void:
 			_toast(str(data.get("text", "")), "info")
 		"interaction_done":
 			_toast("%s：%s" % [str(data.get("name", "做完了")), str(data.get("text", ""))], "ok")
-			audio.confirm()
 			arrival_refresh_at = clock.ticks_ms() + 50.0
 		"interaction":
 			arrival_refresh_at = clock.ticks_ms() + 50.0
@@ -713,6 +727,7 @@ func _on_renewed(msg: Dictionary) -> void:
 	if sp != "" and sp != cur_space:
 		cur_space = sp
 		cur_space_name = world.space_name(cur_scene, sp)
+		audio.set_place(manifest, cur_scene, cur_space)
 		_dirty = true
 		arrival_refresh_at = clock.ticks_ms() + 50.0
 
@@ -745,9 +760,10 @@ func _on_scene(msg: Dictionary) -> void:
 		near_valid = false
 		_hide_marker()
 	var sp: String = str(msg.get("space", cur_space))
-	if sp != cur_space or switched:
+	if sp != cur_space or switched or not audio.place_known():
 		cur_space = sp
 		cur_space_name = world.space_name(sid, sp)
+		audio.set_place(manifest, cur_scene, cur_space)
 		arrival_refresh_at = clock.ticks_ms() + 50.0
 	var now: float = clock.server_now()
 	if msg.has("self"):
@@ -902,7 +918,7 @@ func _do_navigate(to: Dictionary, label: String, mark = null) -> void:
 		arrival_refresh_at = clock.ticks_ms() + 50.0
 		return
 	var d: Dictionary = r["data"]
-	audio.confirm()
+	audio.tap()
 	if str(d.get("status", "")) == "completed":
 		_hide_marker()
 		arrival_refresh_at = clock.ticks_ms() + 50.0
@@ -969,7 +985,7 @@ func _on_act_button(arg: String) -> void:
 			return
 		var r: Dictionary = await _act({"type": "start_interaction", "objectId": oid})
 		if r["ok"]:
-			audio.confirm()
+			audio.start()
 			var inter = r["data"].get("interaction")
 			var nm: String = str(inter.get("name", "")) if inter is Dictionary else ""
 			_toast("开始了：%s" % nm if nm != "" else "开始了。", "ok")
@@ -1317,6 +1333,7 @@ func _process(dt: float) -> void:
 	var sa: TActor = actors.get(self_id)
 	if sa != null:
 		rig.follow(Vector3(sa.disp.x, 0.0, sa.disp.y), dt)
+		audio.set_listener(sa.disp)
 		if sa.moving:
 			step_timer -= dt
 			if step_timer <= 0.0:
@@ -1548,5 +1565,6 @@ func _push_debug() -> void:
 		"tapLimit": _tap_limit(),
 		"dir": {"seq": dir_seq, "active": dir_active, "suppressed": dir_suppressed, "keys": _key_vec_text()},
 		"screenScale": DisplayServer.screen_get_scale(),
+		"snd": audio.debug_info(),
 	}
 	bridge.hud_debug(JSON.stringify(d))

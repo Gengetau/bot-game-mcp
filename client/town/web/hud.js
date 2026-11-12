@@ -132,6 +132,69 @@
     if (soundOn && window.TownHost) window.TownHost.unlockAudio();
   });
 
+  /* ── 音量设置：音乐 / 环境声 / 音效三条独立音量 + 切后台静音，记在 localStorage（读写都包 try/catch，读不到用默认值） ── */
+  var AUDIO_DEFAULT = { music: 60, amb: 70, sfx: 80, bg: true };
+  var audioPrefs = (function () {
+    var out = { music: AUDIO_DEFAULT.music, amb: AUDIO_DEFAULT.amb, sfx: AUDIO_DEFAULT.sfx, bg: AUDIO_DEFAULT.bg };
+    try {
+      var j = JSON.parse(lsGet('town3d.audio') || 'null');
+      if (j && typeof j === 'object') {
+        ['music', 'amb', 'sfx'].forEach(function (k) {
+          var v = Number(j[k]);
+          if (isFinite(v)) out[k] = Math.max(0, Math.min(100, Math.round(v)));
+        });
+        if (typeof j.bg === 'boolean') out.bg = j.bg;
+      }
+    } catch (e) {
+      /* 损坏就用默认值 */
+    }
+    return out;
+  })();
+  var VOL_IDS = { music: 'volMusic', amb: 'volAmb', sfx: 'volSfx' };
+  function renderAudioPrefs() {
+    Object.keys(VOL_IDS).forEach(function (k) {
+      $(VOL_IDS[k]).value = String(audioPrefs[k]);
+      $(VOL_IDS[k] + 'V').textContent = audioPrefs[k] + '%';
+    });
+    $('bgMute').checked = audioPrefs.bg;
+  }
+  function emitAudioPrefs() {
+    Object.keys(VOL_IDS).forEach(function (k) {
+      emit('vol', k + ':' + audioPrefs[k] / 100);
+    });
+    emit('bgmute', audioPrefs.bg ? '1' : '0');
+  }
+  renderAudioPrefs();
+  Object.keys(VOL_IDS).forEach(function (k) {
+    $(VOL_IDS[k]).addEventListener('input', function () {
+      audioPrefs[k] = Math.max(0, Math.min(100, parseInt(this.value, 10) || 0));
+      $(VOL_IDS[k] + 'V').textContent = audioPrefs[k] + '%';
+      lsSet('town3d.audio', JSON.stringify(audioPrefs));
+      emit('vol', k + ':' + audioPrefs[k] / 100);
+    });
+  });
+  $('bgMute').addEventListener('change', function () {
+    audioPrefs.bg = this.checked;
+    lsSet('town3d.audio', JSON.stringify(audioPrefs));
+    emit('bgmute', audioPrefs.bg ? '1' : '0');
+  });
+  function setSoundPanel(on) {
+    $('soundPanel').hidden = !on;
+    $('soundSetBtn').setAttribute('aria-expanded', on ? 'true' : 'false');
+    emit('sfx', on ? 'panel_open' : 'panel_close');
+  }
+  $('soundSetBtn').addEventListener('click', function () {
+    if (window.TownHost) window.TownHost.unlockAudio();
+    setSoundPanel($('soundPanel').hidden);
+  });
+  document.addEventListener(
+    'pointerdown',
+    function (e) {
+      if (!$('soundPanel').hidden && !$('soundPanel').contains(e.target) && e.target !== $('soundSetBtn')) setSoundPanel(false);
+    },
+    true,
+  );
+
   /* ── 面板 ── */
   var state = {};
   var dead = false;
@@ -175,6 +238,7 @@
   $('enterBtn').addEventListener('click', function () {
     if (window.TownHost) window.TownHost.unlockAudio();
     emit('sound', soundOn ? '1' : '0');
+    emitAudioPrefs();
     emit('enter');
   });
   $('retryBtn').addEventListener('click', function () {
@@ -210,6 +274,7 @@
     emit(state.inHome ? 'leave_home' : 'home');
   });
   $('destBtn').addEventListener('click', function () {
+    emit('sfx', $('destMenu').hidden ? 'panel_open' : 'panel_close');
     show($('destMenu'), $('destMenu').hidden);
   });
 
@@ -527,6 +592,7 @@
     d.canvasRect = { left: r.left, top: r.top, width: r.width, height: r.height };
     d.audio = window.TownHost ? window.TownHost.audioState() : [];
     d.soundOn = soundOn;
+    d.audioPrefs = audioPrefs;
     d.toasts = Array.prototype.map.call($('toasts').children, function (e) {
       return e.textContent;
     });
@@ -552,6 +618,9 @@
     setLoading: setLoading,
     fatal: fatal,
     debugSet: debugSet,
+    bgMute: function () {
+      return audioPrefs.bg;
+    },
     ready: ready,
   };
   setLoading(0, '正在加载客户端…');

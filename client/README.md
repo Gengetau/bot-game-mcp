@@ -57,12 +57,13 @@ client/town/
   project.godot, export_presets.cfg, main.tscn, icon.svg
   scripts/   clock.gd（服务器时间估计） bridge.gd（fetch、界面桥） net.gd（WebSocket）
              actor.gd（居民：折线插值、动画） world.gd（从 /map 生成灰盒） rig.gd（镜头）
-             audio.gd（音效） main.gd（启动流程、协议、输入、续租、重连）
+             audio.gd（音乐、环境声、音效） main.gd（启动流程、协议、输入、续租、重连）
   web/       shell.html（导出外壳，无内联脚本） boot.js（启动引擎、fetch 通道、AudioContext 拦截）
-             hud.js / hud.css（DOM 界面：面板、姓名牌、按钮、提示条、声音开关）
+             hud.js / hud.css（DOM 界面：面板、姓名牌、按钮、提示条、声音开关、音量面板）
+  stream/    music/{day,night}.ogg：不进 pck，导出时拷到 build/web/music/
   assets/    素材（素材同事的范围，只读）；*.import 入库，.godot/ 不入库
 client/tools/export.sh
-client/art_source/, client/ASSETS.md   素材来源与台账
+client/art_source/, client/ASSETS.md   素材来源与台账（audio/ 是音频再生成脚本）
 ```
 
 ## 协议要点（实现位置都在 main.gd）
@@ -87,6 +88,35 @@ client/art_source/, client/ASSETS.md   素材来源与台账
 - 调试钩子：`?debug=1` 时每 100 毫秒写 `window.__town`：`{self, scene, space, serverTimeOffset, connection, actors:[{id,name,x,z,moving,sx,sy}], objects, mine, pending, ...}`，
   另有 `project(x,y,z)`（世界坐标 -> 页面像素）和 `act(action)`。`window.__town` 只在 `?debug=1` 下存在；`window.TownHost.audioState()` 一直存在，只返回各 AudioContext 的状态字符串。
 
+## 音频
+
+代码在 `scripts/audio.gd`（`TAudio`），素材台账在 `client/ASSETS.md`「音频台账」，再生成脚本在 `client/art_source/audio/`。
+
+- **构成**：两首循环音乐（白天 / 夜晚）、四条环境声（白天、夜晚、室内、喷泉定点）、10 个操作音效（确认、脚步、点地、失败、互动开始、收到消息、开关面板、硬币、进门）。全部是 CC0 的 Ogg Vorbis。
+  体积：音乐 1.41 MB、环境声 0.52 MB、音效 58 KB，合计约 1.99 MB。
+- **总线**：Godot 里建三条总线 `Music` / `Ambience` / `SFX`，都送到 `Master`。音量变化、总静音、后台静音一律经过平滑（时间常数约 0.12 秒），不会突响。
+- **音乐放在 pck 之外**：`client/town/stream/music/{day,night}.ogg`（目录里有 `.gdignore`，Godot 不导入，不进 pck）。`client/tools/export.sh` 把 `client/town/stream/` 下的子目录原样拷到产物里
+  （`build/web/music/`），引擎照常托管（`/town/3d/music/day.ogg`，`Cache-Control: no-cache` + ETag）。客户端在用户点「进入小镇」之后才用 `HTTPRequest` 取（先取当前时段的那一首），
+  取到后 `AudioStreamOggVorbis.load_from_buffer`，所以不占首屏的下载量，也不拖慢「进入」按钮出现；取不到会隔 20 秒重试，共 3 轮，之后就没有音乐，环境声和音效不受影响。
+  环境声和音效很小（0.58 MB），留在 pck 里。`index.pck` 因此从约 113 KB 变成约 743 KB（br 约 653 KB），见下面「包体与耗时」。
+- **昼夜**：取自服务器世界时间，不看设备时区。`clock.server_now()`（对时后的服务器毫秒）经 `boot.js` 的 `TownHost.worldHour(时区, 毫秒)` 换成世界时区的钟点
+  （时区来自 `GET /config` 的 `world.timezone`），18:00 到次日 06:00 放夜晚曲 + 虫鸣，其余放白天曲 + 鸟风。每 2 秒重算一次，换时段时两首音乐 6 秒交叉淡入淡出，环境声 3 秒；
+  两首都一直保持播放位置（淡出到 0 时暂停，不销毁），所以不会「重新从头放」。调试：`?debug=1&hour=21` 强制钟点（页面运行中改地址栏参数也生效）。
+- **环境声切换**：按所在区域的 `indoor` 标记（来自 `/map` 清单的区域表）判断室内外。进室内：室内环境声（壁炉 + 房间底声）淡入，室外环境声降到 12%；出来切回。
+  室内外变化时响一声门（刚进入、刚重连时的第一次判断不响）。喷泉：取地图里 id 以 `fountain` 结尾的障碍的中心，按自己到它的距离衰减（4 米内满，22 米外无，之间平方衰减），室内听不到。
+- **音量设置**：顶栏「声音：开 / 关」是总静音（原有），旁边新增「音量」按钮，展开 `#soundPanel`：音乐、环境声、音效三条滑块和「切到后台时静音」勾选。
+  记在 `localStorage`（键 `town3d.audio`，JSON；总静音仍是 `town3d.sound`），读写都包了 `try/catch`，读不到就用默认值（音乐 60、环境声 70、音效 80、后台静音开）。
+  界面文字全在 `shell.html`；`hud.js` 管存取并发 `vol` / `bgmute` / `sound` 事件给 Godot，进入小镇时全量发一遍。
+- **浏览器限制**：沿用原做法：`boot.js` 记录 Godot 建出来的 `AudioContext`，用户点「进入小镇」（手势）时 `resume()`，之后任何 `pointerdown`/`touchend` 都会再试一次；被阻止时静音继续，不报错。
+  音频在手势之前不初始化（`init_after_gesture()`）。
+- **后台**：页面切到后台时，若勾着「切到后台时静音」（默认），`boot.js` 把所有 `AudioContext` `suspend()`，Godot 一侧主总线也淡到 0；回到前台 `resume()`，不新建上下文，不叠播。
+  没勾时后台继续放（但后台标签页没有渲染循环，淡入淡出和昼夜切换会停在原地，回前台继续）。
+- **提示音**：服务器事件（`mail`、`chat`、`invite`、`offer`、`asked_hobby` 响收信音；`interaction_done` 和带「硬币」的 `notice` 响硬币声）按事件编号去重，
+  比服务器时间旧 15 秒以上的不补播，所以断线重连补发的事件不会连响。点地确认、够不着 / 失败（所有红色提示条）、互动开始、开关地点菜单和音量面板各有各的声音。
+- **缺资源**：任何一个音频文件缺失 / 加载失败，只是少一层声音：音乐取不到就没有音乐，`load()` 不到的音效 / 环境声在播放时直接跳过，页面和游戏流程不受影响（端到端步骤 15 用 404 掉整个 `music/` 验证）。
+- **调试**：`window.__town.snd` 有音频状态（总线分贝、各层增益 / 是否在放 / 播放位置、世界钟点、各音效播放次数），`window.__town.audioPrefs` 是网页层的偏好。
+- **没做**：没有在真机上听过；不按天气换环境声（服务器没有天气）；打开小游戏时没有降低背景音乐；没有「房间混响」类处理；音乐没有按建筑区分。
+
 ## 已知限制
 
 - 只有灰盒和一个居民模型；角色外观、动画、昼夜都是占位。墙画成半高（斜俯视免得挡住室内）。
@@ -95,7 +125,7 @@ client/art_source/, client/ASSETS.md   素材来源与台账
 - 软件渲染（3 到 8 帧每秒）下页面的服务器时间估计比真实服务器慢约 110 到 290 毫秒（端到端步骤 2、8 的对时数据；推断原因是 pong 要等下一帧才被读到），折成位置是整体滞后 0.3 到 0.7 米；真机待测。
 - 标签页在后台时浏览器暂停渲染循环，心跳和续租也暂停（在场租约 60 秒），回前台会重新进入并取快照，同时发探测、3 秒内无回应就重连（见「协议要点」的断线一条；后台停掉的时间不算静默）。
 - WebSocket 正好断着的时候在别处离开小镇（比如另一个标签页点了「离开」），本页收不到撤销通知；心跳发现不在场（`presence_lost`）后约 2 秒会自动重新进入。服务端目前不告诉客户端「为什么不在场」，区分「在别处主动离开」和「服务器重启」需要服务端给出原因，记为 P1 事项。
-- 声音：没有在真机上听过；被浏览器阻止时静音继续。没有在 Godot 里测过音量。
+- 声音：没有在真机上听过，音乐和音效好不好听、混音平衡、循环接缝听着顺不顺都只有工具测量，没有人耳确认；无头 Chromium 允许自动播放，「浏览器真的阻止自动播放」的场景没有实测（只保证代码路径不报错）。
 - 键盘方向输入只走 WebSocket：WS 断着时按键不起作用（点地仍可用）；贴墙时是沿一个轴向滑动，速度按分量折算；没有手柄 / 摇杆。窗口失焦发零向量靠 `blur` 事件，浏览器在极端情况下（系统级抢焦点）可能不触发，那时服务器 500 毫秒租约兜底。
 - 不做：聊天、背包、信箱、小游戏界面、NPC、摇杆；这些仍在旧页面 `/town/`。
 - 引擎不支持 Range 请求、缓存策略是 `no-cache` + ETag（见 `docs/TOWN.md`）。
@@ -105,7 +135,7 @@ client/art_source/, client/ASSETS.md   素材来源与台账
 | 文件 | 原始 | gzip | brotli |
 |---|---|---|---|
 | index.wasm | 39,514,754 | 10,153,810 | 6,902,599 |
-| index.pck | 113,072 | 107,364 | 105,610 |
+| index.pck | 742,860 | 672,334 | 652,991 |
 | index.js | 279,815 | 68,917 | 59,854 |
 
 对账：同一个 Godot 版本下，`index.wasm` 和 `index.js` 在不同机器上导出是逐字节相同的（x86_64 和 aarch64 实测一致）。`index.pck` 大小相同，但每次重新导入资源哈希都会变（导入时的随机编号），不能拿它的哈希对账。

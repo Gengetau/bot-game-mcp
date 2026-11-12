@@ -204,7 +204,7 @@ async function step(n, title, fn) {
     current.ok = true;
     console.log(`  ✓ 步骤 ${n} 通过（${((Date.now() - t0) / 1000).toFixed(1)} 秒）`);
   } catch (e) {
-    for (const p of [A, B, A2, A3].filter(Boolean)) p.w.allow = [];
+    for (const p of [A, B, A2, A3, ...extra].filter(Boolean)) p.w.allow = [];
     current.error = e instanceof Error ? e.message : String(e);
     console.log(`  ✗ 步骤 ${n} 失败：${current.error}`);
   }
@@ -215,7 +215,7 @@ async function step(n, title, fn) {
 
 /** 步骤结束时核对声明过的失败请求次数，然后清空声明（下一步重新声明）。 */
 function settleAllowed() {
-  const ws = [A, B, A2, A3].filter(Boolean).map((p) => p.w);
+  const ws = [A, B, A2, A3, ...extra].filter(Boolean).map((p) => p.w);
   const bad = [];
   for (const w of ws) {
     for (const a of w.allow) if (a.hits < a.min || a.hits > a.max) bad.push(`[${w.label}] ${a.why}：声明 ${a.min}~${a.max} 次，实际 ${a.hits} 次`);
@@ -500,6 +500,7 @@ const seen = async (page, id) => (await snap(page)).actors.find((a) => a.id === 
 // ───────────────────────── 主流程 ─────────────────────────
 
 let A, B, A2, A3;
+const extra = []; // 步骤 15 的两个独立页面（声音测试），并入全程检查
 let aiClient = null;
 let runner = null;
 let aiId = null;
@@ -1249,16 +1250,295 @@ async function main() {
     await shot(A2.page, '14-desktop-left-town');
     note('两个页面都停在「你已经离开了小镇」面板，6 秒内没有自动重新进入，服务器上居民不在场');
   });
+
+  // ── 15 ──
+  await step(15, '声音：手势后 AudioContext 为 running；昼夜按服务器世界时间；三个音量与总静音生效并在刷新后保持；后台挂起/回前台不叠播；断线重连不重新起播；进屋切环境声；音乐文件取不到时照常运行', async () => {
+    const snd = (p) => p.page.evaluate(() => (window.__town ? window.__town.snd : null));
+    const near = (a, b, tol) => typeof a === 'number' && Math.abs(a - b) <= tol;
+    const dbOf = (v) => (v <= 0.0001 ? -80 : 20 * Math.log10(v));
+    const setRange = (p, id, v) =>
+      p.page.$eval(
+        `#${id}`,
+        (el, val) => {
+          el.value = String(val);
+          el.dispatchEvent(new Event('input', { bubbles: true }));
+        },
+        v,
+      );
+    // 复选框用页面内 click()：Playwright 的 page.click 对这个复选框偶发报「element is not visible」，而此时 elementFromPoint 命中它、
+    // 各级祖先都可见（排查记录见 docs/PROGRESS.md）；真人点击不受影响，这里只验证设置本身的行为
+    const clickEl = (p, sel) => p.page.$eval(sel, (el) => el.click());
+    const audioStates = (p) => p.page.evaluate(() => window.TownHost.audioState());
+    const goHidden = (p) =>
+      p.page.evaluate(() => {
+        Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'hidden' });
+        document.dispatchEvent(new Event('visibilitychange'));
+      });
+    const goVisible = (p) =>
+      p.page.evaluate(() => {
+        delete document.visibilityState;
+        document.dispatchEvent(new Event('visibilitychange'));
+      });
+
+    const C = await newPlayer(chromiumBrowserA, 'C 声音', { viewport: { width: 1280, height: 800 }, deviceScaleFactor: 1 }, { wsGate: true });
+    extra.push(C);
+    const lc = await login(C, `阿声${rnd()}`);
+    check(lc.audioAfter.includes('running'), `手势之后至少应有一个 AudioContext 处于 running，实际 [${lc.audioAfter}]`);
+    const ctxCount = lc.audioAfter.length;
+    note(`手势前 AudioContext [${lc.audioBefore}]，手势后 [${lc.audioAfter}]`);
+
+    // 默认值与初始化
+    let s = await until(async () => {
+      const x = await snd(C);
+      return x && x.inited ? x : null;
+    }, 20_000, '音频初始化');
+    check(s.sfxLoaded.length === 10, `10 个音效应全部载入，实际 ${s.sfxLoaded.length}：${s.sfxLoaded}`);
+    const prefs0 = await C.page.evaluate(() => window.__town.audioPrefs);
+    check(prefs0.music === 60 && prefs0.amb === 70 && prefs0.sfx === 80 && prefs0.bg === true, `默认音量应是 60/70/80、后台静音开，实际 ${JSON.stringify(prefs0)}`);
+
+    // 昼夜取自服务器世界时间：同一时刻在不同时区钟点不同（与设备时区无关）
+    const tz = (await (await C.ctx.request.get(`${BASE}/town/api/config`)).json()).world.timezone;
+    const hours = await C.page.evaluate(() => {
+      const u = Date.UTC(2026, 10, 13, 12, 0, 0);
+      const H = window.TownHost;
+      return { tokyo: H.worldHour('Asia/Tokyo', u), ny: H.worldHour('America/New_York', u), edgeNight: H.worldHour('Asia/Tokyo', Date.UTC(2026, 10, 13, 9, 0, 0)), edgeDawn: H.worldHour('Asia/Tokyo', Date.UTC(2026, 10, 12, 21, 0, 0)), bad: H.worldHour('Not/AZone', u) };
+    });
+    check(hours.tokyo === 21 && hours.ny === 7 && hours.edgeNight === 18 && hours.edgeDawn === 6 && hours.bad === -1, `worldHour 按时区换算不对：${JSON.stringify(hours)}`);
+    const hnow = await C.page.evaluate((z) => window.TownHost.worldHour(z, window.__town.serverNow), tz);
+    s = await snd(C);
+    const dh = Math.min(Math.abs(s.hour - hnow), 24 - Math.abs(s.hour - hnow));
+    check(dh < 0.1, `音频用的世界钟点 ${s.hour} 与按服务器时间 ${tz} 现算的 ${hnow} 不一致`);
+    check(s.night === (s.hour >= 18 || s.hour < 6), `night=${s.night} 与钟点 ${s.hour} 不符`);
+    note(`世界时区 ${tz}，当前钟点 ${s.hour.toFixed(2)}，放${s.night ? '夜晚' : '白天'}曲；同一时刻东京 ${hours.tokyo} 点、纽约 ${hours.ny} 点（与设备时区无关）`);
+
+    // 音乐从 /town/3d/music/ 流式取到并淡入；环境声和音效在包里
+    const want = s.night ? 'night' : 'day';
+    const other = want === 'day' ? 'night' : 'day';
+    s = await until(async () => {
+      const x = await snd(C);
+      const l = x.layers[`music_${want}`];
+      return l.loaded && l.playing && l.gain > 0.99 ? x : null;
+    }, 90_000, '当前时段的音乐载入并淡入完成');
+    check(!s.layers[`music_${other}`].playing, '另一时段的音乐不应同时在放（不叠播）');
+    check(s.layers[`amb_${want}`].playing && s.layers[`amb_${want}`].gain > 0.99, `室外应放${want}环境声`);
+    check(!s.layers.amb_indoor.playing, '室外不应放室内环境声');
+    await until(async () => (await snd(C)).layers[`music_${other}`].loaded, 60_000, '另一首音乐也取到了');
+    note(`音乐 ${want} 在播（增益 ${s.layers[`music_${want}`].gain}），环境声 ${want} 在播；总线(dB) ${JSON.stringify(s.busDb)}`);
+
+    // 昼夜切换：把世界钟点改到另一个时段（?debug=1&hour=，页面运行中改地址栏参数即可），两首音乐交叉淡入淡出，中途两首同时在放，结束后只剩一首；再改回来
+    {
+      const farHour = want === 'night' ? 12 : 21;
+      await C.page.evaluate((h) => history.replaceState(null, '', `${location.pathname}?debug=1&hour=${h}`), farHour);
+      let overlap = false;
+      s = await until(async () => {
+        const x = await snd(C);
+        const a = x.layers[`music_${want}`];
+        const b = x.layers[`music_${other}`];
+        if (a.playing && b.playing && a.gain > 0.05 && b.gain > 0.05) overlap = true;
+        return b.gain > 0.99 && a.gain < 0.01 && !a.playing && x.night === (want === 'day') ? x : null;
+      }, 90_000, '改钟点后音乐交叉淡入到另一首', 100);
+      check(overlap, '交叉淡化的过程中应有两首同时在放（渐变，不是硬切）');
+      check(s.layers[`amb_${other}`].gain > 0.99 && s.layers[`amb_${want}`].gain < 0.01, '环境声也应跟着切到另一时段');
+      note(`世界钟点改到 ${farHour} 点：音乐 ${want} -> ${other} 交叉淡化（中途两首同时在放），环境声同步切换`);
+      await C.page.evaluate(() => history.replaceState(null, '', `${location.pathname}?debug=1`));
+      await until(async () => {
+        const x = await snd(C);
+        return x.layers[`music_${want}`].gain > 0.99 && x.layers[`music_${other}`].gain < 0.01 && x.night === (want === 'night') ? x : null;
+      }, 90_000, '钟点改回后切回原来的曲子', 100);
+    }
+
+    // 点地：点地确认音计数 +1
+    const before = (await snd(C)).plays.tap ?? 0;
+    await clickWorld(C, 20, 24);
+    await until(async () => ((await snd(C)).plays.tap ?? 0) > before, 15_000, '点地后响了点地确认音');
+    await until(async () => !selfActor(await serverScene(C))?.nav, 60_000, 'C 走完').catch(() => {});
+
+    // 喷泉定点声按距离衰减：离喷泉近的地方听得到，远处听不到
+    await until(async () => (await snd(C)).fountainDist >= 0, 10_000, '拿到离喷泉的距离').catch(async (e) => {
+      const x = await snd(C);
+      throw new Error(`${e.message} ${JSON.stringify({ scene: x.scene, fountains: x.fountains, indoor: x.indoor, d: x.fountainDist })}`);
+    });
+    s = await until(async () => {
+      const x = await snd(C);
+      return x.layers.amb_fountain.playing === (x.layers.amb_fountain.gain > 0.002) ? x : null;
+    }, 20_000, '喷泉声增益稳定');
+    const fNear = { d: s.fountainDist, g: s.layers.amb_fountain.gain };
+    // 镜头跟着人走，一次点不到 26 米外：分两跳
+    for (const [hx, hz] of [[40, 27], [47, 27], [54, 28], [58, 28]]) {
+      await clickWorld(C, hx, hz);
+      await sleep(1500);
+      await until(async () => !selfActor(await serverScene(C))?.nav, 90_000, 'C 走到远处');
+    }
+    s = await until(async () => {
+      const x = await snd(C);
+      return x.fountainDist > 22 && x.layers.amb_fountain.gain < 0.01 ? x : null;
+    }, 30_000, '走远后听不到喷泉').catch(async (e) => {
+      const x = await snd(C);
+      throw new Error(`${e.message} ${JSON.stringify({ d: x.fountainDist, g: x.layers.amb_fountain.gain, indoor: x.indoor, scene: x.scene })}`);
+    });
+    check(fNear.d < 22 ? fNear.g > 0.05 : true, `离喷泉 ${fNear.d} 米时应听得到，增益 ${fNear.g}`);
+    note(`喷泉声：离喷泉 ${fNear.d} 米增益 ${fNear.g}，走到 ${s.fountainDist} 米外增益 ${s.layers.amb_fountain.gain}（按距离衰减）`);
+
+    // 设置面板：三个独立音量 + 后台静音，真正作用到三条总线
+    await C.page.click('#soundSetBtn');
+    check(await C.page.$eval('#soundPanel', (e) => !e.hidden), '点「音量」应展开设置面板');
+    await shot(C.page, '16-desktop-sound-panel');
+    await setRange(C, 'volMusic', 30);
+    await setRange(C, 'volAmb', 40);
+    await setRange(C, 'volSfx', 50);
+    await clickEl(C, '#bgMute'); // 取消勾选
+    s = await until(async () => {
+      const x = await snd(C);
+      return near(x.busDb.music, dbOf(0.3), 0.6) && near(x.busDb.amb, dbOf(0.4), 0.6) && near(x.busDb.sfx, dbOf(0.5), 0.6) && x.bgMute === false ? x : null;
+    }, 15_000, '三个音量和后台静音设置作用到总线');
+    note(`音乐 30% -> ${s.busDb.music.toFixed(1)} dB，环境声 40% -> ${s.busDb.amb.toFixed(1)} dB，音效 50% -> ${s.busDb.sfx.toFixed(1)} dB`);
+    await setRange(C, 'volMusic', 0);
+    s = await until(async () => {
+      const x = await snd(C);
+      return x.busDb.music <= -60 ? x : null;
+    }, 10_000, '音乐音量拖到 0 后总线静音');
+    check(near(s.busDb.amb, dbOf(0.4), 0.6) && near(s.busDb.sfx, dbOf(0.5), 0.6), `只动音乐音量时环境声、音效不应变：${JSON.stringify(s.busDb)}`);
+    await setRange(C, 'volMusic', 30);
+    await C.page.click('#soundBtn'); // 总静音
+    check((await C.page.$eval('#soundBtn', (e) => e.textContent)) === '声音：关', '总静音后按钮应显示「声音：关」');
+    await until(async () => {
+      const x = await snd(C);
+      return x.enabled === false && x.busDb.master <= -60 ? x : null;
+    }, 10_000, '总静音后主总线静音');
+
+    // 刷新后保持：音量在 localStorage，总静音也是
+    C.w.closing = true;
+    await C.page.reload();
+    await C.page.waitForSelector('#enterBtn:not([hidden])', { timeout: 120_000 });
+    C.w.closing = false;
+    const afterReload = await C.page.evaluate(() => ({
+      m: document.getElementById('volMusic').value,
+      a: document.getElementById('volAmb').value,
+      s: document.getElementById('volSfx').value,
+      bg: document.getElementById('bgMute').checked,
+      snd: document.getElementById('soundBtn').textContent,
+    }));
+    check(afterReload.m === '30' && afterReload.a === '40' && afterReload.s === '50' && afterReload.bg === false && afterReload.snd === '声音：关', `刷新后设置应保持，实际 ${JSON.stringify(afterReload)}`);
+    await C.page.click('#enterBtn');
+    await C.page.waitForFunction(() => window.__town && window.__town.actors.length > 0 && document.body.dataset.phase === 'playing', null, { timeout: 60_000 });
+    await until(async () => {
+      const x = await snd(C);
+      return x && x.inited && near(x.vol.music, 0.3, 0.001) && near(x.vol.amb, 0.4, 0.001) && near(x.vol.sfx, 0.5, 0.001) && x.enabled === false && x.bgMute === false && near(x.busDb.music, dbOf(0.3), 0.6) && x.busDb.master <= -60 ? x : null;
+    }, 30_000, '刷新后进入：音量、总静音、后台静音设置都已作用');
+    note('刷新后：音量 30/40/50、总静音、后台静音（关）都保持，并在进入后作用到总线');
+    await C.page.click('#soundBtn');
+    await until(async () => {
+      const x = await snd(C);
+      return x.enabled && near(x.busDb.master, 0, 0.5) ? x : null;
+    }, 10_000, '取消总静音后主总线恢复');
+    await until(async () => {
+      const l = (await snd(C)).layers[`music_${want}`];
+      return l.loaded && l.playing && l.gain > 0.99;
+    }, 90_000, '刷新后音乐重新淡入');
+
+    // 切后台：「切到后台时静音」关着时不挂起；勾上后 AudioContext 挂起，回来恢复，不新建上下文、不叠播
+    await goHidden(C);
+    await sleep(800);
+    check(!(await audioStates(C)).includes('suspended'), '「切到后台时静音」关着时不应挂起 AudioContext');
+    await goVisible(C);
+    await clickEl(C, '#bgMute'); // 勾上
+    await goHidden(C);
+    await until(async () => (await audioStates(C)).every((x) => x === 'suspended'), 8000, '切到后台后 AudioContext 全部挂起');
+    await until(async () => {
+      const x = await snd(C);
+      return x.hidden && x.busDb.master <= -60 ? x : null;
+    }, 8000, '切到后台后主总线静音');
+    await goVisible(C);
+    await until(async () => (await audioStates(C)).includes('running'), 10_000, '回到前台后 AudioContext 恢复 running');
+    s = await until(async () => {
+      const x = await snd(C);
+      return !x.hidden && near(x.busDb.master, 0, 0.5) ? x : null;
+    }, 8000, '回到前台后主总线恢复');
+    const playingNow = Object.entries(s.layers).filter(([k, v]) => k.startsWith('music_') && v.playing && v.gain > 0.5).map(([k]) => k);
+    check(playingNow.length === 1 && playingNow[0] === `music_${want}`, `回前台后应只有一首音乐在放，实际 ${playingNow}`);
+    check((await audioStates(C)).length === ctxCount, 'AudioContext 数量不应增加');
+    note('关着「切到后台时静音」时切后台不挂起；勾上后切后台全部 suspended、主总线静音，回前台恢复 running、仍只有一首音乐，AudioContext 数量不变');
+
+    // 断线重连：音乐不重新起播（播放位置继续往前，不重新取文件），上下文数量不变
+    const pos0 = (await snd(C)).layers[`music_${want}`].pos;
+    const tried0 = (await snd(C)).musicTried;
+    C.gate.block = true;
+    for (const ws of C.gate.sockets) ws.close();
+    C.gate.sockets.length = 0;
+    await until(async () => (await snap(C.page)).conn !== 'ok', 15_000, 'C 页面显示断线');
+    await sleep(3000);
+    C.gate.block = false;
+    await until(async () => (await snap(C.page)).conn === 'ok', 40_000, 'C 重连成功');
+    await sleep(2000);
+    s = await snd(C);
+    const pos1 = s.layers[`music_${want}`].pos;
+    check(s.layers[`music_${want}`].playing && (pos1 >= pos0 - 0.5 || pos0 > 60), `重连后音乐应接着播，位置 ${pos0} -> ${pos1}`);
+    check(s.musicTried === tried0, `重连不应重新取音乐文件（musicTried ${tried0} -> ${s.musicTried}）`);
+    check((await audioStates(C)).length === ctxCount, '重连后 AudioContext 数量不应增加');
+    note(`断线重连：音乐位置 ${pos0}s -> ${pos1}s（没有从头），未重新取文件，上下文数量不变`);
+
+    // 进屋：环境声切到室内，室外环境声只留一点；出门切回
+    await C.page.click('#homeBtn');
+    await until(async () => (await snap(C.page)).scene === 'home', 120_000, 'C 进到自己家');
+    s = await until(async () => {
+      const x = await snd(C);
+      return x.indoor && x.layers.amb_indoor.playing && x.layers.amb_indoor.gain > 0.99 && x.layers[`amb_${want}`].gain < 0.2 ? x : null;
+    }, 30_000, '进屋后室内环境声起来、室外环境声降下去').catch(async (e) => {
+      throw new Error(`${e.message}；当时 ${JSON.stringify({ ...(await snd(C)), sfxLoaded: undefined })}`);
+    });
+    check((s.plays.door ?? 0) >= 1, '进门应响一声门');
+    check(s.layers.amb_fountain.gain < 0.01, '在屋里听不到喷泉');
+    await C.page.click('#homeBtn');
+    await until(async () => (await snap(C.page)).scene === 'town', 60_000, 'C 出门');
+    s = await until(async () => {
+      const x = await snd(C);
+      return !x.indoor && x.layers[`amb_${want}`].gain > 0.99 && x.layers.amb_indoor.gain < 0.01 ? x : null;
+    }, 30_000, '出门后环境声切回室外');
+    note(`进屋：室内环境声增益 1、室外降到 ≤0.2，门声 ${s.plays.door} 次；出门后切回`);
+
+    // 窄屏：顶栏多了「音量」按钮，手机上不能溢出、面板在屏幕内
+    await B.page.click('#soundSetBtn');
+    const geo = await B.page.evaluate(() => {
+      const r = (id) => document.getElementById(id).getBoundingClientRect().toJSON();
+      const top = ['where', 'soundBtn', 'soundSetBtn', 'oldLink'].map((id) => ({ id, ...r(id) }));
+      return { vw: window.innerWidth, sw: document.documentElement.scrollWidth, top, panel: r('soundPanel') };
+    });
+    await shot(B.page, '17-mobile-sound-panel');
+    await B.page.click('#soundSetBtn');
+    check(geo.sw <= geo.vw, `手机上页面不应横向溢出：scrollWidth ${geo.sw} > ${geo.vw}`);
+    check(geo.top.every((t) => t.left >= -0.5 && t.right <= geo.vw + 0.5), `手机顶栏按钮应都在屏幕内：${JSON.stringify(geo.top.map((t) => [t.id, Math.round(t.left), Math.round(t.right)]))}`);
+    check(geo.panel.left >= 0 && geo.panel.right <= geo.vw, `手机上设置面板应在屏幕内：${Math.round(geo.panel.left)}..${Math.round(geo.panel.right)} / ${geo.vw}`);
+    C.w.closing = true;
+    await C.ctx.close();
+
+    // 缺资源：音乐文件取不到（404）时客户端照常运行，其余声音正常
+    const D = await newPlayer(chromiumBrowserB, 'D 缺音乐', { viewport: { width: 1000, height: 700 }, deviceScaleFactor: 1 });
+    extra.push(D);
+    await D.page.route(/\/town\/3d\/music\//, (route) => route.fulfill({ status: 404, contentType: 'text/plain', body: 'missing' }));
+    allowFailure(D.w, 'GET', /^\/town\/3d\/music\/(day|night)\.ogg$/, { min: 2, max: 6, why: '步骤 15：音乐文件被故意 404（缺资源）' });
+    await login(D, `阿缺${rnd()}`);
+    s = await until(async () => {
+      const x = await snd(D);
+      return x && x.inited && x.musicTried >= 1 ? x : null;
+    }, 30_000, 'D 尝试过取音乐');
+    check(!s.layers.music_day.loaded && !s.layers.music_night.loaded, '音乐取不到时不应有任何音乐载入');
+    const dw = s.night ? 'night' : 'day';
+    await until(async () => (await snd(D)).layers[`amb_${dw}`].playing, 30_000, '缺音乐时环境声照常播放');
+    check((await D.page.evaluate(() => document.body.dataset.phase)) === 'playing', '缺音乐时客户端应照常运行');
+    note('音乐被 404：客户端照常进入并运行，环境声和音效正常，没有页面错误');
+    D.w.closing = true;
+    await D.ctx.close();
+  });
 }
 
 // ───────────────────────── 收尾 ─────────────────────────
 
 function allWatches() {
-  return [A, B, A2, A3].filter(Boolean).map((p) => p.w);
+  return [A, B, A2, A3, ...extra].filter(Boolean).map((p) => p.w);
 }
 
 async function collectCsp() {
-  for (const p of [A, B, A2, A3].filter(Boolean)) {
+  for (const p of [A, B, A2, A3, ...extra].filter(Boolean)) {
     try {
       const v = await p.page.evaluate(() => window.__csp ?? []);
       if (v.length) p.w.problems.push(`CSP 违规事件：${v.join('; ')}`);
@@ -1294,7 +1574,7 @@ try {
 } finally {
   // 被信号打断：清理由信号处理函数负责（它会 process.exit），这里不能抢先退出，否则临时目录删不掉
   if (interrupted) await new Promise(() => {});
-  for (const p of [A, B, A2, A3].filter(Boolean)) p.w.closing = true;
+  for (const p of [A, B, A2, A3, ...extra].filter(Boolean)) p.w.closing = true;
   try {
     await runner?.stop();
     await aiClient?.close();
