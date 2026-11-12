@@ -330,8 +330,7 @@ export function directory(w: WorldService, now: number): { id: string; name: str
 }
 
 function hereChat(w: WorldService, residentId: string, space: string, now: number): HereView['chat'] {
-  void space;
-  return recentHeard(w, residentId, now);
+  return recentHeard(w, residentId, space, now);
 }
 
 /** 我听到过的现场发言（附近聊天；按我自己的消息序号往前翻页）。只包含当时我在受众里的消息。 */

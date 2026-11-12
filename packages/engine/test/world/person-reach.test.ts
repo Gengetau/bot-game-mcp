@@ -5,8 +5,9 @@
  */
 import { describe, expect, it } from 'vitest';
 import { homeId } from '../../src/world/content.js';
+import { nearbyAudience } from '../../src/world/hearing.js';
 import { canInteractPerson } from '../../src/world/reach.js';
-import { positionOfResident } from '../../src/world/space.js';
+import { directionInput, positionOfResident } from '../../src/world/space.js';
 import { Actor, makeTown, type Town } from './helpers.js';
 import { checkInvariants } from './invariants.js';
 
@@ -95,26 +96,22 @@ describe('面对面互动按距离：personReach', () => {
     a.go(NEAR_SPAWN);
     b.go(homeId(b.residentId));
     expect(b.pos().instance).toBe(b.residentId);
-    const probe = (who: Actor, target: string) => {
-      const out = [] as unknown[];
-      for (const [type, f] of [
+    // 整个错误体（去掉本来就不同的字段后）逐字比较：这里每个场景发的动作、对象都一样，所以什么都不用去掉
+    const probe = (who: Actor, target: string) =>
+      [
         ['invite', { to: target }],
         ['offer', { kind: 'gift', to: target, give: { coins: 1 } }],
         ['ask_hobby', { target }],
-      ] as const) {
-        const e = who.fail(type, f);
-        out.push([type, e.code, e.reason, e.message, e.data]);
-      }
-      return out;
-    };
+      ].map(([type, f]) => who.fail(type as string, f as Record<string, unknown>).toJSON());
     const fromOutside = probe(a, b.residentId); // 对着屋里的人
-    expect(probe(b, a.residentId).map((x) => (x as unknown[]).slice(0, 3))).toEqual(fromOutside.map((x) => (x as unknown[]).slice(0, 3))); // 屋里对着屋外的人
-    for (const x of fromOutside as unknown[][]) expect([x[1], x[2], x[4]]).toEqual(['precondition_failed', 'not_here', undefined]);
-    // 和「不存在」「离线」逐字相同
+    expect(fromOutside).toHaveLength(3);
+    for (const body of fromOutside) expect(body).toMatchObject({ error: 'precondition_failed', reason: 'not_here' });
+    for (const body of fromOutside) expect(Object.keys(body).sort()).toEqual(['error', 'message', 'reason']);
+    expect(probe(b, a.residentId)).toEqual(fromOutside); // 屋里对着屋外的人
+    // 和「不存在」「离线」整个响应体相同
     c.leave();
     expect(probe(a, c.residentId)).toEqual(fromOutside);
     expect(probe(a, 'r_nobody')).toEqual(fromOutside);
-    expect(JSON.stringify(fromOutside)).not.toMatch(/navigateTo|"x"|"z"|home:/);
     checkInvariants(t);
   });
 
@@ -156,6 +153,64 @@ describe('面对面互动按距离：personReach', () => {
     c.go({ x: 32, z: 29 });
     t.advance(1);
     expect(c.act('offer', { kind: 'gift', to: b.residentId, give: { coins: 1 } }).status).toBe('accepted');
+  });
+});
+
+describe('方向输入走开（按现算位置判定）', () => {
+  /** 一方按住方向键 ms 毫秒（每 150 毫秒重发一次，像真客户端），用的是 directionInput 本身 */
+  function hold(a: Actor, x: number, z: number, ms: number, seq: { n: number }) {
+    for (let left = ms; left > 0; left -= 150) {
+      directionInput(a.t.w, a.auth, { seq: ++seq.n, epoch: a.row().control_epoch, x, z, source: 1 });
+      a.t.advance(Math.min(150, left));
+    }
+  }
+
+  it('一方用方向输入走开后 accept_offer 被拒（too_far）且报价仍在；走回来后成交', () => {
+    const { t, a, b } = two();
+    b.go({ x: 30, z: 26 });
+    a.go({ x: 32.2, z: 26 }); // 2.2 米，a 在 b 的东边
+    const o = a.act('offer', { kind: 'gift', to: b.residentId, give: { coins: 5 } });
+    const seq = { n: 0 };
+    hold(a, 1, 0, 1200, seq); // 往东走开
+    expect(a.pos().moving || gap(t, a, b) > 3).toBe(true);
+    expect(gap(t, a, b)).toBeGreaterThan(3);
+    const e = b.fail('accept_offer', { offerId: o.offer.id });
+    expect([e.code, e.reason, e.data]).toEqual(['precondition_failed', 'too_far', { navigateTo: a.residentId }]);
+    expect(t.w.db.get('SELECT status FROM offers WHERE offer_id = ?', o.offer.id)!.status).toBe('open');
+    expect(a.view().inventory.coins.reserved).toBe(5);
+    // 方向输入的租约到期后停在原地，判定依旧
+    t.advance(2000);
+    b.heartbeat();
+    expect(a.pos().moving).toBe(false);
+    expect(b.fail('accept_offer', { offerId: o.offer.id }).reason).toBe('too_far');
+    // 走回来：方向输入同样按现算位置判定
+    hold(a, -1, 0, 1200, seq);
+    t.advance(600);
+    expect(gap(t, a, b)).toBeLessThanOrEqual(3);
+    expect(b.act('accept_offer', { offerId: o.offer.id }).offer.status).toBe('accepted');
+    expect([a.coins(), b.coins()]).toEqual([15, 25]);
+    checkInvariants(t);
+  });
+});
+
+describe('「在场」的定义和附近聊天共用', () => {
+  it('离线、在小游戏里的人：nearbyAudience 和 canInteractPerson 一致地排除', () => {
+    const { t, a, b } = two();
+    const c = t.join('阿木');
+    const d = t.join('小雨');
+    const ids = () => nearbyAudience(t.w, a.row(), t.w.now()).map((r) => r.resident_id);
+    const reachable = () => [b, c, d].filter((x) => canInteractPerson(t.w, a.row(), x.row())).map((x) => x.residentId);
+    // 先把大家放到彼此很近的地方
+    for (const x of [b, c, d]) x.go({ x: 30, z: 27 });
+    a.go({ x: 30, z: 26 });
+    expect(ids().sort()).toEqual([a, b, c, d].map((x) => x.residentId).sort());
+    expect(reachable().sort()).toEqual([b, c, d].map((x) => x.residentId).sort());
+    c.leave();
+    const p = d.act('propose_game', { game: 'number_bomb' });
+    b.act('join_game', { activityId: p.activity.id });
+    d.act('start_game', { activityId: p.activity.id });
+    expect(ids().sort()).toEqual([a.residentId]);
+    expect(reachable()).toEqual([]);
   });
 });
 
@@ -227,5 +282,16 @@ describe('here.chat 只按受众表', () => {
     expect(b.row().location_id).toBe('tea_house');
     expect(b.view().here!.chat.map((m) => m.text)).toEqual(['广场上的一句话']);
     expect(late.view().here!.chat).toEqual([]);
+  });
+
+  it('同一区域但在听力距离之外的人，当时不在受众里，视图里看不到（与区域标签无关）', () => {
+    const { t, a, b } = two();
+    a.go({ x: 22, z: 20 });
+    b.go({ x: 40, z: 31 }); // 同在广场，相距超过 9 米
+    expect(a.row().location_id).toBe(b.row().location_id);
+    expect(gap(t, a, b)).toBeGreaterThan(t.w.map.hearDistance);
+    a.act('speak', { text: '这句话传不远' });
+    expect(a.view().here!.chat.map((m) => m.text)).toEqual(['这句话传不远']);
+    expect(b.view().here!.chat).toEqual([]);
   });
 });
