@@ -438,6 +438,64 @@ describe('WS：scene 同步', () => {
 
 // ───────────────────────── 续租与断开 ─────────────────────────
 
+describe('WS：键盘方向输入', () => {
+  it('hello 带方向租约；dir 帧让角色沿方向走，scene 快照给出折线；松手发零向量就停；成功没有回答，不发坐标', async () => {
+    const app = await serve();
+    const { u, c, hello } = await connect(app, '阿灯');
+    expect(hello.dirLeaseMs).toBe(app.t.w.params.dirLeaseMs);
+    const epoch = u.actor.row().control_epoch;
+    const start = u.actor.pos();
+    const from = c.msgs.length;
+    c.send({ t: 'dir', seq: 1, epoch, x: 1, z: 0 });
+    const scene = await c.waitFor((m) => m.t === 'scene' && m.actors.some((x: any) => x.id === u.residentId && x.nav), 3000, from);
+    const me = scene.actors.find((x: any) => x.id === u.residentId);
+    expect(me.nav.until - me.nav.startedAt).toBeLessThanOrEqual(app.t.w.params.dirLeaseMs);
+    expect(me.nav.points[1].x).toBeGreaterThan(start.x);
+    app.t.advance(200);
+    expect(u.actor.pos().x).toBeGreaterThan(start.x);
+    const from2 = c.msgs.length;
+    c.send({ t: 'dir', seq: 2, epoch, x: 0, z: 0 });
+    await c.waitFor((m) => m.t === 'scene' && m.actors.every((x: any) => !x.nav), 3000, from2);
+    expect(c.msgs.slice(from).some((m) => m.t === 'error' || m.t === 'dir_dropped')).toBe(false);
+  });
+
+  it('旧序号 → dir_dropped(stale)；旧 epoch、不在场、非控制者 → error（连接不关）；坏参数 → bad_request', async () => {
+    const app = await serve();
+    const { u, c } = await connect(app, '阿灯');
+    const epoch = u.actor.row().control_epoch;
+    c.send({ t: 'dir', seq: 5, epoch, x: 0, z: 1 });
+    c.send({ t: 'dir', seq: 5, epoch, x: 1, z: 0 });
+    expect(await c.type('dir_dropped')).toMatchObject({ seq: 5, reason: 'stale' });
+    c.send({ t: 'dir', seq: 6, epoch: epoch + 7, x: 1, z: 0 });
+    expect((await c.type('error')).code).toBe('control_lost');
+    const n = c.count('error');
+    c.send({ t: 'dir', seq: 'x', epoch, x: 1, z: 0 });
+    await c.waitFor((m) => m.t === 'error' && m.code === 'bad_request', 3000);
+    expect(c.count('error')).toBe(n + 1);
+    c.send({ t: 'ping', n: 1 });
+    await c.type('pong');
+    expect(c.closed).toBeNull();
+    // 频率限制：一口气发很多条，超出的收到 dir_dropped(rate_limited)
+    for (let i = 0; i < 40; i++) c.send({ t: 'dir', seq: 100 + i, epoch, x: 0, z: 1 });
+    await c.waitFor((m) => m.t === 'dir_dropped' && m.reason === 'rate_limited', 3000);
+  });
+
+  it('重连：新连接的序号从头开始也被接受，旧连接迟到的输入被丢弃', async () => {
+    const app = await serve();
+    const { u, c } = await connect(app, '阿灯');
+    const epoch = u.actor.row().control_epoch;
+    c.send({ t: 'dir', seq: 300, epoch, x: 1, z: 0 });
+    await c.type('scene', 3000, 1);
+    const { c: c2 } = await attach(app, u);
+    c2.send({ t: 'dir', seq: 1, epoch, x: 0, z: 1 });
+    await c2.waitFor((m) => m.t === 'scene' && m.actors.some((x: any) => x.id === u.residentId && x.nav && x.nav.points[1].z > x.nav.points[0].z), 3000);
+    const rev = whereabouts(app.t.w, app.t.w.mustResident(u.residentId), app.t.w.now()).navigation!.revision;
+    c.send({ t: 'dir', seq: 301, epoch, x: -1, z: 0 });
+    expect(await c.type('dir_dropped')).toMatchObject({ reason: 'stale' });
+    expect(whereabouts(app.t.w, app.t.w.mustResident(u.residentId), app.t.w.now()).navigation!.revision).toBe(rev);
+  });
+});
+
 describe('WS：renew 与断开', () => {
   it('renew：成功 / 旧版本号 ok:false / 没有导航 ok:false / 非控制者 control_lost（连接不关）', async () => {
     const app = await serve();

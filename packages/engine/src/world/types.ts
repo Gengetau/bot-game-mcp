@@ -28,7 +28,7 @@ export interface ResidentState {
 
 /** 导航的目标（给本人和运行器看的说明；路径另算）。 */
 export interface NavTarget {
-  kind: 'place' | 'home' | 'object' | 'resident' | 'point';
+  kind: 'place' | 'home' | 'object' | 'resident' | 'point' | 'dir';
   /** 地点编号、物件编号、居民编号；地图点没有 */
   id?: string;
   name: string;

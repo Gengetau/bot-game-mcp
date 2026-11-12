@@ -32,7 +32,7 @@ npm run client:export && npm run client:e2e                    # 三维客户端
 
 小镇在 `packages/engine/src/world/`，说明和接口契约见 `docs/TOWN.md`。改它之前先读那份文档。
 
-- 所有写入只走 `WorldService.command()`（居民动作）或定时任务处理器，并且都在 `w.commit()` 的同一个 SQLite 事务里：状态、账本、事件、回执、定时任务一起提交或一起回滚。处理过程必须同步，不等模型、不等网络。例外只有两类不是「动作」的写入：在场心跳和导航控制租约的续期（`renewNavigation`），它们同样在 `w.commit()` 里，但没有回执。
+- 所有写入只走 `WorldService.command()`（居民动作）或定时任务处理器，并且都在 `w.commit()` 的同一个 SQLite 事务里：状态、账本、事件、回执、定时任务一起提交或一起回滚。处理过程必须同步，不等模型、不等网络。例外只有三类不是「动作」的写入：在场心跳、导航控制租约的续期（`renewNavigation`）和键盘方向输入（`space.ts` 的 `directionInput`，只经 WebSocket），它们同样在 `w.commit()` 里，但没有回执；方向输入不产生任何事件，也不接受客户端坐标，只收方向、序号和控制版本。
 - 订阅者（SSE、长轮询、WebSocket）只在提交之后被唤醒。不要在事务里直接往外发东西。
 - 硬币只通过 `property.ts` 的 `ledger()` 变动，每笔分录平衡、原因键唯一；物品只通过 `addStack` / `takeStack` / `reserve` / `release` 变动。不要直接改余额或数量。
 - 关系、愿望、日报只读 `w.fact()` 记录的结构化事实，不读聊天文字。
@@ -41,6 +41,7 @@ npm run client:export && npm run client:e2e                    # 三维客户端
 - 场景快照里不只有位置：谁在场、名字、是否在一局小游戏里也在里面。改了这些就调 `touchScene`，让同一场景实例里的人拿到新快照；往快照里加字段时，想清楚它变的时候谁来通知。
 - 读位置用 `posOf` / `positionOfResident`：位置按折线和时间现算，永远截断在导航控制租约的截止时刻。不要自己插值，不要存每帧坐标。
 - 导航的每次变化（开始、改道、停止、穿过门口、结束）都递增 `nav_revision`；`nav_step` 任务必须对上导航编号和版本才生效。
+- 键盘方向输入只是一段租约约 500 毫秒（`dirLeaseMs`）的短直线导航（目的地 `dir`），仍走同一套折线、租约截断和 `nav_revision`；它没有进出口，进出私宅只走 `navigate`。它的路线不能用点地的 10 秒续租撑长，零向量只停方向输入自己的路线，到期和松手都不发事件。
 - 坐标只出现在两处：本人视图里自己的位置、`sceneView` 里同一场景实例中在场的人。事件（`w.emitTo` / `w.emitPublic`）、公开投影、日报里不能有坐标、折线、到达时间。私宅实例的快照只给屋里的人。
 - 地图（`spatial/town-map.ts`）发布后不原地改：动了可走范围、落脚点或物件位置就换 `mapVersion`。`spatial/` 下的模块是纯函数：不读数据库、不取时间、不用随机数。
 - 给居民的私有事件用 `w.emitTo()`，公开事件用 `w.emitPublic()`；固定模板的通知不要拼进别人的私密信息。

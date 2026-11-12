@@ -78,7 +78,7 @@ packages/engine/town/             旧的网页前端（静态文件；会被 God
 
 事务就是「候选状态」：处理过程是同步的，不等模型、不等网络。
 
-不走这条管线的只有两类，它们都不是居民的「动作」：在场心跳，和导航控制租约的续期（`renewNavigation`）。两者同样在一个写事务里完成，但不产生回执、不需要请求号。空间位置的同步（场景快照）是只读投影，提交之后才发。
+不走这条管线的只有三类，它们都不是居民的「动作」：在场心跳，导航控制租约的续期（`renewNavigation`），和键盘方向输入（`directionInput`，只经 WebSocket）。三者同样在一个写事务里完成（`w.commit()`），但不产生回执、不需要请求号；方向输入不产生任何事件。空间位置的同步（场景快照）是只读投影，提交之后才发。
 
 ## 身份、在场、控制权
 
@@ -111,7 +111,19 @@ packages/engine/town/             旧的网页前端（静态文件；会被 God
 - 开始、改道、停止、穿过门口、结束都是耐久变化：每次变化 `revision` 加一。定时任务（`nav_step`，一趟导航一条）必须对上导航编号和版本，否则作废。
 - 立即停步：`stop_navigation`、离线、控制权换手、控制连接正常关闭、开始一局小游戏、发起或加入需要够得着的共同活动。租约到期则停在截止那一刻。
 - 改路线有频率上限（每分钟 120 次，突发 8 次）。
+- 键盘方向输入（WASD / 方向键，见下面「键盘方向输入」）是另一种路线：每次只是一段 500 毫秒租约的短直线，客户端按住时每 150 到 200 毫秒重发。
 - 导航控制租约 10 秒，由客户端或运行器的普通程序每 3 秒续一次（`POST /nav/renew`、WebSocket 的 `renew`、MCP `heartbeat` 带 `navigation_id` + `revision`）。续租要同时对上导航编号和版本；对不上就不动现在这条，并把现在这条的编号和版本还回来（过了门口、换了一段时就是这样，照着新的接着续）。
+
+**键盘方向输入**（可选的第二种输入方式，只给有键盘的网页客户端；AI 和手机仍用 `navigate`）。设计稿要求方向输入「传方向、输入序号和控制版本，不上传可信坐标；服务器限制速度、位移和时间步长；约 500 毫秒没有新的有效输入就停」，做法是把一次方向输入变成一段短的直线导航，仍然走同一套折线 + 租约截断机制，所以客户端依旧只按服务器给的折线和服务器时间插值：
+
+- 消息：WebSocket 上 `{t:"dir", seq, epoch, x, z}`。`x`、`z` 是世界方向（x 向东、z 向南，绝对值不超过 4，服务器只取方向并归一化，速度永远是地图速度），`seq` 是整数输入序号，`epoch` 是 `controlEpoch`；全零向量表示「停」。没有坐标。成功没有回答（画面看 `scene`）；被丢弃回 `{t:"dir_dropped", seq, reason}`（`stale` 旧序号或旧连接，`rate_limited` 太频繁）；没有控制权 / 控制版本不对 / 不在场 / 正在游戏里等回 `{t:"error", code, reason?, message}`。
+- 服务器（`space.ts` 的 `directionInput`，写入在 `w.commit()` 里）：从这一刻的权威位置出发，沿方向直走，长度上限 = 速度 × `dirLeaseMs`（默认 500 毫秒，即 1.2 米），撞到不可走的格子就停在边缘；斜着撞墙则沿墙贴边滑一小段（只取一个轴向，速度按分量折算，所以贴墙比自由行走慢）。装上的是一条目的地为 `dir` 的导航，租约截止 = 现在 + `dirLeaseMs`，`revision` 照常加一，`nav_step` 任务照常必须对上编号和版本；位置仍然只由空间模块写，租约一到 `positionAt` 就截断。按住时客户端每 150 到 200 毫秒重发，每次都从当前位置起一条新的短路线，所以画面连续；松手发零向量立即停下，页面卡死或断网则最迟 `dirLeaseMs` 后停。这个 500 毫秒期限只属于方向输入，**不会**取消点地路线：零向量只停方向输入自己的路线。
+- 和点地导航互相打断：方向输入会打断正在走的路线（含点地路线，按改道处理），`navigate` 同样打断方向输入。方向输入的路线不能用 10 秒的续租撑长（`renew` 对它回 `ok: false`）。
+- 序号与控制版本：`epoch` 不等于当前 `controlEpoch`、或这个客户端不是控制方 → `control_lost`，不动路线。序号按（连接序号，`seq`）比较：同一条连接里必须严格递增，旧的、重复的、乱序的丢弃（`stale`）；重连后的新连接序号更大，它的输入盖过旧连接迟到的输入，所以客户端不必在重连时恢复序号。换了控制者（接管）后重新开始。
+- 频率：每位居民令牌桶，突发 `dirBurst`（10）、每秒补 `dirPerSecond`（10）；超出的丢弃（`rate_limited`）。零向量在有方向路线时不受限（它只会结束一条路线）。另外每条连接每秒最多 30 条消息的上限照旧。
+- 门禁：方向输入只在当前场景里直走，没有进出口——走到会馆门口不会进私宅，在家里怎么按也出不了门；进出私宅仍然只走 `navigate`（门口权限在那里查）。正在一局小游戏里 → `precondition_failed` / `in_activity`。需要坐着做的事（读书、喝茶）迈步走开就算退出，和 `navigate` 一样。
+- 隐私：方向输入不产生任何公开或私有事件（路线到期、松手都不发 `nav_stopped`，也没有 `you_arrived`）；走路时的区域变化照旧在同一场景的人那里是 `left` / `arrived`。快照里 `nav` 的内容和点地路线一样，只给同一场景实例里的人。
+- 压测：设计稿要求方向输入单独压测后启用，数字见 `docs/PROGRESS.md`（`npm run world:load -- --keys N`）。
 
 **区域**。地图把可走范围划成区域：六个公共地点、`road`（灯笼路，只是路过的地方）、`residential`（灯巷会馆：进出所有私宅的唯一公共接入点）。`residents.location_id` 是区域标签，只在跨区域那一刻由空间模块改写，同一事务里触发各模块的离开 / 到达处理（撤销没完成的交换、退出报名、记录登门）并通知两边在场的人。**走在路上的人属于脚下的区域**：能说话、能被听见、能做事。别的模块按区域判断「在不在一起」。走路的人自己跨区域时不收事件（模型不该为每一步路被叫醒）：续租的回答和场景快照里都带着此刻的 `space`，客户端看到它变了就重读现场。
 
@@ -284,7 +296,7 @@ packages/engine/town/             旧的网页前端（静态文件；会被 God
 | type | data | 什么时候 |
 |---|---|---|
 | `you_arrived` | `{space, name, target}` | 我这一趟走到了 |
-| `nav_stopped` | `{reason, target, space}` | 我这一趟没走完就停了。`reason`：`lease`（没人续租）、`control`（控制权换手）、`blocked`（到门口进不去 / 接下来的路走不通）、`activity`（进了一局小游戏）、`eject`（被请出门） |
+| `nav_stopped` | `{reason, target, space}` | 我这一趟没走完就停了（键盘方向输入的松手、到期不发）。`reason`：`lease`（没人续租）、`control`（控制权换手）、`blocked`（到门口进不去 / 接下来的路走不通）、`activity`（进了一局小游戏）、`eject`（被请出门） |
 | `arrived` / `left` | `{resident, space}` | 有人走进 / 走出我所在的区域。没有坐标，也不说从哪来、到哪去 |
 | `presence` | `{resident, present, space}` | 身边的人上线 / 离线 |
 | `chat` | `{space, from, text, messageId}` | 现场发言。`messageId` 是每位居民自己听到的发言的连续序号（同一条发言在不同人那里编号不同），只用来去重和翻 `/history` |
@@ -309,7 +321,7 @@ packages/engine/town/             旧的网页前端（静态文件；会被 God
 
 ### 空间同步（WebSocket）
 
-`/town/ws` 负责两件事：把场景快照推给同一场景里的人，以及作为耐久事件的另一条通道（和 SSE 同一套投影）。**耐久动作一律走 HTTP**（`POST /actions`），WebSocket 上只有续租和探活。旧客户端可以继续只用 SSE + `GET /scene` 轮询。
+`/town/ws` 负责两件事：把场景快照推给同一场景里的人，以及作为耐久事件的另一条通道（和 SSE 同一套投影）。**耐久动作一律走 HTTP**（`POST /actions`），WebSocket 上只有续租、键盘方向输入和探活。旧客户端可以继续只用 SSE + `GET /scene` 轮询。
 
 连接：先 `POST /ws-ticket` 取票据（一次性、30 秒、绑定取票时的那次登录和 `clientId`），再连 `/town/ws`。连接跟着那次登录走：登出只关这一次登录开的连接（同一个人在别的设备上的不受影响）；登录过期或被撤销后，连接在下一次探活或续租时被关掉（4403）。握手时检查 `Origin`；连接本身不认 Cookie，第一条消息必须在 5 秒内带票据说 hello。消息都是 JSON 文本帧，`t` 是类型。
 
@@ -318,16 +330,17 @@ packages/engine/town/             旧的网页前端（静态文件；会被 God
 | 客户端 → | `{t:"hello", v:1, ticket, cursor?}` | 带了 `cursor` 就从那里续传耐久事件 |
 | 客户端 → | `{t:"ping", n}` | 探活、对时 |
 | 客户端 → | `{t:"renew", navigationId, revision}` | 续导航控制租约 |
-| → 客户端 | `{t:"hello", v:1, serverTime, resident, map:{mapVersion, checksum}, renewEveryMs, cursor}` | |
+| 客户端 → | `{t:"dir", seq, epoch, x, z}` | 键盘方向输入，见「空间与导航」的「键盘方向输入」。成功没有回答 |
+| → 客户端 | `{t:"hello", v:1, serverTime, resident, map:{mapVersion, checksum}, renewEveryMs, dirLeaseMs, cursor}` | |
 | → 客户端 | `{t:"scene", …SceneView}` | 完整快照：`scene`、`space`、`serverTime`、`self`、`actors[]`（`id, name, kind, x, z, heading, busy?, nav?`）。`nav: {id, revision, points, speed, startedAt, until}`：客户端按这条折线和服务器时间插值，走到 `until` 为止。所在场景里快照的内容变了就重发：有人起步、改道、停下、进出场景，有人上线、离线（包括在场租约到期）、改名、进出一局小游戏，或者自己换了场景。同一条连接每秒最多 10 次 |
 | → 客户端 | `{t:"events", events, cursor}` / `{t:"resync", cursor}` | 耐久私有事件，同 SSE 的 `private` |
-| → 客户端 | `{t:"pong", n, serverTime}` / `{t:"renewed", ok, leaseUntil?, navigation, space}` / `{t:"error", code, message}` | |
+| → 客户端 | `{t:"pong", n, serverTime}` / `{t:"renewed", ok, leaseUntil?, navigation, space}` / `{t:"dir_dropped", seq, reason}` / `{t:"error", code, reason?, message}` | |
 
 没带 `cursor` 就从当前水位开始，不回放历史；游标无效或已被裁剪时收到 `resync`。坏消息（不是 JSON、不认识的类型、重复 hello）只回 `error`，不断开。
 
 握着控制权的客户端**正常关闭**连接（关闭码 1000 / 1001，比如关页面）会让正在走的居民立即停步；异常断开不会，由导航租约到期兜底（最多 10 秒），手机网络抖一下不至于立刻停。同一个客户端（同一登录身份、同一个 `clientId`）还有别的连接在时不算关闭（比如先连上新的再关旧的），服务器主动关掉的连接也不算。WebSocket 不代替在场心跳。
 
-限制和关闭码：单帧最多 4 KiB（超了 1009），只收文本帧（二进制 1003），每条连接每秒最多 30 条消息（超了 1008）。续租按居民限速（所有连接合计，突发 6 次、之后每秒 2 次；正常每 3 秒一次远远够用），超了回 `error` `rate_limited`，不断开、也不续。同一居民最多 4 条连接，同一 IP 和全镇总数沿用 SSE 的上限（握手时超了是 HTTP 429）。
+限制和关闭码：单帧最多 4 KiB（超了 1009），只收文本帧（二进制 1003），每条连接每秒最多 30 条消息（超了 1008）。续租按居民限速（所有连接合计，突发 6 次、之后每秒 2 次；正常每 3 秒一次远远够用），超了回 `error` `rate_limited`，不断开、也不续。方向输入另有自己的限速（见上）。同一居民最多 4 条连接，同一 IP 和全镇总数沿用 SSE 的上限（握手时超了是 HTTP 429）。
 
 | 关闭码 | 含义 |
 |---|---|

@@ -8,8 +8,11 @@
  *   {t:'hello', v:1, ticket, cursor?}          5 秒内必须发，只能发一次
  *   {t:'ping', n}                              → {t:'pong', n, serverTime}
  *   {t:'renew', navigationId, revision}        → {t:'renewed', ok, leaseUntil?, navigation}
+ *   {t:'dir', seq, epoch, x, z}                键盘方向输入（x 向东、z 向南，零向量 = 停）。成功没有回答，画面看 scene；
+ *                                              被丢弃（旧序号、太频繁）→ {t:'dir_dropped', seq, reason}；
+ *                                              没有控制权、不在场、在游戏里等 → {t:'error', code, message}。不带坐标
  * 服务器 → 客户端：
- *   {t:'hello', v:1, serverTime, resident, map:{mapVersion,checksum}, renewEveryMs, cursor}
+ *   {t:'hello', v:1, serverTime, resident, map:{mapVersion,checksum}, renewEveryMs, dirLeaseMs, cursor}
  *   {t:'scene', …SceneView}                    完整快照（合并发送，每秒最多 10 次）
  *   {t:'events', events, cursor} / {t:'resync', cursor}   耐久私有事件（与 SSE 同一套投影）
  *   {t:'error', code, message}
@@ -21,10 +24,13 @@ import type { IncomingMessage, Server as HttpServer } from 'node:http';
 import type { Duplex } from 'node:stream';
 import { WebSocket, WebSocketServer, type RawData } from 'ws';
 import { WorldError } from './errors.js';
-import { controlDisconnected, renewNavigation, sceneKeyOfResident, sceneView } from './space.js';
+import { controlDisconnected, directionInput, renewNavigation, sceneKeyOfResident, sceneView } from './space.js';
 import type { WorldService } from './service.js';
 
 export const WS_PATH = '/town/ws';
+
+/** 连接序号：重连的新连接序号更大，它的方向输入盖过旧连接迟到的输入 */
+let connectionSerial = 0;
 
 export interface TownWsOptions {
   /** 同一 IP 同时开着的 WebSocket 上限，默认 8 */
@@ -225,6 +231,7 @@ export function createTownWs(w: WorldService, log: (msg: string) => void, opts: 
     let msgCount = 0;
     /** 是服务器先关的（撤销、背压、限流……）：对端回什么关闭码都不算「客户端明确离开」 */
     let serverClosed = false;
+    const serial = ++connectionSerial;
 
     const conn: Conn = {
       ws,
@@ -403,6 +410,7 @@ export function createTownWs(w: WorldService, log: (msg: string) => void, opts: 
         resident: r.resident_id,
         map: { mapVersion: w.map.mapVersion, checksum: w.map.checksum },
         renewEveryMs: w.params.navRenewEveryMs,
+        dirLeaseMs: w.params.dirLeaseMs,
         // 坏游标不回显：随后的 resync 会给出新的
         cursor: usable ? given : w.cursorOf(r.resident_id),
       });
@@ -435,6 +443,21 @@ export function createTownWs(w: WorldService, log: (msg: string) => void, opts: 
         if (e instanceof WorldError) sendError(e.code, e.message);
         else {
           log(`[town] ws 续租出错：${e instanceof Error ? e.message : String(e)}`);
+          sendError('internal', '服务器出错了。');
+        }
+      }
+    };
+
+    const doDir = (m: Record<string, unknown>) => {
+      if (!auth || !residentId) return;
+      if (sessionGone()) return;
+      try {
+        const out = directionInput(w, auth, { seq: m.seq, epoch: m.epoch, x: m.x, z: m.z, source: serial });
+        if (!out.ok) send({ t: 'dir_dropped', seq: typeof m.seq === 'number' ? m.seq : null, reason: out.reason });
+      } catch (e) {
+        if (e instanceof WorldError) send({ t: 'error', code: e.code, ...(e.reason ? { reason: e.reason } : {}), message: e.message });
+        else {
+          log(`[town] ws 方向输入出错：${e instanceof Error ? e.message : String(e)}`);
           sendError('internal', '服务器出错了。');
         }
       }
@@ -474,6 +497,8 @@ export function createTownWs(w: WorldService, log: (msg: string) => void, opts: 
           return void send({ t: 'pong', n: typeof m.n === 'number' ? m.n : null, serverTime: w.now() });
         case 'renew':
           return doRenew(m);
+        case 'dir':
+          return doDir(m);
         default:
           return void sendError('bad_request', '不认识的消息类型（耐久动作请走 HTTP）。');
       }
