@@ -377,6 +377,22 @@ describe('提交后才唤醒', () => {
   });
 });
 
+describe('订阅者出错', () => {
+  it('订阅回调抛错不影响已提交的命令结果，也不影响其他订阅者', () => {
+    const { t, a, b } = pair();
+    const got: string[] = [];
+    t.w.onResident(b.residentId, () => {
+      throw new Error('订阅者坏了');
+    });
+    t.w.onResident(b.residentId, () => got.push('ok'));
+    const out = a.act('speak', { text: '给坏订阅者听' });
+    expect(out.ok).toBe(true);
+    expect(got).toEqual(['ok']);
+    expect(count(t.w, 'request_receipts')).toBe(1);
+    expect(t.logs.some((l) => l.includes('订阅者出错'))).toBe(true);
+  });
+});
+
 describe('调度器', () => {
   /** 把几个任务类型的处理器换成记录器。 */
   function recorder(t: Town, kinds: string[], fail?: (tag: string, n: number) => boolean) {

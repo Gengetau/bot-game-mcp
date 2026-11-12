@@ -398,8 +398,10 @@ export function installProperty(w: WorldService): void {
   });
 
   // ── 用掉一件消耗品 ──
+  // 物品种类的字段叫 itemType：action.type 已经是动作类型本身（type: 'use_item'），不能再拿来放物品种类
+  const itemTypeOf = (action: Record<string, unknown>): string => String(action.itemType ?? action.item ?? '');
   w.handlers.set('use_item', ({ r, action, now }) => {
-    const def = mustItemDef(String(action.type ?? ''));
+    const def = mustItemDef(itemTypeOf(action));
     if (!def.consume) throw precondition(`${def.name}不是拿来直接用的。${def.use}`, 'not_usable');
     takeStack(w, r.resident_id, def.type, 1);
     const needs = applyNeeds(w, r, { energy: def.consume.energy ?? 0 }, now);
@@ -417,7 +419,7 @@ export function installProperty(w: WorldService): void {
       w.db.run('UPDATE items SET shelved = ? WHERE item_id = ?', on ? 1 : 0, it.item_id);
       return { status: 'completed', text: `${on ? '摆出了' : '收起了'}${itemLabel(it)}。` };
     }
-    const def = mustItemDef(String(action.type ?? ''));
+    const def = mustItemDef(itemTypeOf(action));
     if (def.category !== 'decor') throw precondition(`${def.name}不是摆设。`, 'not_decor');
     const qty = Number(action.qty ?? 1);
     if (!Number.isInteger(qty) || qty < 1 || qty > 20) throw badRequest('数量无效。');
@@ -524,8 +526,10 @@ export function installProperty(w: WorldService): void {
       for (const it of want.items) {
         if (availableQty(w, r.resident_id, it.type) < it.qty) throw precondition(`你的${itemDef(it.type)?.name ?? it.type}不够换这份。`, 'insufficient_items');
       }
-      moveBundle(w, give, from.resident_id, r.resident_id, `offer:${row.offer_id}:give`, row.kind);
+      // 先转"想要"的一边：它按种类自动挑接受方手里最早得到的几件，如果先把对方给的东西转进来，
+      // 刚到手的东西也会被挑中又转回去，互换书之类的交易就等于什么都没发生
       moveBundle(w, want, r.resident_id, from.resident_id, `offer:${row.offer_id}:want`, row.kind);
+      moveBundle(w, give, from.resident_id, r.resident_id, `offer:${row.offer_id}:give`, row.kind);
       const types = (b: Bundle) => [...new Set(b.items.map((i) => i.type))];
       w.fact(row.kind === 'gift' ? 'gift_accepted' : 'trade_completed', parties, { give: describeBundle(give), want: describeBundle(want), giveTypes: types(give), coins: give.coins });
       for (const t of types(give)) w.fact('item_acquired', [{ id: r.resident_id, role: 'self' }], { itemType: t, via: row.kind });

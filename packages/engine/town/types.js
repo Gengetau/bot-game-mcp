@@ -45,6 +45,6 @@ export {};
 /** @typedef {{ id: string, name: string, familiarity: number, closeness: number, level: string, memories: { text: string, at: number }[] }} Relation */
 /** @typedef {{ scope: string, date: string, lines: string[], final: boolean }} Report */
 /** @typedef {{ messageId: number, space: string, spaceName: string, from: Card, text: string, at: number }} HistoryMsg */
-/** @typedef {{ messageId: number, space: string, spaceName: string, from: Card, text: string, at: number }} ChatLine */
+/** @typedef {{ messageId: number, space: string, spaceName: string, from: Card, text: string, at: number, sys?: boolean }} ChatLine */
 
 /** @typedef {{ ok: boolean, error?: string, reason?: string, message?: string, retryAfterMs?: number, status?: string, replayed?: boolean, text?: string, [k: string]: unknown }} ActResult */

@@ -210,37 +210,47 @@ export class WorldService {
     this.emitter.setMaxListeners(0);
     this.db = new TownDb(opts.dbPath);
     const now = this.now();
-    this.secret = this.db.tx(() => {
-      const w = this.db.get('SELECT * FROM worlds WHERE world_id = ?', this.worldId);
-      if (!w) {
-        this.db.run(
-          'INSERT INTO worlds(world_id, timezone, status, schema_version, content_version, created_at, last_alive_at) VALUES (?,?,?,?,?,?,?)',
-          this.worldId,
-          this.params.timezone,
-          'open',
-          this.db.userVersion(),
-          CONTENT_VERSION,
-          now,
-          now,
-        );
-        for (const [id, kind] of [
-          ['sys:mint', 'system'],
-          ['sys:sink', 'system'],
-        ] as const) {
-          this.db.run('INSERT OR IGNORE INTO accounts(account_id, world_id, resident_id, kind, balance) VALUES (?,?,NULL,?,0)', id, this.worldId, kind);
+    try {
+      this.secret = this.db.tx(() => {
+        const w = this.db.get('SELECT * FROM worlds WHERE world_id = ?', this.worldId);
+        if (!w) {
+          this.db.run(
+            'INSERT INTO worlds(world_id, timezone, status, schema_version, content_version, created_at, last_alive_at) VALUES (?,?,?,?,?,?,?)',
+            this.worldId,
+            this.params.timezone,
+            'open',
+            this.db.userVersion(),
+            CONTENT_VERSION,
+            now,
+            now,
+          );
+          for (const [id, kind] of [
+            ['sys:mint', 'system'],
+            ['sys:sink', 'system'],
+          ] as const) {
+            this.db.run('INSERT OR IGNORE INTO accounts(account_id, world_id, resident_id, kind, balance) VALUES (?,?,NULL,?,0)', id, this.worldId, kind);
+          }
+        } else if (w.timezone !== this.params.timezone) {
+          throw new Error(
+            `世界 ${this.worldId} 开服时的时区是 ${w.timezone}，配置里现在是 ${this.params.timezone}。已有每日任务后改时区需要迁移计划，拒绝启动。`,
+          );
         }
-      } else if (w.timezone !== this.params.timezone) {
-        throw new Error(
-          `世界 ${this.worldId} 开服时的时区是 ${w.timezone}，配置里现在是 ${this.params.timezone}。已有每日任务后改时区需要迁移计划，拒绝启动。`,
-        );
+        let secret = this.db.getMeta('stream_secret');
+        if (!secret) {
+          secret = randomBytes(32).toString('hex');
+          this.db.setMeta('stream_secret', secret);
+        }
+        return Buffer.from(secret, 'hex');
+      });
+    } catch (e) {
+      // 拒绝启动时不要把数据库文件句柄留在进程里
+      try {
+        this.db.close();
+      } catch {
+        /* ignore */
       }
-      let secret = this.db.getMeta('stream_secret');
-      if (!secret) {
-        secret = randomBytes(32).toString('hex');
-        this.db.setMeta('stream_secret', secret);
-      }
-      return Buffer.from(secret, 'hex');
-    });
+      throw e;
+    }
   }
 
   // ═══════════════════════════ 基础工具 ═══════════════════════════
@@ -488,8 +498,19 @@ export class WorldService {
     const pub = this.pendingPublic;
     this.pendingBumps = new Set();
     this.pendingPublic = false;
-    for (const id of ids) this.emitter.emit(`r:${id}`);
-    if (pub) this.emitter.emit('public');
+    // 订阅者出错不能影响已经提交的结果（否则调用方会把成功的事务当成失败重试）
+    const safeEmit = (name: string) => {
+      // 逐个调用：一个订阅者抛错不影响其他订阅者
+      for (const fn of this.emitter.listeners(name)) {
+        try {
+          fn();
+        } catch (e) {
+          this.log(`[town] 事件订阅者出错（已忽略）：${e instanceof Error ? e.message : String(e)}`);
+        }
+      }
+    };
+    for (const id of ids) safeEmit(`r:${id}`);
+    if (pub) safeEmit('public');
   }
 
   private dropBumps(): void {
@@ -523,18 +544,21 @@ export class WorldService {
    * 心跳和等待超时本身不产生事件。
    */
   async waitResident(residentId: string, cursor: string | undefined, contextVersion: number | undefined, maxMs: number, signal?: AbortSignal): Promise<'event' | 'context' | 'timeout'> {
+    // 没带游标 = 从调用这一刻的位置开始等（和事件流「无游标从当前位置开始」一致）
+    const baseline = cursor ? null : this.streamHead(`r:${residentId}`).highWater;
     const check = (): 'event' | 'context' | null => {
       const r = this.resident(residentId);
       if (!r) return 'context';
       if (contextVersion !== undefined && r.context_version !== contextVersion) return 'context';
-      const after = this.decodeCursor('r', residentId, cursor);
       const head = this.streamHead(`r:${residentId}`);
-      if (cursor && (after === null || after < head.highWater)) return 'event';
+      if (baseline !== null) return head.highWater > baseline ? 'event' : null;
+      const after = this.decodeCursor('r', residentId, cursor);
+      if (after === null || after < head.highWater) return 'event';
       return null;
     };
     const first = check();
     if (first) return first;
-    if (maxMs <= 0) return 'timeout';
+    if (maxMs <= 0 || signal?.aborted) return 'timeout';
     return new Promise((resolve) => {
       let done = false;
       const finish = (why: 'event' | 'context' | 'timeout') => {
@@ -771,12 +795,15 @@ export class WorldService {
         done++;
       } catch (e) {
         skipped.add(job.job_id);
+        // 数据库写不进去（磁盘满、只读）不是任务自己的错：不计重试、不搁置，等恢复可写后按现实时间追赶
+        if (this.status === 'degraded') break;
         const msg = e instanceof Error ? e.message : String(e);
         const attempts = job.attempts + 1;
         try {
           this.db.tx(() => {
+            // 只改还在待办里的任务：事务其实已经提交（任务是 done）时，不能把它改回待办再执行一次
             this.db.run(
-              'UPDATE scheduled_jobs SET attempts = ?, last_error = ?, status = ? WHERE job_id = ?',
+              "UPDATE scheduled_jobs SET attempts = ?, last_error = ?, status = ? WHERE job_id = ? AND status = 'pending'",
               attempts,
               msg.slice(0, 300),
               attempts >= MAX_JOB_ATTEMPTS ? 'failed' : 'pending',

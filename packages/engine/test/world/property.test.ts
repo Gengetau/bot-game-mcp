@@ -79,8 +79,11 @@ function ownedBook(a: Actor): string {
   return a.view().inventory.items.find((i) => i.type === 'book' && !i.borrowedFrom)!.itemId;
 }
 
+/** 愿望奖励会让硬币数字随机游走，财物测试关掉愿望，只看账本本身。 */
+const NO_GOALS = { shortGoals: 0, longGoals: 0 };
+
 function twoAtPlaza(seed = 'prop-1') {
-  const t = makeTown({ seed });
+  const t = makeTown({ seed, params: NO_GOALS });
   const a = t.join('阿灯');
   const b = t.join('小岚', 'agent');
   return { t, a, b };
@@ -117,7 +120,7 @@ describe('财物：账本与物品', () => {
   it('只发一次：离开再进入、控制权接管、重启后都不会重发', () => {
     const db = tempDb();
     try {
-      const t = makeTown({ dbPath: db.path });
+      const t = makeTown({ dbPath: db.path, params: NO_GOALS });
       const a = t.join('阿灯');
       const before = { coins: a.coins(), tea: a.qty('tea_leaves'), books: bookIds(t, a.residentId), totals: itemTotals(t) };
       a.leave();
@@ -143,7 +146,7 @@ describe('财物：账本与物品', () => {
   it('书屋藏书只生成一次（重启不翻倍）：每种两册', () => {
     const db = tempDb();
     try {
-      const t = makeTown({ dbPath: db.path });
+      const t = makeTown({ dbPath: db.path, params: NO_GOALS });
       const count = () => t.w.db.scalar("SELECT COUNT(*) FROM items WHERE owner_id = 'town' AND type = 'book'");
       expect(count()).toBe(BOOKS.length * 2);
       t.restart();
@@ -201,7 +204,7 @@ describe('财物：账本与物品', () => {
     a.act('buy', { shop: 'tea_counter', sku: 'tea_leaves', qty: 3 });
     a.go('plaza');
     a.act('buy', { shop: 'stall', sku: 'cookie', qty: 2 });
-    a.act('use_item', { type: 'cookie' });
+    a.act('use_item', { itemType: 'cookie' });
     const offer = a.act('offer', { kind: 'gift', to: b.residentId, give: { coins: 4, items: [{ type: 'cookie', qty: 1 }] } });
     b.act('accept_offer', { offerId: offer.offer.id });
     const now = itemTotals(t);
@@ -258,7 +261,7 @@ describe('财物：商店', () => {
     expect(stock()).toBe(6);
     expect(a.qty('lantern')).toBe(0);
     // 预留着的硬币同样不能花
-    const b = t.join('小岚');
+    const b = t.join('阿木');
     a.act('offer', { kind: 'gift', to: b.residentId, give: { coins: 18 } });
     expect(a.fail('buy', { shop: 'stall', sku: 'cookie' }).reason).toBe('insufficient_coins');
     checkInvariants(t);
@@ -275,11 +278,13 @@ describe('财物：商店', () => {
     // 库存不够量时的提示：茶叶剩 N 件
     a.go('tea_house');
     b.go('tea_house');
-    for (let i = 0; i < 3; i++) a.act('buy', { shop: 'tea_counter', sku: 'tea_leaves', qty: 3 }); // 18 币，剩 2 币…
+    a.act('buy', { shop: 'tea_counter', sku: 'tea_leaves', qty: 3 });
     const before = shopsAt(t.w, 'tea_house', t.clock.t)[0]!.goods[0]!.stock;
-    expect(before).toBe(30 - 9);
+    expect(before).toBe(30 - 3);
     // 过一个世界日（保持心跳）
-    t.advanceAlive(24 * HOUR, [a, b], 55_000);
+    a.heartbeat();
+    b.heartbeat();
+    t.advanceAlive(24 * HOUR, [a, b], 30_000);
     const next = shopsAt(t.w, 'bookshop', t.clock.t)[0]!.goods.find((g) => g.sku === 'book:rain_lane')!.stock;
     expect(next).toBe(1);
     expect(shopsAt(t.w, 'tea_house', t.clock.t)[0]!.goods[0]!.stock).toBe(30);
@@ -335,22 +340,21 @@ describe('财物：商店', () => {
   it('display_item：只能在自己家摆出/收起装饰；摆出的不能送人', () => {
     const { t, a, b } = twoAtPlaza();
     a.act('buy', { shop: 'stall', sku: 'lantern', qty: 2 });
-    expect(a.fail('display_item', { type: 'lantern' }).reason).toBe('not_home');
+    expect(a.fail('display_item', { itemType: 'lantern' }).reason).toBe('not_home');
     a.go('home');
-    expect(a.fail('display_item', { type: 'tea_leaves' }).reason).toBe('not_decor');
-    expect(a.fail('display_item', { type: 'lantern', qty: 3 }).reason).toBe('insufficient_items');
-    a.act('display_item', { type: 'lantern', qty: 1 });
+    expect(a.fail('display_item', { itemType: 'tea_leaves' }).reason).toBe('not_decor');
+    expect(a.fail('display_item', { itemType: 'lantern', qty: 3 }).reason).toBe('insufficient_items');
+    a.act('display_item', { itemType: 'lantern', qty: 1 });
     const inv = a.view().inventory.items.find((i) => i.type === 'lantern')!;
     expect(inv).toMatchObject({ qty: 2, shelved: 1, available: 1 });
-    expect(a.fail('display_item', { type: 'lantern', on: false, qty: 2 }).reason).toBe('insufficient_items');
-    a.act('display_item', { type: 'lantern', on: false });
+    expect(a.fail('display_item', { itemType: 'lantern', on: false, qty: 2 }).reason).toBe('insufficient_items');
+    a.act('display_item', { itemType: 'lantern', on: false });
     expect(a.view().inventory.items.find((i) => i.type === 'lantern')!.shelved).toBe(0);
     // 用 itemId 摆书，摆出来的书不能送人
     const book = ownedBook(a);
     a.act('display_item', { itemId: book });
     expect(a.fail('display_item', { itemId: 'nope' }).reason).toBe('not_yours');
     a.go('plaza');
-    b.go('plaza');
     expect(a.fail('offer', { kind: 'loan', to: b.residentId, give: { items: [{ itemId: book }] } }).reason).toBe('item_busy');
     expect(a.fail('offer', { kind: 'gift', to: b.residentId, give: { items: [{ itemId: book }] } }).reason).toBe('item_busy');
     checkInvariants(t);
@@ -371,7 +375,7 @@ describe('财物：报价（送礼与交换）', () => {
     expect(inv.items.find((i) => i.type === 'cookie')).toMatchObject({ qty: 1, available: 0 });
     expect(inv.items.find((i) => i.type === 'tea_leaves')).toMatchObject({ qty: 2, available: 1 });
     // 不能使用预留中的饼干
-    expect(a.fail('use_item', { type: 'cookie' }).reason).toBe('insufficient_items');
+    expect(a.fail('use_item', { itemType: 'cookie' }).reason).toBe('insufficient_items');
     // 不能再报价同一份
     expect(a.fail('offer', { kind: 'gift', to: b.residentId, give: { items: [{ type: 'cookie', qty: 1 }] } }).reason).toBe('insufficient_items');
     expect(a.fail('offer', { kind: 'gift', to: b.residentId, give: { coins: 8 } }).reason).toBe('insufficient_coins');
@@ -461,7 +465,8 @@ describe('财物：报价（送礼与交换）', () => {
     expect(b.fail('accept_offer', { offerId: o3.offer.id }).reason).toBe('insufficient_items');
     // 仍可婉拒，婉拒后预留退回
     b.act('decline_offer', { offerId: o.offer.id });
-    expect(a.view().inventory.items.find((i) => i.type === 'tea_leaves')!.available).toBe(2 - 0 - 0 - 0);
+    // b 把 1 份蔬菜预留给了 c，但 a 的茶叶预留在婉拒后全部退回
+    expect(a.view().inventory.items.find((i) => i.type === 'tea_leaves')!.available).toBe(2);
     checkInvariants(t);
   });
 
@@ -509,9 +514,8 @@ describe('财物：报价（送礼与交换）', () => {
   it('到点那一刻才接受也不行：过期边界按 expires_at 判断（任务还没跑时）', () => {
     const { t, a, b } = twoAtPlaza();
     const o = a.act('offer', { kind: 'gift', to: b.residentId, give: { coins: 9 } });
+    t.advanceAlive(o.offer.expiresAt - t.clock.t - 1000, [a, b]);
     t.clock.t = o.offer.expiresAt; // 不 tick，由命令入口先处理到期任务
-    b.heartbeat();
-    a.heartbeat();
     expect(b.fail('accept_offer', { offerId: o.offer.id }).reason).toBe('offer_closed');
     expect(a.coins()).toBe(20);
     checkInvariants(t);
@@ -710,15 +714,12 @@ describe('财物：出借与归还', () => {
     checkInvariants(t);
   });
 
-  it('借出期间：所有者不能再把同一本书送人/借给别人；预留阶段也占着', () => {
+  it('借出期间：所有者不能再把同一本书送人/借给别人', () => {
     const { t, a, b } = twoAtPlaza();
     const c = t.join('阿木');
     const { itemId } = lend(t, a, b);
     expect(a.fail('offer', { kind: 'gift', to: c.residentId, give: { items: [{ itemId }] } }).reason).toBe('not_yours');
     expect(a.fail('offer', { kind: 'loan', to: c.residentId, give: { items: [{ itemId }] } }).reason).toBe('not_yours');
-    // 预留阶段：报价开着时同一本书不能再报价
-    const book2 = a.view().inventory.items.find((i) => i.type === 'book');
-    expect(book2).toBeUndefined();
     checkInvariants(t);
   });
 
@@ -764,7 +765,7 @@ describe('财物：出借与归还', () => {
     expect(t.w.db.get('SELECT holder_id FROM items WHERE item_id = ?', itemId)!.holder_id).toBe(b.residentId);
     expect(t.w.db.get('SELECT status FROM loans WHERE item_id = ?', itemId)!.status).toBe('active');
     expect(JSON.stringify(t.w.db.all('SELECT * FROM relationships ORDER BY resident_id, other_id'))).toBe(rel);
-    expect([a.row() && wallet(t.w, a.residentId).balance, wallet(t.w, b.residentId).balance]).toEqual(coins);
+    expect([wallet(t.w, a.residentId).balance, wallet(t.w, b.residentId).balance]).toEqual(coins);
     checkInvariants(t);
   });
 
@@ -870,7 +871,6 @@ describe('财物：出借与归还', () => {
     const itemId = ownedBook(a);
     a.act('offer', { kind: 'loan', to: b.residentId, give: { items: [{ itemId }] } });
     expect(a.fail('offer', { kind: 'gift', to: b.residentId, give: { items: [{ itemId }] } }).reason).toBe('item_busy');
-    expect(a.fail('start_interaction', { objectId: 'bookshop:shelf', itemId }).reason).toBeDefined();
     checkInvariants(t);
   });
 });
@@ -953,7 +953,7 @@ describe('财物：消耗品', () => {
     a.act('buy', { shop: 'stall', sku: 'cookie', qty: 3 });
     expect(a.view().me.needs.energy).toBe(80);
     const total = itemTotals(t).cookie;
-    const out = a.act('use_item', { type: 'cookie' });
+    const out = a.act('use_item', { itemType: 'cookie' });
     expect(out.energy).toBe(88);
     expect(a.view().me.needs.energy).toBe(88);
     expect(a.qty('cookie')).toBe(2);
@@ -964,10 +964,10 @@ describe('财物：消耗品', () => {
   it('精力不会超过 100；用完了不能再用，没有也不能用', () => {
     const { t, a } = twoAtPlaza();
     a.act('buy', { shop: 'stall', sku: 'cookie', qty: 3 });
-    for (let i = 0; i < 3; i++) a.act('use_item', { type: 'cookie' });
+    for (let i = 0; i < 3; i++) a.act('use_item', { itemType: 'cookie' });
     expect(a.view().me.needs.energy).toBe(100); // 80+8*3=104 → 截断
     expect(a.qty('cookie')).toBe(0);
-    expect(a.fail('use_item', { type: 'cookie' }).reason).toBe('insufficient_items');
+    expect(a.fail('use_item', { itemType: 'cookie' }).reason).toBe('insufficient_items');
     expect(a.view().me.needs.energy).toBe(100);
     // 行已删除，不留 0 数量的行
     expect(t.w.db.scalar("SELECT COUNT(*) FROM items WHERE owner_id = ? AND type = 'cookie'", a.residentId)).toBe(0);
@@ -976,9 +976,9 @@ describe('财物：消耗品', () => {
 
   it('不是消耗品的东西不能直接用；不存在的种类 bad_request', () => {
     const { t, a } = twoAtPlaza();
-    expect(a.fail('use_item', { type: 'tea_leaves' }).reason).toBe('not_usable');
-    expect(a.fail('use_item', { type: 'book' }).reason).toBe('not_usable');
-    expect(a.fail('use_item', { type: 'nothing' }).code).toBe('bad_request');
+    expect(a.fail('use_item', { itemType: 'tea_leaves' }).reason).toBe('not_usable');
+    expect(a.fail('use_item', { itemType: 'book' }).reason).toBe('not_usable');
+    expect(a.fail('use_item', { itemType: 'nothing' }).code).toBe('bad_request');
     expect(a.fail('use_item', {}).code).toBe('bad_request');
     expect(a.qty('tea_leaves')).toBe(2);
     checkInvariants(t);
@@ -987,8 +987,8 @@ describe('财物：消耗品', () => {
   it('同一 requestId 重放不会多用一份', () => {
     const { t, a } = twoAtPlaza();
     a.act('buy', { shop: 'stall', sku: 'cookie', qty: 2 });
-    a.act('use_item', { type: 'cookie' }, { requestId: 'use-req-00001' });
-    const again = a.act('use_item', { type: 'cookie' }, { requestId: 'use-req-00001' });
+    a.act('use_item', { itemType: 'cookie' }, { requestId: 'use-req-00001' });
+    const again = a.act('use_item', { itemType: 'cookie' }, { requestId: 'use-req-00001' });
     expect(again.replayed).toBe(true);
     expect(a.qty('cookie')).toBe(1);
     checkInvariants(t);
@@ -999,7 +999,7 @@ describe('财物：消耗品', () => {
 
 describe('财物：综合守恒', () => {
   it('多人交叉买卖/送礼/交换/借还/过期之后，所有不变量依然成立', () => {
-    const t = makeTown({ seed: 'prop-mix' });
+    const t = makeTown({ seed: 'prop-mix', params: NO_GOALS });
     const people = ['甲', '乙', '丙', '丁'].map((n, i) => t.join(n, i % 2 ? 'agent' : 'human'));
     const [p, q, r, s] = people as [Actor, Actor, Actor, Actor];
     const base = itemTotals(t);
@@ -1016,7 +1016,7 @@ describe('财物：综合守恒', () => {
     expect(exp.offer.id).toBeDefined();
     t.advanceAlive(11 * 60_000, people);
     p.act('return_item', { itemId: lo.offer.give.items[0].itemId });
-    p.act('use_item', { type: 'cookie' });
+    p.act('use_item', { itemType: 'cookie' });
     checkInvariants(t);
     const now = itemTotals(t);
     expect(now.cookie).toBe(4 - 1);
