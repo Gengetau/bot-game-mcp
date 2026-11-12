@@ -312,13 +312,18 @@ async function newPlayer(browser, label, ctxOpts, { wsGate = false } = {}) {
   let gate = null;
   if (wsGate) {
     // 让测试能在需要的时候把 WebSocket 断掉并拦住重连
-    gate = { block: false, silent: false, sockets: [] };
+    gate = { block: false, silent: false, sockets: [], dirFrames: [] };
     await page.routeWebSocket(/\/town\/ws/, (ws) => {
       if (gate.block) {
         ws.close();
         return;
       }
       const server = ws.connectToServer();
+      // 记下页面发给服务器的方向输入帧（核对不带坐标、序号递增）；其余原样转发
+      ws.onMessage((m) => {
+        if (typeof m === 'string' && m.includes('"t":"dir"')) gate.dirFrames.push(m);
+        server.send(m);
+      });
       // 显式转发，才能在 silent 时把服务器发来的消息吞掉（页面那头看起来就是连接还开着、但什么都收不到：半开连接）
       server.onMessage((m) => {
         if (!gate.silent) ws.send(m);
@@ -639,6 +644,147 @@ async function main() {
     const fb = await seen(B.page, A.id);
     check(dist(fin, fb) < 0.4, `B 页面里 A 离服务器位置 ${dist(fin, fb).toFixed(2)} 米`);
     note(`到达 (${fin.x.toFixed(2)}, ${fin.z.toFixed(2)})，离新目标 ${dist(fin, goal).toFixed(2)} 米`);
+  });
+
+  // ── 4.5 ──
+  await step(4.5, 'A 用键盘走路（WASD / 方向键）：按住就走、松开约 0.5 秒内停下；Esc、窗口失焦都会停；点地能打断；页面只发方向、序号、控制版本，不发坐标', async () => {
+    await until(async () => !selfActor(await serverScene(A))?.nav, 20_000, 'A 空闲');
+    await sleep(600);
+    const T_STOP = 1000; // 松开到服务器里停下：服务器端租约 500 毫秒，加上帧间隔和往返
+    const navNow = async () => selfActor(await serverScene(A))?.nav ?? null;
+    const stoppedWithin = async (ms, what) => {
+      const t0 = Date.now();
+      await until(async () => !(await navNow()), ms, what, 40);
+      return Date.now() - t0;
+    };
+    A.gate.dirFrames.length = 0;
+    const p0 = selfActor(await serverScene(A));
+
+    // 1. 按住 D（向东）：服务器里是一段短路线，租约约 500 毫秒；B 页面看到的位置与服务器折线一致
+    await A.page.keyboard.down('d');
+    const n1 = await until(navNow, 8000, '按下 D 后服务器里 A 在走');
+    check(n1.until - n1.startedAt <= 600, `方向输入的路线租约应约 500 毫秒，实际 ${n1.until - n1.startedAt} 毫秒`);
+    check(normPts(n1.points).length === 2 && normPts(n1.points)[1].x > normPts(n1.points)[0].x, '按 D 应是朝东的一段直线');
+    const errs = [];
+    for (let i = 0; i < 8; i++) {
+      const [sb, sc] = await Promise.all([snap(B.page), serverScene(A)]);
+      const na = selfActor(sc);
+      const ab = sb.actors.find((a) => a.id === A.id);
+      if (na?.nav && ab) errs.push(dist(ab, polyAt(na.nav, sb.serverNow)));
+      await sleep(250);
+    }
+    const p1 = selfActor(await serverScene(A));
+    check(await navNow(), '按住 D 2 秒后仍应在走（页面在定时重发）');
+    note(`按住 D 约 2.2 秒：服务器里 x 从 ${p0.x.toFixed(2)} 到 ${p1.x.toFixed(2)}（向东 ${(p1.x - p0.x).toFixed(2)} 米，z 变化 ${Math.abs(p1.z - p0.z).toFixed(3)}），B 页面与折线现算位置相差最大 ${Math.max(0, ...errs).toFixed(2)} 米（${errs.length} 个采样）`);
+    check(p1.x - p0.x > 2.0 && Math.abs(p1.z - p0.z) < 0.05, '应一直朝东走');
+    // 方向输入的路线每段只有约 500 毫秒租约：慢的观察者（软件渲染 3~8 帧）在下一份快照到达前会停在上一段的截止点，最多差一个租约长（1.2 米）
+    const T_POS_DIR = T_POS + (n1.speed * (n1.until - n1.startedAt)) / 1000;
+    check(errs.length >= 3 && Math.max(...errs) < T_POS_DIR, `B 页面与服务器折线相差过大（容差 ${T_POS_DIR.toFixed(2)} 米）：${errs.map((e) => e.toFixed(2)).join(' ')}`);
+    await shot(A.page, '15-desktop-keyboard-walk');
+
+    // 2. 松开：服务器里很快停下，之后位置不再变
+    await A.page.keyboard.up('d');
+    const tStop = await stoppedWithin(T_STOP + 2000, '松开 D 后服务器里 A 停下');
+    // 慢机器上松手前最后一条重发可能在「第一次看到没在走」之后才到，随即被零向量盖掉：多等一会儿再取停下的位置
+    await sleep(400);
+    const stopAt = selfActor(await serverScene(A));
+    const trace = [];
+    for (let i = 0; i < 9; i++) {
+      await sleep(100);
+      const t = selfActor(await serverScene(A));
+      trace.push(`${t.x.toFixed(3)}${t.nav ? '*' : ''}`);
+    }
+    const later = selfActor(await serverScene(A));
+    note(`松开 D 到服务器里停下：${tStop} 毫秒（含轮询）；停下后 0.9 秒位置变化 ${dist(stopAt, later).toFixed(3)} 米`);
+    check(tStop <= T_STOP + 600, `松开后 ${tStop} 毫秒才停`);
+    check(dist(stopAt, later) < 0.001, `停下后位置不应再变：停下时 x=${stopAt.x.toFixed(3)}，之后 ${trace.join(' ')}；最后几条帧 ${A.gate.dirFrames.slice(-3).join(' ')}`);
+    const fa = await seen(A.page, A.id);
+    check(dist(fa, later) < 0.4, `A 页面里的自己离服务器位置 ${dist(fa, later).toFixed(2)} 米`);
+    await until(async () => (await seen(B.page, A.id))?.moving === false, 8000, 'B 页面里 A 停住');
+    await sleep(1500);
+    const fb = await seen(B.page, A.id);
+    check(dist(fb, later) < 0.4, `停下后 B 页面里的 A 离服务器位置 ${dist(fb, later).toFixed(2)} 米`);
+
+    // 3. 方向键 + 斜向：向上和向左同时按 = 朝西北
+    const q0 = selfActor(await serverScene(A));
+    await A.page.keyboard.down('ArrowUp');
+    await A.page.keyboard.down('ArrowLeft');
+    const n3 = await until(navNow, 8000, '按下 ↑← 后服务器里 A 在走');
+    const pts3 = normPts(n3.points);
+    const dx3 = pts3[1].x - pts3[0].x;
+    const dz3 = pts3[1].z - pts3[0].z;
+    check(dx3 < 0 && dz3 < 0 && Math.abs(Math.abs(dx3) - Math.abs(dz3)) < 0.02, `↑← 应是朝西北的 45 度斜线，实际 (${dx3.toFixed(2)}, ${dz3.toFixed(2)})`);
+    await sleep(800);
+    await A.page.keyboard.up('ArrowUp');
+    await A.page.keyboard.up('ArrowLeft');
+    await stoppedWithin(T_STOP + 2000, '松开方向键后停下');
+    const q1 = selfActor(await serverScene(A));
+    note(`↑← 斜向走了 ${dist(q0, q1).toFixed(2)} 米（西北）`);
+    check(q1.x < q0.x && q1.z < q0.z, '应走到西北方向');
+
+    // 4. Esc 停步：键还按着也不会再走，松开键之后才能再次起步
+    await A.page.keyboard.down('d');
+    await until(navNow, 8000, '再次按下 D 后在走');
+    await sleep(500);
+    await A.page.keyboard.press('Escape');
+    const tEsc = await stoppedWithin(T_STOP + 2000, 'Esc 后服务器里 A 停下');
+    await sleep(400); // 同上：等最后一条在路上的重发落地
+    const e0 = selfActor(await serverScene(A));
+    await sleep(900);
+    const e1 = selfActor(await serverScene(A));
+    note(`Esc 到停下 ${tEsc} 毫秒；键仍按着时 0.9 秒后位置变化 ${dist(e0, e1).toFixed(3)} 米（应为 0）`);
+    check(dist(e0, e1) < 0.001 && !(await navNow()), 'Esc 之后键还按着，不应继续走');
+    await A.page.keyboard.up('d');
+
+    // 5. 窗口失焦：当作全部松开
+    await A.page.keyboard.down('d');
+    await until(navNow, 8000, '第三次按下 D 后在走');
+    await sleep(400);
+    await A.page.evaluate(() => window.dispatchEvent(new Event('blur')));
+    const tBlur = await stoppedWithin(T_STOP + 2000, '窗口失焦后服务器里 A 停下');
+    note(`窗口失焦到停下 ${tBlur} 毫秒`);
+    await A.page.keyboard.up('d');
+
+    // 6. 方向输入走路时点地：点地路线接手（按着键也不会被方向输入盖掉），走的是长路线
+    // 先回到开阔处（前面几段一路向东，已经贴近东边界，那里去西边的路要先绕一下）
+    await walkTo(A, p0.x, p0.z);
+    await A.page.keyboard.down('d');
+    await until(navNow, 8000, '第四次按下 D 后在走');
+    await sleep(300);
+    const c0 = selfActor(await serverScene(A));
+    const fr0 = A.gate.dirFrames.length;
+    const clicked = await clickWorld(A, c0.x - 12, c0.z + 4);
+    const longNav = await until(async () => {
+      const nv = await navNow();
+      return nv && nv.until - nv.startedAt > 3000 ? nv : null;
+    }, 8000, '点地后换成长路线（租约 10 秒）');
+    await sleep(1500);
+    const c1 = selfActor(await serverScene(A));
+    note(`按着 D 时点地向西：点击世界点 (${clicked.x.toFixed(1)}, ${clicked.z.toFixed(1)})，1.5 秒后 x ${c0.x.toFixed(1)} → ${c1.x.toFixed(1)}，导航租约 ${(longNav.until - longNav.startedAt) / 1000} 秒`);
+    // 去目标的路可能先绕一下（东边靠近边界处），所以不比方向，只比：这条长路线还在、终点是点的地方、人在沿它走
+    const lp = normPts(longNav.points);
+    const lastP = lp[lp.length - 1];
+    const stillLong = await navNow();
+    check(dist(lastP, clicked) < 3 && dist(c0, c1) > 1.0 && (!stillLong || stillLong.id === longNav.id), `点地之后应沿点地路线走，不能被还按着的 D 盖回去：终点 (${lastP.x.toFixed(1)}, ${lastP.z.toFixed(1)})，走了 ${dist(c0, c1).toFixed(2)} 米，折线 ${JSON.stringify(lp)}，起点 (${c0.x.toFixed(1)}, ${c0.z.toFixed(1)}) 现在 (${c1.x.toFixed(1)}, ${c1.z.toFixed(1)})`);
+    await A.page.keyboard.up('d');
+    await sleep(500);
+    check(await navNow(), `松开 D 不应取消点地路线；点地后页面又发了方向帧：${A.gate.dirFrames.slice(fr0).join(' ')}；动作 ${JSON.stringify(A.w.actions.slice(-3))}`);
+    await A.page.click('#stopBtn');
+    await stoppedWithin(8000, '点「停下」后停下');
+
+    // 7. 页面发出的帧：只有方向、序号、控制版本，没有坐标；序号严格递增
+    const frames = A.gate.dirFrames.map((m) => JSON.parse(m));
+    const keysOk = frames.every((f) => Object.keys(f).sort().join() === 'epoch,seq,t,x,z' && Math.abs(f.x) <= 1 && Math.abs(f.z) <= 1 && Number.isInteger(f.seq) && Number.isInteger(f.epoch));
+    const seqOk = frames.every((f, i) => i === 0 || f.seq > frames[i - 1].seq);
+    const zeros = frames.filter((f) => f.x === 0 && f.z === 0).length;
+    note(`页面共发出 ${frames.length} 条方向输入（其中 ${zeros} 条零向量），字段只有 t/seq/epoch/x/z，序号严格递增`);
+    check(frames.length >= 10 && keysOk && seqOk, `方向输入帧不合格：${JSON.stringify(frames.slice(0, 3))}`);
+    check(zeros >= 4, `松手、Esc、失焦、点地都应发零向量，实际零向量 ${zeros} 条`);
+    // 方向输入没有产生任何失败请求或错误提示
+    const s = await snap(A.page);
+    check(!JSON.stringify(s.toasts ?? []).includes('控制权'), `不应出现控制权提示：${JSON.stringify(s.toasts)}`);
+    // 把 A 点地走回起点：后面的步骤要求喷泉在视野里
+    await walkTo(A, p0.x, p0.z);
   });
 
   // ── 5 ──
