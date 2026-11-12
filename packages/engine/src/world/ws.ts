@@ -321,7 +321,15 @@ export function createTownWs(w: WorldService, log: (msg: string) => void, opts: 
 
     /** 取票时的登录会话过期或被撤销了：连接不能比它活得更久（和 SSE 一样）。 */
     const sessionGone = (): boolean => {
-      if (!session || session.valid()) return false;
+      // 世界已经关了（数据库也关了）就不去读库：连接随后由服务关闭的流程收掉
+      if (!session || w.status !== 'running') return false;
+      let valid = true;
+      try {
+        valid = session.valid();
+      } catch (e) {
+        log(`WebSocket 会话检查出错：${e instanceof Error ? e.message : String(e)}`);
+      }
+      if (valid) return false;
       sendError('revoked', '登录已失效，请重新登录。');
       conn.closeWith(4403, '会话已失效');
       return true;

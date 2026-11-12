@@ -629,6 +629,24 @@ describe('WS：关闭、限额与保活', () => {
     expect(other.c.closed).toBeNull();
   });
 
+  it('世界先于连接关闭（数据库已关）：探活和续租不去读库，不抛未捕获的异常', async () => {
+    const app = await serve({ ws: { pingMs: 30 } });
+    const { u, c } = await connect(app, '阿灯');
+    const nav = u.actor.act('navigate', { to: 'tea_house' }).navigation;
+    const errors: unknown[] = [];
+    const onError = (e: unknown) => errors.push(e);
+    process.on('uncaughtException', onError);
+    try {
+      app.t.w.close();
+      c.send({ t: 'renew', navigationId: nav.navigationId, revision: nav.revision });
+      // 等几轮探活
+      await new Promise((r) => setTimeout(r, 150));
+    } finally {
+      process.off('uncaughtException', onError);
+    }
+    expect(errors).toEqual([]);
+  });
+
   it('取票之后、hello 之前会话就失效了：票据换不来连接', async () => {
     const app = await serve();
     const u = await new User(app).login('阿灯');
