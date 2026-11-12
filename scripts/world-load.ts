@@ -14,7 +14,7 @@
  *
  * 参数：--residents(30) --games(3) --seconds(20) --seed(1) --db <路径>（默认临时目录里的文件库，结束后删除）
  *       --keys <K>     其中 K 位真人居民改用「键盘方向输入」走路（按住 1~5 秒、每约 175 毫秒重发、松手发零向量，间隔 0.5~3 秒），
- *                      同时模拟 WebSocket 的场景扇出：同场景有变化的居民每 100 毫秒最多各生成一份 sceneView（和 ws.ts 的合并一致）
+ *                      同时模拟 WebSocket 的场景扇出：同场景有变化的居民每 DEFAULT_MIN_SCENE_MS（从 ws.ts 导入，默认 100）毫秒最多各生成一份 sceneView（和 ws.ts 的合并一致）
  *       --json <path>  --http（本脚本不实现，见输出说明）
  * 说明：这是开发容器里的测试，不代表生产服务器；单进程同步命令，所以“并发”体现为排队。
  */
@@ -50,6 +50,7 @@ import {
 } from './world-lib.js';
 import { PUBLIC_OBJECTS } from '../packages/engine/src/world/content.js';
 import { directionInput, sceneKeyOfResident } from '../packages/engine/src/world/space.js';
+import { DEFAULT_MIN_SCENE_MS } from '../packages/engine/src/world/ws.js';
 
 const { values: args } = parseArgs({
   options: {
@@ -174,8 +175,10 @@ const navM = {
   sceneActors: [] as number[],
   walkingSamples: 0,
 };
-const dirM = { n: 0, ok: 0, stale: 0, limited: 0, blocked: 0, errors: 0, stops: 0, ms: [] as number[], sessions: 0, fanBuilds: 0, fanMs: [] as number[], fanBytes: [] as number[], fanActors: [] as number[], walkedM: 0 };
+const dirM = { n: 0, ok: 0, stale: 0, limited: 0, blocked: 0, errors: 0, stops: 0, ms: [] as number[], sessions: 0, fanBuilds: 0, fanPerConnMax: 0, fanMs: [] as number[], fanBytes: [] as number[], fanActors: [] as number[], walkedM: 0 };
 const dirErr = new Map<string, number>();
+/** 每个连接收到场景份数的时间戳，用来核对每秒份数 */
+const fanTimes = new Map<string, number[]>();
 let gamesStarted = 0;
 let gamesDone = 0;
 let gamesAborted = 0;
@@ -624,7 +627,7 @@ async function main(): Promise<void> {
       }
     }
     if (KEYS > 0 && now >= fanAt) {
-      fanAt = now + 100;
+      fanAt = now + DEFAULT_MIN_SCENE_MS;
       for (const r of dirty) {
         const res = w.mustResident(r.p.residentId);
         if (res.present_since === null) continue;
@@ -634,6 +637,9 @@ async function main(): Promise<void> {
         dirM.fanBytes.push(utf8Bytes(sv));
         dirM.fanActors.push(sv.actors.length);
         dirM.fanBuilds++;
+        const ts = fanTimes.get(res.resident_id) ?? [];
+        ts.push(now);
+        fanTimes.set(res.resident_id, ts);
       }
       dirty.clear();
     }
@@ -736,6 +742,13 @@ function report(wallMs: number, enterMs: number[], m0: Record<string, unknown>, 
   );
   if (KEYS > 0) {
     const dm = summarize(dirM.ms);
+    // 每个连接任意 1 秒窗口里收到的场景份数的最大值
+    for (const ts of fanTimes.values()) {
+      for (let i = 0, j = 0; i < ts.length; i++) {
+        while (ts[i]! - ts[j]! >= 1000) j++;
+        dirM.fanPerConnMax = Math.max(dirM.fanPerConnMax, i - j + 1);
+      }
+    }
     const fm = summarize(dirM.fanMs);
     const fb = summarize(dirM.fanBytes);
     const fa = summarize(dirM.fanActors);
@@ -746,6 +759,7 @@ function report(wallMs: number, enterMs: number[], m0: Record<string, unknown>, 
         ['方向输入调用', `${dirM.n} 次，${(dirM.n / secs).toFixed(1)} 次/秒；按住 ${dirM.sessions} 次；成功 ${dirM.ok}（其中零向量 ${dirM.stops}，脸贴墙没动 ${dirM.blocked}），丢弃 stale ${dirM.stale}，限频 ${dirM.limited}，被拒/出错 ${dirM.errors}${dirErr.size ? `（${[...dirErr].map(([k, v]) => `${k} ${v}`).join('，')}）` : ''}`],
         ['directionInput 耗时 ms（p50 / p95 / p99 / max）', `${fmtMs(dm.p50)} / ${fmtMs(dm.p95)} / ${fmtMs(dm.p99)} / ${fmtMs(dm.max)}`],
         ['场景扇出（模拟 WS 合并，每居民每 100 毫秒至多一份）', `${dirM.fanBuilds} 份，${(dirM.fanBuilds / secs).toFixed(1)} 份/秒；生成耗时 p50 / p95 / p99 / max = ${fmtMs(fm.p50)} / ${fmtMs(fm.p95)} / ${fmtMs(fm.p99)} / ${fmtMs(fm.max)} ms；每份 ${fmtBytes(fb.p50)}（max ${fmtBytes(fb.max)}），场景里 ${fa.p50} / ${fa.max} 人`],
+        ['每连接任意 1 秒内收到的场景份数（最大）', `${dirM.fanPerConnMax} 份（上限 ${1000 / DEFAULT_MIN_SCENE_MS}）`],
         ['扇出的 JSON 出站带宽（估算）', `${fmtBytes((fb.p50 * dirM.fanBuilds) / secs)}/秒（全部 WebSocket 合计）`],
       ]),
     );
@@ -758,9 +772,9 @@ function report(wallMs: number, enterMs: number[], m0: Record<string, unknown>, 
   for (const s of internalSamples) console.log(`内部异常样例：${s}`);
 
   const present = w.presentCount();
-  const dirPass = KEYS === 0 || (summarize(dirM.ms).p99 < GATE_MS && dirM.limited === 0 && dirM.stale === 0 && dirM.errors === 0);
+  const dirPass = KEYS === 0 || (summarize(dirM.ms).p99 < GATE_MS && dirM.limited === 0 && dirM.stale === 0 && dirM.errors === 0 && dirM.fanPerConnMax <= 1000 / DEFAULT_MIN_SCENE_MS + 0.5);
   const pass = dirPass && all.p99 < GATE_MS && rn.p99 < GATE_MS && internalErrors === 0 && bm.max < 65536 && ba.max < 16384;
-  console.log(`\n门槛：命令 p99 < ${GATE_MS} ms（实测 ${fmtMs(all.p99)} ms，max ${fmtMs(all.max)} ms）；续租 p99 < ${GATE_MS} ms（实测 ${fmtMs(rn.p99)} ms）；内部异常 0（实测 ${internalErrors}）；视图大小在门槛内${KEYS > 0 ? `；方向输入 p99 < ${GATE_MS} ms（实测 ${fmtMs(summarize(dirM.ms).p99)} ms）且不被限频 / 丢弃 / 拒绝（${dirM.limited} / ${dirM.stale} / ${dirM.errors}）` : ''}；结束时在场 ${present} 人`);
+  console.log(`\n门槛：命令 p99 < ${GATE_MS} ms（实测 ${fmtMs(all.p99)} ms，max ${fmtMs(all.max)} ms）；续租 p99 < ${GATE_MS} ms（实测 ${fmtMs(rn.p99)} ms）；内部异常 0（实测 ${internalErrors}）；视图大小在门槛内${KEYS > 0 ? `；方向输入 p99 < ${GATE_MS} ms（实测 ${fmtMs(summarize(dirM.ms).p99)} ms）且不被限频 / 丢弃 / 拒绝（${dirM.limited} / ${dirM.stale} / ${dirM.errors}）；每连接每秒场景份数 ≤ ${1000 / DEFAULT_MIN_SCENE_MS + 0.5}（实测 ${dirM.fanPerConnMax}）` : ''}；结束时在场 ${present} 人`);
   console.log(`结论：${pass ? '通过' : '未通过'}（${N} 居民 / ${GAMES} 局；单进程、开发容器）`);
 
   if (args.json) {
