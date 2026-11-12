@@ -24,9 +24,9 @@ export {};
 /** @typedef {{ messageId: number, from: Card, text: string, at: number }} HereChat */
 /** @typedef {{ space: string, name: string, kind: 'public' | 'street' | 'home', blurb: string, residents: Neighbor[], objects: PlaceObject[], shops: Shop[], activities: Lobby[], games: GameOffer[], exits: { id: string, name: string, seconds: number }[], doors?: { home: string, owner: Card, no: number, canEnter: boolean }[], home?: { owner: Card, mine: boolean, decor: string[] }, library?: { bookId: string, title: string, available: number }[], chat: HereChat[] }} Here */
 
-/** @typedef {{ itemId: string, type: string, name: string, qty: number, available: number, shelved: number, category: string, use: string, borrowedFrom?: string, dueAt?: number }} InvItem */
+/** @typedef {{ itemId: string, type: string, name: string, qty: number, available: number, shelved: number, category: string, stackable: boolean, use: string, borrowedFrom?: string, dueAt?: number }} InvItem */
 /** @typedef {{ coins: { balance: number, reserved: number, available: number }, items: InvItem[], lent: { itemId: string, name: string, to: string, dueAt: number }[] }} Inventory */
-/** @typedef {{ id: string, kind: 'long' | 'short', title: string, description: string, progress: number, target: number, status: string, reward: number }} Goal */
+/** @typedef {{ id: string, kind: 'long' | 'short', title: string, description: string, progress: number, target: number, status: 'active' | 'offered' | string, reward: number }} Goal */
 /** @typedef {{ grantId: string, home: string, host: Card, guest: Card, expiresAt: number, reentry: boolean, via: string }} Invite */
 /** @typedef {{ id: string, name: string, reason?: string, until?: number, custom?: boolean }} Mood */
 /** @typedef {{ since: number, lines: string[] }} Recap */
@@ -40,9 +40,10 @@ export {};
 
 /** @typedef {{ world: WorldHeader, me: { id: string, name: string, kind: 'human' | 'agent', bio: string, traits: { id: string, name: string }[], interests: { id: string, name: string }[], titles: string[], home: { id: string, street: string, streetName: string, no: number }, needs: { energy: number, social: number, interest: number }, mood: Mood | null, settings: { showMood: boolean, allowAskHobby: boolean, moodOverride: string | null }, present: boolean }, control: { epoch: number, mine: boolean, presenceEpoch: number }, context: { version: number, activityId: string | null }, actionWindow: string, cursor: string, location: { space: string | null, name: string, moving: { from: string, to: string, toName: string, path: string[], startedAt: number, arriveAt: number } | null }, here: Here | null, inventory: Inventory, goals: Goal[], mail: { unread: number, total: number }, invites: { received: Invite[], sent: Invite[] }, offers: Offer[], interaction: Interaction | null, game: GameView | null, events: PublicEvent[], suggestions: string[], recap?: Recap }} MeView */
 
-/** @typedef {{ id: string, box: 'inbox' | 'sent', from: Card, to: Card, sentAt: number, deliveredAt: number | null, read: boolean, body?: string, invite?: { grantId: string, expiresAt: number, active: boolean } }} Letter */
+/** @typedef {{ id: string, box: 'inbox' | 'sent', from: Card, to: Card, sentAt: number, deliveredAt: number | null, read?: boolean, body?: string, invite?: { grantId: string, expiresAt: number, active: boolean } }} Letter */
 /** @typedef {{ id: string, name: string, kind: string, bio: string, titles: string[], present: boolean, at: string | null }} DirEntry */
-/** @typedef {{ id: string, name: string, familiarity: number, closeness: number, level: string, memories: { text: string, at: number }[] }} Relation */
+/** @typedef {{ text: string, at: number }} Memory */
+/** @typedef {{ id: string, name: string, familiarity: number, closeness: number, level: string, memories: Memory[] }} Relation */
 /** @typedef {{ scope: string, date: string, lines: string[], final: boolean }} Report */
 /** @typedef {{ messageId: number, space: string, spaceName: string, from: Card, text: string, at: number }} HistoryMsg */
 /** @typedef {{ messageId: number, space: string, spaceName: string, from: Card, text: string, at: number, sys?: boolean }} ChatLine */

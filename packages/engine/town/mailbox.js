@@ -53,7 +53,7 @@ export function createMailbox() {
     const atHome = me?.location.space === me?.me.home.id;
     const sent = l.box === 'sent';
     const other = sent ? l.to : l.from;
-    const unread = !sent && !l.read;
+    const unread = !sent && l.read === false;
     return row({
       lead: h('span', { class: `mail-ico${unread ? ' new' : ''}` }, icon('mail', 20)),
       title: h('span', null, `${sent ? '寄给 ' : ''}${other.name}`, unread ? chip('未读', 'amber') : null, l.invite ? chip('附邀请', 'moss') : null),

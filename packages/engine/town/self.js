@@ -63,6 +63,9 @@ export function createSelf() {
     const m = me.me;
     const needs = m.needs;
     const inv = me.inventory;
+    // status === 'offered' 是长期愿望完成后的候选，还没开始，不能当进行中的愿望渲染
+    const activeGoals = me.goals.filter((g) => g.status !== 'offered');
+    const offered = me.goals.filter((g) => g.status === 'offered');
     const groups = [
       ['消耗品', inv.items.filter((i) => i.category === 'consumable' && !i.borrowedFrom)],
       ['书与用品', inv.items.filter((i) => i.category === 'usable' && !i.borrowedFrom)],
@@ -100,11 +103,11 @@ export function createSelf() {
       me.suggestions.length ? section('小建议', h('ul', { class: 'bullets' }, me.suggestions.map((t) => h('li', null, t)))) : null,
       section(
         '愿望',
-        me.goals.length
+        activeGoals.length
           ? h(
               'div',
               { class: 'stack' },
-              me.goals.map((g) =>
+              activeGoals.map((g) =>
                 h(
                   'div',
                   { class: 'goal' },
@@ -115,9 +118,33 @@ export function createSelf() {
                 ),
               ),
             )
-          : empty('暂时没有愿望', '完成一个愿望之后，新的会出现。'),
+          : offered.length
+            ? null
+            : empty('暂时没有愿望', '完成一个愿望之后，新的会出现。'),
         { hint: '愿望的进度只来自真正做过的事（程序记录的事实），聊天文字不算。' },
       ),
+      offered.length
+        ? section(
+            '选一个新的长期愿望',
+            h(
+              'div',
+              { class: 'stack' },
+              offered.map((g) =>
+                h(
+                  'div',
+                  { class: 'goal offer' },
+                  h('div', { class: 'goal-top' }, chip('候选', 'moss'), h('b', null, g.title), h('span', { class: 'price' }, icon('coin', 13), `+${g.reward}`)),
+                  h('p', { class: 'hint' }, g.description),
+                  h('div', { class: 'goal-foot' }, h('span', null, `完成后奖励 ${g.reward} 枚硬币`), btn('选这个', async () => {
+                    const r = await act({ type: 'choose_goal', goalId: g.id });
+                    if (r.ok) toast(`新的长期愿望：${g.title}`, 'ok');
+                  }, { small: true, variant: 'soft' })),
+                ),
+              ),
+            ),
+            { hint: '今天不选的话，明天小镇会替你挑一个。' },
+          )
+        : null,
       section(
         '背包',
         inv.items.length === 0 && inv.lent.length === 0

@@ -31,10 +31,39 @@ export function createPeople() {
   let reports = null;
   let reportDate = '';
   let error = '';
+  /**
+   * 每位认识的人的共同经历翻页状态：next 为 undefined 表示还没翻过（首页游标未知），null 表示没有更早的了。
+   * @type {Map<string, { next: string | null | undefined, err: string }>}
+   */
+  const paging = new Map();
+
+  /** @param {Relation} r */
+  async function loadOlder(r) {
+    const st = paging.get(r.id) ?? { next: undefined, err: '' };
+    paging.set(r.id, st);
+    st.err = '';
+    // 列表接口不带每对的游标：第一次不带 before、按已显示的条数取第一页，把列表换成这一页（等于按已显示的条目去重）
+    const first = st.next === undefined;
+    const q = first ? `limit=${Math.min(30, r.memories.length + 10)}` : `before=${encodeURIComponent(String(st.next))}&limit=10`;
+    const res = await http('GET', `/relations?with=${encodeURIComponent(r.id)}&${q}`).catch(() => null);
+    if (res && res.status === 200 && Array.isArray(res.data.memories)) {
+      /** @type {import('./types.js').Memory[]} */
+      const got = res.data.memories;
+      if (first) {
+        const seen = new Set(got.map((m) => `${m.at}|${m.text}`));
+        r.memories = [...got, ...r.memories.filter((m) => !seen.has(`${m.at}|${m.text}`))];
+      } else r.memories = [...r.memories, ...got];
+      st.next = res.data.next ?? null;
+    } else st.err = res?.data?.message ?? '没能读到更早的往事，稍后再试。';
+    render();
+  }
 
   async function loadRel() {
     const r = await http('GET', '/relations').catch(() => null);
-    if (r && r.status === 200) relations = r.data.relations;
+    if (r && r.status === 200) {
+      relations = r.data.relations;
+      paging.clear();
+    }
     else error = r?.data?.message ?? '没能读到。';
     render();
   }
@@ -99,6 +128,8 @@ export function createPeople() {
                   h('div', { class: 'rel-top' }, avatar(r.name, 'human'), h('b', null, r.name), chip(r.level, r.level === '老朋友' || r.level === '朋友' ? 'moss' : r.level === '熟人' ? 'amber' : '')),
                   h('div', { class: 'rel-bar' }, h('span', { class: 'hint' }, '熟悉度'), progress(Math.min(r.familiarity, 50), 50, `与${r.name}的熟悉度`), h('b', null, String(r.familiarity))),
                   r.memories.length ? h('ul', { class: 'bullets' }, r.memories.map((m) => h('li', null, m.text, h('small', null, ` · ${dateTimeOf(m.at, tz())}`)))) : h('p', { class: 'hint' }, '还没有共同经历。'),
+                  r.memories.length && paging.get(r.id)?.next !== null ? btn('更早的往事', () => loadOlder(r), { small: true, variant: 'ghost', always: true }) : null,
+                  paging.get(r.id)?.err ? h('p', { class: 'err' }, paging.get(r.id)?.err) : null,
                 ),
               ),
             )

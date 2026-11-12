@@ -216,13 +216,16 @@ export function createHere() {
   function renderChat() {
     const me = state.me;
     const lines = state.chat;
-    const key = `${lines.length}:${lines[lines.length - 1]?.messageId ?? 0}:${lines[0]?.messageId ?? 0}:${state.olderChatDone}`;
+    const key = `${lines.length}:${lines[lines.length - 1]?.messageId ?? 0}:${lines[0]?.messageId ?? 0}:${state.olderChatDone}:${lines.filter((c) => !c.sys && c.messageId > 0).reduce((m, c) => Math.min(m, c.messageId), Infinity)}`;
     if (chatLog.dataset.memo === key) return;
     chatLog.dataset.memo = key;
     const top = chatLog.scrollHeight;
     chatLog.replaceChildren();
+    // messageId 是每位居民自己的连续序号，从 1 开始：已经显示到 1 就不会再有更早的
+    const real = lines.filter((c) => !c.sys && c.messageId > 0);
+    const reachedStart = real.length > 0 && Math.min(...real.map((c) => c.messageId)) <= 1;
     chatLog.appendChild(
-      state.olderChatDone
+      state.olderChatDone || reachedStart
         ? h('p', { class: 'chat-note' }, '更早的话没有了。')
         : h('div', { class: 'chat-more' }, btn('看更早的发言', async () => {
             const n = await loadOlderChat();
