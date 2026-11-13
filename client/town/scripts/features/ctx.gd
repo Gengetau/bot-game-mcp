@@ -144,7 +144,27 @@ func feature(fid: String):
 # ─────────────────────────────────────────────────────────────────────────
 
 
-# ───────────────────────── C4 分区（预留，空）─────────────────────────
+# ───────────────────────── C4 分区 ─────────────────────────
+## 走过去 / 进门 / 出门：只是对 main._do_navigate 的转发（它自己做 _can_control、续租、序号栅栏和错误 toast）。
+## 协程不 await：调用方不等它走完。to 形如 {"to": "home:<居民编号>"}、{"to": "home"}、{"to": "residential"}。
+func c4_go(to: Dictionary, label: String = "") -> void:
+	m._do_navigate(to, label)
+
+
+## 走到某个居民身边（和 main._on_tap 里点人的调用一致）
+func c4_approach(actor_id: String) -> void:
+	var a = m.actors.get(actor_id)
+	if a == null:
+		return
+	m._do_navigate({"approach": actor_id}, (a as TActor).actor_name, Vector3((a as TActor).disp.x, 0.0, (a as TActor).disp.y))
+
+
+## 人和人当面互动的够得着距离（米）：读 /config 的 limits.personReach，服务端没给就用 3.0
+func c4_person_reach() -> float:
+	var lim = m.server_cfg.get("limits")
+	if lim is Dictionary and lim.has("personReach"):
+		return float(lim["personReach"])
+	return 3.0
 # ─────────────────────────────────────────────────────────────────────────
 
 
