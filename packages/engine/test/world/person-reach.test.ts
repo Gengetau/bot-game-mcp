@@ -3,6 +3,9 @@
  * 依据：设计文档第 12 章「可见 可听 可交互分别判定」；docs/TOWN.md「够得着」。
  * 距离一律用权威位置（positionOfResident）在测试里独立量一遍，不借用被测函数。
  */
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { homeId } from '../../src/world/content.js';
 import { nearbyAudience } from '../../src/world/hearing.js';
@@ -269,6 +272,49 @@ describe('报价与成交按距离', () => {
     expect(b.act('return_item', { itemId }).status).toBe('completed');
     expect(t.w.db.get('SELECT holder_id FROM items WHERE item_id = ?', itemId)!.holder_id).toBe(a.residentId);
     checkInvariants(t);
+  });
+});
+
+describe('too_far 的线上形状：navigateTo 在错误体顶层，没有 data 这一层', () => {
+  it('WorldError 序列化后顶层有 navigateTo，且可以原样做 navigate 的 approach', () => {
+    const { a, b } = two();
+    b.go(FAR_CORNER);
+    const e = a.fail('invite', { to: b.residentId });
+    const wire = JSON.parse(JSON.stringify({ ok: false, ...e.toJSON() }));
+    expect(wire.navigateTo).toBe(b.residentId);
+    expect(wire.reason).toBe('too_far');
+    expect(wire.data).toBeUndefined();
+  });
+
+  it('指南、居民提示词、TOWN.md 不再把它写成 data.navigateTo', () => {
+    const here = dirname(fileURLToPath(import.meta.url));
+    const files = ['../../src/mcp/town.ts', '../../../agent-kit/prompts/resident-zh.md', '../../../agent-kit/src/prompts.ts', '../../../../docs/TOWN.md'];
+    for (const f of files) expect(readFileSync(join(here, f), 'utf8'), f).not.toContain('data.navigateTo');
+  });
+});
+
+describe('仿真不变量 face_to_face_in_reach 覆盖当面归还', () => {
+  async function inv() {
+    const lib = (await import(/* @vite-ignore */ pathToFileURL(join(dirname(fileURLToPath(import.meta.url)), '../../../../scripts/world-lib.ts')).href)) as { Invariants: new (echo: (m: string) => void) => any };
+    return new lib.Invariants(() => undefined);
+  }
+  it('记为当面归还、但双方实际相距很远 → 违例；站得近 → 通过；走归还箱不要求', async () => {
+    const { t, a, b } = two();
+    b.go(FAR_CORNER);
+    expect(gap(t, a, b)).toBeGreaterThan(3);
+    const record = (how: string) => t.w.fact('loan_returned', [{ id: b.residentId, role: 'borrower' }, { id: a.residentId, role: 'owner' }], { item: 'x', how });
+    const i = await inv();
+    record('return_box');
+    i.checkFaceToFace(t.w, 'return_item', b.residentId, {}, t.w.now());
+    expect(i.totalViolations).toBe(0);
+    record('in_person');
+    i.checkFaceToFace(t.w, 'return_item', b.residentId, {}, t.w.now());
+    expect(i.totalViolations).toBe(1);
+    b.go(a.residentId);
+    record('in_person');
+    i.checkFaceToFace(t.w, 'return_item', b.residentId, {}, t.w.now());
+    expect(i.totalViolations).toBe(1);
+    expect(i.runs.get('face_to_face_in_reach').checks).toBe(2);
   });
 });
 

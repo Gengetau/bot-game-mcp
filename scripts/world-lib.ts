@@ -451,7 +451,7 @@ export class Invariants {
 
   /**
    * 面对面动作成功之后核对一次（不信任被测的 canInteractPerson，自己重新量）：
-   * 询问、邀请、报价、接受报价成交的那一刻，双方在同一个场景实例里、距离不超过 personReach。
+   * 询问、邀请、报价、接受报价成交、当面归还的那一刻，双方在同一个场景实例里、距离不超过 personReach。
    * 模拟里命令和检查用同一个时钟，成功提交后的位置就是判定时的位置。
    */
   checkFaceToFace(w: WorldService, type: string, actorId: string, fields: Record<string, unknown>, now: number): void {
@@ -459,6 +459,16 @@ export class Invariants {
     if (type === 'offer' || type === 'invite') otherId = String(fields.to ?? '');
     else if (type === 'ask_hobby') otherId = String(fields.target ?? '');
     else if (type === 'accept_offer') otherId = w.db.get('SELECT from_id FROM offers WHERE offer_id = ?', String(fields.offerId ?? ''))?.from_id as string | undefined;
+    if (type === 'return_item') {
+      // 归还：只有「当面」那一条路要量距离（书屋、归还箱不要求）；方式以这次归还记下的事实为准
+      const ev = w.db.get(
+        `SELECT e.event_id, e.payload FROM world_events e JOIN event_parties p ON p.event_id = e.event_id AND p.resident_id = ? AND p.role = 'borrower'
+          WHERE e.type = 'loan_returned' ORDER BY e.event_id DESC LIMIT 1`,
+        actorId,
+      );
+      if (!ev || (JSON.parse(ev.payload) as { how?: string }).how !== 'in_person') return;
+      otherId = w.db.get("SELECT resident_id FROM event_parties WHERE event_id = ? AND role = 'owner'", ev.event_id)?.resident_id as string | undefined;
+    }
     if (!otherId) return;
     this.pass('face_to_face_in_reach');
     const a = actorOf(w, actorId);
