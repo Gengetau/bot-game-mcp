@@ -397,7 +397,13 @@ export default async function run(h) {
     check(!dom.img && !dom.u && !dom.paneImg && !dom.paneU && dom.xss === undefined, `不应产生元素或执行脚本：${JSON.stringify(dom)}`);
     // 门牌上的名字
     await openPeopleTab(B.page);
-    await until(async () => (await B.page.evaluate((p) => document.querySelector(`${p} li[data-home="home:${A.id}"] [data-role="owner"]`)?.textContent ?? '', PANE)).includes('<u>'), 20_000, '门牌上以字面量显示 A 的名字');
+    const ownerText = () => B.page.evaluate((p) => document.querySelector(`${p} li[data-home="home:${A.id}"] [data-role="owner"]`)?.textContent ?? '', PANE);
+    try {
+      await until(async () => (await ownerText()).includes('<u>'), 20_000, '门牌上以字面量显示 A 的名字');
+    } catch (e) {
+      const sm = await serverMe(B);
+      throw new Error(`${e.message}；门牌文字「${await ownerText()}」；门牌行 ${JSON.stringify(await doorRows(B.page))}；服务器 doors ${JSON.stringify((sm.here?.doors ?? []).map((d) => [d.home, d.owner.name]))}；B 的位置 ${JSON.stringify(await where(B))}；godot ${JSON.stringify(await godotPeople(B))}`);
+    }
     check(!(await B.page.evaluate(() => !!document.querySelector('#dock u, #dock img'))), '门牌里也不应产生元素');
     await closePanel(B.page);
     // 还原名字，免得影响后面的断言
