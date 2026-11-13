@@ -285,7 +285,7 @@ func _profile_of(pid: String) -> Dictionary:
 	var r = _res.get(pid)
 	if r is Dictionary:
 		p["known"] = true
-		p["name"] = str(r.get("name", p["name"]))
+		# 名字以场景快照里的为准（改名后它先到，/me 里的资料可能还是旧的）
 		p["kind"] = _kind_of(str(r.get("kind", p["kind"])))
 		p["bio"] = str(r.get("bio", ""))
 		p["traits"] = _strs(r.get("traits"), 4)
@@ -335,6 +335,7 @@ func _open_card(pid: String) -> void:
 	_card_walk = false
 	ctx.mark_dirty()
 	_push()
+	ctx.refresh_me()  # 资料（简介、称号、个性）取最新的；/me 回来后 on_me 会重推
 
 
 func _close_card() -> void:

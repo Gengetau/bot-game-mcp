@@ -314,8 +314,9 @@ export default async function run(h) {
     const doorsBefore = JSON.stringify(await doorRows(A.page));
     await clickDoor(B.page, `home:${A.id}`);
     await until(async () => (await where(B)).scene === 'home', 90_000, 'B 进了私宅场景', 500);
-    const w = await where(B);
-    check(w.spaceName.includes(aName), `B 的场所名应含 A 的名字：${w.spaceName}`);
+    // 场所名以服务器为准（页面自己的 spaceName 来自地图表，私宅只写「家」）
+    const loc = await until(async () => { const m = await serverMe(B); return m.here?.kind === 'home' ? m : null; }, 20_000, 'B 的 /me 里 here 是私宅');
+    check(loc.here.name.includes(aName) && loc.location.name.includes(aName), `B 的场所名应含 A 的名字：${loc.here.name} / ${loc.location.name}`);
     await until(async () => (await houseInfo(B.page))?.open, 15_000, '「屋里」栏出现');
     const hi = await houseInfo(B.page);
     check(hi.title === `${aName}的家` && hi.tag === '做客' && !hi.mine, `屋里应写 A 的名字、标签做客：${JSON.stringify(hi)}`);
@@ -335,6 +336,7 @@ export default async function run(h) {
   // ───────────────────────── 60.65 自己家与屋里点人 ─────────────────────────
   await step(60.65, '自己家与屋里点人：A 点「你家」的回家 -> 标签「主人」、标题「你的家」；B 受邀再进，A 点 B 出卡；B 出门，A 出门', async () => {
     await openPeopleTab(A.page);
+    await until(async () => (await doorRows(A.page)).some((r) => r.home === `home:${A.id}`), 20_000, `A 的门牌里有自己家（现在：${JSON.stringify(await where(A))} ${JSON.stringify(await doorRows(A.page))}）`);
     await clickDoor(A.page, `home:${A.id}`);
     await until(async () => (await where(A)).scene === 'home', 90_000, 'A 进了自己家', 500);
     await until(async () => (await houseInfo(A.page))?.open, 15_000, 'A 的「屋里」栏出现');
@@ -380,7 +382,13 @@ export default async function run(h) {
     const srv = async () => (await serverMe(B)).here.residents.find((x) => x.id === A.id);
     const info = await srv();
     check(info && info.bio.includes('<img'), `服务器里 A 的简介应保留尖括号：${info?.bio}`);
-    const c = await until(async () => { const x = await peopleCard(B.page); return x.cardOpen && x.cardId === A.id && x.name === info.name ? x : null; }, 40_000, 'B 的卡上是 A 的新名字');
+    let c;
+    try {
+      c = await until(async () => { const x = await peopleCard(B.page); return x.cardOpen && x.cardId === A.id && x.name === info.name ? x : null; }, 40_000, 'B 的卡上是 A 的新名字');
+    } catch (e) {
+      const x = await peopleCard(B.page);
+      throw new Error(`${e.message}；服务器：${info.name}；现状：${JSON.stringify({ open: x.cardOpen, id: x.cardId, name: x.name, hint: x.hint })} ${JSON.stringify(await godotPeople(B))} 画面里的 A：${JSON.stringify((await snap(B.page)).actors.find((y) => y.id === A.id))}`);
+    }
     check(c.name === info.name && c.name.includes('<u>'), `名字应以字面量显示：${c.name}`);
     await until(async () => (await B.page.evaluate((s) => document.querySelector(`${s} [data-role="bio"]`).textContent, CARD)) === info.bio, 20_000, '简介等于服务器里的字面量');
     const dom = await B.page.evaluate((s) => ({ img: !!document.querySelector(`${s} img`), u: !!document.querySelector(`${s} u`), paneImg: !!document.querySelector('#dock img'), paneU: !!document.querySelector('#dock u'), xss: window.__xss }), CARD);

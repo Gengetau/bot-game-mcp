@@ -64,6 +64,15 @@
         }
       }
       window.addEventListener('resize', placeCard);
+      /* 抽屉开合会抬高 #bottombar（改的是 --dock-h 和 body 的属性，#bottombar 自己的尺寸不变，ResizeObserver 看不到）：监听这两处 */
+      if (window.MutationObserver) {
+        try {
+          new MutationObserver(placeCard).observe(document.documentElement, { attributes: true, attributeFilter: ['style'] });
+          new MutationObserver(placeCard).observe(document.body, { attributes: true, attributeFilter: ['data-dock-open', 'data-dock', 'data-kb'] });
+        } catch (e) {
+          /* ignore */
+        }
+      }
 
       function setHint(text, kind, id) {
         hint = { text: text || '', kind: kind || '', id: id || '' };
