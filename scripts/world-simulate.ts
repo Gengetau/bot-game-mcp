@@ -55,7 +55,7 @@ import {
   type Person,
   type WorldService,
 } from './world-lib.js';
-import { PUBLIC_OBJECTS } from '../packages/engine/src/world/content.js';
+import { NPCS, PUBLIC_OBJECTS } from '../packages/engine/src/world/content.js';
 import { actorOf, posOf } from '../packages/engine/src/world/space.js';
 import { zoneAt } from '../packages/engine/src/world/spatial/grid.js';
 import { exchangeTicket, issueTicket, sessionPrincipal } from '../packages/engine/src/index.js';
@@ -681,6 +681,23 @@ class Sim {
     if (playing >= 2) this.bump('tables_both_playing_samples');
     const p = this.w.presentCount();
     if (p > this.presentMax) this.presentMax = p;
+    this.sampleNpcs();
+  }
+
+  /** 氛围 NPC 的覆盖：记下它停靠过的每个锚点和路线版本（每走一趟版本至少加 2：出发、到达）。 */
+  private sampleNpcs(): void {
+    for (const def of NPCS) {
+      if (!def.schedule) continue;
+      const row = this.w.db.get("SELECT x, z, nav_json, nav_revision FROM world_actors WHERE actor_id = ? AND kind = 'npc'", def.id);
+      if (!row) continue;
+      this.counters.set(`npc_revision:${def.id}`, Number(row.nav_revision));
+      if (row.nav_json !== null) continue;
+      const town = this.w.map.scenes.get('town')!;
+      for (const stop of def.schedule.stops) {
+        const an = town.anchors.get(stop.anchor);
+        if (an && Math.abs(an.x - Number(row.x)) < 1e-9 && Math.abs(an.z - Number(row.z)) < 1e-9) this.bump(`npc_visit:${def.id}:${stop.anchor}`);
+      }
+    }
   }
 
   private check(final = false): void {
@@ -2311,6 +2328,18 @@ if (DAYS >= 1 && N >= 8) {
   if ((sim.negCount.get('占用中的桌再凑桌') ?? 0) < 1) coverageMissing.push('对被占的桌 propose_game 期望 table_busy 从未探测');
   if ((sim.counters.get('tables_both_running_samples') ?? 0) < 1) coverageMissing.push('两张桌同时有局从未出现');
 }
+// 氛围 NPC：一天里至少完成若干次移动，并到过日程里的每个锚点（覆盖不到算失败）
+if (DAYS >= 1) {
+  for (const def of NPCS) {
+    if (!def.schedule) continue;
+    const moves = Math.floor((sim.counters.get(`npc_revision:${def.id}`) ?? 0) / 2);
+    if (moves < 5) coverageMissing.push(`${def.name} 一天里只完成了约 ${moves} 次移动（至少 5 次）`);
+    for (const stop of def.schedule.stops) {
+      if ((sim.counters.get(`npc_visit:${def.id}:${stop.anchor}`) ?? 0) < 1) coverageMissing.push(`${def.name} 从未到过 ${stop.anchor}`);
+    }
+  }
+}
+console.log(`NPC：${NPCS.map((n) => `${n.name} 路线版本 ${sim.counters.get(`npc_revision:${n.id}`) ?? '—'}`).join('，')}；到过的锚点 ${[...sim.counters].filter(([k]) => k.startsWith('npc_visit:')).map(([k]) => k.slice(10)).join('、') || '无'}`);
 if (coverageMissing.length) {
   console.log('\n覆盖不足：');
   for (const c of coverageMissing) console.log(`  × ${c}`);

@@ -29,7 +29,7 @@ import {
   type WorldOptions,
   type WorldService,
 } from '../packages/engine/src/index.js';
-import { BOOKS, PLACES } from '../packages/engine/src/world/content.js';
+import { BOOKS, NPCS, PLACES } from '../packages/engine/src/world/content.js';
 import { controlDisconnected, renewNavigation, sceneView, whereabouts } from '../packages/engine/src/world/index.js';
 import { actorOf, posOf, positionOfResident } from '../packages/engine/src/world/space.js';
 import { distance, isWalkable, zoneAt } from '../packages/engine/src/world/spatial/grid.js';
@@ -787,6 +787,83 @@ export class Invariants {
     return this.totalViolations - before;
   }
 
+  /** NPC 这一层：行恰好是内容里定义的那些、没有居民编号、位置合法、待办恰好一条、不沾账本和听众、不进任何事件。只读，独立于实现重新算。 */
+  npcs(w: WorldService, now: number, actors: Row[], scanEvents: boolean): void {
+    const db = w.db;
+    const fail = (name: string, message: string, detail: unknown) => this.fail(name, message, detail, now);
+    const rows = actors.filter((a) => a.kind === 'npc');
+    const want = NPCS.map((n) => n.id).sort();
+    this.pass('npc_rows_exact');
+    if (JSON.stringify(rows.map((r) => String(r.actor_id)).sort()) !== JSON.stringify(want)) fail('npc_rows_exact', 'NPC 的行与内容里定义的不一致', { want, got: rows.map((r) => r.actor_id) });
+    const states = db.all('SELECT actor_id FROM npc_state ORDER BY actor_id').map((r) => String(r.actor_id));
+    if (JSON.stringify(states) !== JSON.stringify(want)) fail('npc_rows_exact', 'npc_state 的行与内容里定义的不一致', { want, got: states });
+    const pendingNpc = db.all("SELECT dedupe_key FROM scheduled_jobs WHERE kind = 'npc_step' AND status = 'pending'").map((j) => String(j.dedupe_key));
+    for (const def of NPCS) {
+      const row = rows.find((r) => String(r.actor_id) === def.id);
+      this.pass('npc_no_resident_id');
+      if (row && row.resident_id !== null) fail('npc_no_resident_id', `NPC ${def.id} 带着居民编号`, { id: def.id });
+      this.pass('npc_one_pending_job');
+      const n = pendingNpc.filter((k) => k === `npc_step:${def.id}`).length;
+      if (n !== (def.schedule ? 1 : 0)) fail('npc_one_pending_job', `NPC ${def.id} 应有 ${def.schedule ? 1 : 0} 条待办 npc_step，实际 ${n}`, { id: def.id, n });
+      if (!row) continue;
+      // 位置：公共场景、现算出来的位置在可走格上（NPC 的路线截止就是到达，没有控制租约）
+      this.pass('npc_walkable');
+      const scene = w.map.scenes.get(String(row.scene_id));
+      const nav = row.nav_json ? (JSON.parse(String(row.nav_json)) as NavState) : null;
+      const p = nav ? positionAt({ points: nav.points, speed: nav.speed, startedAt: nav.startedAt, until: nav.leaseUntil }, now) : { x: Number(row.x), z: Number(row.z) };
+      if (!scene || scene.instanced || row.instance_id !== '' || !isWalkable(scene, p.x, p.z)) fail('npc_walkable', `NPC ${def.id} 此刻的位置 (${p.x.toFixed(2)}, ${p.z.toFixed(2)}) 不在公共场景的可走格子上`, { id: def.id, scene: row.scene_id, instance: row.instance_id });
+      if (nav && (nav.leaseUntil < Math.floor(arrivalAt({ points: nav.points, speed: nav.speed, startedAt: nav.startedAt })))) fail('npc_walkable', `NPC ${def.id} 的路线截止早于到达`, { id: def.id });
+      if (!def.schedule && nav) fail('npc_walkable', `不走动的 NPC ${def.id} 带着路线`, { id: def.id });
+    }
+    this.pass('npc_one_pending_job');
+    if (pendingNpc.some((k) => !NPCS.some((n) => k === `npc_step:${n.id}`))) fail('npc_one_pending_job', '有 npc_step 待办对不上定义的 NPC', pendingNpc.slice(0, 5));
+    // 不沾账本、物品、听众
+    this.pass('npc_no_ledger');
+    const ledger =
+      db.scalar("SELECT COUNT(*) FROM ledger_entries e JOIN accounts a ON a.account_id = e.account_id WHERE a.resident_id LIKE 'npc:%'") +
+      db.scalar("SELECT COUNT(*) FROM accounts WHERE resident_id LIKE 'npc:%' OR account_id LIKE '%npc:%'") +
+      db.scalar("SELECT COUNT(*) FROM items WHERE owner_id LIKE 'npc:%' OR holder_id LIKE 'npc:%'") +
+      db.scalar("SELECT COUNT(*) FROM offers WHERE from_id LIKE 'npc:%' OR to_id LIKE 'npc:%'") +
+      db.scalar("SELECT COUNT(*) FROM letters WHERE sender_id LIKE 'npc:%' OR recipient_id LIKE 'npc:%'");
+    if (ledger > 0) fail('npc_no_ledger', `有 ${ledger} 条账本 / 物品 / 报价 / 信件记录指向 NPC`, null);
+    this.pass('npc_no_audience');
+    const aud = db.scalar("SELECT COUNT(*) FROM chat_audience WHERE resident_id LIKE 'npc:%'") + db.scalar("SELECT COUNT(*) FROM chat_messages WHERE sender_id LIKE 'npc:%'");
+    if (aud > 0) fail('npc_no_audience', `chat_audience / chat_messages 里有 ${aud} 条指向 NPC`, null);
+    // 走动、停留、换姿态不产生任何事件或事实
+    if (!scanEvents) return;
+    this.pass('npc_no_events');
+    // 居民走到 NPC 身边时，本人的 you_arrived / nav_stopped 带着「目标是 NPC」（target: {kind:'npc', id, name}），那是居民自己的事件，不算 NPC 的事件。
+    // 只放行这一个字段：去掉它之后，事件里别处再出现 NPC 编号（姿态、位置之类被顺手带进来）照样算违例
+    const stripNpcTarget = (v: unknown): unknown => {
+      if (Array.isArray(v)) return v.map(stripNpcTarget);
+      if (!v || typeof v !== 'object') return v;
+      const out: Record<string, unknown> = {};
+      for (const [k, x] of Object.entries(v as Record<string, unknown>)) {
+        if (k === 'target' && x && typeof x === 'object' && (x as { kind?: unknown }).kind === 'npc') continue;
+        out[k] = stripNpcTarget(x);
+      }
+      return out;
+    };
+    let mentions = 0;
+    for (const row of db.all("SELECT type, projection FROM recipient_events WHERE resident_id NOT LIKE 'npc:%' AND projection LIKE '%npc:%'")) {
+      if (row.type === 'you_arrived' || row.type === 'nav_stopped') {
+        try {
+          if (!JSON.stringify(stripNpcTarget(JSON.parse(String(row.projection)))).includes('npc:')) continue;
+        } catch {
+          // 解析不了就按违例算
+        }
+      }
+      mentions++;
+    }
+    const ev =
+      mentions +
+      db.scalar("SELECT COUNT(*) FROM recipient_events WHERE resident_id LIKE 'npc:%'") +
+      db.scalar("SELECT COUNT(*) FROM public_events WHERE projection LIKE '%npc:%'") +
+      db.scalar("SELECT COUNT(*) FROM world_events WHERE payload LIKE '%npc:%'") +
+      db.scalar("SELECT COUNT(*) FROM event_parties WHERE resident_id LIKE 'npc:%'");
+    if (ev > 0) fail('npc_no_events', `有 ${ev} 条事件 / 事实提到了 NPC`, null);
+  }
+
   /** 空间这一层：位置、区域标签、导航任务、租约截止。只读。 */
   space(w: WorldService, now: number, scanEvents = true): void {
     const db = w.db;
@@ -798,6 +875,16 @@ export class Invariants {
       byResident.set(k, [...(byResident.get(k) ?? []), a]);
     }
     const pendingNav = new Map<string, number>();
+    // 按角色行遍历（居民和 NPC 都覆盖）：行数 = 居民数 + 定义的 NPC 数，每一行恰好是其中之一
+    const residentIds = new Set(db.all('SELECT resident_id FROM residents').map((r) => String(r.resident_id)));
+    const npcIds = new Set(NPCS.map((n) => n.id));
+    this.pass('actor_one_row');
+    if (actors.length !== residentIds.size + npcIds.size) fail('actor_one_row', `world_actors 有 ${actors.length} 行，应为居民 ${residentIds.size} + NPC ${npcIds.size}`, null);
+    for (const a of actors) {
+      const id = String(a.actor_id);
+      this.pass('actor_one_row');
+      if (a.kind === 'resident' ? !residentIds.has(id) || a.resident_id !== id : !npcIds.has(id) || a.resident_id !== null) fail('actor_one_row', `角色行 ${id}（${a.kind}）不属于任何居民或定义的 NPC`, { id, kind: a.kind, resident_id: a.resident_id });
+    }
     for (const j of db.all("SELECT dedupe_key FROM scheduled_jobs WHERE kind = 'nav_step' AND status = 'pending'")) pendingNav.set(String(j.dedupe_key), (pendingNav.get(String(j.dedupe_key)) ?? 0) + 1);
     let navigating = 0;
     // 每位居民恰好一条角色行
@@ -845,8 +932,14 @@ export class Invariants {
       navigating++;
       this.checkNav(w, rid, a.nav, now, fail);
     }
+    // nav_step 的待办必须对得上某一行正在走的角色（居民和 NPC 都按角色行查；NPC 不用 nav_step，用自己的 npc_step）
     this.pass('nav_job_orphan');
-    if (pendingNav.size > 0) fail('nav_job_orphan', `有 ${pendingNav.size} 条待办 nav_step 对不上任何居民`, [...pendingNav.keys()].slice(0, 5));
+    for (const [key, n] of pendingNav) {
+      const id = key.replace(/^nav:/, '');
+      const row = actors.find((x) => String(x.actor_id) === id);
+      if (!key.startsWith('nav:') || !row || row.kind !== 'resident' || row.nav_json === null || n !== 1) fail('nav_job_orphan', `待办 nav_step ${key} 对不上一位正在走的居民`, { key, n, kind: row?.kind ?? null });
+    }
+    this.npcs(w, now, actors, scanEvents);
     this.navSamples += navigating;
     // 旧模型的残留
     this.pass('no_legacy_move');
@@ -932,6 +1025,11 @@ export class Invariants {
             )
             .map((x) => x.actor_id as string);
           const got = sv.actors.map((x) => x.id).sort();
+          // NPC 单独一个数组：公共场景里恰好是定义的那些，私宅实例里没有这个字段，actors 里不混进 NPC
+          const wantNpcs = mine.instance_id === '' ? NPCS.map((n) => n.id).sort() : null;
+          const gotNpcs = sv.npcs ? sv.npcs.map((x) => x.id).sort() : null;
+          if (JSON.stringify(wantNpcs) !== JSON.stringify(gotNpcs)) this.fail('scene_view_isolation', '场景视图里的 npcs 与应有的不一致（公共场景应有全部 NPC，私宅实例不该有）', { viewer: aId, wantNpcs, gotNpcs }, now);
+          if (got.some((id) => id.startsWith('npc:'))) this.fail('scene_view_isolation', 'actors 里混进了 NPC', { viewer: aId }, now);
           if (JSON.stringify(want) !== JSON.stringify(got)) this.fail('scene_view_isolation', '场景视图里的人与同一场景实例里在场的人不一致', { viewer: aId, want, got }, now);
           if (mine.instance_id === '' && JSON.stringify(sv).includes('home:')) this.fail('scene_view_isolation', `公共场景的场景视图里出现了私宅信息（观看者 ${aId}）`, null, now);
           if (mine.instance_id !== '' && sv.actors.some((x) => x.id !== aId && actorOf(w, x.id)?.instance_id !== mine.instance_id)) this.fail('scene_view_isolation', '私宅场景视图里出现了别的实例的人', { viewer: aId }, now);

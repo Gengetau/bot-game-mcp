@@ -257,6 +257,10 @@ async function step(n, title, fn) {
     for (const p of [A, B, A2, A3, ...extra].filter(Boolean)) p.w.allow = [];
     current.error = e instanceof Error ? e.message : String(e);
     console.log(`  ✗ 步骤 ${n} 失败：${current.error}`);
+    // 步骤半路失败时可能还按着方向键（角色会一直走下去，把后面的步骤也带红）：都松开。没按着的键松开是空操作
+    for (const p of [A, B, A2, A3, ...extra].filter(Boolean)) {
+      for (const key of ['w', 'a', 's', 'd', 'ArrowUp', 'ArrowLeft', 'ArrowDown', 'ArrowRight']) await p.page.keyboard.up(key).catch(() => {});
+    }
   }
   current.ms = Date.now() - t0;
   await noteFrameStats();
@@ -452,26 +456,38 @@ const snap = (page) =>
 const viewport = (page) => page.evaluate(() => ({ w: window.innerWidth, h: window.innerHeight }));
 const project = (page, x, z) => page.evaluate(([x, z]) => window.__town.project(x, 0, z), [x, z]);
 
-/** 点在页面里的世界坐标上（鼠标或触摸）。目标不在可点区域内就沿着自己到目标的连线往回缩，直到点得到。 */
+/**
+ * 点在页面里的世界坐标上（鼠标或触摸）。目标不在可点区域内就沿着自己到目标的连线往回缩，直到点得到。
+ *
+ * 投影和往回缩在页面里对着同一份 window.__town 一次算完（自己的位置和投影矩阵来自 Godot 的同一帧）。
+ * 以前是先取一次自己的位置，再一趟趟往返页面去投影：自己正按着方向键走路时镜头每帧都在跟，
+ * 软件渲染下一趟往返约一帧（0.25 秒，够走 1 米），先取到的位置越来越旧，每缩一步都追不上镜头，
+ * 机器一忙就报「投影不到可点区域」（步骤 4.5 的「按着 D 时点地」，目标本来就贴着屏幕左缘）。
+ */
 async function clickWorld(p, x, z, opts = {}) {
-  const s = await snap(p.page);
-  const me = s.actors.find((a) => a.id === s.self);
   const vp = await viewport(p.page);
   // opts.avoidDock（新步骤用）：面板开着时，点位还要避开没被面板盖住的矩形以外的地方（桌面侧栏在右、手机抽屉在下）
   const fr = opts.avoidDock ? await p.page.evaluate(() => (window.TownDock?.freeRect ? window.TownDock.freeRect() : null)) : null;
-  const ok = (q) => q.x > 24 && q.x < vp.w - 24 && q.y > 100 && q.y < vp.h - 170 && (!fr || (q.x < fr.r - 24 && q.y < fr.b - 24 && q.x > fr.l + 24));
-  let k = 1;
-  let q = await project(p.page, x, z);
-  while (!ok(q) && k > 0.05) {
-    k -= 0.05;
-    q = await project(p.page, me.x + (x - me.x) * k, me.z + (z - me.z) * k);
-  }
-  if (!ok(q)) {
-    // 连自己脚边都点不到：把镜头和投影的现状写进报错里，否则只能猜
-    const mq = await project(p.page, me.x, me.z);
-    const cam = await p.page.evaluate(() => ({ zoom: window.__town.zoom ?? null, rect: window.__town.canvasRect, phase: window.__town.phase ?? null }));
-    check(false, `世界点 (${x},${z}) 投影不到可点区域：自己在 (${me.x.toFixed(2)},${me.z.toFixed(2)}) 投影 (${mq.x.toFixed(0)},${mq.y.toFixed(0)})，视口 ${vp.w}×${vp.h}，${JSON.stringify(cam)}`);
-  }
+  const r = await p.page.evaluate(
+    ([x, z, vp, fr]) => {
+      const t = window.__town;
+      const self = t.actors.find((a) => a.id === t.self);
+      const me = { x: self.x, z: self.z };
+      const ok = (q) => q.x > 24 && q.x < vp.w - 24 && q.y > 100 && q.y < vp.h - 170 && (!fr || (q.x < fr.r - 24 && q.y < fr.b - 24 && q.x > fr.l + 24));
+      let k = 1;
+      let q = t.project(x, 0, z);
+      while (!ok(q) && k > 0.05) {
+        k -= 0.05;
+        q = t.project(me.x + (x - me.x) * k, 0, me.z + (z - me.z) * k);
+      }
+      const mq = t.project(me.x, 0, me.z);
+      return { ok: ok(q), k, q: { x: q.x, y: q.y }, me, mq: { x: mq.x, y: mq.y }, cam: { zoom: t.zoom ?? null, rect: t.canvasRect, phase: t.phase ?? null } };
+    },
+    [x, z, vp, fr],
+  );
+  const { me, q, k } = r;
+  // 连自己脚边都点不到：把镜头和投影的现状写进报错里，否则只能猜
+  if (!r.ok) check(false, `世界点 (${x},${z}) 投影不到可点区域：自己在 (${me.x.toFixed(2)},${me.z.toFixed(2)}) 投影 (${r.mq.x.toFixed(0)},${r.mq.y.toFixed(0)})，视口 ${vp.w}×${vp.h}，${JSON.stringify(r.cam)}`);
   if (p.touch) await p.page.touchscreen.tap(q.x, q.y);
   else await p.page.mouse.click(q.x, q.y);
   return { x: me.x + (x - me.x) * k, z: me.z + (z - me.z) * k, px: q };
@@ -1006,7 +1022,14 @@ async function main() {
       const lp = normPts(longNav.points);
       const lastP = lp[lp.length - 1];
       const stillLong = await navNow();
-      check(dist(lastP, clicked) < 3 && dist(lp[0], c1) > 1.0 && (!stillLong || stillLong.id === longNav.id), `点地之后应沿点地路线走，不能被还按着的 D 盖回去：终点 (${lastP.x.toFixed(1)}, ${lastP.z.toFixed(1)})，走了 ${dist(c0, c1).toFixed(2)} 米，折线 ${JSON.stringify(lp)}，起点 (${c0.x.toFixed(1)}, ${c0.z.toFixed(1)}) 现在 (${c1.x.toFixed(1)}, ${c1.z.toFixed(1)})`);
+      // 终点以客户端实际发给服务器的目标点为准（和步骤 4 一样）：人按着 D 在走，镜头每帧都在跟，从算出点位到鼠标落下之间
+      // 屏幕下的世界点会往东漂一截（一两帧，软件渲染下 1 到 3 米），拿 clickWorld 估的点去比会把这截漂移算成路线不对
+      const sentNav = [...A.w.actions.slice(act0)].reverse().find((r) => r.type === 'navigate' && r.to && typeof r.to === 'object');
+      check(sentNav, `第 ${round} 遍：点地之后没有记录到带目标点的 navigate：${JSON.stringify(A.w.actions.slice(act0))}`);
+      const goal = { x: sentNav.to.x, z: sentNav.to.z };
+      note(`第 ${round} 遍：客户端实际发出的目标 (${goal.x.toFixed(2)}, ${goal.z.toFixed(2)})，离估算的点击点 ${dist(goal, clicked).toFixed(2)} 米；路线终点离目标 ${dist(lastP, goal).toFixed(2)} 米`);
+      check(goal.x < c0.x - 4 && dist(goal, clicked) < 6, `第 ${round} 遍：点的是西边约 12 米处，客户端发出的目标却是 (${goal.x.toFixed(2)}, ${goal.z.toFixed(2)})（按下时自己在 x=${c0.x.toFixed(2)}，估算的点击点 (${clicked.x.toFixed(2)}, ${clicked.z.toFixed(2)})）`);
+      check(dist(lastP, goal) < 1.0 && dist(lp[0], c1) > 1.0 && (!stillLong || stillLong.id === longNav.id), `点地之后应沿点地路线走，不能被还按着的 D 盖回去：终点 (${lastP.x.toFixed(1)}, ${lastP.z.toFixed(1)})，走了 ${dist(c0, c1).toFixed(2)} 米，折线 ${JSON.stringify(lp)}，起点 (${c0.x.toFixed(1)}, ${c0.z.toFixed(1)}) 现在 (${c1.x.toFixed(1)}, ${c1.z.toFixed(1)})`);
       await A.page.keyboard.up('d');
       await sleep(500);
       check(await navNow(), `松开 D 不应取消点地路线；点地后页面又发了方向帧：${A.gate.dirFrames.slice(fr0).join(' ')}；动作 ${JSON.stringify(A.w.actions.slice(-3))}`);

@@ -32,6 +32,13 @@ export const townParamsSchema = z.object({
   /** 改路线的频率上限：每分钟几次、突发几次 */
   navPerMinute: int(120, 1, 6000),
   navBurst: int(8, 1, 600),
+  /** NPC 散步：每次停留的最短、最长时间（毫秒），实际时长用 w.rng 在范围内选 */
+  npcStayMinMs: ms(60_000, 0),
+  npcStayMaxMs: ms(180_000, 0),
+  /** NPC 的走路速度是居民的几成（散步比居民慢一点） */
+  npcSpeedFactor: z.number().min(0.1).max(1).default(0.6),
+  /** NPC 找不到路时多久以后再试 */
+  npcRetryMs: ms(30_000, 1000),
   /** 信件从寄出到进信箱 */
   letterDeliveryDelayMs: ms(60_000),
   /** 住宅邀请有效期 */
