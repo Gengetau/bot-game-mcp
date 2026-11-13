@@ -425,6 +425,7 @@ func _ack(n: int, verb: String, pid: String, d: Dictionary) -> void:
 
 func _do(verb: String, pid: String, n: int) -> void:
 	if not _pickable(pid):
+		_ack(n, verb, pid, {"ok": false, "code": "gone"})  # 对方已不在场景里：让网页解开「在途」状态
 		return
 	var why: String = _block_reason()
 	if why != "":

@@ -483,7 +483,13 @@ export default async function run(h) {
   });
 
   // ───────────────────────── 60.93 截图 ─────────────────────────
+  let letterId = null;
   await step(60.93, '截图：B 向 A 问爱好并邀请 -> A 的门牌 + 请柬（桌面）；A 回家的屋里；A 傍晚点 B 的居民卡', async () => {
+    // 顺手先寄一封附邀请的信（A -> B）：投递要 60 秒，让等待和下面的截图重叠；60.96 读它
+    const lr0 = await apiAct(A, { type: 'send_letter', to: B.id, body: '来家里坐坐', invite: {} });
+    check(lr0.status === 200 || lr0.status === 202, `寄信应成功：${lr0.status} ${JSON.stringify(lr0.body)}`);
+    letterId = lr0.body?.letterId ?? null;
+    check(letterId, `寄信应回 letterId：${JSON.stringify(lr0.body)}`);
     await clickActor(B, A.id).catch(async () => { await B.page.click(`#actions [data-action="f:people:meet:${A.id}"]`); });
     await cardIs(B, A.id);
     const nb = await lastN(B);
@@ -518,6 +524,41 @@ export default async function run(h) {
     await cardIs(A, B.id);
     await sleep(400);
     await shot(A.page, '60-desktop-card-evening');
+  });
+
+  // ───────────────────────── 60.96 信里的邀请 ─────────────────────────
+  await step(60.96, '信里的邀请：B 在读信之前 /me 与界面都没有这份请柬；B 回家读信（API）后，/me 出现 via=letter 的邀请，Godot 一侧算新请柬（没有 invite 事件也不弹 toast），#actions 出现「去做客」，请柬栏有一条', async () => {
+    await closePanel(B.page);
+    const bHome = `home:${B.id}`;
+    // 屏障：信已经投递到 B 的信箱，而且 B 还没读（读之前 /me 的 received 里没有 A 的邀请）
+    const cid = await B.page.evaluate(() => window.TownHud.clientId());
+    const inbox = async () => (await (await B.ctx.request.get(`${BASE}/town/api/letters?clientId=${encodeURIComponent(cid)}`)).json()).letters ?? [];
+    await until(async () => (await inbox()).some((l) => l.id === letterId), 120_000, 'A 的信投递到 B 的信箱（60 秒延迟）', 1000);
+    check(!(await serverMe(B)).invites.received.some((r) => r.host.id === A.id), '读信之前 B 的 /me 不应有 A 的邀请');
+    const g0 = await godotPeople(B);
+    check(g0.fresh === 0, `读信之前 Godot 一侧不应有新请柬：${g0.fresh}`);
+    check((await inviteRows(B.page)).length === 0 && !(await actionButtons(B.page)).some((b) => b.id.startsWith('f:people:visit:')), '读信之前界面不应有请柬或「去做客」');
+    // 回家（走页面，长路），读信
+    await openPeopleTab(B.page);
+    await clickDoor(B.page, bHome);
+    await until(async () => (await where(B)).scene === 'home', 90_000, 'B 回到自己家', 500);
+    await closePanel(B.page);
+    const rr = await apiAct(B, { type: 'read_letter', letterId });
+    check(rr.status === 200, `读信应成功：${rr.status} ${JSON.stringify(rr.body)}`);
+    const me = await serverMe(B);
+    const inv = me.invites.received.find((r) => r.host.id === A.id);
+    check(inv && inv.via === 'letter', `读信之后 /me 应有 via=letter 的邀请：${JSON.stringify(me.invites.received)}`);
+    // 读信是 API 代发的，页面不知道；开面板（页签被看到）会让 Godot 刷新 /me
+    await openPeopleTab(B.page);
+    await until(async () => (await godotPeople(B)).fresh === 1, 20_000, 'Godot 一侧出现 1 张新请柬');
+    await until(async () => (await inviteRows(B.page)).some((r) => r.home === `home:${A.id}` && r.fresh), 15_000, '请柬栏出现这一份且是新的');
+    await closePanel(B.page);
+    await until(async () => (await actionButtons(B.page)).some((b) => b.id === `f:people:visit:home:${A.id}`), 15_000, 'B 的 #actions 出现「去做客」');
+    // 出门回会馆，给 60.95 一个干净的起点
+    await openPeopleTab(B.page);
+    await B.page.click(`${PANE} [data-role="leave"]`);
+    await until(async () => { const x = await where(B); return x.scene === 'town'; }, 60_000, 'B 出门', 500);
+    await closePanel(B.page);
   });
 
   // ───────────────────────── 60.95 离开与换人 ─────────────────────────
