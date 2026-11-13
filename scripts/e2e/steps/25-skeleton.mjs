@@ -327,6 +327,7 @@ export default async function run(h) {
 
   await step(25.4, '假接管：对 B 返回 true 之后按 E，记录是 (actor, B, key, 接管)，旧行为没有发生（屏障：之后的 /me 刷新和若干帧）；撤掉假接管后恢复旧行为', async () => {
     await A.page.evaluate((id) => window.__town.pickStub(id), B.id);
+    try {
     await frames(A.page, 3);
     const rec0 = await pickRec(A);
     const n0 = rec0.n;
@@ -361,6 +362,22 @@ export default async function run(h) {
     check(rec2.id === B.id && rec2.taken === false, `撤掉后应是没接管：${JSON.stringify(rec2)}`);
     await until(() => actionsOf(A, 'navigate').length > nav0, 20_000, '撤掉假接管后旧行为恢复（发出 navigate）');
     await idle(A);
+    } finally {
+      // 任何一条 check 抛出时也要撤掉假接管，免得它留在 A 页面上把后面步骤里对 B 的 E 键 / 点选都变成「被接管」
+      await A.page.evaluate(() => window.__town.pickStub('')).catch(() => {});
+    }
+  });
+
+  await step(25.5, '假接管已撤干净：按 E 对 B 的记录是没接管（25.4 无论成败都不把假接管留给后面的步骤）', async () => {
+    await until(async () => (await snap(A.page)).nearValid === true, 15_000, 'A 的「够得着」状态有效');
+    const n0 = (await pickRec(A))?.n ?? 0;
+    await pressE(A);
+    const rec = await until(async () => {
+      const r = await pickRec(A);
+      return r && r.n > n0 ? r : null;
+    }, 20_000, 'on_pick 记录出现');
+    check(rec.taken === false, `25.4 之后不应还有假接管：${JSON.stringify(rec)}`);
+    await idle(A);
   });
 
   await h.release(A);
@@ -377,6 +394,7 @@ export default async function run(h) {
  *  - main.gd 的 _do_interact 里 on_pick 返回 true 后不 return：本次和上一条一起改坏，25.4 在更前面的「来源应是 key」就红了，
  *    「被接管后不应发出 navigate」这条没有单独被触发过。
  *  - main.gd 里去掉 `features.on_pick(best_kind, best_id, src)` 那三行：25.2 的记录出不来（超时）。
+ *  - [实测过] 25.4 去掉 try/finally 并在假接管装上后立刻 throw（模拟中途 check 失败）：25.5 红，「25.4 之后不应还有假接管」。（实测：25.4 红「inject」、25.5 红「25.4 之后不应还有假接管 … taken:true」；改回后绿）
  *  - dock.css 里 #dockTabs 去掉 overflow-x:auto / padding-right 改 0 / 内边距改回 14：六个页签的「最后一个页签中心点命中自己」「右沿在关闭钮之内」会红。
  *  - dock.css 去掉抽屉里 `.dock-tab::before { top: -14px }` 或条高改回 40：抽屉里「页签条高应 >= 44」「顶端点不到」会红。
  *  - dock.css 去掉 `#dock #dockTabs[data-count="1"] .dock-tab`：真页签只有一个时「仍是不可点的标题」会红。
