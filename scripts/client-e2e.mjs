@@ -6,6 +6,8 @@
  *   npm run client:e2e      # 起引擎（子进程、开发登录、临时库、随机端口）+ 两个浏览器上下文 + 一个 AI 居民
  *
  * 选项：--no-shots 不写截图；--only=3,4 只跑指定步骤（步骤之间有先后依赖，只用于调试）；--keep-engine-log 失败时不删临时目录。
+ * 新步骤文件在 scripts/e2e/steps/（写法和号段见那里的 README.md）：--only=chat-nearby（meta.id）或 --only=20（落在 [n, n+10) 的数字）只跑这个文件，
+ * 命中后整个文件的所有子步骤都运行；--list 列出全部新步骤后退出。
  * 反向验证：E2E_AI_NO_RENEW=1 npx tsx scripts/client-e2e.mjs --only=1,8 --no-shots（步骤 8 里让 AI 的端口没有续租方法，运行器不续租，这一步应当失败）。
  * 退出码：全部通过为 0；任何步骤失败、控制台错误、页面错误、CSP 违规、请求失败都算失败（非零）。
  * 结果写到 client/demo/results.json，截图写到 client/demo/NN-说明.jpg（手机 deviceScaleFactor 2，桌面 1）。
@@ -21,11 +23,11 @@
  */
 import { spawn, execFileSync } from 'node:child_process';
 import { createRequire } from 'node:module';
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { randomBytes } from 'node:crypto';
 
 const ROOT = resolve(fileURLToPath(new URL('..', import.meta.url)));
@@ -35,7 +37,10 @@ const ARGS = process.argv.slice(2);
 const NO_SHOTS = ARGS.includes('--no-shots');
 const KEEP = ARGS.includes('--keep-engine-log');
 const AI_NO_RENEW = process.env.E2E_AI_NO_RENEW === '1'; // 反向验证用：步骤 8 里让端口没有 renewNavigation，运行器就不续租，这一步应当失败
-const ONLY = (ARGS.find((a) => a.startsWith('--only=')) ?? '').slice(7).split(',').filter(Boolean).map(Number);
+const ONLY_RAW = (ARGS.find((a) => a.startsWith('--only=')) ?? '').slice(7).split(',').filter(Boolean);
+const ONLY = ONLY_RAW.map(Number); // 非数字变 NaN：ONLY.length 仍为真，所以旧步骤全部跳过（保持原行为）
+const ONLY_IDS = ONLY_RAW.filter((x) => Number.isNaN(Number(x))); // 新步骤文件的 meta.id（如 chat-nearby）
+const LIST = ARGS.includes('--list');
 const T_POS = 0.6; // 页面里的位置 与 服务器折线现算位置 的容差（米）
 // 页面的服务器时间估计与服务器真实时间的容差（毫秒）。页面的 serverNow 一秒内只在 Godot 帧里写进 __town（软件渲染约 3~7 帧每秒，
 // 最旧约 300 毫秒），脚本用「值变化的那一刻」去对齐，剩下的是时钟估计本身的误差；走路速度 2.4 米每秒，400 毫秒约 1 米。
@@ -43,6 +48,32 @@ const T_CLOCK_MS = 400;
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const rnd = () => randomBytes(3).toString('hex');
+
+// ───────────────────────── 新步骤文件（scripts/e2e/steps/*.mjs，写法见那里的 README.md）─────────────────────────
+
+const STEPS_DIR = join(ROOT, 'scripts', 'e2e', 'steps');
+/** 读全部步骤文件（按文件名排序）；id 或 n 重复就抛错，免得两个人的步骤互相覆盖。 */
+async function loadStepFiles() {
+  if (!existsSync(STEPS_DIR)) return [];
+  const mods = [];
+  const ids = new Map();
+  const ns = new Map();
+  for (const f of readdirSync(STEPS_DIR).filter((x) => x.endsWith('.mjs')).sort()) {
+    const m = await import(pathToFileURL(join(STEPS_DIR, f)).href);
+    if (!m.meta || typeof m.default !== 'function') throw new Error(`步骤文件 ${f} 必须导出 meta 和 default 函数`);
+    const { id, n } = m.meta;
+    if (ids.has(id)) throw new Error(`步骤文件 ${f} 的 meta.id「${id}」与 ${ids.get(id)} 重复`);
+    if (ns.has(n)) throw new Error(`步骤文件 ${f} 的 meta.n ${n} 与 ${ns.get(n)} 重复`);
+    ids.set(id, f);
+    ns.set(n, f);
+    mods.push({ file: f, meta: m.meta, run: m.default });
+  }
+  return mods;
+}
+if (LIST) {
+  for (const m of await loadStepFiles()) console.log(`${m.meta.n}\t${m.meta.id}\t${m.meta.title}\t${m.file}`);
+  process.exit(0);
+}
 
 // ───────────────────────── 前置检查 ─────────────────────────
 
@@ -209,8 +240,9 @@ async function noteFrameStats() {
   }
   if (rows.length) note(`最长帧间隔：${rows.join('；')}`);
 }
+let fileSelected = false; // 正在跑的新步骤文件被 --only 选中：它的所有子步骤都运行
 async function step(n, title, fn) {
-  if (ONLY.length && !ONLY.includes(n)) return;
+  if (ONLY.length && !ONLY.includes(n) && !fileSelected) return;
   current = { n, title, ok: false, ms: 0, notes: [] };
   notes.length = 0;
   const t0 = Date.now();
@@ -368,9 +400,9 @@ async function newPlayer(browser, label, ctxOpts, { wsGate = false } = {}) {
   return { ctx, page, w, label, touch: !!ctxOpts.hasTouch, gate, name: null };
 }
 
-async function login(p, name, { shotEnter } = {}) {
+async function login(p, name, { shotEnter, query = '' } = {}) {
   const t0 = Date.now();
-  await p.page.goto(`${BASE}/town/3d/?debug=1`);
+  await p.page.goto(`${BASE}/town/3d/?debug=1${query}`); // query：新步骤用（如 &hour=19.5 固定傍晚）
   await p.page.waitForSelector('#enterBtn:not([hidden])', { timeout: 120_000 });
   const tButton = Date.now() - t0;
   if (shotEnter) await shot(p.page, shotEnter);
@@ -421,11 +453,13 @@ const viewport = (page) => page.evaluate(() => ({ w: window.innerWidth, h: windo
 const project = (page, x, z) => page.evaluate(([x, z]) => window.__town.project(x, 0, z), [x, z]);
 
 /** 点在页面里的世界坐标上（鼠标或触摸）。目标不在可点区域内就沿着自己到目标的连线往回缩，直到点得到。 */
-async function clickWorld(p, x, z) {
+async function clickWorld(p, x, z, opts = {}) {
   const s = await snap(p.page);
   const me = s.actors.find((a) => a.id === s.self);
   const vp = await viewport(p.page);
-  const ok = (q) => q.x > 24 && q.x < vp.w - 24 && q.y > 100 && q.y < vp.h - 170;
+  // opts.avoidDock（新步骤用）：面板开着时，点位还要避开没被面板盖住的矩形以外的地方（桌面侧栏在右、手机抽屉在下）
+  const fr = opts.avoidDock ? await p.page.evaluate(() => (window.TownDock?.freeRect ? window.TownDock.freeRect() : null)) : null;
+  const ok = (q) => q.x > 24 && q.x < vp.w - 24 && q.y > 100 && q.y < vp.h - 170 && (!fr || (q.x < fr.r - 24 && q.y < fr.b - 24 && q.x > fr.l + 24));
   let k = 1;
   let q = await project(p.page, x, z);
   while (!ok(q) && k > 0.05) {
@@ -527,11 +561,11 @@ function polyAt(nav, t) {
 const dist = (a, b) => Math.hypot(a.x - b.x, a.z - b.z);
 
 /** 分几段走到 (x,z)：每一段点视野内能点到的点（clickWorld 会缩回），等服务器里走完再点下一段。 */
-async function walkTo(p, x, z, tol = 0.8) {
+async function walkTo(p, x, z, tol = 0.8, opts = {}) {
   for (let hop = 0; hop < 10; hop++) {
     const me = selfActor(await serverScene(p));
     if (dist(me, { x, z }) < tol) return me;
-    await clickWorld(p, x, z);
+    await clickWorld(p, x, z, opts);
     // 点的地方离得太近时服务器当场就算走完，没有导航：回头重新量距离
     const started = await until(async () => selfActor(await serverScene(p))?.nav, 5000, '开始走', 250).catch(() => null);
     if (!started) continue;
@@ -566,6 +600,96 @@ let aiClient = null;
 let runner = null;
 let aiId = null;
 const metrics = { versions: {}, bundle: [], load: {} };
+const finishedWatches = []; // release 过的页面的监视记录：最后的全程检查仍统计它们的问题
+
+/** 新步骤文件用的一对新页面：桌面 1440x900 DSF 1（A）+ 手机 390x844 DSF 2 触摸（B），都带 wsGate，名字随机，登录好并互相看见。 */
+async function pair() {
+  const a = await newPlayer(browsers[0], 'N-A 桌面', { viewport: { width: 1440, height: 900 }, deviceScaleFactor: 1 }, { wsGate: true }); // 桌面 DSF 必须是 1：DSF 2 会把软件渲染拖到 1~2 帧每秒
+  const b = await newPlayer(browsers[1], 'N-B 手机', { viewport: { width: 390, height: 844 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true }, { wsGate: true });
+  extra.push(a, b);
+  await Promise.all([login(a, `阿桌${rnd()}`), login(b, `阿机${rnd()}`)]);
+  a.id = (await snap(a.page)).self;
+  b.id = (await snap(b.page)).self;
+  await until(async () => (await snap(a.page)).actors.some((x) => x.id === b.id) && (await snap(b.page)).actors.some((x) => x.id === a.id), 20_000, '新的一对页面互相看到对方');
+  return { A: a, B: b };
+}
+
+/**
+ * 让一个页面的居民离开并关掉页面：先带它自己的 clientId POST /leave（只关上下文不会让居民下线，在场租约 60 秒，
+ * 会继续被后面的步骤当成「附近的人」听见），再关上下文。它的监视记录并入 finishedWatches，最后的全程检查仍统计。
+ */
+async function release(p) {
+  if (!p) return;
+  try {
+    const cid = await p.page.evaluate(() => window.TownHud.clientId());
+    await p.ctx.request.post(`${BASE}/town/api/leave`, { data: { clientId: cid } });
+  } catch {
+    /* 空白页面（--only 单跑时旧的 A、B 没登录过）或已关闭：没有居民可离开 */
+  }
+  try {
+    const v = await p.page.evaluate(() => window.__csp ?? []);
+    if (v.length) {
+      p.w.problems.push(`CSP 违规事件：${v.join('; ')}`);
+      p.w.csp += v.length;
+    }
+  } catch {
+    /* 页面已关 */
+  }
+  p.w.closing = true;
+  const shared = A && p !== A && p.ctx === A.ctx; // A2、A3 是 A 的上下文里的第二、三个标签页：只关页面
+  if (shared) await p.page.close().catch(() => {});
+  else await p.ctx.close().catch(() => {});
+  if (!finishedWatches.includes(p.w)) finishedWatches.push(p.w);
+  const i = extra.indexOf(p);
+  if (i >= 0) extra.splice(i, 1);
+  if (p === A) A = null;
+  if (p === B) B = null;
+  if (p === A2) A2 = null;
+  if (p === A3) A3 = null;
+}
+
+/** 新步骤文件的入口：在步骤 15 之后、全程检查之前执行。 */
+async function runStepFiles(hh) {
+  const mods = await loadStepFiles();
+  const sel = mods.filter((m) => !ONLY.length || ONLY_IDS.includes(m.meta.id) || ONLY.some((x) => Number.isFinite(x) && x >= m.meta.n && x < m.meta.n + 10));
+  if (!sel.length) return;
+  // 清场：旧的页面和 AI 居民还在镇上，同出生点，会污染 heardBy 与「恰好一条」的断言
+  for (const p of [A2, A3, ...extra, A, B].filter(Boolean)) await release(p);
+  try {
+    await runner?.stop();
+    await aiClient?.close();
+  } catch {
+    /* 忽略 */
+  }
+  runner = null;
+  aiClient = null;
+  for (const m of sel) {
+    fileSelected = ONLY.length > 0;
+    console.log(`\n── 步骤文件 ${m.file}（${m.meta.title}）──`);
+    try {
+      await m.run(hh);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      console.log(`  ✗ 步骤文件 ${m.file} 出错：${msg}`);
+      results.push({ n: m.meta.n, title: `${m.meta.title}（步骤文件出错）`, ok: false, ms: 0, error: msg, notes: [] });
+    } finally {
+      fileSelected = false;
+    }
+  }
+}
+
+/** 传给新步骤文件的工具集（转发现有函数；旧步骤不搬、不抽 harness）。 */
+const h = {
+  step, until, sleep, check, note, shot, allowFailure, newPlayer, login, serverScene, snap, clickWorld, walkTo, rnd, browsers,
+  selfActor, dist, project, viewport, seen, clearSpot, assertClock, polyAt, normPts, T_POS, T_CLOCK_MS,
+  get BASE() {
+    return BASE;
+  },
+  get NO_SHOTS() {
+    return NO_SHOTS;
+  },
+  pair, release,
+};
 
 async function main() {
   console.log(`栖灯镇客户端端到端：临时目录 ${TMP}`);
@@ -582,7 +706,7 @@ async function main() {
   } catch {
     metrics.versions.godot = '（本机没有 Godot 可执行文件，未取到版本）';
   }
-  for (const f of ['index.wasm', 'index.pck', 'index.js']) {
+  for (const f of ['index.wasm', 'index.pck', 'index.js', 'town-modules.js', 'town-modules.css'].filter((x) => existsSync(join(CLIENT_DIR, x)))) {
     const raw = statSync(join(CLIENT_DIR, f)).size;
     const gz = existsSync(join(CLIENT_DIR, `${f}.gz`)) ? statSync(join(CLIENT_DIR, `${f}.gz`)).size : null;
     const br = existsSync(join(CLIENT_DIR, `${f}.br`)) ? statSync(join(CLIENT_DIR, `${f}.br`)).size : null;
@@ -1727,12 +1851,14 @@ async function main() {
     D.w.closing = true;
     await D.ctx.close();
   });
+
+  await runStepFiles(h);
 }
 
 // ───────────────────────── 收尾 ─────────────────────────
 
 function allWatches() {
-  return [A, B, A2, A3, ...extra].filter(Boolean).map((p) => p.w);
+  return [...[A, B, A2, A3, ...extra].filter(Boolean).map((p) => p.w), ...finishedWatches];
 }
 
 async function collectCsp() {
@@ -1809,6 +1935,12 @@ try {
   } catch (e) {
     console.error('写结果失败：', e);
     exitCode = 1;
+  }
+  // --shots-dir=<目录>（看图用）：不管是否 --only，把这一遍拍到的截图另存一份，不动 client/demo/
+  const shotsDir = (ARGS.find((x) => x.startsWith('--shots-dir=')) ?? '').slice(12);
+  if (shotsDir && shots.length) {
+    mkdirSync(shotsDir, { recursive: true });
+    for (const sh of shots) copyFileSync(join(SHOT_TMP, `${sh.name}.jpg`), join(shotsDir, `${sh.name}.jpg`));
   }
   // 引擎真正退出之后才删临时目录
   await stopEngine();

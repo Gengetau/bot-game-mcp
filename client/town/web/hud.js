@@ -356,7 +356,11 @@
       } else if (code === 'Escape') {
         if (e.repeat) return;
         if (!$('destMenu').hidden) show($('destMenu'), false);
-        else emit('esc');
+        else {
+          /* 面板开着：这一下 Esc 关面板，同时照常发 esc（走路中也停下）；键位提示「Esc 停下」始终成立 */
+          if (window.TownDock) window.TownDock.escape();
+          emit('esc');
+        }
       }
     },
     true,
@@ -462,6 +466,7 @@
       return;
     }
     state = s;
+    if (window.TownDock) window.TownDock.onCore(s);
     renderPanel(s);
     lastPhase = s.phase;
     if (s.phase !== 'playing') {
@@ -646,6 +651,7 @@
     d.act = function (action) {
       emit('debug_act', JSON.stringify(action));
     };
+    d.dock = window.TownDock ? window.TownDock.debug() : {};
     window.__town = d;
   }
 
@@ -661,6 +667,11 @@
       return audioPrefs.bg;
     },
     ready: ready,
+    /* 面板功能的网页通道：dock.js 在同一个对象上换成真实现（不能整体替换 window.TownHud）；没加载 dock.js 时协议号 0 与客户端的 2 对不上，Godot 会报版本不一致 */
+    feed: function () {},
+    protocol: function () {
+      return 0;
+    },
   };
   setLoading(0, '正在加载客户端…');
 })();

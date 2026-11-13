@@ -26,7 +26,9 @@
     "world:load": "tsx scripts/world-load.ts",
     "world:recovery": "tsx scripts/world-recovery.ts",
     "client:export": "bash client/tools/export.sh",
-    "client:e2e": "tsx scripts/client-e2e.mjs"
+    "client:e2e": "tsx scripts/client-e2e.mjs",
+    "client:lint": "node client/tools/lint-web.mjs",
+    "client:web": "bash client/tools/web-only.sh"
   },
   "devDependencies": {
     "@modelcontextprotocol/sdk": "^1.32.2",
