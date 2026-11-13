@@ -4,6 +4,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { resolveParams } from '../../src/world/params.js';
+import { publicView } from '../../src/world/views.js';
 import { makeTown, type Actor, type Town } from './helpers.js';
 
 const TABLE1 = 'tea_house:table1';
@@ -41,12 +42,26 @@ describe('InteractionView.startedAt', () => {
     expect(seen.endsAt).toBe(mine.endsAt);
   });
 
-  it('不在场的人（还在广场）的视图里没有这场活动，也没有 startedAt', () => {
-    const { a } = pair();
-    const t2 = makeTown({ seed: 's0b' });
-    const c = t2.join('阿木', 'agent');
-    a.act('start_interaction', { objectId: TABLE1, wait: true });
-    expect(JSON.stringify(c.view())).not.toContain('startedAt');
+  it('同一个镇里不在桌边的人（留在广场）：开桌、开始之后，视图、事件、公开视图里都没有这场活动，也没有 startedAt', () => {
+    const { t, a, b } = pair();
+    const c = t.join('阿木', 'agent');
+    c.heartbeat();
+    const cur0 = c.view().cursor;
+    const ix = a.act('start_interaction', { objectId: TABLE1, wait: true }).interaction;
+    b.act('join_interaction', { interactionId: ix.id });
+    t.advance(7 * SEC);
+    a.heartbeat();
+    b.heartbeat();
+    a.act('begin_interaction', { interactionId: ix.id });
+    // 正面对照：参与者的视图里确实有这个字段，下面的「没有」不会因改名而空过
+    expect(JSON.stringify(a.view())).toContain('startedAt');
+    expect(a.view().interaction!.startedAt).not.toBeNull();
+    c.heartbeat();
+    const mine = JSON.stringify(c.view());
+    expect(mine).not.toContain('startedAt');
+    expect(c.view().interaction).toBeNull();
+    expect(JSON.stringify(c.events(cur0))).not.toContain('startedAt');
+    expect(JSON.stringify(publicView(t.w))).not.toContain('startedAt');
   });
 });
 
@@ -82,5 +97,18 @@ describe('interactionTimeScale', () => {
     for (const bad of [0, -1, 1.5, 100]) expect(() => resolveParams({ interactionTimeScale: bad }), String(bad)).toThrow(/interactionTimeScale/);
     expect(resolveParams({}).interactionTimeScale).toBe(1);
     expect(resolveParams({ interactionTimeScale: 0.01 }).interactionTimeScale).toBe(0.01);
+  });
+});
+
+describe('报名时限 activityLobbyTtlMs 是开服参数', () => {
+  it('设成 30 秒：开了桌没人来，30 秒后自动散（默认 10 分钟）', () => {
+    expect(resolveParams({}).activityLobbyTtlMs).toBe(10 * 60 * SEC);
+    const { t, a } = pair({ activityLobbyTtlMs: 30 * SEC });
+    const ix = a.act('start_interaction', { objectId: TABLE1, wait: true }).interaction;
+    expect(ix.lobbyExpiresAt - t.clock.t).toBe(30 * SEC);
+    t.advanceAlive(25 * SEC, [a], 5 * SEC);
+    expect(a.view().interaction).not.toBeNull();
+    t.advanceAlive(10 * SEC, [a], 5 * SEC);
+    expect(a.view().interaction).toBeNull();
   });
 });
