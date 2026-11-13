@@ -1263,6 +1263,12 @@ function revalidateNpc(w: WorldService, a: ActorRow, now: number): void {
     w.db.run('UPDATE npc_state SET pose = ?, stop_anchor = ? WHERE actor_id = ?', def.post.pose, def.post.anchor, a.actor_id);
     // 日程任务作废：npc.ts 的恢复钩子随后按岗位重新安排
     w.cancelJob(npcJobKey(a.actor_id));
+  } else if (def) {
+    // 位置还合法，但作废的路线出发时已把站点指向没去成的目的地：站点和姿态回到离脚下最近的一站（在站上就是那一站的姿态）
+    const spots = [def.post, ...(def.schedule?.stops ?? [])].map((stop) => ({ stop, spot: anchorSpot(w, stop.anchor) }));
+    const near = spots.reduce((best, c) => (Math.hypot(c.spot.x - a.x, c.spot.z - a.z) < Math.hypot(best.spot.x - a.x, best.spot.z - a.z) ? c : best));
+    const on = Math.hypot(near.spot.x - a.x, near.spot.z - a.z) < 0.05;
+    w.db.run('UPDATE npc_state SET pose = ?, stop_anchor = ? WHERE actor_id = ?', on ? near.stop.pose : 'stand', near.stop.anchor, a.actor_id);
   }
   saveActor(w, a);
   w.bumpSpace(sceneKeyOf(a));

@@ -833,7 +833,8 @@ export class Invariants {
     if (!scanEvents) return;
     this.pass('npc_no_events');
     const ev =
-      db.scalar("SELECT COUNT(*) FROM recipient_events WHERE resident_id LIKE 'npc:%' OR projection LIKE '%npc:%'") +
+      // 居民走到 NPC 身边时，本人的 you_arrived / nav_stopped 带着「目标是 NPC」，那是居民自己的事件，不算 NPC 的事件
+      db.scalar("SELECT COUNT(*) FROM recipient_events WHERE resident_id LIKE 'npc:%' OR (projection LIKE '%npc:%' AND type NOT IN ('you_arrived', 'nav_stopped'))") +
       db.scalar("SELECT COUNT(*) FROM public_events WHERE projection LIKE '%npc:%'") +
       db.scalar("SELECT COUNT(*) FROM world_events WHERE payload LIKE '%npc:%'") +
       db.scalar("SELECT COUNT(*) FROM event_parties WHERE resident_id LIKE 'npc:%'");

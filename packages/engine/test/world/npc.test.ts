@@ -3,12 +3,15 @@
  * 数据（world_actors 的 npc 行）、不占名额、不进听众、不发事件、场景快照的 npcs、走到 NPC 身边、
  * 居民路径碰不到 NPC、重启与停机追赶、地图换版本、schema v6 迁移。
  */
+import { dirname, join } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
 import { NPCS, npcDef } from '../../src/world/content.js';
 import { SCHEMA_VERSION } from '../../src/world/db.js';
 import { WorldError } from '../../src/world/errors.js';
 import { directory, publicView } from '../../src/world/views.js';
 import { outboxPending, report } from '../../src/world/reports.js';
+import { nearbyAudience } from '../../src/world/hearing.js';
 import { actorOf, directionInput, npcActorOf, positionOfNpc, positionOfResident, renewNavigation, sceneView, stopNav } from '../../src/world/space.js';
 import { distance, isWalkable } from '../../src/world/spatial/index.js';
 import { FakeClock } from '../helpers.js';
@@ -211,6 +214,23 @@ describe('NPC：不是听众、不发事件', () => {
     expect(new Set(aud)).toEqual(new Set([a.residentId, b.residentId]));
   });
 
+  it('nearbyAudience 只认居民行：即使有一行 kind=npc 却带着真实居民编号（绕过表约束造出的坏行），也不会把那位居民当成 NPC 行的听众', () => {
+    const t = makeTown({ params: SHORT });
+    const a = t.join('阿灯');
+    const b = t.join('小岚', 'agent');
+    const c = t.join('阿澈');
+    const speaker = t.w.mustResident(a.residentId);
+    const ids = () => nearbyAudience(t.w, speaker, t.clock.t).map((r) => r.resident_id).sort();
+    expect(ids()).toEqual([a.residentId, b.residentId, c.residentId].sort());
+    // 表约束本来就不允许这样的行
+    expect(() => t.w.db.db.prepare("UPDATE world_actors SET kind = 'npc' WHERE resident_id = ?").run(c.residentId)).toThrow();
+    // 关掉检查约束，把 c 的行改成 kind=npc（位置不动，仍在同一场景同一实例里）
+    t.w.db.db.exec('PRAGMA ignore_check_constraints = ON');
+    t.w.db.db.prepare("UPDATE world_actors SET kind = 'npc' WHERE resident_id = ?").run(c.residentId);
+    t.w.db.db.exec('PRAGMA ignore_check_constraints = OFF');
+    expect(ids()).toEqual([a.residentId, b.residentId].sort());
+  });
+
   it('NPC 走动期间：私有事件、公开事件、事实里都没有关于它的行，事件总数也不因它而增加', () => {
     const t = makeTown({ params: SHORT });
     const a = t.join('阿灯');
@@ -402,15 +422,27 @@ describe('NPC：居民路径碰不到 NPC', () => {
     checkSpaceInvariants(t);
   });
 
-  it('NPC 路径不触发居民才有的钩子：走动不产生 arrived 事实、不撤销报价、不改任何居民的区域标签', () => {
+  it('NPC 路径不触发居民才有的钩子：走动不产生 arrived 事实、不撤销挂着的报价、不改任何居民的区域标签和位置', () => {
     const t = makeTown({ params: SHORT });
     const a = t.join('阿灯');
+    const b = t.join('小岚', 'agent');
+    const offer = a.act('offer', { kind: 'gift', to: b.residentId, give: { coins: 1 } });
+    const offerRow = () => t.w.db.get('SELECT * FROM offers WHERE offer_id = ?', offer.offer.id);
+    expect(offerRow()).toMatchObject({ status: 'open' });
     const labels = () => t.w.db.all('SELECT resident_id, location_id FROM residents ORDER BY resident_id');
     const l0 = labels();
+    const o0 = offerRow();
+    const arrivedBefore = t.w.db.scalar("SELECT COUNT(*) FROM world_events WHERE type = 'arrived'");
+    const posA = a.pos();
     const rev = Number(rowOf(t, STROLLER).nav_revision);
-    until(t, () => Number(rowOf(t, STROLLER).nav_revision) >= rev + 6, 3000, [a]);
+    until(t, () => Number(rowOf(t, STROLLER).nav_revision) >= rev + 6, 3000, [a, b]);
     expect(labels()).toEqual(l0);
-    expect(t.w.db.scalar("SELECT COUNT(*) FROM world_events WHERE type = 'arrived'")).toBe(0);
+    expect(offerRow()).toEqual(o0);
+    expect(a.pos()).toMatchObject({ x: posA.x, z: posA.z });
+    expect(t.w.db.scalar("SELECT COUNT(*) FROM world_events WHERE type = 'arrived'")).toBe(arrivedBefore);
+    // 反向对照：居民自己进私宅（换了场景实例）确实会撤掉这份报价，证明上面的断言能抓到钩子
+    a.go('home');
+    expect(offerRow()!.status).not.toBe('open');
   });
 });
 
@@ -465,15 +497,15 @@ describe('NPC：重启、停机与地图换版本', () => {
     const t = makeTown({ dbPath: file.path, clock: new FakeClock(), params: SHORT });
     until(t, () => npcPos(t, STROLLER).moving);
     const dest = npcActorOf(t.w, STROLLER)!.nav!.points.at(-1)!;
+    const at = [...town(t).anchors].find(([, an]) => Math.abs(an.x - dest.x) < 1e-9 && Math.abs(an.z - dest.z) < 1e-9)![0];
     t.clock.advance(120_000);
     t.restart({ crash: true });
-    const p = npcPos(t, STROLLER);
-    const at = [...town(t).anchors].find(([, an]) => Math.abs(an.x - dest.x) < 1e-9 && Math.abs(an.z - dest.z) < 1e-9)![0];
-    // 120 秒里至少走完这一趟；之后可能又出发，但状态合法
-    expect(isWalkable(town(t), p.x, p.z)).toBe(true);
-    expect(stateOf(t, STROLLER).stop_anchor).toBeTruthy();
+    // 恢复追赶只处理一步（到站），所以此刻恰好站在这一趟的终点上，摆好那一站的姿态
+    expect(restingAt(t, STROLLER)).toBe(at);
+    expect(stateOf(t, STROLLER)).toMatchObject({ stop_anchor: at, pose: npcDef(STROLLER)!.schedule!.stops.find((s) => s.anchor === at)!.pose });
     expect(pending(t, STROLLER)).toBe(1);
-    expect(at).toBeTruthy();
+    expect(Number(t.w.db.get('SELECT due_at FROM scheduled_jobs WHERE dedupe_key = ?', `npc_step:${STROLLER}`)!.due_at)).toBeGreaterThan(t.clock.t);
+    checkSpaceInvariants(t);
   });
 
   it('地图换了版本：位置不合法的 NPC 挪回岗位锚点（姿态跟着回岗位），合法的路线作废但位置不动；任务重新安排', () => {
@@ -500,23 +532,92 @@ describe('NPC：重启、停机与地图换版本', () => {
     until(t, () => Number(rowOf(t, STROLLER).nav_revision) > rev + 2);
   });
 
-  it('地图换了版本时 NPC 正走在路上而位置合法：路线作废、位置不动，随后从原地继续去下一站', () => {
+  it('地图换了版本时 NPC 正带着旧路线走在路上而位置合法：路线作废、版本递增、站点和姿态回到脚下这一站，随后从原地继续去别的站', () => {
     const file = tempDb();
     cleanups.push(file.cleanup);
     const t = makeTown({ dbPath: file.path, clock: new FakeClock(), params: SHORT });
+    const stops = npcDef(STROLLER)!.schedule!.stops;
+    until(t, () => restingAt(t, STROLLER) !== null);
+    // 等到它刚从某一站出发（行里带着旧地图的路线，坐标是出发点）
+    const from = restingAt(t, STROLLER)!;
     until(t, () => npcPos(t, STROLLER).moving);
-    t.advance(2_000);
-    const mid = npcPos(t, STROLLER);
-    t.w.db.db.prepare("UPDATE world_actors SET map_version = 'old', x = ?, z = ?, anchor_at = ? WHERE actor_id = ?").run(mid.x, mid.z, t.clock.t, STROLLER);
-    t.w.db.db.prepare('UPDATE world_actors SET nav_json = NULL WHERE actor_id = ?').run(STROLLER);
+    const origin = anchor(t, from);
+    const nav = npcActorOf(t.w, STROLLER)!.nav!;
+    expect(stateOf(t, STROLLER).stop_anchor).not.toBe(from); // 出发时站点已指向目的地
+    const rev = Number(rowOf(t, STROLLER).nav_revision);
+    t.w.db.db.prepare("UPDATE world_actors SET map_version = 'old' WHERE actor_id = ?").run(STROLLER);
+    expect(rowOf(t, STROLLER).nav_json).toBeTruthy();
     t.restart();
     expect(npcActorOf(t.w, STROLLER)!.nav).toBeNull();
-    expect(rowOf(t, STROLLER)).toMatchObject({ x: mid.x, z: mid.z });
+    expect(Number(rowOf(t, STROLLER).nav_revision)).toBeGreaterThan(rev);
+    expect(rowOf(t, STROLLER)).toMatchObject({ x: origin.x, z: origin.z, map_version: t.w.map.mapVersion });
+    // 姿态和站点跟着位置：在出发那一站上，不是没去成的目的地
+    expect(stateOf(t, STROLLER)).toMatchObject({ stop_anchor: from, pose: stops.find((s) => s.anchor === from)!.pose });
+    expect(nav.points.length).toBeGreaterThan(1);
     expect(pending(t, STROLLER)).toBe(1);
-    until(t, () => npcPos(t, STROLLER).moving || restingAt(t, STROLLER) !== null);
+    until(t, () => npcPos(t, STROLLER).moving);
+    // 新的一趟不会又走回原地这一站
+    expect(npcActorOf(t.w, STROLLER)!.nav!.points.at(-1)).not.toMatchObject({ x: origin.x, z: origin.z });
     until(t, () => restingAt(t, STROLLER) !== null);
     expect(pending(t, STROLLER)).toBe(1);
     checkSpaceInvariants(t);
+  });
+});
+
+describe('NPC：npc_step 的旧任务护栏', () => {
+  const variants: [string, (live: { navigationId: string; revision: number }) => Record<string, unknown>][] = [
+    ['导航编号对不上', (l) => ({ npcId: STROLLER, phase: 'walk', navigationId: 'nav:old', revision: l.revision })],
+    ['导航版本对不上', (l) => ({ npcId: STROLLER, phase: 'walk', navigationId: l.navigationId, revision: l.revision - 1 })],
+    ['阶段是停留但 NPC 正在走', () => ({ npcId: STROLLER, phase: 'stay' })],
+  ];
+  for (const [label, make] of variants) {
+    it(`${label}的晚到旧任务：到期也不结算别人的路线，位置和路线不变，按现在这条重新安排，恰好一条待办`, () => {
+      const t = makeTown({ params: SHORT });
+      until(t, () => npcPos(t, STROLLER).moving);
+      t.advance(1_000);
+      const live = npcActorOf(t.w, STROLLER)!.nav!;
+      const before = { row: rowOf(t, STROLLER), pos: npcPos(t, STROLLER), state: stateOf(t, STROLLER) };
+      expect(live.leaseUntil).toBeGreaterThan(t.clock.t + 1_000);
+      t.w.db.run("UPDATE scheduled_jobs SET payload = ?, due_at = ? WHERE dedupe_key = ?", JSON.stringify(make(live)), t.clock.t, `npc_step:${STROLLER}`);
+      t.w.tick();
+      expect(rowOf(t, STROLLER)).toEqual(before.row);
+      expect(npcPos(t, STROLLER)).toEqual(before.pos);
+      expect(stateOf(t, STROLLER)).toEqual(before.state);
+      expect(npcActorOf(t.w, STROLLER)!.nav).toMatchObject({ navigationId: live.navigationId, revision: live.revision });
+      expect(pending(t, STROLLER)).toBe(1);
+      // 旧任务被换成了对得上现在这条路线的任务，到点才结算
+      const job = t.w.db.get('SELECT due_at, payload FROM scheduled_jobs WHERE dedupe_key = ?', `npc_step:${STROLLER}`)!;
+      expect(Number(job.due_at)).toBe(Math.round(live.leaseUntil));
+      expect(JSON.parse(String(job.payload))).toMatchObject({ phase: 'walk', navigationId: live.navigationId, revision: live.revision });
+      checkSpaceInvariants(t);
+    });
+  }
+});
+
+describe('NPC：寻路失败', () => {
+  it('找不到路就原地停留，npcRetryMs 之后再试：位置不动、没抛错、恰好一条待办', () => {
+    const file = tempDb();
+    cleanups.push(file.cleanup);
+    const RETRY = 7_000;
+    const t = makeTown({ dbPath: file.path, clock: new FakeClock(), params: { ...SHORT, npcRetryMs: RETRY } });
+    until(t, () => restingAt(t, STROLLER) !== null);
+    // 把它放到封闭的障碍里面（不在可走格上，寻路不出去）：用喷泉中心
+    const fountain = town(t).source.obstacles.find((o) => o.id === 'plaza.fountain')!;
+    const fx = fountain.x + fountain.w / 2;
+    const fz = fountain.z + fountain.d / 2;
+    t.w.db.db.prepare('UPDATE world_actors SET x = ?, z = ? WHERE actor_id = ?').run(fx, fz, STROLLER);
+    t.restart();
+    const rev = Number(rowOf(t, STROLLER).nav_revision);
+    // 让待办到期
+    t.w.db.run('UPDATE scheduled_jobs SET due_at = ? WHERE dedupe_key = ?', t.clock.t, `npc_step:${STROLLER}`);
+    t.w.tick();
+    const failedJobs = t.w.db.scalar("SELECT COUNT(*) FROM scheduled_jobs WHERE kind = 'npc_step' AND status = 'failed'");
+    expect(failedJobs).toBe(0);
+    expect(npcActorOf(t.w, STROLLER)!.nav).toBeNull();
+    expect(rowOf(t, STROLLER)).toMatchObject({ x: fx, z: fz });
+    expect(Number(rowOf(t, STROLLER).nav_revision)).toBe(rev);
+    expect(pending(t, STROLLER)).toBe(1);
+    expect(Number(t.w.db.get('SELECT due_at FROM scheduled_jobs WHERE dedupe_key = ?', `npc_step:${STROLLER}`)!.due_at)).toBe(Math.round(t.clock.t + RETRY));
   });
 });
 
@@ -585,5 +686,30 @@ describe('NPC：公开出口没有坐标', () => {
       expect(text.includes('npc:'), `${label} 出现了 NPC 编号`).toBe(false);
       expect(text.includes(String(Math.round(p.x * 1000) / 1000) + ','), `${label} 出现了 NPC 的坐标`).toBe(false);
     }
+  });
+});
+
+describe('NPC：仿真不变量 npc_no_events 只看事件的主体', () => {
+  async function inv() {
+    const lib = (await import(/* @vite-ignore */ pathToFileURL(join(dirname(fileURLToPath(import.meta.url)), '../../../../scripts/world-lib.ts')).href)) as { Invariants: new (echo: (m: string) => void) => any };
+    return new lib.Invariants(() => undefined);
+  }
+  const run = (i: any, t: Town) => i.npcs(t.w, t.clock.t, t.w.db.all('SELECT * FROM world_actors WHERE world_id = ?', t.w.worldId), true);
+
+  it('居民走到 NPC 身边会收到带 NPC 目标的 you_arrived：不算 NPC 的事件；真有 NPC 当主体的事件仍然报违例', async () => {
+    const t = makeTown({ params: SHORT });
+    const a = t.join('阿灯');
+    until(t, () => restingAt(t, KEEPER) !== null, 60, [a]);
+    a.act('navigate', { approach: KEEPER });
+    a.walk();
+    const arrived = t.w.db.all("SELECT projection FROM recipient_events WHERE type = 'you_arrived'");
+    expect(arrived.some((r) => String(r.projection).includes(KEEPER))).toBe(true);
+    const i = await inv();
+    run(i, t);
+    expect(i.totalViolations).toBe(0);
+    // 反向：以 NPC 为接收者或参与方的记录必须仍被抓到
+    t.w.db.run("INSERT INTO recipient_events (resident_id, cursor, type, projection, occurred_at, created_at) VALUES (?, 1, 'x', '{}', 0, 0)", KEEPER);
+    run(i, t);
+    expect(i.totalViolations).toBeGreaterThan(0);
   });
 });
