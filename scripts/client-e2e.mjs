@@ -1910,20 +1910,29 @@ async function main() {
   // 步骤 15 里「刷新后音乐重新淡入」只走整遍恰好跑到的那个时段（夜里跑整遍就只测夜晚曲，白天跑就只测白天曲），
   // 夜晚那一支曾在 18 点到 24 点的整遍里超时、白天却一直是绿的。这里用 ?debug=1&hour= 把钟点固定住，夜晚（22 点）和白天（12 点）
   // 各做一遍：刷新 → 静音进入 → 取消静音 → 该时段的音乐淡入到满、另一首不在放，不再依赖整遍在哪个钟点跑。
+  // 怎么让 15.1 失败：把 audio.gd 的 _fetch 改回「req.timeout = 30」的总时长超时（去掉停滞计时和 download_chunk_size），重新导出：夜晚这一遍
+  // 里 night 曲第一次取会在 0 字节时超时、第二次才成功，「第一次取就应成功」那条断言变红。
   await step(15.1, '声音：钟点固定在夜晚（22 点）和白天（12 点），各做一遍「刷新 → 静音进入 → 取消静音 → 该时段的音乐淡入、另一首不在放」', async () => {
     const near = (a, b, tol) => typeof a === 'number' && Math.abs(a - b) <= tol;
     const E = await newPlayer(chromiumBrowserA, 'E 钟点', { viewport: { width: 1000, height: 700 }, deviceScaleFactor: 1 });
     extra.push(E);
     await login(E, `阿钟${rnd()}`, { query: '&hour=22' }); // 第一次进入：登录、建居民（地址栏带着 hour=22）
-    if (process.env.E2E_THROTTLE) await (await E.ctx.newCDPSession(E.page)).send('Emulation.setCPUThrottlingRate', { rate: Number(process.env.E2E_THROTTLE) }); // EXPERIMENT
+    // 夜晚这一遍把页面的 CPU 压慢 8 倍（Chromium 的 CDP，只影响这个页面）：模拟「机器忙 / 弱设备」。刷新后进场景的预热会把主线程卡住十几秒，
+    // 以前音乐请求按「整个请求 30 秒」计时，卡一次就在还没收到第一个字节时被判超时，再空等 20 秒重试，整首曲子晚到近一分钟
+    // （整遍在 18 到 24 点、机器正忙时红过两次）。现在这一遍不论整遍几点跑、机器忙不忙都走同一条路径。
+    // （点击都带 noWaitAfter：页面被压慢时 Playwright 点完后「等待可能的导航」会白等 30 秒）
+    const cdp = await E.ctx.newCDPSession(E.page);
+    const throttle = (rate) => cdp.send('Emulation.setCPUThrottlingRate', { rate });
+    await throttle(8);
     await until(async () => {
       const x = await snd(E);
       return x && x.inited ? x : null;
     }, 20_000, '音频初始化');
     for (const [hour, want, other] of [[22, 'night', 'day'], [12, 'day', 'night']]) {
       const t0 = Date.now();
+      if (hour === 12) await throttle(1); // 白天这一遍不压
       // 让总静音是开着的（上一遍结束时是取消静音的），然后刷新：第一遍用 reload 保持地址栏的 hour=22，第二遍换成 hour=12 重新载入
-      if ((await snd(E)).enabled) await E.page.click('#soundBtn');
+      if ((await snd(E)).enabled) await E.page.click('#soundBtn', { noWaitAfter: true });
       await until(async () => (await snd(E)).enabled === false && (await E.page.$eval('#soundBtn', (e) => e.textContent)) === '声音：关', 10_000, `钟点 ${hour}：总静音已开`);
       E.w.closing = true;
       if (hour === 22) await E.page.reload();
@@ -1931,14 +1940,14 @@ async function main() {
       await E.page.waitForSelector('#enterBtn:not([hidden])', { timeout: 120_000 });
       E.w.closing = false;
       check((await E.page.evaluate(() => location.search)).includes(`hour=${hour}`), `刷新后地址栏应还带着 hour=${hour}`);
-      await E.page.click('#enterBtn');
-      await E.page.waitForFunction(() => window.__town && window.__town.actors.length > 0 && document.body.dataset.phase === 'playing', null, { timeout: 60_000 });
+      await E.page.click('#enterBtn', { noWaitAfter: true });
+      await E.page.waitForFunction(() => window.__town && window.__town.actors.length > 0 && document.body.dataset.phase === 'playing', null, { timeout: 240_000 }); // 压慢 8 倍时进场景要一两分钟，只是上限
       const sEnter = await untilMusic(E, async () => {
         const x = await snd(E);
         return x && x.inited && x.enabled === false && x.busDb.master <= -60 && x.night === (want === 'night') && near(x.hour, hour, 0.01) ? x : null;
-      }, 30_000, `钟点 ${hour}：静音进入，音频钟点与昼夜判定对得上`);
+      }, 120_000, `钟点 ${hour}：静音进入，音频钟点与昼夜判定对得上`);
       check(sEnter.firstPlay && sEnter.firstPlay.masterDb <= -60, `钟点 ${hour}：静音进入的第一声应已是静音，实际 ${JSON.stringify(sEnter.firstPlay)}`);
-      await E.page.click('#soundBtn'); // 取消总静音
+      await E.page.click('#soundBtn', { noWaitAfter: true }); // 取消总静音
       await until(async () => {
         const x = await snd(E);
         return x.enabled && near(x.busDb.master, 0, 0.5) ? x : null;
@@ -1949,6 +1958,9 @@ async function main() {
         return l.loaded && l.playing && l.gain > 0.99 ? x : null;
       }, 90_000, `钟点 ${hour}：刷新后${want === 'night' ? '夜晚' : '白天'}曲载入并淡入`);
       check(!s.layers[`music_${other}`].playing, `钟点 ${hour}：另一首（${other}）不应在放（不叠播）`);
+      // 刷新后第一次取就应该成功：不能靠第一次超时、等 20 秒再取第二次才到（机器闲的时候第二次也能过，所以要明确断言）
+      const f = s.musicFetch[want];
+      check(f && f.attempt === 1 && f.history.length === 0 && f.result === 0, `钟点 ${hour}：${want} 曲第一次取就应成功，实际 ${JSON.stringify(f)}`);
       note(`钟点固定 ${hour}：静音进入 → 取消静音后 ${want} 曲淡入（增益 ${s.layers[`music_${want}`].gain}），${other} 不在放，用时 ${((Date.now() - t0) / 1000).toFixed(0)} 秒`);
     }
     E.w.closing = true;

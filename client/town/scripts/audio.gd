@@ -11,8 +11,12 @@ extends Node
 const SFX_DIR := "res://assets/audio/sfx/"
 const AMB_DIR := "res://assets/audio/ambience/"
 const MUSIC_PATH := "/town/3d/music/"
-## 取一首音乐的请求超时（秒）。
-const FETCH_TIMEOUT_S := 30.0
+## 取一首音乐：连续这么多秒（按帧累计，每帧最多计 1 秒）一个字节也没有新到，才算卡住、放弃这一次。
+## 不用「整个请求的总时长」：网页版 HTTPRequest 在主循环里按帧读，页面卡顿（进场景时的预热、机器忙）时总时长会被拖长，
+## 但数据其实一直在到；总时长超时会把一首正在慢慢到的曲子在 30 秒时掐掉、再空等 20 秒重试（夜晚曲比白天曲大 28%，更容易越线）。
+const FETCH_STALL_S := 30.0
+## 每次读 body 的块大小：默认 64 KB，一帧只读一块，整首要十几帧；放大后一帧就把已到的部分都读走
+const FETCH_CHUNK_BYTES := 1048576
 const SFX_NAMES := ["confirm", "step", "tap", "fail", "start", "mail", "panel_open", "panel_close", "coin", "door"]
 const AMB_NAMES := ["day", "night", "indoor", "fountain"]
 const MUSIC_NAMES := ["day", "night"]
@@ -302,15 +306,42 @@ func _fetch(url: String, track: String = "", attempt: int = 0) -> PackedByteArra
 		_music_fetch[track] = info
 	var req := HTTPRequest.new()
 	req.accept_gzip = false
-	req.timeout = FETCH_TIMEOUT_S  # 连上了但不返回的请求不能一直拖住后面的曲子和重试
+	req.download_chunk_size = FETCH_CHUNK_BYTES
 	add_child(req)
+	var box := {"done": false, "res": []}
+	req.request_completed.connect(func(r: int, c: int, h: PackedStringArray, b: PackedByteArray) -> void:
+		box["res"] = [r, c, h, b]
+		box["done"] = true)
 	var rerr: int = req.request(url)
 	if rerr != OK:
 		info["reqErr"] = rerr
 		info["fetching"] = false
 		req.queue_free()
 		return PackedByteArray()
-	var res: Array = await req.request_completed
+	# 等完成；连续 FETCH_STALL_S 秒没有新字节（连上了但不返回、半通的网络）才放弃，这样卡住的请求拖不住后面的曲子和重试
+	var last_bytes := -1
+	var stall := 0.0
+	var last_ms := Time.get_ticks_msec()
+	while not bool(box["done"]):
+		await get_tree().process_frame
+		var now := Time.get_ticks_msec()
+		var dt := minf(float(now - last_ms) / 1000.0, 1.0)
+		last_ms = now
+		var got: int = req.get_downloaded_bytes()
+		if got != last_bytes:
+			last_bytes = got
+			stall = 0.0
+		else:
+			stall += dt
+		info["bytes"] = got
+		if stall >= FETCH_STALL_S:
+			req.cancel_request()
+			req.queue_free()
+			info["fetching"] = false
+			info["result"] = -2  # 本地判定的停滞（不是 HTTPRequest 的结果码）
+			info["elapsedMs"] = Time.get_ticks_msec() - int(info["startMs"])
+			return PackedByteArray()
+	var res: Array = box["res"]
 	req.queue_free()
 	info["fetching"] = false
 	info["result"] = int(res[0])
