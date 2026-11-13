@@ -1590,6 +1590,38 @@ async function main() {
   // ── 15 ──
   await step(15, '声音：手势后 AudioContext 为 running；昼夜按服务器世界时间；三个音量与总静音生效并在刷新后保持；后台挂起/回前台不叠播；断线重连不重新起播；进屋切环境声；音乐文件取不到时照常运行', async () => {
     const snd = (p) => p.page.evaluate(() => (window.__town ? window.__town.snd : null));
+    // 等音乐的几处共用：超时的时候把当时的声音状态一起报出来（两首音乐的 loaded/playing/gain、night、hour、enabled、busDb、vol，
+    // 以及音频代码里「取文件」的状态 musicFetch：正在取、第几次、结果码、HTTP 码、字节数、耗时、是否在等重试）
+    const musicState = (x) =>
+      x
+        ? JSON.stringify({
+            night: x.night,
+            hour: x.hour,
+            enabled: x.enabled,
+            hidden: x.hidden,
+            bgMute: x.bgMute,
+            busDb: x.busDb,
+            vol: x.vol,
+            music_day: x.layers.music_day,
+            music_night: x.layers.music_night,
+            musicTried: x.musicTried,
+            musicFetch: x.musicFetch,
+            ticksMs: x.ticksMs,
+          })
+        : 'null';
+    const untilMusic = async (C_, fn, ms, what, every) => {
+      try {
+        return await until(fn, ms, what, every);
+      } catch (e) {
+        let st;
+        try {
+          st = musicState(await snd(C_));
+        } catch (e2) {
+          st = `读声音状态失败：${e2.message}`;
+        }
+        throw new Error(`${e.message}；当时的声音状态 ${st}`);
+      }
+    };
     const near = (a, b, tol) => typeof a === 'number' && Math.abs(a - b) <= tol;
     const dbOf = (v) => (v <= 0.0001 ? -80 : 20 * Math.log10(v));
     const setRange = (p, id, v) =>
@@ -1659,7 +1691,7 @@ async function main() {
     // 音乐从 /town/3d/music/ 流式取到并淡入；环境声和音效在包里
     const want = s.night ? 'night' : 'day';
     const other = want === 'day' ? 'night' : 'day';
-    s = await until(async () => {
+    s = await untilMusic(C, async () => {
       const x = await snd(C);
       const l = x.layers[`music_${want}`];
       return l.loaded && l.playing && l.gain > 0.99 ? x : null;
@@ -1667,7 +1699,7 @@ async function main() {
     check(!s.layers[`music_${other}`].playing, '另一时段的音乐不应同时在放（不叠播）');
     check(s.layers[`amb_${want}`].playing && s.layers[`amb_${want}`].gain > 0.99, `室外应放${want}环境声`);
     check(!s.layers.amb_indoor.playing, '室外不应放室内环境声');
-    await until(async () => (await snd(C)).layers[`music_${other}`].loaded, 60_000, '另一首音乐也取到了');
+    await untilMusic(C, async () => (await snd(C)).layers[`music_${other}`].loaded, 60_000, '另一首音乐也取到了');
     note(`音乐 ${want} 在播（增益 ${s.layers[`music_${want}`].gain}），环境声 ${want} 在播；总线(dB) ${JSON.stringify(s.busDb)}`);
 
     // 昼夜切换：把世界钟点改到另一个时段（?debug=1&hour=，页面运行中改地址栏参数即可），两首音乐交叉淡入淡出，中途两首同时在放，结束后只剩一首；再改回来
@@ -1675,7 +1707,7 @@ async function main() {
       const farHour = want === 'night' ? 12 : 21;
       await C.page.evaluate((h) => history.replaceState(null, '', `${location.pathname}?debug=1&hour=${h}`), farHour);
       let overlap = false;
-      s = await until(async () => {
+      s = await untilMusic(C, async () => {
         const x = await snd(C);
         const a = x.layers[`music_${want}`];
         const b = x.layers[`music_${other}`];
@@ -1686,7 +1718,7 @@ async function main() {
       check(s.layers[`amb_${other}`].gain > 0.99 && s.layers[`amb_${want}`].gain < 0.01, '环境声也应跟着切到另一时段');
       note(`世界钟点改到 ${farHour} 点：音乐 ${want} -> ${other} 交叉淡化（中途两首同时在放），环境声同步切换`);
       await C.page.evaluate(() => history.replaceState(null, '', `${location.pathname}?debug=1`));
-      await until(async () => {
+      await untilMusic(C, async () => {
         const x = await snd(C);
         return x.layers[`music_${want}`].gain > 0.99 && x.layers[`music_${other}`].gain < 0.01 && x.night === (want === 'night') ? x : null;
       }, 90_000, '钟点改回后切回原来的曲子', 100);
@@ -1776,7 +1808,7 @@ async function main() {
       const x = await snd(C);
       return x.enabled && near(x.busDb.master, 0, 0.5) ? x : null;
     }, 10_000, '取消总静音后主总线恢复');
-    await until(async () => {
+    await untilMusic(C, async () => {
       const l = (await snd(C)).layers[`music_${want}`];
       return l.loaded && l.playing && l.gain > 0.99;
     }, 90_000, '刷新后音乐重新淡入');

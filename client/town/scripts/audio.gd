@@ -56,6 +56,7 @@ var _music_players := {}
 var _music_gain := {"day": 0.0, "night": 0.0}
 var _music_loaded := {"day": false, "night": false}
 var _music_tried := 0
+var _music_fetch := {}  # 曲名 -> 取文件的状态（调试口只读：正在取、第几次、上次结果码、HTTP 码、字节数、已用毫秒、重试等待）
 
 var _night: bool = false
 var _hour: float = -1.0
@@ -273,7 +274,7 @@ func _load_track(n: String) -> void:
 	for attempt in range(3):
 		if bool(_music_loaded[n]):
 			return
-		var data: PackedByteArray = await _fetch(bridge.origin + MUSIC_PATH + n + ".ogg")
+		var data: PackedByteArray = await _fetch(bridge.origin + MUSIC_PATH + n + ".ogg", n, attempt + 1)
 		_music_tried = maxi(_music_tried, attempt + 1)
 		if data.size() >= 1000:
 			var s := AudioStreamOggVorbis.load_from_buffer(data)
@@ -281,20 +282,35 @@ func _load_track(n: String) -> void:
 				s.loop = true
 				(_music_players[n] as AudioStreamPlayer).stream = s
 				_music_loaded[n] = true
+				(_music_fetch[n] as Dictionary)["decoded"] = true
 				return
+			(_music_fetch[n] as Dictionary)["decoded"] = false
+		(_music_fetch[n] as Dictionary)["retryWait"] = true
 		await get_tree().create_timer(20.0).timeout
+		(_music_fetch[n] as Dictionary)["retryWait"] = false
 
 
-func _fetch(url: String) -> PackedByteArray:
+func _fetch(url: String, track: String = "", attempt: int = 0) -> PackedByteArray:
+	var info := {"fetching": true, "attempt": attempt, "startMs": Time.get_ticks_msec(), "result": -1, "http": -1, "bytes": -1, "elapsedMs": 0, "retryWait": false, "decoded": false, "reqErr": 0}
+	if track != "":
+		_music_fetch[track] = info
 	var req := HTTPRequest.new()
 	req.accept_gzip = false
 	req.timeout = FETCH_TIMEOUT_S  # 连上了但不返回的请求不能一直拖住后面的曲子和重试
 	add_child(req)
-	if req.request(url) != OK:
+	var rerr: int = req.request(url)
+	if rerr != OK:
+		info["reqErr"] = rerr
+		info["fetching"] = false
 		req.queue_free()
 		return PackedByteArray()
 	var res: Array = await req.request_completed
 	req.queue_free()
+	info["fetching"] = false
+	info["result"] = int(res[0])
+	info["http"] = int(res[1])
+	info["bytes"] = (res[3] as PackedByteArray).size()
+	info["elapsedMs"] = Time.get_ticks_msec() - int(info["startMs"])
 	if int(res[0]) != HTTPRequest.RESULT_SUCCESS or int(res[1]) != 200:
 		return PackedByteArray()
 	return res[3]
@@ -423,6 +439,16 @@ func on_event(ev: Dictionary) -> void:
 # ───────────────────────── 调试 ─────────────────────────
 
 
+func _music_fetch_debug() -> Dictionary:
+	var out := {}
+	for n in _music_fetch:
+		var d: Dictionary = (_music_fetch[n] as Dictionary).duplicate()
+		if bool(d["fetching"]):
+			d["elapsedMs"] = Time.get_ticks_msec() - int(d["startMs"])
+		out[n] = d
+	return out
+
+
 func debug_info() -> Dictionary:
 	var pl := {}
 	for n in MUSIC_NAMES:
@@ -439,4 +465,4 @@ func debug_info() -> Dictionary:
 			"amb": AudioServer.get_bus_volume_db(int(_bus["Ambience"])),
 			"sfx": AudioServer.get_bus_volume_db(int(_bus["SFX"])),
 		}
-	return {"inited": inited, "enabled": enabled, "hidden": hidden, "bgMute": bg_mute, "vol": vol, "night": _night, "hour": _hour, "indoor": _indoor, "scene": _scene, "busDb": bus_db, "layers": pl, "sfxLoaded": _sfx_streams.keys(), "plays": _plays, "firstPlay": _first_play, "musicTried": _music_tried, "fountains": _fountains.keys(), "fountainDist": snappedf(_listener.distance_to(_fountains[_scene]), 0.1) if _fountains.has(_scene) else -1.0}
+	return {"inited": inited, "enabled": enabled, "hidden": hidden, "bgMute": bg_mute, "vol": vol, "night": _night, "hour": _hour, "indoor": _indoor, "scene": _scene, "busDb": bus_db, "layers": pl, "sfxLoaded": _sfx_streams.keys(), "plays": _plays, "firstPlay": _first_play, "musicTried": _music_tried, "musicFetch": _music_fetch_debug(), "ticksMs": Time.get_ticks_msec(), "fountains": _fountains.keys(), "fountainDist": snappedf(_listener.distance_to(_fountains[_scene]), 0.1) if _fountains.has(_scene) else -1.0}
