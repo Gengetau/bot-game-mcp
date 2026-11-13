@@ -121,4 +121,72 @@ describe('jubensha lobby hardening on PR31 (FB261108-01)', () => {
     expect(rec.lobby).toHaveLength(10);
     expect(rec.players.map(p => p.id).sort()).toEqual(Array.from({ length: 6 }, (_, n) => bot(n + 1).id).sort());
   });
+
+  for (const registration of ['join', 'offer'] as const) {
+    const registerReferee = (manager: ReturnType<typeof setup>['manager'], id: string) => {
+      if (registration === 'offer') manager.offerReferee(REF, id, 'offline-code-referee');
+      else manager.joinGame(REF, id, { as: 'referee' });
+    };
+    for (const autoReferee of [true, false]) {
+      it(`does not lend a referee-only DM seat to AI or humans (${registration}, auto=${autoReferee})`, () => {
+        const { manager, id } = lobby({ host: REF.id, stage: 'group' }, autoReferee);
+        for (let n = 2; n <= 6; n++) manager.joinGame(bot(n), id);
+        registerReferee(manager, id);
+        const before = JSON.stringify(manager.snapshot());
+        expect(manager.summary(manager.getRecord(id)).max_players).toBe(6);
+        for (const as of ['player', 'either'] as const) {
+          expect(() => manager.joinGame(bot(7), id, { as })).toThrow(/人数已满/);
+        }
+        expect(() => manager.addHuman(bot(1), id, human(1))).toThrow(/人数已满/);
+        expect(JSON.stringify(manager.snapshot())).toBe(before);
+      });
+
+      it(`keeps the named referee outside the six player seats (${registration}, auto=${autoReferee})`, () => {
+        const { manager, id } = lobby({ host: REF.id }, autoReferee);
+        manager.joinGame(bot(1), id, { as: 'player' });
+        for (let n = 2; n <= 6; n++) manager.joinGame(bot(n), id, { as: 'player' });
+        registerReferee(manager, id);
+        manager.startGame(bot(1), id);
+        const rec = manager.getRecord(id);
+        expect(rec.players).toHaveLength(6);
+        expect(rec.players.map(p => p.id)).not.toContain(REF.id);
+        expect(rec.state.host).toBe(0);
+        expect(Object.keys(rec.state.cast)).toHaveLength(6);
+        expect(rec.referee?.id ?? null).toBe(autoReferee ? null : REF.id);
+        if (autoReferee) expect(rec.standbyReferees.map(r => r.id)).toContain(REF.id);
+        else expect(rec.referee?.hostedBy).toBe(registration === 'offer' ? 'offline-code-referee' : null);
+      });
+    }
+  }
+
+  for (const host of [`${REF.id},107`, `${REF.name},Bot7`]) {
+    it(`skips a referee-only first DM candidate and protects the next player (${host})`, () => {
+      const { manager, id } = lobby({ host }, false);
+      manager.joinGame(bot(1), id, { as: 'player' });
+      for (let n = 2; n <= 6; n++) manager.joinGame(bot(n), id, { as: 'player' });
+      manager.offerReferee(REF, id, 'offline-code-referee');
+      manager.joinGame(bot(7), id, { as: 'player' });
+      manager.startGame(bot(1), id);
+      const rec = manager.getRecord(id);
+      expect(rec.referee?.id).toBe(REF.id);
+      expect(rec.players).toHaveLength(7);
+      expect(rec.players.find(p => p.seat === rec.state.host)?.id).toBe('107');
+      expect(Object.keys(rec.state.cast)).toHaveLength(6);
+    });
+  }
+
+  for (const as of ['player', 'either'] as const) {
+    it(`releases the extra DM seat when ${as} changes back to referee`, () => {
+      const { manager, id } = lobby({ host: REF.id });
+      for (let n = 2; n <= 6; n++) manager.joinGame(bot(n), id);
+      manager.joinGame(REF, id, { as: 'referee' });
+      manager.joinGame(REF, id, { as });
+      expect(manager.summary(manager.getRecord(id)).max_players).toBe(7);
+      manager.joinGame(REF, id, { as: 'referee' });
+      expect(manager.summary(manager.getRecord(id)).max_players).toBe(6);
+      expect(() => manager.joinGame(bot(7), id)).toThrow(/人数已满/);
+      manager.startGame(bot(1), id);
+      expect(manager.getRecord(id).players.map(p => p.id)).not.toContain(REF.id);
+    });
+  }
 });
