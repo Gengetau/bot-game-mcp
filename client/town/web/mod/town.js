@@ -311,15 +311,10 @@
             stripText.textContent = '';
             olderBtn.hidden = true;
           } else if (k === 'rebuild') {
-            /* 游标过期，整体重读：清掉列表和序号，草稿留着 */
-            var draft = input.value;
-            kit.reset();
+            /* 游标过期，整体重读：只清列表和序号。发送中、限流倒计时、提示、ArrowUp 历史、草稿都留着（不走 kit.reset） */
+            kit.clearList();
             meta = {};
             restore = null;
-            if (draft) {
-              input.value = draft;
-              input.dispatchEvent(new Event('input', { bubbles: true }));
-            }
           }
         },
         onCore: function () {},

@@ -6,6 +6,7 @@
  *   kit.append(items, live)   items = [{id, from, name, kind, text, at, space, spaceName, mine}]；按 id 去重、按 id 升序；live=false 的（历史补读）永不计未读
  *   kit.onAck(ack)      ack = {n, ok, heardBy?, code?, reason?, message?, retryMs?, maxChars?}
  *   kit.reset()         离开 / 换人：清列表、草稿、ArrowUp 历史、倒计时（聊天内容只放内存）
+ *   kit.clearList()     只清列表与未读（整体重读用），不动发送中状态、倒计时、提示、历史、草稿
  *   kit.onShow() / kit.forceSend(text) / kit.debug()
  * options：
  *   msgTpl     消息行模板的 id（独立顶层 <template>，不嵌套）
@@ -379,6 +380,21 @@
       updateCount();
     }
 
+    /* 只清列表（整体重读用）：不动发送中、限流倒计时、提示、ArrowUp 历史、草稿；未读清零（重读的是历史，不计未读） */
+    function clearList() {
+      pendingIn = [];
+      if (rafId) {
+        cancelAnimationFrame(rafId);
+        rafId = 0;
+      }
+      items = [];
+      byId = {};
+      list.textContent = '';
+      jump.hidden = true;
+      unread = 0;
+      host.setUnread(0);
+    }
+
     function onShow() {
       requestAnimationFrame(toBottom);
       if (unread) {
@@ -406,7 +422,7 @@
     }
 
     updateCount();
-    return { setState: setState, append: append, onAck: onAck, reset: reset, onShow: onShow, forceSend: forceSend, debug: debug, addSystem: addSystem };
+    return { setState: setState, append: append, onAck: onAck, reset: reset, clearList: clearList, onShow: onShow, forceSend: forceSend, debug: debug, addSystem: addSystem };
   }
 
   window.TownChatKit = { create: create };

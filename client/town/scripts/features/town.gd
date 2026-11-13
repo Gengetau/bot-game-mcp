@@ -301,7 +301,6 @@ func _load_older() -> void:
 	_older_busy = true
 	var g: int = _gen
 	var ep: int = _epoch
-	var front: String = str(_msgs[0]["sid"])  # 发请求时最旧的一条：回来时它必须还是最旧的，这一页才接得上
 	var lim: int = maxi(1, mini(_page, MAX_MSGS - _msgs.size()))
 	var r: Dictionary = await ctx.api_get("/town-chat?before=%s&limit=%d" % [_older.uri_encode(), lim])
 	if g != _gen or ep != _epoch:
@@ -313,13 +312,12 @@ func _load_older() -> void:
 	if bool(d.get("resync", false)):
 		_has_older = false
 		return
-	if _msgs.is_empty() or str(_msgs[0]["sid"]) != front:
-		# 等待期间追新把最旧的几条挤掉了（封顶）：这页和现在的最前面之间会缺几条，接上去就断档。丢掉，用户再点一次按当前最旧一条重读
-		return
 	var arr = d.get("messages")
 	var older = d.get("older")
 	if arr is Array:
-		var room: int = MAX_MSGS - _msgs.size()  # 等待期间追新也可能把列表填满了
+		# 等待期间追新可能已经把列表填满，甚至因封顶把最旧的几条挤掉了：那几条不在这一页里，整页接上去中间就断档。
+		# 所以只收得下 room 条（紧挨着现在最前面的那几条）；room 为 0 就丢掉这页，_older 已是当前最旧一条，用户再点一次即可
+		var room: int = MAX_MSGS - _msgs.size()
 		if room <= 0:
 			return
 		if arr.size() > room:
