@@ -7,6 +7,8 @@
 <title>栖灯镇</title>
 <link rel="icon" href="data:,">
 <link rel="stylesheet" href="hud.css">
+<link rel="stylesheet" href="dock.css">
+<link rel="stylesheet" href="town-modules.css">
 <!-- Godot 的启动配置放进数据块，由 boot.js 读取；整个页面没有内联脚本、没有内联事件处理器 -->
 <script type="application/json" id="godot-config">$GODOT_CONFIG</script>
 </head>
@@ -52,7 +54,7 @@
   </div>
 
   <!-- 键位提示：只在有物理键盘和鼠标的设备上显示（hud.js 判断），界面文字都放在这里 -->
-  <div id="keyHint" class="chip" hidden aria-hidden="true"><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> 或方向键 移动 <span class="sep">·</span> <kbd>E</kbd> 互动 <span class="sep">·</span> <kbd>Esc</kbd> 停下</div>
+  <div id="keyHint" class="chip" hidden aria-hidden="true"><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> 或方向键 移动 <span class="sep">·</span> <kbd>E</kbd> 互动 <span class="sep">·</span> <kbd>Esc</kbd> 停下 <span class="sep">·</span> <kbd>Enter</kbd> 聊天</div>
 
   <div id="bottombar">
     <div id="destMenu" hidden></div>
@@ -61,8 +63,13 @@
       <button id="stopBtn" type="button" class="danger" disabled>停下</button>
       <button id="homeBtn" type="button">回家</button>
       <button id="destBtn" type="button">地点</button>
+      <button id="dockBtn" type="button" aria-controls="dock" aria-expanded="false" aria-label="聊天" data-label="聊天" data-label-unread="聊天，{n} 条未读"><span>聊天</span><i class="dock-badge" hidden></i></button>
     </div>
   </div>
+
+  <!-- 面板底座：功能模块（web/mod/*）的模板由导出时注入下面的标记；底座 DOM 与样式见 dock.js / dock.css -->
+  <aside id="dock" hidden aria-label="聊天与信息"><div id="dockGrip"></div><div id="dockTabs" role="tablist"></div><div id="dockBody"></div><button id="dockClose" type="button" aria-label="关闭"></button></aside>
+  <div id="dockOverlays"></div>
 
   <div id="panel" class="overlay">
     <div class="card">
@@ -82,8 +89,12 @@
   </div>
 </div>
 
+<!--TOWN:TEMPLATES-->
+
 <script src="$GODOT_URL"></script>
 <script src="hud.js"></script>
+<script src="dock.js"></script>
+<script src="town-modules.js"></script>
 <script src="boot.js"></script>
 </body>
 </html>

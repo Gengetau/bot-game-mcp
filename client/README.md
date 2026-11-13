@@ -46,7 +46,7 @@ npm run client:e2e      # 约 4.3 分钟，不进 CI；需要完整导出（含 
 ```
 
 脚本 `scripts/client-e2e.mjs` 自己起引擎（子进程、开发登录、keys 认证里放一个测试 AI 密钥、临时库、随机端口），
-开桌面 1440x900 和手机 390x844（触摸）两个 Chromium 上下文加一个由 agent-kit 的 `ResidentRunner` 驱动的 AI 居民（决策函数写死、不调用模型），走完 14 步并检查控制台、CSP、失败请求和所有未声明的 4xx/5xx，
+开桌面 1440x900 和手机 390x844（触摸）两个 Chromium 上下文加一个由 agent-kit 的 `ResidentRunner` 驱动的 AI 居民（决策函数写死、不调用模型），走完 15 步（外加 `scripts/e2e/steps/` 里的新步骤文件）并检查控制台、CSP、失败请求和所有未声明的 4xx/5xx，
 全部通过才把截图和结果换进 `client/demo/`（失败的运行写 `results.failed.json`，已 gitignore，不动已提交的验收记录），验收记录见 `client/demo/README.md`。需要 Playwright 和 Chromium
 （`require('playwright')` 能解析即可）。导出目录不存在时脚本提示先导出并以退出码 2 退出。
 
@@ -60,11 +60,28 @@ client/town/
              audio.gd（音乐、环境声、音效） main.gd（启动流程、协议、输入、续租、重连）
   web/       shell.html（导出外壳，无内联脚本） boot.js（启动引擎、fetch 通道、AudioContext 拦截）
              hud.js / hud.css（DOM 界面：面板、姓名牌、按钮、提示条、声音开关、音量面板）
+             dock.js / dock.css（面板底座：右侧栏 / 底部抽屉、页签、未读角标、软键盘、Enter 全局快捷键）
+             mod/*.js / *.css / *.html（面板里的功能模块；导出时由 assemble.mjs 合成 town-modules.js / .css 并把模板注入 index.html）
+  scripts/features/  功能模块的 GDScript 部分：feature.gd（基类）ctx.gd（给功能的门面）hub.gd（钩子分发）manifest.gd（功能清单）
+                     其余每个功能一个文件（nearby.gd 已实现，其余是桩，由 C1b 到 C7 各自填）
   stream/    music/{day,night}.ogg：不进 pck，导出时拷到 build/web/music/
   assets/    素材（素材同事的范围，只读）；*.import 入库，.godot/ 不入库
-client/tools/export.sh
+client/tools/export.sh, assemble.mjs, lint-web.mjs, compress.mjs, web-only.sh   导出与网页层工具
+client/docs/   各段的实现说明与待办（C1a.md 先写；C1b 到 C7 各写各的 <段>.md）
 client/art_source/, client/ASSETS.md   素材来源与台账（audio/ 是音频再生成脚本）
 ```
+
+## 面板与功能模块（C1a 起）
+
+聊天、信箱等界面都挂在同一个「面板」里（桌面是右侧栏，手机是底部抽屉；`dock.js`），每个功能是两半：GDScript 一半（`scripts/features/<id>.gd`，继承 `TFeature`）管协议和状态，网页一半（`web/mod/<id>.{js,css,html}`）管界面。两边只通过 JSON 字符串说话：Godot 用 `feed(kind, data)` 推给网页，网页用 `host.emit(name, json)` 回给 Godot 的 `on_ui(name, arg)`。
+`main.gd`、`hud.js`、`shell.html`、`export.sh`、`client-e2e.mjs` 在 C1a 之后不再为新功能改动：新功能只加自己的文件，并在 `scripts/features/manifest.gd` 里已经预留了名字。
+
+- 接口、钩子清单、桥接口：`client/docs/C1a.md`。功能能用的东西都在 `ctx.gd`（门面），不要直接伸手进 `main.gd`。
+- 钩子里的运行时错误只会中止那一个钩子（GDScript 没有 try/catch，引擎打印错误后继续），不会拖垮 `main.gd` 和别的功能；C1a 用故意出错的临时功能验证过。
+- 网页模块不许用 `innerHTML`、`localStorage`、内联脚本等（`client/tools/lint-web.mjs` 在导出时检查），`mod/*.js` 里不写汉字字面量（文字放进 `mod/*.html` 的模板里，用 `host.t(key)` 读）。
+- **Enter 是全局快捷键，由 `dock.js` 独占**：不在输入框里、没有修饰键、焦点不在按钮 / 链接上时，Enter 打开面板并聚焦当前页签的 `[data-focus]` 输入框。别的功能不要再占用 Enter。
+- 只改网页文件时，用 `bash client/tools/web-only.sh` 重新合并并更新 `build/web/`，不用完整导出（约 2 分钟）。改了 GDScript 才需要完整导出。
+- 端到端的新步骤放在 `scripts/e2e/steps/`（号段分配和写法见那里的 README.md），公共小工具在 `scripts/e2e/lib/`。
 
 ## 协议要点（实现位置都在 main.gd）
 

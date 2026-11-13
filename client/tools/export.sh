@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # 导出 Godot 网页客户端到 client/town/build/web/：
-#   1) 导入资源  2) export-release  3) 拷 web/ 下的外壳文件（除 shell.html）  4) 生成 .br / .gz 预压缩  5) 打印大小  6) 换到位
+#   1) 导入资源  2) export-release  3) 拷 web/ 顶层的外壳文件（除 shell.html；mod/ 子目录由 assemble.mjs 合并并注入模板）  4) 生成 .br / .gz 预压缩  5) 打印大小  6) 换到位
 # 注意：SKIP_COMPRESS=1 的产物没有 .br，过不了 npm run client:e2e 的步骤 1（它断言 index.pck 发 br）。
 # 环境变量：GODOT（默认 /opt/godot/godot）、BROTLI_QUALITY（默认 11）、SKIP_COMPRESS=1 跳过预压缩。
 set -euo pipefail
@@ -48,11 +48,15 @@ rm -f "$LOG"
 
 echo "[export] 拷贝外壳文件…"
 for f in "$PROJ"/web/*; do
+  [ -d "$f" ] && continue # web/mod/ 等子目录不直接拷：由下面的 assemble 合并
   case "$(basename "$f")" in
     shell.html) ;;
     *) cp "$f" "$OUT/" ;;
   esac
 done
+
+echo "[export] 合并网页模块（检查、拼接、注入模板）…"
+node "$ROOT/client/tools/assemble.mjs" "$OUT" "$PROJ/web"
 
 # 音乐等「进游戏后才取」的大文件放在 client/town/stream/（有 .gdignore，Godot 不导入，也就不进 pck），整个目录树拷到产物里：
 # client/town/stream/music/day.ogg -> build/web/music/day.ogg，客户端用 HTTPRequest 取。不预压缩（ogg 已是压缩格式）。
@@ -65,23 +69,7 @@ fi
 
 if [ "${SKIP_COMPRESS:-0}" != "1" ]; then
   echo "[export] 生成预压缩副本（.br / .gz）…"
-  OUT="$OUT" node --input-type=module -e '
-    import { readdirSync, readFileSync, writeFileSync, statSync, rmSync } from "node:fs";
-    import { brotliCompressSync, gzipSync, constants } from "node:zlib";
-    import { join } from "node:path";
-    const dir = process.env.OUT;
-    const q = Number(process.env.BROTLI_QUALITY ?? 11);
-    for (const f of readdirSync(dir)) {
-      if (/\.(br|gz)$/.test(f)) rmSync(join(dir, f));
-    }
-    for (const f of readdirSync(dir)) {
-      if (!/\.(wasm|pck|js|css)$/.test(f)) continue;
-      const p = join(dir, f);
-      const buf = readFileSync(p);
-      writeFileSync(p + ".gz", gzipSync(buf, { level: 9 }));
-      writeFileSync(p + ".br", brotliCompressSync(buf, { params: { [constants.BROTLI_PARAM_QUALITY]: q, [constants.BROTLI_PARAM_LGWIN]: 24, [constants.BROTLI_PARAM_SIZE_HINT]: buf.length } }));
-    }
-  '
+  BROTLI_QUALITY="${BROTLI_QUALITY:-11}" node "$ROOT/client/tools/compress.mjs" "$OUT"
 fi
 
 echo "[export] 产物（字节）："
