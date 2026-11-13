@@ -17,7 +17,7 @@ GDScript 一侧（`client/town/scripts/features/`）：
 
 钩子：`event_types` `frame_types` `wants_tick` `setup` `on_enter` `on_leave` `on_me` `on_scene` `on_hello(msg, resumed, first)` `on_ws_closed` `on_resync` `on_event` `on_frame` `on_ui(name, arg)` `tick` `actions` `on_action(verb, arg)` `on_pick` `blocks_input` `tags` `debug`。`main.gd` 里的改动只有这些钩子的调用点和新的 `_act_once`（一次性动作：不动 `pending`、不睡眠重试、可复用请求号）。
 
-桥（`bridge.gd` + `hud.js`）：`HUD_PROTOCOL = 2`。页面文件与客户端版本不一致时 `main.gd` 直接提示「请强制刷新」。`hud.js` 只有三处改动（核心状态转交 `TownDock.onCore`、Esc 先问 `TownDock.escape()`、占位的 `feed` / `protocol` 与调试里的 dock 状态）。
+桥（`bridge.gd` + `hud.js`）：`HUD_PROTOCOL = 2`。页面文件与客户端版本不一致时 `main.gd` 直接提示「请强制刷新」。`hud.js` 只有三处改动（核心状态转交 `TownDock.onCore`、Esc 先关面板（`TownDock.escape()`），并照常发 `esc` 让走路中的角色同时停下、占位的 `feed` / `protocol` 与调试里的 dock 状态）。
 
 网页一侧（`client/town/web/`）：`dock.js` / `dock.css`（底座）、`mod/00-chatkit.{js,css}`（聊天类面板共用的消息列表 + 输入栏，C1b 复用，不改内部）、`mod/nearby.{js,css,html}`。`client/tools/assemble.mjs` 把 `mod/*` 合成 `town-modules.js` / `.css` 并把模板注入 `index.html` 的 `<!--TOWN:TEMPLATES-->`。
 
@@ -28,7 +28,9 @@ GDScript 一侧（`client/town/scripts/features/`）：
 - 发话走 `act_once({type:"say_nearby"})`；成功后用回执的 `messageId` 立刻把自己这句放进列表，事件回声到达时按 id 去重。失败时输入保留；限流（429）显示倒计时并禁用发送；超长在本地先拒，不发请求；网络失败保留请求号，重发同一句不会说两遍。
 - 「看起来附近没人」只按距离算，是软提示，永远不拦发送；服务端的 `heardBy` 才是准的。
 - 键盘：输入框里 WASD 不进游戏；Esc 先失焦，再按一次才关面板；Enter（不在输入框、没有修饰键、焦点不在按钮 / 链接上）全局打开面板并聚焦输入框；输入法组字中的 Enter 不发送；ArrowUp 找回最近 5 句；桌面发送成功后自动失焦。
-- 表单 `submit` 一律 `preventDefault`（引擎 CSP 有 `form-action 'none'`）。
+- 表单 `submit` 一律 `preventDefault`（引擎 CSP 有 `form-action 'none'`）。「说」按钮的 `mousedown` 也 `preventDefault`，点它不抢输入框的焦点（手机上才不会收起软键盘）。
+- 面板开着、焦点不在输入框时，一下 Esc 既关面板又停步（键位提示「Esc 停下」成立）；焦点在输入框里的第一下 Esc 只失焦。
+- 横屏小高度（侧栏布局）遇到软键盘：侧栏抬到键盘上沿，顶部让到 8px。
 
 ## 3. 观感
 
@@ -49,6 +51,9 @@ GDScript 一侧（`client/town/scripts/features/`）：
 3. 老 Android 浏览器、三星浏览器、微信 X5 内核：软键盘会缩布局视口，Godot 画布随之缩放，镜头画幅可能跳。交 C7 评估。
 4. 手机上输入框 16px 防聚焦放大、`enterkeyhint="send"` 的键盘按钮、列表长按复制文字。
 5. 触摸：真实手指在面板里的拖动与双指是否会穿透到画布（无头里用 CDP 触摸验证过，真机再看一次）。
+6. Android Chrome：点「说」之后输入框是否仍聚焦、软键盘不收、抽屉不弹回（靠 `mousedown` 的 `preventDefault`，无头里用 `page.tap` 验证了焦点，软键盘本身没验证）。
+7. 横屏手机弹软键盘：侧栏是否确实停在键盘之上（无头里用 `TownDock.test.setKeyboard` 模拟；真机浏览器是否平移视口没验证）。
+8. 列表整体重建（断线补缺）时滚动位置按距底距离还原：Chromium 里不加还原也不会跳到最顶（同步重建，布局没被强制），所以这一条没有红灯，是对 Safari / Firefox 的防御；真机待看。
 6. 四个按钮在 360 宽屏上的实际观感（无头里只验证了不溢出）。
 
 ## 6. 已知缺口

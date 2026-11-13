@@ -529,6 +529,14 @@
         }
       });
     }
+    /* 点「说」不能把焦点抢走：Android 上焦点一到按钮，输入框失焦、软键盘收起、抽屉弹回高度。
+     * mousedown 的默认动作就是移焦点（触摸点按也会合成 mousedown），取消它；click 照常触发提交 */
+    var sendBtn = form ? form.querySelector('[data-role="send"]') : null;
+    if (sendBtn) {
+      sendBtn.addEventListener('mousedown', function (e) {
+        e.preventDefault();
+      });
+    }
     return {
       setBusy: function (b) {
         busy = !!b;

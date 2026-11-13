@@ -356,9 +356,11 @@
       } else if (code === 'Escape') {
         if (e.repeat) return;
         if (!$('destMenu').hidden) show($('destMenu'), false);
-        else if (window.TownDock && window.TownDock.escape()) {
-          /* 面板开着：这一下 Esc 用来关面板，不发 esc */
-        } else emit('esc');
+        else {
+          /* 面板开着：这一下 Esc 关面板，同时照常发 esc（走路中也停下）；键位提示「Esc 停下」始终成立 */
+          if (window.TownDock) window.TownDock.escape();
+          emit('esc');
+        }
       }
     },
     true,

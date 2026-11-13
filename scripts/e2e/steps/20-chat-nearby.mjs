@@ -151,6 +151,24 @@ export default async function run(h) {
     await A.page.click(IN);
     await A.page.keyboard.press('Enter');
     check(!(await compose(A.page)).focused, '空输入按 Enter 应失焦');
+    // 「说」按钮（表单提交路径，手机上最常用）：点按钮真的发出一句；submit 监听必须 preventDefault（引擎 CSP 有 form-action 'none'）
+    const tBtn = uniq('按钮');
+    const base2 = okSays(A);
+    await sleep(350);
+    const nBtn = ((await modState(A.page, 'nearby'))?.seq ?? 0) + 1;
+    await A.page.fill(IN, tBtn);
+    await A.page.click('#dock [data-role="send"]');
+    await poll(async () => ((await godotFeature(A.page, 'nearby'))?.lastAck?.n === nBtn ? true : null), 20_000, '点「说」得到回应');
+    check((await godotFeature(A.page, 'nearby')).lastAck.ok && okSays(A) === base2 + 1, `点「说」应发出一句：${JSON.stringify((await godotFeature(A.page, 'nearby')).lastAck)}`);
+    // 不经 keydown 的隐式提交（输入法的 Enter 会这样）：默认动作必须被取消，且不产生请求
+    await A.page.fill(IN, '');
+    const sub = await A.page.evaluate((sel) => {
+      const f = document.querySelector(sel).closest('form');
+      const ev = new Event('submit', { cancelable: true, bubbles: true });
+      f.dispatchEvent(ev);
+      return ev.defaultPrevented;
+    }, IN);
+    check(sub === true, 'submit 事件的默认动作应被取消（否则真机上会触发 form-action CSP 违规并刷新页面）');
     const csp = await A.page.evaluate(() => window.__csp ?? []);
     check(csp.length === 0, `提交表单不应产生 CSP 违规：${csp.join('; ')}`);
   });
@@ -177,7 +195,16 @@ export default async function run(h) {
     const r400 = await apiSay(A, long);
     check(r400.status === 400 && r400.body?.error === 'bad_request' && r400.body?.reason === 'text_too_long' && r400.body?.maxChars === 120, `服务器应对 121 码点回 400 text_too_long：${JSON.stringify(r400)}`);
     await A.page.fill(IN, '');
-    // 限流：连发直到被拒
+    // 限流：连发直到被拒。先装一个观察器记下倒计时提示第一次出现时的数字（事后读会错过第一拍）
+    await A.page.evaluate((sel) => {
+      const hint = document.querySelector(sel).closest('[data-pane]').querySelector('[data-role="hint"]');
+      window.__coolSeen = [];
+      window.__coolSend = null;
+      new MutationObserver(() => {
+        if (hint.className.includes('cool')) window.__coolSeen.push(hint.textContent);
+        if (hint.className.includes('cool') && !window.__coolSend) window.__coolSend = { disabled: document.querySelector(sel).closest('form').querySelector('[data-role="send"]').disabled };
+      }).observe(hint, { childList: true, characterData: true, attributes: true, subtree: true });
+    }, IN);
     const sent = [];
     let rej = null;
     for (let i = 0; i < 8 && !rej; i++) {
@@ -191,7 +218,12 @@ export default async function run(h) {
     c = await compose(A.page);
     const kit = await modState(A.page, 'nearby');
     check(c.value === rej.t, `被拒后输入应保留：${c.value}`);
-    check(c.sendDisabled && kit.cool > 0 && c.hintClass.includes('cool') && /\d/.test(c.hint), `应出现倒计时并禁用发送：${JSON.stringify({ c, cool: kit.cool })}`);
+    // 倒计时可能只有 1 秒（读到这里时已经结束），所以「出现过倒计时、出现时发送钮禁用」用观察器当时记下的为准
+    const seen0 = await A.page.evaluate(() => ({ seen: window.__coolSeen, send: window.__coolSend }));
+    check(seen0.seen.length > 0 && /\d/.test(seen0.seen[0]) && seen0.send?.disabled === true, `应出现倒计时并禁用发送：${JSON.stringify({ seen0, c, cool: kit.cool })}`);
+    const seen = await A.page.evaluate(() => window.__coolSeen);
+    const first = Number((seen[0] ?? '').match(/\d+/)?.[0]);
+    check(first === Math.ceil(rej.ack.retryMs / 1000), `倒计时第一拍应等于 ceil(retryMs/1000)=${Math.ceil(rej.ack.retryMs / 1000)}，实际「${seen[0]}」（全部 ${JSON.stringify(seen)}）`);
     note(`连发 ${sent.length} 条成功后第 ${sent.length + 1} 条被限流，retryMs ${rej.ack.retryMs}，提示「${c.hint}」`);
     // 恢复后能再发（换一句，好和被拒的那句区分）
     await until(async () => (await modState(A.page, 'nearby')).cool <= 0 && !(await compose(A.page)).sendDisabled, 30_000, '倒计时结束、发送钮恢复');
@@ -262,6 +294,27 @@ export default async function run(h) {
     check(row.from === A.id, 'B 应收到路上说的话');
     await Promise.all([waitIdle(A), waitIdle(B)]);
     note(`移动中相距 ${g1.toFixed(1)} / ${g2.toFixed(1)} 米，heardBy ${r.body.heardBy}`);
+  });
+
+  // ───────────────────────── 20.455 面板开着时 Esc 同时停步 ─────────────────────────
+  await step(20.455, 'Esc：面板开着、角色在走时按一下 Esc，面板关闭并且角色停下（键位提示「Esc 停下」始终成立）', async () => {
+    await closeDock(A.page);
+    await walkTo(A, 36, 27.5, 1.5);
+    await openDock(A.page);
+    const to = { x: 25, z: 27.5 };
+    await h.clickWorld(A, to.x, to.z, { avoidDock: true });
+    await until(async () => !!(await sceneOf(A)).nav, 8000, '点地后在走', 250);
+    await A.page.evaluate(() => document.activeElement?.blur());
+    const p0 = await sceneOf(A);
+    check(!!p0.nav && (await dockState(A.page)).open, 'Esc 之前：角色在走、面板开着');
+    await A.page.keyboard.press('Escape');
+    await until(async () => !(await dockState(A.page)).open, 5000, 'Esc 后面板关闭');
+    await until(async () => !(await sceneOf(A)).nav, 4000, '同一下 Esc 之后角色停下（不必再按一次）', 250);
+    const me = await sceneOf(A);
+    check(Math.hypot(me.x - to.x, me.z - to.z) > 2, `角色应是被中途停下而不是走到了终点：${JSON.stringify({ x: me.x, z: me.z })}`);
+    // 回到本步之前的位置：后面的步骤（20.5 的 B 走远）以 A 在花园一带为前提
+    await apiAct(A, { type: 'navigate', to: { x: 58, z: 28 } });
+    await waitIdle(A);
   });
 
   // ───────────────────────── 20.46 隔离房间收不到 ─────────────────────────
@@ -463,6 +516,14 @@ export default async function run(h) {
     await touch('touchEnd', []);
     await until(async () => (await snap(B.page)).zoom !== z0, 10_000, '对照：画布上的双指会缩放镜头');
 
+    // 点「说」不抢输入框的焦点（Android 上焦点到按钮会收起软键盘）：触摸点按，之后焦点仍在输入框；这一句也是 B 的一次真实发送
+    await until(async () => !(await compose(B.page)).disabled, 20_000, 'B 的输入框可用');
+    await B.page.click(IN);
+    await B.page.fill(IN, uniq('点说'));
+    await B.page.tap('#dock [data-role="send"]');
+    check((await compose(B.page)).focused, '点「说」之后输入框应仍聚焦（手机上才不会收起软键盘、抽屉不弹回）');
+    await B.page.evaluate(() => document.activeElement?.blur());
+
     // 软键盘（无头浏览器没有软键盘：模拟 visualViewport 并派发 resize，真实键盘行为见真机待办）
     await B.page.click(IN);
     await B.page.evaluate(() => {
@@ -492,6 +553,14 @@ export default async function run(h) {
     await until(async () => (await dockState(B.page)).layout === 'side', 5000, '横屏 844x390 切成侧栏');
     const dl = await rectOf(B.page, '#dock');
     check(dl.right > 844 / 2 && dl.width <= 844 * 0.45, `横屏侧栏应靠右、不超过四成宽：${JSON.stringify(dl)}`);
+    // 横屏加软键盘：侧栏也要抬到键盘上沿，输入栏不被盖住（测试钩子直接给 kb，真机的键盘行为见真机待办）
+    await B.page.evaluate(() => window.TownDock.test.setKeyboard(200));
+    await until(async () => (await dockState(B.page)).kb === 200, 5000, '横屏模拟键盘 200');
+    const dlk = await rectOf(B.page, '#dock');
+    const ik = await rectOf(B.page, IN);
+    check(dlk.bottom <= 390 - 200 + 1 && dlk.top >= 0 && ik.bottom <= 390 - 200 + 1 && ik.top >= dlk.top, `横屏软键盘下侧栏与输入栏应在键盘上沿（190）之上：${JSON.stringify({ dlk, ik })}`);
+    await B.page.evaluate(() => window.TownDock.test.setKeyboard(null));
+    await until(async () => (await dockState(B.page)).kb === 0, 5000, '横屏键盘收起');
     await B.page.setViewportSize({ width: 390, height: 844 });
     await until(async () => (await dockState(B.page)).layout === 'drawer', 5000, '竖屏回到抽屉');
 
@@ -559,17 +628,47 @@ export default async function run(h) {
   });
 
   // ───────────────────────── 20.95 离开与换人 ─────────────────────────
+  await step(20.92, '补缺重建：正在看旧消息（不在底部）时，先到的新消息加上补回的缺口触发整体重建，滚动位置按距底距离还原，不跳到最顶', async () => {
+    await openDock(A.page);
+    const feed = (items) => A.page.evaluate((it) => window.TownDock.feed('nearby', 'append', JSON.stringify({ live: true, items: it })), items);
+    const mk = (id) => ({ id, from: 'x-rebuild', name: '路人', kind: 'human', text: `重建测试${id}`, at: Date.now(), space: 'town', spaceName: '', mine: false });
+    const LIST = '#dock [data-pane="nearby"] [data-role="list"]';
+    await feed(Array.from({ length: 40 }, (_, i) => mk(9_000_100 + i)));
+    await until(async () => (await nearbyRows(A.page)).some((r) => r.mid === 9_000_139), 5000, '40 条测试消息进了列表');
+    const read = () => A.page.evaluate((sel) => { const l = document.querySelector(sel); return { top: l.scrollTop, fromBottom: l.scrollHeight - l.scrollTop, h: l.scrollHeight, ch: l.clientHeight }; }, LIST);
+    const r0 = await read();
+    check(r0.h > r0.ch + 200, `列表应有足够高度可滚动：${JSON.stringify(r0)}`);
+    await A.page.evaluate((sel) => { const l = document.querySelector(sel); l.scrollTop = Math.floor((l.scrollHeight - l.clientHeight) / 2); l.dispatchEvent(new Event('scroll')); }, LIST);
+    await frames(A.page, 2);
+    const before = await read();
+    check(before.top > 100, `应停在中间位置：${JSON.stringify(before)}`);
+    await feed([mk(9_000_150)]); // 先到的 live：追加（不在底部，只显示「有新消息」）
+    await until(async () => (await nearbyRows(A.page)).some((r) => r.mid === 9_000_150), 5000, '新的一条到了');
+    const mid = await read();
+    await feed([mk(9_000_145)]); // 补回的缺口：id 小于已有最大值，整体重建
+    await until(async () => (await nearbyRows(A.page)).some((r) => r.mid === 9_000_145), 5000, '补回的缺口到了');
+    await frames(A.page, 2);
+    const rows = await nearbyRows(A.page);
+    const ids = rows.filter((r) => r.mid >= 9_000_100).map((r) => r.mid);
+    check(ids.every((v, i) => i === 0 || v > ids[i - 1]), '重建后顺序应按编号递增');
+    const after = await read();
+    check(after.top > 100 && Math.abs(after.fromBottom - mid.fromBottom) < 40, `重建后应按距底距离还原，而不是跳到最顶：${JSON.stringify({ before, mid, after })}`);
+  });
+
   await step(20.95, '离开与换人：B 离开小镇后列表、草稿、未读被清空（on_leave）；换另一个名字重新进入后列表为空，看不到上一位听到的话', async () => {
     allowFailure(B.w, 'POST', /\/town\/api\/heartbeat$/, { min: 0, max: 1, why: '20.95：离开瞬间在途的心跳可能 presence_lost' });
+    await uiSay(B, uniq('离开前的一句'));
     await openDock(B.page);
     await B.page.fill(IN, uniq('没发出去的草稿'));
     check((await nearbyRows(B.page)).length > 0, '离开前 B 的列表应有内容');
+    check((await modState(B.page, 'nearby')).hist > 0, '离开前 B 应有发送记录（否则清空断言是空的）');
     const cid = await B.page.evaluate(() => window.TownHud.clientId());
     const lr = await B.ctx.request.post(`${BASE}/town/api/leave`, { data: { clientId: cid } });
     check(lr.ok(), `POST /leave 返回 ${lr.status()}`);
     await until(() => B.page.evaluate(() => document.body.dataset.phase === 'ready'), 20_000, 'B 页面回到「已离开」');
     const k = await modState(B.page, 'nearby');
     check(k.count === 0 && k.rows === 0 && k.unread === 0, `离开后列表应清空：${JSON.stringify(k)}`);
+    check(k.hist === 0, `离开后「最近发送记录」（ArrowUp 找回）应清空：${JSON.stringify(k)}`);
     check((await compose(B.page)).value === '', '离开后草稿应清空');
     // 换人：清掉登录 Cookie，再进入时要求重新取名
     await B.ctx.clearCookies();
@@ -591,6 +690,10 @@ export default async function run(h) {
     const k2 = await modState(B.page, 'nearby');
     check(k2.count === 0 && k2.rows === 0, `新居民不应看到上一位听到的话：${JSON.stringify(k2)}`);
     check((await unread(B.page)).n === 0, '新居民的未读应为 0');
+    await openDock(B.page);
+    await B.page.click(IN);
+    await B.page.keyboard.press('ArrowUp');
+    check((await compose(B.page)).value === '', '新居民按 ArrowUp 不应找回上一位发过的话');
     // Godot 一侧也要清：_seen 里留着上一位的消息编号，新居民的收件序号会撞上它们（debug().seen 是 _seen 的大小；
     // 离开期间 Godot 不推调试数据，所以在新居民进入、调试数据刷新之后看）。新居民刚进来，历史是空的，已见编号应为 0
     await until(async () => ((await godotFeature(B.page, 'nearby'))?.seen ?? -1) === 0, 10_000, '新居民的 Godot 一侧已见编号为 0（nearby.gd 的 on_leave 清了 _seen）');
@@ -624,7 +727,15 @@ export default async function run(h) {
  *  - dock.js wireInput 里 Esc 不失焦：20.2（第一次 Esc 只失焦）；done() 里不失焦：20.2（桌面发送成功后应失焦）；空输入 Enter 不失焦：20.2（空输入按 Enter 应失焦）。
  *  - 本文件自己的前置条件：B 不走远（20.4：B 应在 9 米以外）、两人目的地改成相距很近（20.45：说话时两人应都还在走）、B 不进私宅（20.46：B 在私宅里不应听到门外的话）。
  *  - 把构建产物里的 textContent 改成 innerHTML（只改产物）：20.8（A 的列表里出现这句的文字与服务端不同 / 注入的元素）。
- * 没有做出红灯的两条（如实记录）：
+ *  - hud.js 的 Esc 里不再发 esc（面板开着只关面板）：20.455（同一下 Esc 之后角色没停，走到了终点）。
+ *  - 00-chatkit.js 的 startCooldown 里恢复 `cool++`：20.3（倒计时第一拍多 1）。
+ *  - dock.js 去掉「说」按钮的 mousedown preventDefault：20.85（点「说」之后输入框失焦）。
+ *  - dock.css 去掉 side + data-kb 的规则：20.85（横屏软键盘下侧栏盖住输入栏）。
+ *  - dock.js 的 submit 监听去掉 preventDefault（只剩 trySend）：20.2 起整页被真正提交而跳走，后面大片跟着红（点「说」超时）。
+ *  - 00-chatkit.js 的 reset() 里去掉 wired.reset()：20.95（离开后最近发送记录应清空）。
+ * 没有做出红灯的三条（如实记录）：
+ *  - 00-chatkit.js 的 rebuild() 去掉按距底距离还原滚动：20.92 仍绿。Chromium 里 rebuild 是同步清空再重建，中途没有强制布局，scrollTop 不会被夹成 0；
+ *    这条是对 Safari / Firefox 的防御，断言留作回归保护，真机待办见 client/docs/C1a.md。
  *  - nearby.gd 的 on_hello 里 `resumed and not first` 改成立即补读：20.6 仍绿，只有全程检查因为一个未声明的 401（离开后的 /history）变红。它防的是「历史抢在补发的事件前面到，补发的事件被当成已有、未读少算」，
  *    本机里事件续传总是先于 /history 的一次往返，这个时序造不出来；要造得先能延迟 WebSocket 帧，wsGate 现在只能整体阻断。
  *  - nearby.gd 的 on_event 里不按 scope == "nearby" 过滤：服务端现在只有 scope 为 nearby 的 chat 事件，造不出别的 scope，这条没验证。

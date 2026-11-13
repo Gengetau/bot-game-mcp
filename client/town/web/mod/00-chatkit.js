@@ -134,7 +134,6 @@
         }
         cool--;
       };
-      cool++;
       tick();
       coolTimer = setInterval(tick, 1000);
       updateSend();
@@ -240,6 +239,8 @@
     }
 
     function rebuild() {
+      /* 记下距底距离：清空会把 scrollTop 夹成 0，重建后按距底距离还原，正在看旧消息的人不被拽到最顶 */
+      var fromBottom = list.scrollHeight - list.scrollTop;
       list.textContent = '';
       byId = {};
       var frag = document.createDocumentFragment();
@@ -249,6 +250,7 @@
         });
       }
       list.appendChild(frag);
+      list.scrollTop = Math.max(0, list.scrollHeight - fromBottom);
     }
 
     function trimHead() {
@@ -400,7 +402,7 @@
       var ids = [];
       var rows = list.querySelectorAll('li[data-mid]');
       for (var i = 0; i < rows.length; i++) ids.push(Number(rows[i].getAttribute('data-mid')));
-      return { count: items.length, rows: rows.length, unread: unread, canSend: !!state.canSend, reason: state.reason, sending: sending, seq: seq, cool: cool, ids: ids, active: host.isActive() };
+      return { count: items.length, rows: rows.length, unread: unread, canSend: !!state.canSend, reason: state.reason, sending: sending, seq: seq, cool: cool, hist: wired.history().length, ids: ids, active: host.isActive() };
     }
 
     updateCount();

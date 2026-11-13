@@ -57,6 +57,8 @@ body[data-dock="side"] #dock {
 @media (orientation: landscape) and (max-height: 520px) {
   body[data-dock="side"] #dock { top: calc(52px + var(--safe-top)); width: min(300px, 42vw); }
 }
+/* 横屏软键盘：侧栏也抬到键盘上沿，并让出顶部，输入栏不被盖住 */
+body[data-dock="side"][data-kb="1"] #dock { top: calc(8px + var(--safe-top)); bottom: calc(var(--kb) + 8px + var(--safe-bottom)); }
 body[data-dock="drawer"] #dock {
   left: calc(8px + var(--safe-left)); right: calc(8px + var(--safe-right)); bottom: calc(var(--kb) + var(--safe-bottom));
   height: min(calc(var(--vvh, 100dvh) * 0.44), 340px); border-radius: 16px 16px 0 0; border-bottom-width: 0; transform: translateY(24px);
