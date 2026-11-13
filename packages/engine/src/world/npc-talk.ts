@@ -106,12 +106,16 @@ export const npcCard = (def: Pick<NpcDef, 'id' | 'name'>): { id: string; name: s
  */
 export function npcSpeak(w: WorldService, def: NpcDef, text: string, now: number): { spoken: boolean; seqOf: Map<string, number> } {
   const seqOf = new Map<string, number>();
-  const last = w.db.get('SELECT MAX(sent_at) AS m FROM chat_messages WHERE world_id = ? AND sender_id = ?', w.worldId, def.id)?.m;
-  if (last !== null && last !== undefined && now - Number(last) < w.params.npcSpeakCooldownMs) return { spoken: false, seqOf };
+  // 上次开口的时间记在一行小表（stream_heads）里，不去扫 chat_messages（它没有 sender_id 索引，随聊天增长会越来越慢）。
+  // 间隔按 NPC 全局计：一名 NPC 每个间隔至多开口一次，不论是谁问的；被压住的人照样拿到回执里的 text
+  const lastKey = `npclast:${w.worldId}:${def.id}`;
+  const lastRow = w.db.get('SELECT high_water FROM stream_heads WHERE stream_key = ?', lastKey);
+  if (lastRow && now - Number(lastRow.high_water) < w.params.npcSpeakCooldownMs) return { spoken: false, seqOf };
   const pos = positionOfNpc(w, def.id, now);
   const zone = zoneIdOf(w, def.id, now);
   if (!pos || !zone) return { spoken: false, seqOf };
   const audience = npcAudience(w, pos, now);
+  w.db.run('INSERT INTO stream_heads(stream_key, high_water, retained_from) VALUES (?,?,1) ON CONFLICT(stream_key) DO UPDATE SET high_water = excluded.high_water', lastKey, now);
   const { lastInsertRowid: messageId } = w.db.run('INSERT INTO chat_messages(world_id, space_id, sender_id, body, sent_at) VALUES (?,?,?,?,?)', w.worldId, zone, def.id, text, now);
   for (const a of audience) {
     w.db.run('INSERT INTO chat_audience(resident_id, message_id) VALUES (?,?)', a.resident_id, messageId);
@@ -125,9 +129,10 @@ export function npcSpeak(w: WorldService, def: NpcDef, text: string, now: number
 }
 
 /** 掌柜成交后的一句台词（受最小间隔限制，不影响成交）。 */
-export function keeperSoldLine(w: WorldService, def: NpcDef, r: ResidentRow, now: number): { spoken: boolean } {
+export function keeperSoldLine(w: WorldService, def: NpcDef, now: number): { spoken: boolean } {
   const count = nextCount(w, def);
-  const text = renderNpcLine(pickLine(w, def, 'sold', 'sold', count), { name: sanitizeName(r.name) });
+  // 成交台词不带买家的名字和货品（谁买了什么是私有的），模板里没有占位符
+  const text = renderNpcLine(pickLine(w, def, 'sold', 'sold', count), {});
   return { spoken: npcSpeak(w, def, text, now).spoken };
 }
 

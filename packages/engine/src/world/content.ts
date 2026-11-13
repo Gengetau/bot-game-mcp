@@ -788,10 +788,11 @@ export const NPC_LINES: Readonly<Record<string, readonly string[]>> = {
     '镇上的公共地点有：{places}。眼下没有开着的活动。',
     '想四处走走的话：{places}，都可以去。眼下没有开着的活动。',
   ],
+  // 成交台词是泛化的：不带买家的名字，也不点货品和数量（谁买了什么是私有的，不能靠旁听得知）
   'npc:teahouse_keeper/sold': [
-    '{name}，茶叶给你包好了，慢用。',
-    '收好，{name}。茶叶两清，欢迎再来。',
-    '好嘞，{name}，茶叶在这儿，路上慢些。',
+    '好嘞，收好，慢走。',
+    '两清了，欢迎再来。',
+    '东西给你包好了，路上慢些。',
   ],
   'npc:plaza_stroller/hello.sit': [
     '{name}，这会儿是{period}，我坐在{place}的长椅上歇脚。',
@@ -830,38 +831,49 @@ export function dayPeriod(hour: number): string {
 }
 
 const reEscape = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-const PLACEHOLDER_PATTERNS: Record<string, string> = {
-  name: '[\\s\\S]{1,64}',
-  period: '(?:早上|中午|下午|傍晚|夜里)',
-  place: `(?:${[...PLACES.map((p) => p.name), '这一带'].map(reEscape).join('|')})`,
-  price: '\\d{1,4}',
-  stock: '\\d{1,4}',
-  places: '[^。]{1,100}',
-  events: '[^。]{1,100}',
-};
+const alt = (xs: readonly string[]): string => `(?:${xs.map(reEscape).join('|')})`;
+/** 除了 {name} 之外的占位符：都只能是程序里的固定值（时段、地点名、价格、公开活动标题），不是自由文字。 */
+function placeholderPatterns(names: readonly string[]): Record<string, string> {
+  const events = alt(PUBLIC_EVENTS.map((e) => e.title));
+  return {
+    // {name} 只能是调用方给的真实居民名（空表则什么也匹配不上）
+    name: names.length > 0 ? alt(names) : '(?!)',
+    period: '(?:早上|中午|下午|傍晚|夜里)',
+    place: alt([...PLACES.map((p) => p.name), '这一带']),
+    price: '\\d{1,4}',
+    stock: '\\d{1,4}',
+    // 公共地点：固定的那一串；公开活动：公开活动标题用「、」连起来
+    places: reEscape(DESTINATIONS.filter((p) => p.kind === 'public').map((p) => p.name).join('、')),
+    events: `${events}(?:${reEscape('、')}${events})*`,
+  };
+}
 
 /** 把模板里的占位符换成值（缺的值保持原样，测试和不变量会发现）。 */
 export function renderNpcLine(template: string, vars: Record<string, string | number>): string {
   return template.replace(/\{(\w+)\}/g, (m, k: string) => (k in vars ? String(vars[k]) : m));
 }
 
-/** 一条模板对应的完整匹配正则：占位符只能出现在占位符的位置，其余字一字不差。 */
-export function npcLinePattern(template: string): RegExp {
+/** 一条模板对应的完整匹配正则：占位符只能出现在占位符的位置，其余字一字不差；{name} 只能是 names 里的名字。 */
+export function npcLinePattern(template: string, names: readonly string[]): RegExp {
+  const patterns = placeholderPatterns(names);
   let out = '';
   let last = 0;
   for (const m of template.matchAll(/\{(\w+)\}/g)) {
-    out += reEscape(template.slice(last, m.index)) + (PLACEHOLDER_PATTERNS[m[1]!] ?? '(?!)');
+    out += reEscape(template.slice(last, m.index)) + (patterns[m[1]!] ?? '(?!)');
     last = m.index! + m[0].length;
   }
   out += reEscape(template.slice(last));
   return new RegExp(`^${out}$`, 'u');
 }
 
-/** 这句话是不是这名 NPC 的某条模板渲染出来的（不变量和测试用，不依赖实现怎么选模板）。 */
-export function npcLineMatches(npcId: string, text: string): boolean {
+/**
+ * 这句话是不是这名 NPC 的某条模板渲染出来的（不变量和测试用，不依赖实现怎么选模板）。
+ * names 是世界里真实居民的名字：模板里唯一的玩家文字只能是其中一个。
+ */
+export function npcLineMatches(npcId: string, text: string, names: readonly string[]): boolean {
   for (const [key, lines] of Object.entries(NPC_LINES)) {
     if (!key.startsWith(`${npcId}/`)) continue;
-    if (lines.some((t) => npcLinePattern(t).test(text))) return true;
+    if (lines.some((t) => npcLinePattern(t, names).test(text))) return true;
   }
   return false;
 }

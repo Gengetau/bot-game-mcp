@@ -6,7 +6,7 @@
  */
 import { afterEach, describe, expect, it } from 'vitest';
 import { sanitizeName } from '../../src/core/text.js';
-import { NPCS, NPC_LINES, npcDef, npcLineMatches, renderNpcLine } from '../../src/world/content.js';
+import { DESTINATIONS, NPCS, NPC_LINES, PUBLIC_EVENTS, npcDef, npcLineMatches, renderNpcLine } from '../../src/world/content.js';
 import { WorldError } from '../../src/world/errors.js';
 import { roomOf } from '../../src/world/hearing.js';
 import { agentView, chatHistory, directory, publicView } from '../../src/world/views.js';
@@ -30,6 +30,8 @@ const npcChat = (a: Actor, cursor: string) => chatEvents(a, cursor).filter((e) =
 const wakes = (a: Actor, cursor: string) => a.events(cursor).events.filter((e) => e.type === 'town_chat_mention');
 const dist = (t: Town, a: Actor, npcId: string) => distance(positionOfResident(t.w, a.residentId, t.clock.t)!, positionOfNpc(t.w, npcId, t.clock.t)!);
 const reachOf = (t: Town) => t.w.params.personReach;
+/** 世界里真实居民的名字：NPC 台词里 {name} 只能是它们之一 */
+const names = (t: Town) => t.w.db.all('SELECT name FROM residents').map((r) => String(r.name));
 
 /** 茶馆里离掌柜够不着、但在同一间屋里的一个点（茶桌旁）。 */
 const FAR_IN_TEA_HOUSE = 'tea_house:table1';
@@ -107,7 +109,7 @@ describe('ask_npc', () => {
     a.go(KEEPER);
     const out = a.act('ask_npc', { npcId: KEEPER, topic: 'hello' });
     expect(out).toMatchObject({ status: 'completed', npc: { id: KEEPER, name: '茶馆掌柜' }, topic: 'hello', spoken: true, messageId: 1 });
-    expect(npcLineMatches(KEEPER, out.text)).toBe(true);
+    expect(npcLineMatches(KEEPER, out.text, names(t))).toBe(true);
     expect(out.text).toContain('阿灯');
     expect(out.text).toContain('30'); // 今天的存量来自程序
     expect(out.topics.map((x: { id: string }) => x.id)).toEqual(['hello', 'tea', 'town']);
@@ -124,7 +126,7 @@ describe('ask_npc', () => {
       t.advance(3_000);
       const out = a.act('ask_npc', { npcId: KEEPER, topic });
       expect(out.topic).toBe(topic);
-      expect(npcLineMatches(KEEPER, out.text), out.text).toBe(true);
+      expect(npcLineMatches(KEEPER, out.text, names(t)), out.text).toBe(true);
     }
     t.advance(3_000);
     const town = a.act('ask_npc', { npcId: KEEPER, topic: 'town' }).text as string;
@@ -297,7 +299,7 @@ describe('NPC 开口：受众与最小间隔', () => {
     t.advance(t.w.params.npcSpeakCooldownMs - 500);
     const second = asker.act('ask_npc', { npcId: KEEPER, topic: 'tea' });
     expect(second).toMatchObject({ status: 'completed', spoken: false, messageId: null });
-    expect(npcLineMatches(KEEPER, second.text)).toBe(true);
+    expect(npcLineMatches(KEEPER, second.text, names(t))).toBe(true);
     expect(npcChat(near, cn)).toHaveLength(1); // 仍然只有第一句
     expect(t.w.db.scalar('SELECT COUNT(*) FROM chat_messages WHERE sender_id = ?', KEEPER)).toBe(1);
     t.advance(1_000);
@@ -354,7 +356,10 @@ describe('掌柜卖茶', () => {
     const said = npcChat(b, cb);
     expect(said).toHaveLength(1);
     const text = said[0]!.data.text as string;
-    expect(NPC_LINES[`${KEEPER}/sold`]!.some((tpl) => renderNpcLine(tpl, { name: a.row().name }) === text)).toBe(true);
+    expect(NPC_LINES[`${KEEPER}/sold`]!).toContain(text);
+    // 成交台词是泛化的：旁听者看不出谁买了什么
+    expect(text).not.toContain(a.row().name);
+    expect(text).not.toContain('茶叶');
     // NPC 不持有任何账户或物品
     expect(t.w.db.scalar("SELECT COUNT(*) FROM accounts WHERE resident_id LIKE 'npc:%'")).toBe(0);
     expect(t.w.db.scalar("SELECT COUNT(*) FROM items WHERE owner_id LIKE 'npc:%' OR holder_id LIKE 'npc:%'")).toBe(0);
@@ -557,7 +562,7 @@ describe('闲逛者被搭话：别转身就走', () => {
         if (moving && dist(t, a, STROLLER) <= reachOf(t)) {
           const rev = t.w.db.get('SELECT nav_revision FROM world_actors WHERE actor_id = ?', STROLLER)!.nav_revision;
           const out = a.act('ask_npc', { npcId: STROLLER });
-          expect(npcLineMatches(STROLLER, out.text)).toBe(true);
+          expect(npcLineMatches(STROLLER, out.text, names(t))).toBe(true);
           expect(out.text).not.toContain('坐在'); // 走路时的台词，不是坐着的
           expect(t.w.db.get('SELECT nav_revision FROM world_actors WHERE actor_id = ?', STROLLER)!.nav_revision).toBe(rev);
           expect(positionOfNpc(t.w, STROLLER, t.clock.t)!.moving).toBe(true);
@@ -596,7 +601,7 @@ describe('台词里没有玩家文字', () => {
     const stock = 30;
     const expected = new Set([...NPC_LINES[`${KEEPER}/hello`]!].map((tpl) => renderNpcLine(tpl, { name: cleaned, price: 2, stock })));
     expect(expected.has(out.text), out.text).toBe(true);
-    expect(npcLineMatches(KEEPER, out.text)).toBe(true);
+    expect(npcLineMatches(KEEPER, out.text, names(t))).toBe(true);
     const evText = npcChat(b, cb)[0]!.data.text as string;
     expect(evText).toBe(out.text);
     expect(chatHistory(t.w, b.residentId, null, 5).messages[0]!.text).toBe(out.text);
@@ -605,11 +610,45 @@ describe('台词里没有玩家文字', () => {
     a.act('buy', { shop: 'tea_counter', sku: 'tea_leaves' });
     const sold = t.w.db.all('SELECT body FROM chat_messages WHERE sender_id = ? ORDER BY message_id', KEEPER).map((r) => String(r.body));
     expect(sold).toHaveLength(2);
-    expect(NPC_LINES[`${KEEPER}/sold`]!.some((tpl) => renderNpcLine(tpl, { name: cleaned }) === sold[1])).toBe(true);
+    expect(NPC_LINES[`${KEEPER}/sold`]!).toContain(sold[1]);
     // 每句话都出自模板；而一句混进了别的文字的话对不上（证明检查抓得到）
-    for (const s of sold) expect(npcLineMatches(KEEPER, s)).toBe(true);
-    expect(npcLineMatches(KEEPER, `${sold[0]}（别人写的话）`)).toBe(false);
-    expect(npcLineMatches(KEEPER, `别人写的话${sold[1]}`)).toBe(false);
+    for (const s of sold) expect(npcLineMatches(KEEPER, s, names(t))).toBe(true);
+    expect(npcLineMatches(KEEPER, `${sold[0]}（别人写的话）`, names(t))).toBe(false);
+  });
+
+  it('{name} 只认真实居民的名字：对每个含 {name} 的模板，真名匹配，前面或后面混进别的文字都不匹配（与选中哪条模板无关）', () => {
+    const t = makeTown({ params: STILL });
+    const a = t.join('阿灯');
+    const real = names(t);
+    let checked = 0;
+    for (const def of NPCS) {
+      for (const [key, lines] of Object.entries(NPC_LINES)) {
+        if (!key.startsWith(`${def.id}/`)) continue;
+        for (const tpl of lines.filter((x) => x.includes('{name}'))) {
+          const vars = { period: '早上', place: '这一带', price: 2, stock: 3, places: '', events: '' };
+          const ok = renderNpcLine(tpl, { ...vars, name: a.row().name });
+          // places / events 在这些模板里不出现；出现的话用真实值渲染（下面单独断言过它们）
+          if (/\{(places|events)\}/.test(tpl)) continue;
+          expect(npcLineMatches(def.id, ok, real), ok).toBe(true);
+          expect(npcLineMatches(def.id, renderNpcLine(tpl, { ...vars, name: `别人写的话${a.row().name}` }), real), tpl).toBe(false);
+          expect(npcLineMatches(def.id, renderNpcLine(tpl, { ...vars, name: '路人甲' }), real), tpl).toBe(false); // 不是居民的名字
+          expect(npcLineMatches(def.id, ok, []), tpl).toBe(false); // 没有居民名可认时什么都不匹配
+          checked++;
+        }
+      }
+    }
+    expect(checked).toBeGreaterThanOrEqual(8);
+    // places / events 也只认程序里的固定值，不是任意文字
+    const keys = Object.keys(NPC_LINES).filter((k) => k.startsWith(`${KEEPER}/town`));
+    expect(keys.length).toBeGreaterThanOrEqual(2);
+    const places = DESTINATIONS.filter((p) => p.kind === 'public').map((p) => p.name).join('、');
+    const title = PUBLIC_EVENTS[0]!.title;
+    for (const tpl of keys.flatMap((k) => NPC_LINES[k]!)) {
+      const good = renderNpcLine(tpl, { places, events: title });
+      expect(npcLineMatches(KEEPER, good, real), good).toBe(true);
+      expect(npcLineMatches(KEEPER, renderNpcLine(tpl, { places: `${places}、别人写的地方`, events: title }), real)).toBe(false);
+      if (tpl.includes('{events}')) expect(npcLineMatches(KEEPER, renderNpcLine(tpl, { places, events: `${title}、别人写的活动` }), real)).toBe(false);
+    }
   });
 
   it('模板本身只含白名单占位符；每名 NPC 的每个话题都有台词', () => {
@@ -621,5 +660,52 @@ describe('台词里没有玩家文字', () => {
       expect(def.topics.length).toBeGreaterThanOrEqual(2);
       for (const topic of def.topics) expect(Object.keys(NPC_LINES).some((k) => k.startsWith(`${def.id}/${topic.id}`)), `${def.id}/${topic.id}`).toBe(true);
     }
+  });
+});
+
+describe('ask_npc 的请求幂等', () => {
+  it('同一请求号连发两次：第二次是回放，只多一条 chat_messages、只数一次台词序号，旁边的人只收到一条 chat 事件', () => {
+    const t = makeTown({ params: STILL });
+    const a = t.join('阿灯');
+    const b = t.join('小岚');
+    a.go(KEEPER);
+    b.go(KEEPER);
+    const cb = b.view().cursor;
+    const msgs = () => Number(t.w.db.scalar('SELECT COUNT(*) FROM chat_messages WHERE sender_id = ?', KEEPER));
+    const said = () => t.w.streamHead(`npcsay:${t.w.worldId}:${KEEPER}`).highWater;
+    const tokens = () => JSON.stringify(t.w.db.all("SELECT * FROM rate_buckets WHERE resident_id = ?", a.residentId));
+    const m0 = msgs();
+    const n0 = said();
+    const r1 = a.act('ask_npc', { npcId: KEEPER, topic: 'tea' }, { requestId: 'npc-ask-req-0001' });
+    const afterFirst = { m: msgs(), n: said(), tok: tokens() };
+    t.advance(5_000); // 过了最小间隔：若重试被当成新的一次，就会再说一句
+    const r2 = a.act('ask_npc', { npcId: KEEPER, topic: 'tea' }, { requestId: 'npc-ask-req-0001' });
+    expect(r1.replayed).toBeUndefined();
+    expect(r2.replayed).toBe(true);
+    expect(r2.text).toBe(r1.text);
+    expect(afterFirst.m).toBe(m0 + 1);
+    expect(afterFirst.n).toBe(n0 + 1);
+    expect(msgs()).toBe(afterFirst.m);
+    expect(said()).toBe(afterFirst.n);
+    expect(tokens()).toBe(afterFirst.tok); // 回放不再耗令牌
+    expect(npcChat(b, cb)).toHaveLength(1);
+  });
+});
+
+describe('NPC 的话与 world_wait', () => {
+  it('NPC 在旁边说话会让卡在 world_wait 的居民返回（和别人的附近聊天一样）；同时不发 town_chat_mention、不动唤醒额度', async () => {
+    const t = makeTown({ params: STILL });
+    const a = t.join('阿灯');
+    const b = t.join('小岚', 'agent');
+    a.go(KEEPER);
+    b.go(KEEPER);
+    const cb = b.view().cursor;
+    // 对照：什么都没发生时等不到事件
+    expect(await t.w.waitResident(b.residentId, cb, undefined, 30)).toBe('timeout');
+    const waiting = t.w.waitResident(b.residentId, cb, undefined, 20_000);
+    a.act('ask_npc', { npcId: KEEPER });
+    expect(await waiting).toBe('event');
+    expect(npcChat(b, cb)).toHaveLength(1);
+    expect(wakes(b, cb)).toHaveLength(0);
   });
 });

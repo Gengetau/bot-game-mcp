@@ -438,7 +438,8 @@ function checkSpace(round: number, label = '', ww: WorldService = w, ppl: Who[] 
   // NPC 的话：说话人是定义的 NPC、受众都是居民、不进 NPC 当听众、每句都出自模板；每个受众恰好一条 chat 事件
   const npcMsgs = db.all("SELECT message_id, sender_id, body FROM chat_messages WHERE sender_id LIKE 'npc:%'");
   check(round, db.scalar("SELECT COUNT(*) FROM chat_audience WHERE resident_id LIKE 'npc:%'") === 0, `${tag}NPC 进了听众`);
-  check(round, npcMsgs.every((m) => NPCS.some((n) => n.id === m.sender_id) && npcLineMatches(String(m.sender_id), String(m.body))), () => `${tag}有 NPC 的话对不上台词模板`);
+  const residentNames = db.all('SELECT name FROM residents').map((x) => String(x.name));
+  check(round, npcMsgs.every((m) => NPCS.some((n) => n.id === m.sender_id) && npcLineMatches(String(m.sender_id), String(m.body), residentNames)), () => `${tag}有 NPC 的话对不上台词模板`);
   const audienceRows = db.scalar("SELECT COUNT(*) FROM chat_audience a JOIN chat_messages m ON m.message_id = a.message_id WHERE m.sender_id LIKE 'npc:%'");
   const npcChatEvents = db.scalar("SELECT COUNT(*) FROM recipient_events WHERE type = 'chat' AND projection LIKE '%\"kind\":\"npc\"%'");
   check(round, audienceRows === npcChatEvents, () => `${tag}NPC 的话的受众行 ${audienceRows} 条，对应的 chat 事件 ${npcChatEvents} 条`);

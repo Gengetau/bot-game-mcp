@@ -852,6 +852,8 @@ export class Invariants {
     if (audNpc > 0) fail('npc_no_audience', `chat_audience 里有 ${audNpc} 行指向 NPC`, null);
     this.pass('npc_lines_from_templates');
     const publicPlaces = new Set(PLACES.filter((p) => p.kind === 'public').map((p) => p.id));
+    // 模板里唯一的玩家文字是居民的名字：{name} 只能是世界里某个真实居民的名字
+    const residentNames = db.all('SELECT name FROM residents').map((x) => String(x.name));
     for (const m of db.all("SELECT message_id, space_id, sender_id, body FROM chat_messages WHERE sender_id LIKE 'npc:%'")) {
       const id = String(m.sender_id);
       if (!NPCS.some((n) => n.id === id)) {
@@ -861,7 +863,7 @@ export class Invariants {
       const strangers = db.scalar('SELECT COUNT(*) FROM chat_audience a WHERE a.message_id = ? AND NOT EXISTS (SELECT 1 FROM residents r WHERE r.resident_id = a.resident_id)', m.message_id);
       if (strangers > 0) fail('npc_no_audience', `NPC ${id} 的话（#${String(m.message_id)}）有 ${strangers} 个受众不是居民`, { messageId: m.message_id });
       if (!publicPlaces.has(String(m.space_id))) fail('npc_no_audience', `NPC ${id} 的话（#${String(m.message_id)}）发在非公共场所 ${String(m.space_id)}`, { messageId: m.message_id });
-      if (!npcLineMatches(id, String(m.body))) fail('npc_lines_from_templates', `NPC ${id} 说的话对不上任何台词模板：${String(m.body).slice(0, 60)}`, { messageId: m.message_id });
+      if (!npcLineMatches(id, String(m.body), residentNames)) fail('npc_lines_from_templates', `NPC ${id} 说的话对不上任何台词模板：${String(m.body).slice(0, 60)}`, { messageId: m.message_id });
     }
     // 走动、停留、换姿态不产生任何事件或事实
     if (!scanEvents) return;

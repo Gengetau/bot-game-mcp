@@ -424,7 +424,7 @@ export function installProperty(w: WorldService): void {
     grantItem(w, r.resident_id, good.type, qty, 'shop', book ? { bookId: book.id, title: book.title } : undefined);
     const name = book?.title ?? itemDef(good.type)?.name ?? good.type;
     // 掌柜说一句固定的成交台词（受最小间隔限制；说不说都不影响成交，和成交在同一个事务里）
-    if (keeper) keeperSoldLine(w, keeper, r, now);
+    if (keeper) keeperSoldLine(w, keeper, now);
     return { status: 'completed', bought: { name, qty, cost }, coins: wallet(w, r.resident_id).balance, text: `买了 ${qty} 件${name}，花了 ${cost} 枚硬币。` };
   });
 
