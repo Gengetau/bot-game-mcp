@@ -58,6 +58,28 @@ GDScript 一侧（`client/town/scripts/features/`）：
 - 声学房间（隔墙）只由服务端判断，页面的「附近没人」不知道墙，隔墙时会判「有人」。
 - 浏览器对 `document.title` 的未读前缀只在页面不可见时加，未在端到端里覆盖。
 
-## 7. 验证记录
+## 7. 之后各段怎么接
+
+通用规则：只加自己的新文件；`feature.gd`、`ctx.gd` 的公共部分、`hub.gd`、`manifest.gd`、`dock.js`、`dock.css`、`mod/00-chatkit.*` 由 C1a 拥有并冻结；`main.gd`、`hud.js`、`shell.html`、`export.sh`、`client-e2e.mjs` 不再为新功能改动。缺钩子时先单独提只加钩子的小补丁并合并（C7 开工前审一遍钩子）。
+
+新功能的步骤：
+1. GDScript：填 `scripts/features/<id>.gd`（桩文件已在 `manifest.gd` 里占好，**不用加注册行**）。要从 main 读新东西，只在 `ctx.gd` 自己那段预留分区里加访问器；转发协程的包装函数必须 `return await …`。
+2. 网页：`web/mod/<id>.{js,css,html}`。`html` 里一个 `<template id="tpl-dock-<id>" data-mod="<id>" data-tab-label="…" data-order="…" data-layout="tab|full|overlay">`；`js` 里 `TownDock.register({id, api: 1, mount(host){…}})`。文字全放模板的 `[data-bank]` 里，`mod/*.js` 不写汉字字面量，不用 `innerHTML` 等（`npm run client:lint` 和导出都会检查）。
+3. 端到端：`scripts/e2e/steps/<号段>-<名字>.mjs`，写法见该目录 README；不碰 `client-e2e.mjs`。
+4. 文档：`client/docs/<段>.md`。
+
+| 段 | 填哪些 | 用到的钩子 / 注意 |
+|---|---|---|
+| C1b 公屏 + 头顶气泡 | `town.gd`、`bubbles.gd`；`mod/town.*`（复用 `TownChatKit`，要改行为先加 options，不改内部）、`bubbles.css` | `frame_types = ["town_chat"]`（hello 里有 `townChat.cursor`，历史走 `GET /town-chat`，**旧的在前**，和 `GET /history` 相反）；气泡用 `tags` 钩子追加 `k:'b'` 条目（hud.js 的 `setTags` 只渲染一段纯文字，类名 `tag b`，`.tag` 默认 nowrap / 深色药丸，需在 `bubbles.css` 覆盖）；订阅 `ctx.feature("nearby").heard`（只在 live 消息时发，历史补读不发） |
+| C2 共同活动 | `activity.gd`、`mod/activity.*` | `actions(out)` 追加按钮，id 必须以 `f:activity:` 开头，`on_action(verb, arg)` 收到去掉前缀的部分；按钮的 `mode` 只能用已有样式 do / go / busy，或在自己的 css 里加类 |
+| C3 入座玩小游戏 | `game.gd`、`mod/game.*`（`data-layout="overlay"`，挂到 `#dockOverlays`） | `blocks_input()` 返回非空原因就屏蔽点地和方向键（方向键提示 3 秒节流）；`on_pick(kind, id)` 返回 true 接管点选；**补 nearby 的真实「对局中不能说话」断言**（见已知缺口） |
+| C4 点人 / 居民卡 / 邀请 / 入户 | `people.gd`、`mod/people.*` | `on_pick`、`tags`（门牌，同样受 `setTags` 字段限制） |
+| C5 信箱 | `mail.gd`、`mod/mail.*`（`data-layout="full"`，入口在 dock 内，不占 controls；`limits.letterMaxChars`） | 未读用 `host.setUnread`，汇入 `#dockBtn` 角标 |
+| C6 NPC | `npc.gd`、`mod/npc.*`；改 `actor.gd`（只有 C6 改） | NPC 的 `from.kind` 若不是 human / agent，`TChatUtil.kind_of` 当 human，要特别处理就通过 chatkit 的 options；注意 NPC 会让 nearby 的「附近没人」便签不出现（见已知缺口） |
+| C7 收尾 | `session.gd`、`mod/session.*`（`data-slot="controls"` 只能占 1 个：390 宽的 `#controls` 只容得下约 5 个按钮，现有 4 个） | 「离开小镇」要调 main 私有的 `_enter_left_state`，经 `ctx.gd` 的 C7 分区加访问器；评估镜头留白（rig inset）、老 Android 画布缩放、首次进入提示（默认关闭的面板新玩家可能发现不了，现在靠角标和 `#keyHint` 的 Enter 提示）；汇总各段文档 |
+
+`mod/*` 的合并顺序是文件名排序（`00-chatkit` 先）；模板里不要嵌套 `<template>`（嵌套克隆行为没有在本仓库验证过，消息行骨架是独立的顶层模板）。聊天内容、草稿、ArrowUp 历史只放内存，不写 localStorage / sessionStorage / IndexedDB（只允许界面偏好：面板开关、最后页签）。
+
+## 8. 验证记录
 
 见交付说明与 `client/demo/results.json`。反向验证（临时破坏实现、确认变红、再还原）的清单在 `scripts/e2e/steps/20-chat-nearby.mjs` 末尾。

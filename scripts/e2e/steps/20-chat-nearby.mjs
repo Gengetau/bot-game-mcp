@@ -591,6 +591,9 @@ export default async function run(h) {
     const k2 = await modState(B.page, 'nearby');
     check(k2.count === 0 && k2.rows === 0, `新居民不应看到上一位听到的话：${JSON.stringify(k2)}`);
     check((await unread(B.page)).n === 0, '新居民的未读应为 0');
+    // Godot 一侧也要清：_seen 里留着上一位的消息编号，新居民的收件序号会撞上它们（debug().seen 是 _seen 的大小；
+    // 离开期间 Godot 不推调试数据，所以在新居民进入、调试数据刷新之后看）。新居民刚进来，历史是空的，已见编号应为 0
+    await until(async () => ((await godotFeature(B.page, 'nearby'))?.seen ?? -1) === 0, 10_000, '新居民的 Godot 一侧已见编号为 0（nearby.gd 的 on_leave 清了 _seen）');
     note(`换人：${oldId} -> ${B.id}，列表为空`);
   });
 
@@ -599,16 +602,30 @@ export default async function run(h) {
 }
 
 /* ───────────────────────── 怎么让它失败（反向验证）─────────────────────────
- * 以下每条临时改动后，指定的子步骤应当变红；改回去再跑应当变绿。
- *  - web 侧去重（?debug=1 下 TownDock.test.noDedupe = true，让聊天组件不按 id 去重）：20.1「恰好一条」与 20.6「各出现且仅出现一次」。
- *  - 00-chatkit.js 的发送函数里去掉 `len() <= maxChars()`（canSend 与 updateSend 都改）：20.3 的超长禁用。
- *  - nearby.gd 的 `_send` 里去掉 `text.length() > mx` 判断：20.3 强发超长（Godot 会发出请求，服务器回 400，页面监视记 4xx 未声明）。
- *  - wireInput 里去掉对 isComposing / keyCode 229 的判断：20.2 的「组字中 Enter 不发送」。
- *  - dock.js 全局 Enter 处理里去掉对 button 的排除：20.2 的「按钮上的 Enter 不被劫持」。
- *  - nearby.gd 的 `on_event` 里不再按 `scope == "nearby"` 过滤、或服务器侧把听众范围放宽：20.4 / 20.46 的「没有 X / T1」。
- *  - nearby.gd 的 `on_leave` 里不清 `_msgs`：20.95 的「离开后列表应清空」。
- *  - nearby.gd 的 `on_hello` 里 `resumed and not first` 分支改成立即补读：20.6 的未读恰为 2（历史抢先到，补发的事件被当成已有）。
- *  - dock.css 里把 #bottombar 的抬高去掉：20.85 的「停下」与抽屉相交。
- *  - dock.js 的 visualViewport 处理里 kb 阈值改成永远 0：20.85 的软键盘断言。
- *  - 把 `#dock` 上对 touchstart/touchmove 的拦截（若有）去掉、且 Godot 的触摸监听在 window：20.85 的“面板里双指不缩放”。
+ * 以下每条临时改动后，指定的子步骤变红（括号里是实际看到的第一个红断言）；改回去再跑变绿。破坏清单和脚本不入库，下面逐条写明改哪里。
+ *  - dock.js wireInput 去掉 `e.isComposing || keyCode === 229 || 30ms` 判断：20.2（组字中的 Enter 不应发送）。
+ *  - 00-chatkit.js 的 updateSend 里去掉 `|| n > maxChars()`（发送钮不因超长而禁用）：20.3（超长应禁用发送并提示最多 120 字）。
+ *    同时去掉 canSend() 里的 `len() <= maxChars()`：Enter 会把超长发到 Godot，Godot 本地拒绝（text_too_long），页面一侧没有可观察的差别，所以前端这道检查是纵深防御，单独破坏它不会变红（已知）。
+ *  - nearby.gd 的 `_send` 里去掉 `text.length() > mx`：20.3（强发超长得不到 text_too_long 的回应）。
+ *  - 00-chatkit.js 的 setState 里让「附近没人」便签永远隐藏：20.5。
+ *  - 00-chatkit.js 的 setState 里占位符固定用 ph.ok：20.7（只读时占位应是只读提示）。
+ *  - dock.css 去掉手机抽屉打开时对 #bottombar 的抬高：20.85（「停下」与抽屉相交）。
+ *  - dock.css 把侧栏宽度改成 70vw：20.85（宽 1100 时面板与 #controls 相交）。
+ *  - 00-chatkit.js 的 reset() 里不清列表：20.95（离开后列表应清空）。
+ *  - nearby.gd 的 `_ingest` 不按 id 去重 + 00-chatkit.js 不按 id 去重（?debug=1 下 TownDock.test.noDedupe 是同样效果的运行时开关）：20.1（回执加回声应恰好一条）、20.6。
+ *  - nearby.gd 的 `on_leave` 里不清 `_seen` / `_msgs`：20.95（新居民的 Godot 一侧已见编号应为 0）。
+ *  - nearby.gd 的 `_alone` 判定改成永远「有人」：20.5（便签不出现）。
+ *  - dock.js 全局 Enter 处理里去掉对 button 的排除：20.2（按钮上的 Enter 不应被劫持）。
+ *  - dock.js 的 applyKb 里 kb 永远 0：20.85（模拟键盘后 kb 约 300）。
+ *  - 00-chatkit.js 的 startCooldown 之后不再禁用发送钮（去掉 updateSend 里的 `cool > 0`）：20.3（应出现倒计时并禁用发送）。
+ *  - 00-chatkit.js 的 onAck 里去掉 heardBy === 0 时的系统行：20.5（出现「没有人听到」系统行）。
+ *  - 00-chatkit.js 的 flush 里历史补读（live=false）也计未读（`else if (p.live) fresh++` 改成 `else fresh++`）：20.6（刷新后补读的历史不计未读）。
+ *  - 00-chatkit.js 的 onShow 里不清未读：20.1（B 打开后角标清零）。
+ *  - dock.js wireInput 里 Esc 不失焦：20.2（第一次 Esc 只失焦）；done() 里不失焦：20.2（桌面发送成功后应失焦）；空输入 Enter 不失焦：20.2（空输入按 Enter 应失焦）。
+ *  - 本文件自己的前置条件：B 不走远（20.4：B 应在 9 米以外）、两人目的地改成相距很近（20.45：说话时两人应都还在走）、B 不进私宅（20.46：B 在私宅里不应听到门外的话）。
+ *  - 把构建产物里的 textContent 改成 innerHTML（只改产物）：20.8（A 的列表里出现这句的文字与服务端不同 / 注入的元素）。
+ * 没有做出红灯的两条（如实记录）：
+ *  - nearby.gd 的 on_hello 里 `resumed and not first` 改成立即补读：20.6 仍绿，只有全程检查因为一个未声明的 401（离开后的 /history）变红。它防的是「历史抢在补发的事件前面到，补发的事件被当成已有、未读少算」，
+ *    本机里事件续传总是先于 /history 的一次往返，这个时序造不出来；要造得先能延迟 WebSocket 帧，wsGate 现在只能整体阻断。
+ *  - nearby.gd 的 on_event 里不按 scope == "nearby" 过滤：服务端现在只有 scope 为 nearby 的 chat 事件，造不出别的 scope，这条没验证。
  */
