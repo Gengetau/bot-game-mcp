@@ -719,17 +719,10 @@ export default async function run(h) {
     await until(async () => (await bubbleOf(A, A.id)).length === 0, 20_000, 'A 的气泡消失', 150);
   });
 
-  await step(31.5, '两人挨着各说一句长话：两块气泡互不相交，也不压在对方的名牌上，整块在顶栏之下（A、B 两个页面各核对一遍）', async () => {
+  await step(31.5, '两人贴着站、各说一句长话：两块气泡互不相交，也不压在对方的名牌上，整块在顶栏之下（A、B 两个页面同一时刻一起核对；B 站在 A 的右后方和正右边各试一次）', async () => {
     await closeDock(A.page);
     await closeDock(B.page);
-    await until(async () => (await bubbleOf(A, A.id)).length === 0 && (await bubbleOf(B, A.id)).length === 0 && (await bubbleOf(A, B.id)).length === 0, 20_000, '此前的气泡已消失', 150);
-    await come(B, A, 3);
-    const long1 = uniq('今天广场上有好多人在放灯要不要一起去看看呀');
-    const long2 = uniq('好呀好呀我们现在就出发吧顺便带上茶');
-    await apiSayWait(A, long1);
-    await apiSayWait(B, long2);
-    await until(async () => (await bubbles(A.page)).length === 2 && (await bubbles(B.page)).length === 2, 20_000, 'A、B 页面都同时有两个气泡', 80);
-    // 抬高量是平滑过去的（人走动、前一个气泡过期时不一帧跳变），所以等排版稳定下来再断言
+    // 抬高量是平滑过去的（人走动、前一个气泡过期时不一帧跳变），所以不是「出现的第一帧」就对，而是在气泡存活期间某一刻两个页面同时排好
     const layout = (p) =>
       p.page.evaluate(() => {
         const R = (e) => e.getBoundingClientRect().toJSON();
@@ -749,19 +742,34 @@ export default async function run(h) {
         }
         return { n: bubs.length, issues: [...new Set(issues)], rects: bubs.map((e) => R(e)).map((r) => [Math.round(r.left), Math.round(r.top), Math.round(r.width), Math.round(r.height)]) };
       });
-    for (const p of [A, B]) {
-      const ok = await until(async () => {
-        const l = await layout(p);
-        return l.n === 2 && l.issues.length === 0 ? l : null;
-      }, 12_000, `${p.label} 页面两块气泡互不相交、不压别人的名牌、不压顶栏`, 120).catch(async (e) => {
-        throw new Error(`${e.message}；最后一次：${JSON.stringify(await layout(p))}`);
+    const placeB = async (dx, dz) => {
+      const a0 = (await pairInfo()).a;
+      const to = { x: a0.x + dx, z: a0.z + dz };
+      await apiAct(B, { type: 'navigate', to });
+      await until(async () => {
+        const q = await pairInfo();
+        return q.b && !q.movingB && Math.hypot(q.b.x - to.x, q.b.z - to.z) < 0.6;
+      }, 40_000, `B 站到 A 的 (${dx}, ${dz}) 处`, 500);
+    };
+    for (const [dx, dz] of [[0.8, -0.9], [1.0, 0]]) {
+      await until(async () => (await bubbles(A.page)).length === 0 && (await bubbles(B.page)).length === 0, 20_000, '此前的气泡已消失', 150);
+      await placeB(dx, dz);
+      const long1 = uniq('今天广场上有好多人在放灯要不要一起去看看呀');
+      const long2 = uniq('好呀好呀我们现在就出发吧顺便带上茶');
+      await apiSayWait(A, long1);
+      await apiSayWait(B, long2);
+      let last = null;
+      await until(async () => {
+        const [la, lb] = await Promise.all([layout(A), layout(B)]);
+        if (la.n === 2 || lb.n === 2) last = { A: la, B: lb };
+        return la.n === 2 && lb.n === 2 && la.issues.length === 0 && lb.issues.length === 0 ? { la, lb } : null;
+      }, 15_000, `B 在 (${dx}, ${dz}) 处：同一时刻两个页面都是两块气泡且互不相交、不压别人的名牌、不压顶栏`, 100).catch((e) => {
+        throw new Error(`${e.message}；最后一次两块气泡都在时：${JSON.stringify(last)}`);
       });
-      note(`${p.label} 两块气泡矩形 ${JSON.stringify(ok.rects)}`);
-      await frames(p.page, 3);
-      const again = await layout(p);
-      check(again.n === 0 || again.issues.length === 0, `${p.label} 稳定之后仍不重叠：${JSON.stringify(again)}`);
+      note(`B 在 A 的 (${dx}, ${dz}) 处：A 页面 ${JSON.stringify(last?.A.rects)}，B 页面 ${JSON.stringify(last?.B.rects)}`);
+      await until(async () => (await bubbles(A.page)).length === 0 && (await bubbles(B.page)).length === 0, 20_000, '气泡淡出', 150);
     }
-    await until(async () => (await bubbles(A.page)).length === 0 && (await bubbles(B.page)).length === 0, 20_000, '气泡淡出', 150);
+    await come(B, A, 5);
   });
 
   // ───────────────────────── 32 @ 高亮、未读与 XSS ─────────────────────────
