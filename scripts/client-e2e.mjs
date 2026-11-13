@@ -1046,6 +1046,7 @@ async function main() {
             minLeft: Math.min(...kids.map((e) => e.getBoundingClientRect().left)),
             docScroll: document.documentElement.scrollWidth,
             rows: new Set(kids.map((e) => Math.round(e.getBoundingClientRect().top))).size,
+            minH: Math.min(...kids.map((e) => e.getBoundingClientRect().height)),
           };
         });
       const okTop = (t, tag) => {
@@ -1053,6 +1054,7 @@ async function main() {
         check(t.whereScroll <= t.whereClient, `${tag}：地点胶囊内容溢出（${t.whereScroll} > ${t.whereClient}）`);
         check(t.barScroll <= t.barClient && t.maxRight <= t.vw && t.minLeft >= 0 && t.docScroll <= t.vw, `${tag}：顶栏超出屏幕宽度 ${JSON.stringify(t)}`);
         check(t.rows === 1, `${tag}：顶栏应保持一行，实际 ${t.rows} 行`);
+        check(t.minH >= 36, `${tag}：顶栏按钮不该比 36 像素矮（触控点击区域），最矮 ${t.minH}`);
       };
       const t0 = await topbar();
       okTop(t0, '手机顶栏');
