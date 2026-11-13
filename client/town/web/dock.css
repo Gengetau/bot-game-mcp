@@ -80,7 +80,8 @@ body[data-dock="drawer"] #dockGrip { display: block; }
 #dockTabs { display: flex; align-items: flex-end; gap: 4px; flex: none; height: 36px; padding: 0 44px 0 6px; background: var(--d-wood); position: relative; }
 body[data-dock="drawer"] #dockTabs { height: 40px; padding-top: 6px; }
 .dock-tab {
-  position: relative; height: 30px; padding: 0 14px; border-radius: 8px 8px 0 0; font: 14px/30px var(--d-serif); color: var(--d-paper);
+  position: relative; z-index: 3; /* 高于 #dockGrip（z-index 2）：手机抽屉里把手横跨整条页签，不抬高的话真手指点页签会点到把手上、抽屉被关掉 */
+  height: 30px; padding: 0 14px; border-radius: 8px 8px 0 0; font: 14px/30px var(--d-serif); color: var(--d-paper);
   background: var(--d-wood-dark); white-space: nowrap;
 }
 .dock-tab::before { content: ""; position: absolute; left: 0; right: 0; top: -8px; bottom: 0; } /* 垂直点按区扩到 44px */

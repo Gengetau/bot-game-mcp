@@ -80,9 +80,17 @@ export async function openPeopleTab(page) {
     await page.click('#dockBtn');
     await poll(() => page.evaluate(() => !!window.__dock?._dock?.open), 5000, '面板打开');
   }
-  // 手机抽屉里 #dockGrip（dock.css，C1a 拥有）盖住了整条页签：真实触摸点不到页签，这里直接在 DOM 上点（已作为骨架缺陷报给统筹）
-  const grip = await page.evaluate(() => { const t = document.querySelector('#dockTabs [data-tab="people"]'); const r = t.getBoundingClientRect(); return document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2)?.id === 'dockGrip'; });
-  if (grip) await page.evaluate(() => document.querySelector('#dockTabs [data-tab="people"]').click());
+  // 真实的点击路径：页签中心最上面必须是页签本身（手机抽屉里曾被 #dockGrip 盖住，真手指点不到），触屏页面用真触摸点
+  const hitInfo = await page.evaluate(() => {
+    const t = document.querySelector('#dockTabs [data-tab="people"]');
+    const r = t.getBoundingClientRect();
+    const x = r.left + r.width / 2;
+    const y = r.top + r.height / 2;
+    const top = document.elementFromPoint(x, y);
+    return { x, y, ok: !!top && !!top.closest('[data-tab="people"]'), top: top?.id || top?.className || top?.tagName || '', coarse: matchMedia('(pointer: coarse)').matches };
+  });
+  if (!hitInfo.ok) throw new Error(`「人家」页签中心 (${hitInfo.x.toFixed(0)},${hitInfo.y.toFixed(0)}) 最上面是 ${hitInfo.top}，真手指点不到页签`);
+  if (hitInfo.coarse) await page.touchscreen.tap(hitInfo.x, hitInfo.y);
   else await page.click('#dockTabs [data-tab="people"]');
   await poll(() => page.evaluate(() => window.__dock?._dock?.tab === 'people'), 5000, '切到人家页签');
 }

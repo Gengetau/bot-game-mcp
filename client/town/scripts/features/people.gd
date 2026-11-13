@@ -19,6 +19,10 @@ var _acc: float = 0.0
 var _card_id: String = ""
 var _card_scene: String = ""
 var _card_walk: bool = false
+var _walk_deadline: float = 0.0  # 「正在走向 ta」最迟持续到这个时刻（_clock 秒）：改道、被拦、对方走远都不会让它卡住
+var _walk_nav: String = ""  # 走过去时自己的导航编号（第一次在快照里看到的）；换了编号就是改道了
+var _walk_ended: bool = false
+var _panel_open: bool = false  # 面板开着且停在「人家」页签（网页告知）：这时不再出「门牌」按钮
 var _want_id: String = ""
 var _want_until: float = 0.0
 
@@ -49,7 +53,7 @@ func _init() -> void:
 
 
 func event_types() -> PackedStringArray:
-	return PackedStringArray(["invite", "asked_hobby", "notice", "you_arrived"])
+	return PackedStringArray(["invite", "asked_hobby", "notice", "you_arrived", "nav_stopped"])
 
 
 func wants_tick() -> bool:
@@ -73,6 +77,9 @@ func _reset_all() -> void:
 	_card_id = ""
 	_card_scene = ""
 	_card_walk = false
+	_walk_nav = ""
+	_walk_ended = false
+	_panel_open = false
 	_want_id = ""
 	_want_until = 0.0
 	_res.clear()
@@ -250,6 +257,10 @@ func on_event(ev: Dictionary) -> void:
 				ctx.toast("%s 问了你的爱好。" % str(frm.get("name", "")), "info")
 		"notice":
 			_notice_wait = 0.12
+		"nav_stopped":
+			# 路线被服务器停了（没续上、被拦、换了控制权……）：不再等着开卡，卡上也不再写「正在走向 ta」
+			_want_id = ""
+			_cancel_walk()
 		"you_arrived":
 			var tg = data.get("target")
 			if tg is Dictionary and str(tg.get("kind", "")) == "resident":
@@ -259,6 +270,8 @@ func on_event(ev: Dictionary) -> void:
 					_want_until = _clock + WANT_WINDOW
 			else:
 				_want_id = ""
+				if tg is Dictionary and str(tg.get("kind", "")) == "home":
+					_visited(str(tg.get("id", "")))
 
 
 # ───────────────────────── 点人 ─────────────────────────
@@ -345,6 +358,41 @@ func _close_card() -> void:
 	ctx.mark_dirty()
 
 
+## 开始「走向 ta」：c4_approach 确实发出了才调用。超时按路程算，给改道、被拦、对方走远留一条出路
+func _begin_walk(tid: String) -> void:
+	_card_walk = true
+	_walk_nav = ""
+	_walk_ended = false
+	var d: float = _dist_to(tid)
+	if d == INF:
+		d = 10.0
+	_walk_deadline = _clock + clampf(d / 2.0 + 4.0, 4.0, 40.0)
+
+
+func _cancel_walk() -> void:
+	if not _card_walk:
+		return
+	_card_walk = false
+	_walk_nav = ""
+	_walk_ended = false
+	_push()
+
+
+## 走向 ta 的途中每 0.25 秒看一眼：自己的导航编号变了（点了别处）、走完了人还不在跟前、或超时，都不再算「正在走向」
+func _watch_walk(me: TActor) -> void:
+	if me.nav_id != "":
+		if _walk_nav == "":
+			_walk_nav = me.nav_id
+		elif me.nav_id != _walk_nav:
+			_cancel_walk()
+			return
+	elif _walk_nav != "" and not _walk_ended:
+		_walk_ended = true
+		_walk_deadline = minf(_walk_deadline, _clock + 1.5)  # 走完了，留一点时间让位置跟上
+	if _clock > _walk_deadline:
+		_cancel_walk()
+
+
 # ───────────────────────── 网页 -> Godot ─────────────────────────
 
 
@@ -361,6 +409,11 @@ func on_ui(ui_name: String, arg: String) -> void:
 			_visit(arg)
 		"leave_home":
 			ctx.c4_go({"to": "residential"}, "")
+		"panel":
+			var open: bool = arg == "1"
+			if open != _panel_open:
+				_panel_open = open
+				ctx.mark_dirty()
 		"dismiss":
 			_dismissed[arg] = true
 			_fresh.erase(arg)
@@ -386,20 +439,30 @@ func _visit(home: String) -> void:
 		return
 	var owner_name: String = ""
 	for g in _recv:
-		if str(g.get("home", "")) == home:
-			var gid: String = str(g["grantId"])
-			_fresh.erase(gid)
-			_unseen.erase(gid)
-			if g.get("host") is Dictionary:
-				owner_name = str(g["host"].get("name", ""))
+		if str(g.get("home", "")) == home and g.get("host") is Dictionary:
+			owner_name = str(g["host"].get("name", ""))
 	if owner_name == "" and _doors is Array:
 		for d in _doors:
 			if str(d["home"]) == home:
 				owner_name = str(d["ownerName"])
 	var to: Dictionary = {"to": "home"} if home == _my_home else {"to": home}
-	_push()
-	ctx.mark_dirty()
+	# 请柬的「新」标留到真的走进那户人家（you_arrived）再清：被走开确认等拦下、没有权限、网络失败时，按钮和角标都还在
 	ctx.c4_go(to, owner_name)
+
+
+## 走进了某户人家（you_arrived，target.kind == home）：这户主人发来的请柬算处理过了
+func _visited(home: String) -> void:
+	var changed: bool = false
+	for g in _recv:
+		if str(g.get("home", "")) == home:
+			var gid: String = str(g.get("grantId", ""))
+			if _fresh.erase(gid):
+				changed = true
+			if _unseen.erase(gid):
+				changed = true
+	if changed:
+		_push()
+		ctx.mark_dirty()
 
 
 # ───────────────────────── 动作：问爱好、邀请 ─────────────────────────
@@ -489,10 +552,10 @@ func _do(verb: String, pid: String, n: int) -> void:
 	var ack2 := {"ok": false, "code": code, "reason": str(r.get("reason", "")), "message": str(r.get("message", "")), "retryMs": int(r.get("retry_after_ms", 0))}
 	if code == "too_far" and data is Dictionary and str(data.get("navigateTo", "")) != "":
 		var tid: String = str(data["navigateTo"])
-		if _card_id == tid:
-			_card_walk = true
-		ack2["walking"] = true
-		ctx.c4_approach(tid)
+		# 只有这张卡还开着、目标就是 ta 时才走过去；卡已换走 / 关掉，这条回应是过期的，不能把玩家拽向旧目标
+		if _card_id == tid and ctx.c4_approach(tid):
+			_begin_walk(tid)
+			ack2["walking"] = true
 	elif code == "not_here":
 		ctx.refresh_me()
 	if not same_card:
@@ -536,35 +599,45 @@ func tick(dt: float, _now_ms: float) -> void:
 		var d: float = _dist_to(_card_id)
 		if not acts.has(_card_id) or ctx.cur_scene() != _card_scene or ctx.in_game():
 			_close_card()
-		elif _card_walk and d <= reach + REACH_SLACK:
-			_card_walk = false
-			feed("ack", {"n": 0, "verb": "walk", "id": _card_id, "ok": true, "code": "arrived"})
-		elif not _card_walk and d > AUTO_CLOSE_DIST:
+		elif _card_walk:
+			if d <= reach + REACH_SLACK:
+				_card_walk = false
+				feed("ack", {"n": 0, "verb": "walk", "id": _card_id, "ok": true, "code": "arrived"})
+			else:
+				_watch_walk(sa as TActor)
+		elif d > AUTO_CLOSE_DIST:
 			_close_card()
-	# 「认识一下」：最近的人，带迟滞
-	var best: String = ""
-	var best_d: float = INF
+	# 「认识一下」：最近的人，带迟滞（选择逻辑在 pick_meet，纯函数，client/tools/test-people.gd 单测）
+	var cands: Array = []
 	for aid in acts:
 		if aid == ctx.self_id():
 			continue
 		var a: TActor = acts[aid]
 		if a.busy or not (a.kind == "human" or a.kind == "agent"):
 			continue
-		var dd: float = a.disp.distance_to((sa as TActor).disp)
-		if dd < best_d:
-			best_d = dd
-			best = aid
-	var want_meet: String = ""
-	if best != "":
-		if best == _meet_id:
-			if best_d <= reach + MEET_HYST:
-				want_meet = best
-		elif best_d <= reach:
-			want_meet = best
+		cands.append({"id": aid, "d": a.disp.distance_to((sa as TActor).disp)})
+	var want_meet: String = pick_meet(cands, _meet_id, reach, MEET_HYST)
 	if want_meet != _meet_id:
 		_meet_id = want_meet
 		ctx.mark_dirty()
 	_push()
+
+
+## 「认识一下」选谁：cands 是 [{id, d}]（已排除自己、busy、非居民）。
+## 当前对象 cur 还在候选里、且没超出 reach + hyst，就一直是它（不被另一个略近的人顶替）；它失效了才换成最近者（要在 reach 之内）。
+static func pick_meet(cands: Array, cur: String, reach: float, hyst: float) -> String:
+	var best: String = ""
+	var best_d: float = INF
+	for c in cands:
+		var d: float = float(c["d"])
+		if cur != "" and str(c["id"]) == cur and d <= reach + hyst:
+			return cur
+		if d < best_d:
+			best_d = d
+			best = str(c["id"])
+	if best != "" and best_d <= reach:
+		return best
+	return ""
 
 
 # ───────────────────────── 推给网页 ─────────────────────────
@@ -659,7 +732,7 @@ func actions(out: Array) -> void:
 				best = g
 	if not best.is_empty():
 		out.append({"id": "f:people:visit:" + str(best["home"]), "label": "去做客", "sub": "%s的家" % str(best["host"].get("name", "")), "mode": "do"})
-	if _doors is Array:
+	if _doors is Array and not _panel_open:
 		out.append({"id": "f:people:doors", "label": "门牌", "sub": "", "mode": "go"})
 
 
@@ -681,6 +754,7 @@ func debug() -> Dictionary:
 		"card": _card_id if _card_id != "" else null,
 		"cardId": _card_id,
 		"walk": _card_walk,
+		"panel": _panel_open,
 		"want": _want_id,
 		"asks": _asks,
 		"invitesSent": _invites_sent,

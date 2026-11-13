@@ -42,6 +42,14 @@ export default async function run(h) {
   const moveBAway = async (min, max) => {
     const offs = [[5, 0], [-5, 0], [0, 5], [0, -5], [6, 4], [-6, -4], [4, -6], [-4, 6], [7, 0], [-7, 0], [0, 7], [0, -7]];
     const sc0 = await sceneOf(A);
+    // 先沿 A 到 B 现在的方向直接拉到目标距离：B 少绕路，A 开着的卡也不会因为 B 路上绕到 8 米外而自动关掉
+    const scb = (await serverScene(A)).actors.find((x) => x.id === B.id);
+    if (scb) {
+      const vx = scb.x - sc0.x;
+      const vz = scb.z - sc0.z;
+      const vl = Math.hypot(vx, vz);
+      if (vl > 0.5) offs.unshift([(vx / vl) * ((min + max) / 2), (vz / vl) * ((min + max) / 2)]);
+    }
     for (const [dx, dz] of offs) {
       const r = await apiAct(B, { type: 'navigate', to: { x: sc0.x + dx, z: sc0.z + dz } });
       if (r.status !== 200) continue;
@@ -175,17 +183,24 @@ export default async function run(h) {
 
   // ───────────────────────── 60.35 限流 ─────────────────────────
   await step(60.35, '限流：A 用 API 烧光问爱好额度；界面再点 -> 提示含「太频繁」，按钮禁用；额度恢复后可点（40 秒内没恢复只记 note）', async () => {
-    let got = false;
-    for (let i = 0; i < 5 && !got; i++) {
-      const r = await apiAct(A, { type: 'ask_hobby', target: B.id });
-      if (r.status === 429) got = true;
+    // 额度每 30 秒补 1 个：烧光之后到界面点击之间若恰好补回一个，界面那一次会成功而不是 429。所以点完发现成功就再烧一轮重来（最多 3 轮），
+    // 每一轮「烧光 -> 立刻点」之间只隔一次 API 往返，补回的概率本来就小，三轮都碰上等于不可能
+    allowFailure(A.w, 'POST', /\/town\/api\/actions$/, { min: 1, max: 3, why: '60.35：额度烧光后界面再问一次必定 429（恰好补到额度的那一轮界面会成功，再烧一轮，最多 3 轮）' });
+    let ack = null;
+    for (let round = 0; round < 3; round++) {
+      let got = false;
+      for (let i = 0; i < 5 && !got; i++) {
+        const r = await apiAct(A, { type: 'ask_hobby', target: B.id });
+        if (r.status === 429) got = true;
+      }
+      check(got, '5 次之内应出现 429');
+      await sleep(900);
+      const n0 = await lastN(A);
+      await A.page.click(`${CARD} [data-role="ask"]`);
+      ack = await ackAfter(A, 'ask', n0);
+      if (!ack.ok) break;
+      note(`第 ${round + 1} 轮：额度恰好补回一个，界面那一次成功了，再烧一轮`);
     }
-    check(got, '5 次之内应出现 429');
-    allowFailure(A.w, 'POST', /\/town\/api\/actions$/, { min: 1, max: 1, why: '60.35：额度烧光后界面再问一次必定 429' });
-    await sleep(900);
-    const n0 = await lastN(A);
-    await A.page.click(`${CARD} [data-role="ask"]`);
-    const ack = await ackAfter(A, 'ask', n0);
     check(!ack.ok && ack.retryMs > 0, `应被限流：${JSON.stringify(ack)}`);
     const c = await peopleCard(A.page);
     check(c.hint.includes('太频繁'), `提示应含服务器原文「太频繁」：${c.hint}`);
@@ -219,7 +234,11 @@ export default async function run(h) {
     for (const d of doors) check(rows.find((r) => r.home === d.home)?.can === d.canEnter, `canEnter 应一一对应：${d.home}`);
     const text = await B.page.evaluate((sel) => document.querySelector(sel).textContent, PANE);
     check(!/在线|在家|离线/.test(text), `门牌与卡片里不应出现在线 / 在家字样：${text.slice(0, 200)}`);
+    // 面板已经开在「人家」页签：「门牌」按钮没有意义（还叠在脚下的地点文字上），不再出；关了面板它回来
+    await until(async () => !(await actionButtons(B.page)).some((b) => b.id === 'f:people:doors'), 10_000, '面板开在「人家」页签时 #actions 没有「门牌」');
     await shot(B.page, '61-mobile-doors');
+    await closePanel(B.page);
+    await until(async () => (await actionButtons(B.page)).some((b) => b.id === 'f:people:doors'), 10_000, '关了面板「门牌」按钮回来');
   });
 
   // ───────────────────────── 60.45 无权入户（竞态） ─────────────────────────
@@ -310,6 +329,90 @@ export default async function run(h) {
     check(apiCount(A, 'ask_hobby') === ask0 + 1, `不应自动重发 ask_hobby：${apiCount(A, 'ask_hobby') - ask0}`);
   });
 
+  // ───────────────────────── 60.57 / 60.58 too_far 之后的走路 ─────────────────────────
+  /** 站到 B 身边并让 A 的卡开着（上一步失败时也能从这里重新起步） */
+  const nearWithCard = async () => {
+    if ((await gapAB()) > 3.2 || !(await peopleCard(A.page)).cardOpen) {
+      if ((await peopleCard(A.page)).cardOpen) { await A.page.click(`${CARD} [data-role="close"]`); await cardClosed(A); }
+      if ((await gapAB()) > 3.2) {
+        // 走到 B 身边（API 代发，短路；对方在屏幕外时点不到）
+        check((await apiAct(A, { type: 'navigate', approach: B.id })).status === 200, 'A 走向 B 应被接受');
+        await waitIdle(A);
+      }
+      await clickActor(A, B.id);
+      await cardIs(A, B.id);
+    }
+  };
+  await step(60.57, 'too_far 之后：走向 ta 的路上点了别处 -> 「正在走向」不再卡住，对方走远后卡自动关', async () => {
+    const { clickWorld, walkTo } = h;
+    await nearWithCard();
+    const g0 = await moveBAway(6.5, 7.5); // 越远，走到跟前（reach + 0.5 米）要的时间越长，改道的点击才赶得上「正在走向」
+    note(`B 离 A ${g0.toFixed(1)} 米`);
+    await until(async () => (await peopleCard(A.page)).cardOpen, 5000, '8 米内卡不自动关');
+    // 先量好背离 B 的方向（点击要在 A 走到跟前之前发出去）
+    const sa = await sceneOf(A);
+    const sb = (await serverScene(A)).actors.find((x) => x.id === B.id);
+    const len = Math.hypot(sa.x - sb.x, sa.z - sb.z) || 1;
+    const ux = (sa.x - sb.x) / len;
+    const uz = (sa.z - sb.z) / len;
+    allowFailure(A.w, 'POST', /\/town\/api\/actions$/, { min: 1, max: 1, why: '60.57：改道一段，离得远时 ask_hobby 必定 too_far' });
+    const ask0 = apiCount(A, 'ask_hobby');
+    await A.page.evaluate((id) => window.TownDock.test.people.forceAsk(id), B.id);
+    await until(() => apiCount(A, 'ask_hobby') === ask0 + 1, 15_000, '这次 ask_hobby 发出了');
+    const rec = await lastRec(A, 'ask_hobby');
+    check(rec.status === 422 && rec.reason === 'too_far', `应是 422 too_far：${JSON.stringify(rec)}`);
+    await until(async () => (await godotPeople(A)).walk === true, 10_000, 'Godot 一侧记下「正在走向 ta」', 50);
+    // 走到一半点了别处：往背离 B 的方向走，直到离 B 超过 8 米（卡的自动关闭距离）。第一下点击紧跟着发
+    check((await godotPeople(A)).walk === true, '点击之前 A 还在「正在走向」（否则这一步测不到卡住的状态）');
+    let far = false;
+    for (const k of [2, 3, 4.5]) {
+      await clickWorld(A, sa.x + ux * k, sa.z + uz * k);
+      await walkTo(A, sa.x + ux * k, sa.z + uz * k, 1.2);
+      if ((await gapAB()) > 8.4) { far = true; break; }
+    }
+    check(far, `A 应走到离 B 8 米以外：${(await gapAB()).toFixed(1)}`);
+    await until(async () => (await godotPeople(A)).walk === false, 15_000, '改道后「正在走向 ta」解除（不再卡住）', 250);
+    await cardClosed(A); // 解除后恢复距离自动关卡：对方已在 8 米外
+    check((await godotPeople(A)).cardId === '', '卡关了，Godot 一侧 cardId 为空');
+  });
+
+  await step(60.58, 'too_far 的回应晚到而卡已关 -> 只算过期的回应，不会把玩家拽向 ta', async () => {
+    await nearWithCard();
+    await moveBAway(3.6, 7.5);
+    await until(async () => (await peopleCard(A.page)).cardOpen, 5000, '8 米内卡不自动关');
+    allowFailure(A.w, 'POST', /\/town\/api\/actions$/, { min: 1, max: 1, why: '60.58：回应晚到一段，离得远时 ask_hobby 必定 too_far' });
+    const actionsUrl = /\/town\/api\/actions(\?|$)/;
+    let hits = 0;
+    await A.page.route(actionsUrl, async (route) => {
+      const req = route.request();
+      const body = req.method() === 'POST' ? (req.postDataBuffer()?.toString('utf8') ?? req.postData() ?? '') : '';
+      if (req.method() === 'POST' && (body === '' || body.includes('ask_hobby'))) { hits++; await sleep(1500); } // 让 too_far 的回应晚到（读不到请求体时一律延迟，这一小段里只有这一个请求）
+      await route.continue();
+    });
+    try {
+      const ask1 = apiCount(A, 'ask_hobby');
+      const nav2 = apiCount(A, 'navigate');
+      const n0 = await lastN(A);
+      await A.page.evaluate((id) => window.TownDock.test.people.forceAsk(id), B.id);
+      await until(() => hits >= 1, 15_000, '这次 ask_hobby 被拦截延迟了（回应还在路上；请求记录要等回应回来才有，不能拿它当信号）', 20);
+      await A.page.click(`${CARD} [data-role="close"]`); // 回应回来之前，卡已经关了
+      await cardClosed(A);
+      const ack = await ackAfter(A, 'ask', n0);
+      await until(() => apiCount(A, 'ask_hobby') === ask1 + 1, 15_000, '这次 ask_hobby 的记录出现');
+      check(!ack.ok && ack.code === 'too_far' && ack.stale === true && !ack.walking, `晚到的 too_far 只算过期的回应，不走路：${JSON.stringify(ack)}`);
+      await frames(A.page, 3);
+      await sleep(800);
+      check(apiCount(A, 'navigate') === nav2, `回应晚到不应再发 navigate：${nav2} -> ${apiCount(A, 'navigate')}`);
+      check(!(await sceneOf(A)).nav && (await godotPeople(A)).walk === false, '服务器里 A 没有在走，Godot 一侧也没有「正在走向」');
+    } finally {
+      await A.page.unroute(actionsUrl);
+    }
+    // 收尾：两人都回会馆（往远处走时可能出了会馆的范围，后面的门牌步骤要在会馆里），回到 B 身边，留一张开着的卡（和 60.55 结束时一样）
+    for (const p of [A, B]) if ((await where(p)).space !== 'residential') await goResidential(p);
+    await until(async () => (await gapAB()) < 8, 20_000, 'A、B 都在会馆门口');
+    await nearWithCard();
+  });
+
   // ───────────────────────── 60.6 受邀入户 ─────────────────────────
   await step(60.6, '受邀入户：B 在门牌里点 A 的「进门」-> 进 A 的家，「屋里」写 A 的名字、标签「做客」、陈设与 /me 一致；A 看不到 B；B 点「出门」回会馆', async () => {
     await openPeopleTab(B.page);
@@ -370,6 +473,69 @@ export default async function run(h) {
     await until(async () => (await doorRows(B.page)).find((x) => x.home === `home:${A.id}`)?.can === false, 20_000, 'B 一侧 A 的牌子变回 data-can=0（notice 之后刷新）');
     await until(async () => (await inviteRows(B.page)).length === 0, 10_000, 'B 的请柬栏里那一条消失');
     check(!(await serverMe(B)).invites.received.some((x) => x.host.id === A.id), '服务器里 B 也没有这份邀请了');
+  });
+
+  // ───────────────────────── 60.72 / 60.73 请柬的「新」标 ─────────────────────────
+  let grant72 = null;
+  /** A 给 B 一份当面邀请（A 要在 B 的 3 米内）；返回那份授权 */
+  const inviteBFromA = async () => {
+    await apiAct(B, { type: 'navigate', approach: A.id });
+    await waitIdle(B);
+    await until(async () => (await gapAB()) < 3, 20_000, 'B 在 A 身边');
+    const r = await apiAct(A, { type: 'invite', to: B.id });
+    check(r.status === 200, `A 邀请 B 应成功：${r.status} ${JSON.stringify(r.body)}`);
+    const g = (await serverMe(A)).invites.sent.find((x) => x.guest.id === B.id);
+    check(g, 'A 的 /me 里应有这份邀请');
+    return g;
+  };
+  await step(60.72, '面板正开在「人家」页签时来了新请柬：请柬栏有、角标和页签小圆点不留', async () => {
+    await closePanel(B.page);
+    await apiAct(B, { type: 'navigate', approach: A.id });
+    await waitIdle(B);
+    await openPeopleTab(B.page);
+    grant72 = await inviteBFromA();
+    await until(async () => (await inviteRows(B.page)).some((r) => r.grantId === grant72.grantId && r.fresh), 20_000, 'B 的请柬栏出现这份新请柬（屏障）');
+    await until(async () => (await badge(B.page)).people === 0 && !(await peopleDot(B.page)), 10_000, '面板开着时新请柬不留未读角标和页签小圆点');
+    check((await godotPeople(B)).unseen === 0, 'Godot 一侧也没有未读');
+    await closePanel(B.page);
+  });
+
+  await step(60.73, '请柬的「新」标：点「去做客」被只读拦下时仍是新的；真的走进那户人家之后才算处理过', async () => {
+    const homeA = `home:${A.id}`;
+    // 上一步没留下请柬（失败了）就重新造一份
+    if (!grant72 || !(await serverMe(A)).invites.sent.some((x) => x.grantId === grant72.grantId)) grant72 = await inviteBFromA();
+    await until(async () => (await godotPeople(B)).fresh >= 1, 20_000, 'B 一侧有新请柬');
+    // 另一处接管（同一身份、另一个 clientId），B 变只读；强发「去做客」被 main 的只读检查拦下
+    const other = `e2e-other-${rnd()}`;
+    check((await B.ctx.request.post(`${BASE}/town/api/enter`, { data: { clientId: other } })).ok(), '另一处登记在场应成功');
+    check((await B.ctx.request.post(`${BASE}/town/api/claim`, { data: { clientId: other } })).ok(), '另一处接管应成功');
+    await until(async () => (await snap(B.page)).mine === false, 15_000, 'B 页面变成只读');
+    const nav0 = apiCount(B, 'navigate');
+    const fresh0 = (await godotPeople(B)).fresh;
+    await B.page.evaluate((home) => window.TownDock.test.people.forceVisit(home), homeA);
+    await toastHas(B, '只读'); // 屏障：main 的拦截提示出来了
+    await frames(B.page, 3);
+    check(apiCount(B, 'navigate') === nav0, `被拦下就不该发 navigate：${nav0} -> ${apiCount(B, 'navigate')}`);
+    check((await godotPeople(B)).fresh === fresh0 && fresh0 >= 1, `没走成，请柬仍是新的：fresh ${fresh0} -> ${(await godotPeople(B)).fresh}`);
+    check((await inviteRows(B.page)).some((r) => r.grantId === grant72.grantId && r.fresh && r.skip), '请柬行仍带「新」标与「先不去」');
+    // 接管回来：「去做客」按钮还在，点它真的走进去；进门之后这张请柬才算处理过
+    await B.page.click('#claimBtn');
+    await until(async () => (await snap(B.page)).mine === true, 15_000, 'B 接管回来');
+    await closePanel(B.page);
+    const visitBtn = `#actions [data-action="f:people:visit:${homeA}"]`;
+    await until(() => B.page.isVisible(visitBtn), 15_000, '「去做客」按钮还在');
+    await B.page.click(visitBtn);
+    await until(async () => (await where(B)).scene === 'home', 90_000, 'B 走进 A 的家', 500);
+    await until(async () => (await godotPeople(B)).fresh === 0, 15_000, '进门之后请柬才算处理过（fresh 清零）');
+    check((await godotPeople(B)).unseen === 0 && !(await actionButtons(B.page)).some((b) => b.id.startsWith('f:people:visit:')), '进门之后没有「去做客」按钮、没有未读');
+    await openPeopleTab(B.page);
+    await B.page.click(`${PANE} [data-role="leave"]`);
+    await until(async () => (await where(B)).scene === 'town', 60_000, 'B 出门', 500);
+    await closePanel(B.page);
+    // 收回这份邀请，给后面的步骤一个干净的起点
+    check((await apiAct(A, { type: 'revoke_invite', grantId: grant72.grantId })).status === 200, '收回应成功');
+    await until(async () => (await inviteRows(B.page)).length === 0, 20_000, 'B 的请柬栏空了');
+    grant72 = null;
   });
 
   // ───────────────────────── 60.8 XSS 与隐私 ─────────────────────────
@@ -469,6 +635,16 @@ export default async function run(h) {
       const ok = await B.page.evaluate(([s, r]) => { const b = document.querySelector(`${s} [data-role="${r}"]`); const q = b.getBoundingClientRect(); const e = document.elementFromPoint(q.left + q.width / 2, q.top + q.height / 2); return e === b; }, [CARD, role]);
       check(ok, `抽屉开着：「${role}」按钮应可点（最上层）`);
     }
+    // 抽屉开着时卡片也不能压在自己和对方的名牌、身体上（脚环、头顶名牌、1 米高处的屏幕位置都算）
+    const body = await B.page.evaluate(([me, other]) => {
+      const t = window.__town;
+      const feet = (id) => { const a = t.actors.find((x) => x.id === id); const q = t.project(a.x, 0, a.z); return { x: q.x, y: q.y }; };
+      const tag = (id) => { const e = document.querySelector(`#tags .tag[data-id="${id}"]`); return e ? e.getBoundingClientRect().toJSON() : null; };
+      return { feet: [feet(me), feet(other)], tags: [tag(me), tag(other)] };
+    }, [B.id, A.id]);
+    const heads = [await screenOf(B.page, B.id), await screenOf(B.page, A.id)];
+    for (const pt of [...heads, ...body.feet]) check(!inside(c2.rect, pt), `抽屉开着：卡片不应盖住人的位置 ${JSON.stringify(pt)}：${JSON.stringify(c2.rect)}`);
+    for (const tr of body.tags) if (tr) check(!hit(c2.rect, tr), `抽屉开着：卡片不应盖住名牌 ${JSON.stringify(tr)}：${JSON.stringify(c2.rect)}`);
     await closePanel(B.page);
     await A.page.keyboard.press('Escape');
     // 桌面：侧栏开着时卡与 #dock 不相交
@@ -479,6 +655,31 @@ export default async function run(h) {
     const da = await rectOf(A.page, '#dock');
     check(ca.cardOpen && !hit(ca.rect, da), `桌面侧栏开着：卡与面板不相交：${JSON.stringify({ card: ca.rect, dock: da })}`);
     await closePanel(A.page);
+  });
+
+  // ───────────────────────── 60.91 Esc 与地点菜单、被 CSS 藏起来的卡 ─────────────────────────
+  await step(60.91, 'Esc 与 hud.js 一致：地点菜单开着时那一下 Esc 只关菜单、卡不动；卡被 CSS 藏起来（软键盘）时 Esc 不去关看不见的卡', async () => {
+    await closePanel(B.page);
+    if (!(await peopleCard(B.page)).cardOpen) {
+      await clickActor(B, A.id);
+      await cardIs(B, A.id);
+    }
+    await B.page.click('#destBtn');
+    await until(() => B.page.evaluate(() => !document.getElementById('destMenu').hidden), 5000, '地点菜单打开');
+    await B.page.keyboard.press('Escape');
+    await until(() => B.page.evaluate(() => document.getElementById('destMenu').hidden), 5000, '这一下 Esc 关了地点菜单');
+    await frames(B.page, 3);
+    check((await peopleCard(B.page)).cardOpen && (await godotPeople(B)).cardId === A.id, '地点菜单开着时那一下 Esc 不该顺带关卡');
+    // 卡被 CSS 藏起来时（软键盘出现）Esc 不去关一张看不见的卡
+    await B.page.evaluate(() => { document.body.dataset.kb = '1'; });
+    await until(() => B.page.evaluate(() => getComputedStyle(document.getElementById('peopleCard')).display === 'none'), 5000, '软键盘状态下卡被藏起来');
+    await B.page.keyboard.press('Escape');
+    await frames(B.page, 3);
+    check((await godotPeople(B)).cardId === A.id, '卡被 CSS 藏起来时 Esc 不该关它');
+    await B.page.evaluate(() => { delete document.body.dataset.kb; });
+    await until(() => B.page.evaluate(() => getComputedStyle(document.getElementById('peopleCard')).display !== 'none'), 5000, '软键盘状态解除，卡又看得见');
+    await B.page.keyboard.press('Escape');
+    await cardClosed(B);
   });
 
   // ───────────────────────── 60.92 只读 / 游戏中 / 离线 / 对方在游戏里 ─────────────────────────
@@ -609,5 +810,35 @@ export default async function run(h) {
 }
 
 /* ───────────────────────── 怎么让它失败（反向验证）─────────────────────────
- * 见本段汇报与 client/docs/C4.md 的「反向验证」一节：逐条写了改哪里、哪个子步骤变红。
+ * 每条：改坏哪里 -> 哪个子步骤变红（现象）。都是临时改坏、跑完还原。
+ * 第一批（接手前的实现；红的步骤是当时亲眼见过的）：
+ *  - people.js 简介 textContent 改成 DOMParser 解析后追加（等价 innerHTML）-> 60.8（简介不等于字面量、卡里出现 img）
+ *  - people.js 爱好名单 reverse() -> 60.3（卡上爱好行与 B 的 /me 顺序不一致）
+ *  - people.js 门牌「进门」按钮永不禁用 -> 60.4（A 的灰牌子 enterDisabled 为假）
+ *  - people.js 屋里标签「做客 / 主人」对调 -> 60.6、60.65
+ *  - people.css 卡片 bottom:0; left:0; width:100vw -> 60.1（卡片盖住 #controls 的按钮）
+ *  - people.gd on_pick 近处改回 return false -> 60.1（多出一次 navigate）
+ *  - people.gd 去掉 you_arrived 里的待开卡 -> 60.2（走到之后卡不出现）
+ *  - people.gd 去掉「已邀请」的本地拦截 -> 60.5（强发邀请没被 Godot 拦下）
+ *  - people.gd 去掉 notice 的刷新 -> 60.7（A 的牌子不变回 data-can=0）
+ *  - people.gd _reset_all 不清爱好缓存 -> 60.95（换人后 hobbies 仍为 1）
+ * 第二批（评审后补的）：
+ *  - dock.css 去掉 .dock-tab 的 z-index:3（手机抽屉里 #dockGrip 盖住页签）-> openPeopleTab 抛「页签中心最上面是 dockGrip，真手指点不到页签」，
+ *    60.5、60.6、60.72、60.8、60.96 都因此变红（连带后面依赖它们的步骤）
+ *  - people.gd _watch_walk 直接 return（「正在走向」不再因改道 / 走完 / 超时结束）、nav_stopped 不再取消 -> 60.57（改道后 15 秒内 walk 仍为 true，卡也不自动关）
+ *  - people.gd too_far 分支不判 _card_id == tid 就 c4_approach -> 60.58（ack 带 stale 却也带 walking:true，A 被拽向 ta）
+ *  - people.gd _visit 里一点「去做客」就清 fresh / unseen -> 60.73（只读拦下之后 fresh 1 -> 0）
+ *  - people.js 去掉 onFeed('state') 里面板开着时的 seen -> 60.72（角标和页签小圆点一直挂着）
+ *  - people.js 不再告诉 Godot 面板开着（panel）-> 60.4（面板开在「人家」页签时 #actions 里还有「门牌」）
+ *  - people.css 去掉抽屉开着时卡片改挂上半屏的那条 -> 60.9（卡片盖住自己的头部位置 / 名牌）
+ *  - people.js 的 Esc 监听去掉 menuOpen 与 getComputedStyle 判断 -> 60.91（地点菜单开着时那一下 Esc 顺带关了卡）；
+ *    「卡被 CSS 藏起来时 Esc 不关它」那一半是同一处改动，但上一句先红了、没有单独见到它变红
+ *  - 「认识一下」选人的迟滞（pick_meet）：Godot 无头单测 client/tools/test-people.gd（两个人距离相近时不来回换）。把 pick_meet 写回旧逻辑
+ *    （只有当前对象本身就是最近者才有迟滞）-> 单测 5 项失败；浏览器里只有两个居民，造不出「两个候选」，所以不放在这个文件里
+ * 没有做出红灯 / 没有做的（如实）：
+ *  - 「把 3 米改成 30 米」：没有单独做。on_pick 近处分支与待开卡各有一条红灯，距离门槛本身靠 60.2（远处点人必须走路、不出卡）覆盖
+ *  - 「把 needs / interests 渲染进卡」：客户端手里没有别人的爱好，做不出诚实的泄露改法；60.1 的「卡里没有 B 的爱好」是在 B 设了三个爱好的前提下断言的
+ *  - 「去掉 invite 事件后的 refresh_me」：没有单独做；门牌可进靠 60.5 的 data-can 等待覆盖，但同一步里还有 notice 与打开面板的刷新
+ *  - 限流（60.35）、declined（60.3）：断言用服务器原文与 422 / 429 记录，没有改坏实现的反向验证
+ *  - 60.35 改成「烧光额度后若界面那一次恰好补到额度而成功，就再烧一轮」（最多 3 轮），不再靠 900 毫秒的侥幸；这条没法在浏览器里造出「恰好补到」，只验过正常路径
  */

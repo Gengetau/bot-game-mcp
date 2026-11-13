@@ -21,6 +21,9 @@ body[data-dock="drawer"][data-dock-open="1"] #peopleCard .people-titles,
 body[data-dock="drawer"][data-dock-open="1"] #peopleCard .people-traits,
 body[data-dock="drawer"][data-dock-open="1"] #peopleCard .people-mood,
 body[data-dock="drawer"][data-dock-open="1"] #peopleCard .people-bio { display: none; }
+/* 抽屉开着时世界没有跟着让位，人和名牌还在屏幕中部、正好在底栏上方：卡片不能再贴着底栏（会盖住名牌和脚环），改挂在上半屏的空档里，
+ * 在顶栏、提示条（#stack）之下、人和名牌之上 */
+body[data-dock="drawer"][data-dock-open="1"] #peopleCard { bottom: auto; top: calc(150px + var(--safe-top)); }
 
 #peopleCard .people-head { display: flex; align-items: center; gap: 8px; padding-right: 40px; min-width: 0; }
 #peopleCard .people-name { font: 700 19px/1.3 var(--d-serif); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; unicode-bidi: plaintext; }

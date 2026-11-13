@@ -274,6 +274,8 @@
         var empty = !S.home && !(S.invites && S.invites.length) && !S.doors;
         $('empty').hidden = !empty;
         host.setUnread(S.freshCount | 0);
+        /* 页签正开着、人就在看：新请柬不再算「没看到」，免得小圆点和总角标一直挂着（onShow 只在切到页签时触发） */
+        if ((S.freshCount | 0) > 0 && host.isActive && host.isActive()) host.emit('seen');
       }
 
       /* ── 卡片上的按钮 ── */
@@ -303,11 +305,24 @@
           q('close').blur();
         });
       }
-      /* Esc 关卡：不拦截，hud.js 照常发 esc 让走路中的角色也停下 */
+      /* 地点菜单开着时，hud.js 的那一下 Esc 只关菜单：它先于本监听执行并已把菜单藏起来，所以菜单状态用 MutationObserver 记，
+       * 并推迟到下一个宏任务才生效（同一次按键分发里，本监听看到的仍是按键前的状态） */
+      var menuEl = document.getElementById('destMenu');
+      var menuOpen = !!(menuEl && !menuEl.hidden);
+      if (menuEl && window.MutationObserver) {
+        new MutationObserver(function () {
+          var o = !menuEl.hidden;
+          setTimeout(function () {
+            menuOpen = o;
+          }, 0);
+        }).observe(menuEl, { attributes: true, attributeFilter: ['hidden'] });
+      }
+      /* Esc 关卡：不拦截，hud.js 照常发 esc 让走路中的角色也停下。卡片被 CSS 藏起来（软键盘、小游戏中）时不算「开着」 */
       window.addEventListener(
         'keydown',
         function (e) {
-          if (e.key !== 'Escape' || !card || card.hidden) return;
+          if (e.key !== 'Escape' || !card || card.hidden || menuOpen) return;
+          if (window.getComputedStyle(card).display === 'none') return;
           var a = document.activeElement;
           if (a && a.tagName && /^(input|textarea|select)$/i.test(a.tagName)) return;
           host.emit('close');
@@ -384,6 +399,8 @@
         $('doorList').textContent = '';
         if (card) card.hidden = true;
         renderAll();
+        /* Godot 一侧重置后不知道面板是否还开着 */
+        if (host.isActive && host.isActive()) host.emit('panel', '1');
       }
 
       /* 测试钩子：仅 ?debug=1。绕过按钮的 disabled 和这一侧的防连点 */
@@ -416,9 +433,12 @@
           renderCard();
         },
         onShow: function () {
+          host.emit('panel', '1');
           host.emit('seen');
         },
-        onHide: function () {},
+        onHide: function () {
+          host.emit('panel', '0');
+        },
         debug: function () {
           var c = S.card;
           var r = card && !card.hidden ? card.getBoundingClientRect().toJSON() : null;
