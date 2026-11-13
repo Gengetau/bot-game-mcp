@@ -168,6 +168,38 @@ export default async function run(h) {
     await cardClosed(A);
   });
 
+  // ───────────────────────── 60.17 别处发起的走近不弹卡 ─────────────────────────
+  await step(60.17, '别处发起的走近不弹卡：A 没在这里点过 B，由接口代发 approach 走到 B 身边 -> 页面收到 you_arrived 之后没有卡、没有待开卡、没有「走开了」提示（另一台设备握着控制权、接口代发时就是这种情况）', async () => {
+    if ((await peopleCard(A.page)).cardOpen) {
+      await A.page.keyboard.press('Escape');
+      await cardClosed(A);
+    }
+    const g = await moveBAway(6, 12);
+    const gp0 = await godotPeople(A);
+    check(gp0.far === '' && gp0.want === '', `起点：A 没有点过谁、也没有待开的卡：${JSON.stringify({ far: gp0.far, want: gp0.want })}`);
+    const pick0 = (await A.page.evaluate(() => window.__town.features._pick))?.n ?? 0;
+    check((await apiAct(A, { type: 'navigate', approach: B.id })).status === 200, 'A 走向 B（接口代发）应被接受');
+    await waitIdle(A);
+    // 屏障：这次到达的 you_arrived 已经进了 people 模块（计数加一），之后才谈得上「没有开卡」
+    await until(async () => (await godotPeople(A)).arrivals > gp0.arrivals, 15_000, 'A 的页面收到这次到达（you_arrived）', 150);
+    const g1 = await gapAB();
+    check(g1 < 3, `A 应已走到 B 的 3 米内（够得着，旧写法这时会开卡）：${g1.toFixed(2)}`);
+    // 待开卡每 0.25 秒看一次距离：守 1.5 秒（六次检查的时间），其间一直没有卡
+    const t1 = Date.now();
+    let looks = 0;
+    while (Date.now() - t1 < 1500) {
+      const c = await peopleCard(A.page);
+      check(!c.cardOpen, `接口代发的走近不应弹出居民卡：${JSON.stringify({ cardId: c.cardId })}`);
+      looks += 1;
+      await sleep(120);
+    }
+    const gp1 = await godotPeople(A);
+    check(gp1.want === '' && gp1.far === '' && gp1.card === null, `Godot 一侧没有待开卡、没有记号、没有卡：${JSON.stringify({ want: gp1.want, far: gp1.far, card: gp1.card })}`);
+    check(((await A.page.evaluate(() => window.__town.features._pick))?.n ?? 0) === pick0, '全程没有发生点选（卡不是因为点了谁才没开）');
+    check(!(await toastTexts(A.page)).some((t) => t.includes('走开了')), '也不应提示「走开了，再点一下」');
+    note(`B 先走到 ${g.toFixed(1)} 米外；A 由接口走近到 ${g1.toFixed(2)} 米；之后 1.5 秒里看了 ${looks} 次都没有卡`);
+  });
+
   // ───────────────────────── 60.2 远处点人先走过去 ─────────────────────────
   await step(60.2, '远处点人先走过去：B 走到 6 米外；A 点 B -> 走路时没有卡、发 navigate、停下后离 B 小于 1.5 米，卡自动出现；全程没有 ask_hobby / invite', async () => {
     const g = await moveBAway(6, 12);
