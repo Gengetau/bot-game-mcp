@@ -8,6 +8,8 @@ const STALE_MS := 8000.0  # 断线续传补回来的旧话不冒泡
 const FADE_MS := 700.0
 const MAX_CHARS := 28
 const LIFT_Y := 2.2  # 比名牌的 2.05 略高
+const STACK_DX := 120.0  # 屏幕像素：横向离得比这近、纵向比 STACK_DY 近的两个气泡，后者往上错开
+const STACK_DY := 36.0
 
 var _b: Dictionary = {}  # 说话人编号 -> {text, born, show_ms}
 var _shown: int = 0
@@ -88,6 +90,7 @@ func tags(cam: Camera3D, size: Vector2, out: Array) -> void:
 		return  # 常态：零开销
 	var now: float = Time.get_ticks_msec()
 	var gone: Array = []
+	var placed: Array = []  # 本帧已放好的气泡屏幕点，后来的离得太近就往上错一格
 	for k in _b:
 		var e: Dictionary = _b[k]
 		var age: float = now - float(e["born"])
@@ -101,6 +104,17 @@ func tags(cam: Camera3D, size: Vector2, out: Array) -> void:
 		if cam.is_position_behind(wp):
 			continue
 		var sp: Vector2 = cam.unproject_position(wp)
+		# 两位居民站得很近时气泡会叠在一起：每有一个已放好的离得近就再往上抬一格（只往上，仍在自己名牌之上）
+		for _i in range(MAX_ACTIVE):
+			var hit := false
+			for q in placed:
+				if absf(q.x - sp.x) < STACK_DX and absf(q.y - sp.y) < STACK_DY:
+					hit = true
+					break
+			if not hit:
+				break
+			sp.y -= STACK_DY
+		placed.append(sp)
 		out.append({"i": "b:" + str(k), "n": e["text"], "x": snappedf(sp.x / size.x, 0.0005), "y": snappedf(sp.y / size.y, 0.0005), "k": "b", "sel": age >= float(e["show_ms"])})
 	for k in gone:
 		_b.erase(k)
