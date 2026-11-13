@@ -101,6 +101,6 @@ export function checkSpaceInvariants(t: Town): void {
   }
   expect(db.scalar("SELECT COUNT(*) FROM scheduled_jobs WHERE kind = 'move_arrive' AND status = 'pending'"), '不该再有 pending 的 move_arrive').toBe(0);
   expect(db.scalar("SELECT COUNT(*) FROM scheduled_jobs WHERE kind = 'nav_step' AND status = 'pending'"), 'pending 的 nav_step 数与在走的人数不符').toBe(
-    db.scalar('SELECT COUNT(*) FROM world_actors WHERE world_id = ? AND nav_json IS NOT NULL', worldId),
+    db.scalar("SELECT COUNT(*) FROM world_actors WHERE world_id = ? AND kind = 'resident' AND nav_json IS NOT NULL", worldId),
   );
 }
