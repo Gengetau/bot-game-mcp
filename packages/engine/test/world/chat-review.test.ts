@@ -194,9 +194,9 @@ describe('约定唤醒收窄与按发言者限额', () => {
     const t = makeTown({ params: LOOSE_TOWN });
     const a = t.join('阿灯');
     const b = t.join('小岚', 'agent');
-    for (const x of [a, b]) x.go('arcade');
+    for (const x of [a, b]) x.go('arcade:table1');
     pulse(a, b);
-    const g = a.act('propose_game', { game: 'number_bomb' });
+    const g = a.act('propose_game', { game: 'number_bomb', objectId: 'arcade:table1' });
     b.act('join_game', { activityId: g.activity.id });
     pulse(a, b);
     const cb = b.view().cursor;

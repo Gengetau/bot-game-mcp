@@ -201,16 +201,16 @@ describe('启动恢复：停机期间到期的事务各结算一次，保留应�
     const { t } = fileTown();
     const a = t.join('阿灯');
     const b = t.join('小岚', 'agent');
-    a.go('arcade');
-    b.go('arcade');
-    const lobby = a.act('propose_game', { game: 'number_bomb' });
+    a.go('arcade:table1');
+    b.go('arcade:table1');
+    const lobby = a.act('propose_game', { game: 'number_bomb', objectId: 'arcade:table1' });
     reopen(t, { down: HOUR });
     expect(t.w.db.get('SELECT status FROM activities WHERE activity_id = ?', lobby.activity.id)!.status).not.toBe('forming');
     expect(count(t.w, 'activity_participants', 'active = 1')).toBe(0);
 
     // 一局进行中：短停机顺延
     comeBackAll([a, b]);
-    const p = a.act('propose_game', { game: 'number_bomb' });
+    const p = a.act('propose_game', { game: 'number_bomb', objectId: 'arcade:table1' });
     b.act('join_game', { activityId: p.activity.id });
     a.act('start_game', { activityId: p.activity.id });
     const deadline = t.w.db.get('SELECT deadline FROM activities WHERE activity_id = ?', p.activity.id)!.deadline;

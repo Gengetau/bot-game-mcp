@@ -10,7 +10,7 @@
 import { DESTINATIONS, INTERESTS, PLACES, RESIDENTIAL_PLACE, TRAITS, homeId, homeOwner, isHome, laneName, placeDef } from './content.js';
 import { parseJson } from './db.js';
 import { nearbyHistory, recentHeard, townChatDigest } from './chat.js';
-import { activitiesAt, gameViewFor, gamesOfferedAt, type ActivityView } from './games.js';
+import { activitiesAt, gameViewFor, gamesOfferedAt, tablesAt, type ActivityView } from './games.js';
 import { myInteraction, objectsIn, publicEventsToday, weatherAt } from './interact.js';
 import { checkHomeAccess, currentMood, settledNeeds, spaceName } from './life.js';
 import { activeInviteOwners, invitesOf, mailboxSummary } from './mail.js';
@@ -33,7 +33,7 @@ function worldHeader(w: WorldService, now: number) {
 export interface PublicView {
   world: ReturnType<typeof worldHeader>;
   /** 公共区域。through 为 true 的是路上（只是经过的地方，不能当目的地） */
-  places: { id: string; name: string; kind: string; blurb: string; indoor: boolean; through: boolean; residents: PublicSpot[]; activities: { id: string; name: string; status: string; players: number }[] }[];
+  places: { id: string; name: string; kind: string; blurb: string; indoor: boolean; through: boolean; residents: PublicSpot[]; activities: { id: string; name: string; status: string; players: number; tableId: string | null }[] }[];
   /** 住宅区：只有人数和名字，不分在会馆门前还是谁家里 */
   residential: { residents: PublicSpot[] };
   events: ReturnType<typeof publicEventsToday>;
@@ -56,7 +56,7 @@ export function publicView(w: WorldService): PublicView {
       indoor: p.indoor,
       through: Boolean(p.through),
       residents: spots.filter((s) => s.at === p.id),
-      activities: activitiesAt(w, p.id).map((a) => ({ id: a.id, name: a.name, status: a.status, players: a.players.length })),
+      activities: activitiesAt(w, p.id).map((a) => ({ id: a.id, name: a.name, status: a.status, players: a.players.length, tableId: a.tableId })),
     })),
     residential: { residents: spots.filter((s) => s.at === RESIDENTIAL) },
     events: publicEventsToday(w, now),
@@ -90,6 +90,8 @@ export interface HereView {
   shops: ReturnType<typeof shopsAt>;
   activities: ActivityView[];
   games: ReturnType<typeof gamesOfferedAt>;
+  /** 游戏桌（凑桌 / 加入要先走到桌边）：near 此刻够得着；activityId 是占着它的那一局 */
+  tables: (ReturnType<typeof tablesAt>[number] & { near: boolean })[];
   /** 可以去的地方（navigate 的目的地）。seconds 是大概要走多久，在路上时没有 */
   exits: { id: string; name: string; seconds?: number }[];
   /** 会馆门前：从这里进各家的门 */
@@ -121,6 +123,7 @@ function hereView(w: WorldService, r: ResidentRow, space: string, now: number): 
     shops: home ? [] : shopsAt(w, space, now),
     activities: home ? [] : activitiesAt(w, space),
     games: home ? [] : gamesOfferedAt(w, space),
+    tables: home ? [] : tablesAt(w, space).map((t) => ({ ...t, near: objectReach(w, r.resident_id, t.id, now)?.near ?? false })),
     exits,
     chat: hereChat(w, r.resident_id, space, now),
   };
@@ -285,7 +288,8 @@ export function agentView(w: WorldService, r: ResidentRow, clientId: string, opt
           residents: here.residents.map((x) => ({ id: x.id, name: x.name, kind: x.kind, ...(x.mood ? { mood: x.mood } : {}) })),
           objects: here.objects.map((o) => ({ id: o.id, label: o.label, ...(o.near ? {} : { far: true }), ...(o.action ? { can: `${o.action.name}（${o.action.cost}）` } : {}), ...(o.active ? { active: { id: o.active.id, status: o.active.status, people: o.active.participants.map((p) => p.name), ends_at: o.active.endsAt } } : {}) })),
           shops: here.shops.map((s) => ({ id: s.id, name: s.name, goods: s.goods.filter((g) => g.stock > 0).map((g) => ({ sku: g.sku, name: g.name, price: g.price })) })),
-          activities: here.activities.map((a) => ({ id: a.id, name: a.name, status: a.status, players: a.players.map((p) => p.name), need: a.min })),
+          activities: here.activities.map((a) => ({ id: a.id, name: a.name, status: a.status, players: a.players.map((p) => p.name), need: a.min, table: a.tableId })),
+          tables: here.tables.map((t) => ({ id: t.id, name: t.name, ...(t.near ? {} : { far: true }), ...(t.activityId ? { activity: t.activityId } : {}) })),
           games: here.games.map((g) => ({ type: g.type, name: g.name, players: `${g.min}~${g.max}` })),
           exits: here.exits.map((e) => ({ to: e.id, name: e.name })),
           ...(here.doors ? { doors: here.doors.filter((d) => d.canEnter).map((d) => ({ home: d.home, owner: d.owner.name })) } : {}),

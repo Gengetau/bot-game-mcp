@@ -270,11 +270,11 @@ describe('命令管线：在场、控制权、上下文', () => {
 
   it('局内动作用在不在局里的居民身上：context_stale；局外动作用在局里：in_activity', () => {
     const { t, a, b } = pair();
-    a.go('arcade');
-    b.go('arcade');
+    a.go('arcade:table1');
+    b.go('arcade:table1');
     const err = a.fail('game_act', { phaseId: 'x', input: {} });
     expect(err.code).toBe('context_stale');
-    const p = a.act('propose_game', { game: 'number_bomb' });
+    const p = a.act('propose_game', { game: 'number_bomb', objectId: 'arcade:table1' });
     b.act('join_game', { activityId: p.activity.id });
     a.act('start_game', { activityId: p.activity.id });
     const err2 = a.fail('speak', { text: '局里说话' });

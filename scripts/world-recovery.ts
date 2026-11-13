@@ -757,6 +757,107 @@ function navFaultScenarios(): { name: string; checks: number }[] {
       c.snap('崩溃重启后');
     });
   }
+
+  // ── 小游戏按桌入局：开局那一刻的崩溃，和局进行中的重启 ──
+  /** 三个人都走到游戏桌边（独立于引擎的 objectReach：只用权威位置和地图源里桌子的中心 / 够得着距离）。 */
+  const seatAll = (c: ScenarioCtx, tableId: string) => {
+    for (const x of c.who) c.cmd(x, { type: 'navigate', to: tableId });
+    c.advanceTo(clock.t + 70 * SEC);
+    for (const x of c.who) check(1000 + c.n, c.w.mustResident(x.residentId).location_id === 'arcade' && !c.nav(x)?.nav, `${c.name}：${x.name} 没走到游戏馆`);
+  };
+  const atTable = (c: ScenarioCtx, x: Who, tableId: string): boolean => {
+    const p = positionOfResident(c.w, x.residentId, clock.t);
+    const town = c.w.map.scenes.get(c.w.map.spawn.scene)!;
+    const it = town.interactables.get(tableId)!;
+    return Boolean(p) && p!.scene === town.id && Math.hypot(p!.x - it.x, p!.z - it.z) <= (it.reach ?? c.w.map.interactDistance) + 0.011;
+  };
+  const openLobby = (c: ScenarioCtx, tableId: string) => {
+    const [a, b, d] = c.who as [Who, Who, Who];
+    seatAll(c, tableId);
+    for (const x of c.who) check(1000 + c.n, atTable(c, x, tableId), `${c.name}：${x.name} 走到了游戏馆却不在桌边`);
+    const p = c.cmd(a, { type: 'propose_game', game: 'number_bomb', objectId: tableId });
+    check(1000 + c.n, p.status === 'accepted', `${c.name}：凑桌没被接受`);
+    const activityId = String(p.activity.id);
+    c.cmd(b, { type: 'join_game', activityId, objectId: tableId });
+    c.cmd(d, { type: 'join_game', activityId });
+    check(1000 + c.n, c.w.db.scalar('SELECT COUNT(*) FROM activity_participants WHERE activity_id = ? AND active = 1', activityId) === 3, `${c.name}：三个人没都进凑桌`);
+    return { a, b, d, activityId };
+  };
+  const tableOpen = (c: ScenarioCtx, tableId: string) => c.w.db.scalar("SELECT COUNT(*) FROM activities WHERE table_id = ? AND status IN ('forming','ready','running','settling')", tableId);
+
+  for (const point of ['before_commit', 'after_commit'] as const) {
+    run(`开局时崩溃（${point}）`, (c) => {
+      const T = 'arcade:table1';
+      const { a, activityId } = openLobby(c, T);
+      c.w.db.failpoint = (pt) => {
+        if (pt === point) throw new Error(`注入的崩溃：${pt}`);
+      };
+      let threw = false;
+      try {
+        c.cmd(a, { type: 'start_game', activityId });
+      } catch {
+        threw = true;
+      }
+      c.w.db.failpoint = null;
+      check(1000 + c.n, threw, '开局的注入点没有触发');
+      c.reopen(true, 20 * SEC);
+      const act = c.w.db.get('SELECT status, table_id FROM activities WHERE activity_id = ?', activityId)!;
+      check(1000 + c.n, act.table_id === T, '重启后这一局不在原来的桌子上');
+      const games = c.w.db.scalar('SELECT COUNT(*) FROM game_records WHERE activity_id = ?', activityId);
+      const inGame = c.who.filter((x) => c.w.mustResident(x.residentId).activity_id === activityId).length;
+      if (point === 'before_commit') {
+        // 开局的事务回滚了：没有游戏记录、没有人进局。重启时所有人先下线，凑桌随发起人下线解散，桌子空出来
+        check(1000 + c.n, act.status === 'aborted' && games === 0 && inGame === 0, () => `提交前崩溃：这一局不该开始，实际 ${act.status}，游戏记录 ${games}，在局里 ${inGame} 人`);
+        check(1000 + c.n, tableOpen(c, T) === 0, () => `提交前崩溃重启后桌子应空出来，实际开着 ${tableOpen(c, T)} 个局`);
+        check(1000 + c.n, c.w.db.scalar('SELECT COUNT(*) FROM settlements WHERE activity_id = ?', activityId) === 0, '提交前崩溃的局不该有结算');
+        // 人还在桌边的原位，重新凑一桌、开局都行（全新执行）
+        for (const x of c.who) check(1000 + c.n, atTable(c, x, T), `${x.name} 在开局崩溃重启后不在桌边`);
+        const p2 = c.cmd(a, { type: 'propose_game', game: 'number_bomb', objectId: T });
+        const id2 = String(p2.activity.id);
+        for (const x of c.who.slice(1)) c.cmd(x, { type: 'join_game', activityId: id2 });
+        const again = c.cmd(a, { type: 'start_game', activityId: id2 });
+        check(1000 + c.n, again.status === 'accepted', '提交前崩溃后重新凑桌开局没成功');
+        check(1000 + c.n, c.who.every((x) => c.w.mustResident(x.residentId).activity_id === id2), '重新开局后三个人应都在局里');
+        check(1000 + c.n, tableOpen(c, T) === 1, '重新开局后这张桌上应恰好一个局');
+      } else {
+        // 事务已经提交，只是响应丢了：局在进行，三个人都在局里，只有一份游戏记录
+        check(1000 + c.n, act.status === 'running' && games === 1 && inGame === 3, () => `提交后崩溃：这一局应已开始，实际 ${act.status}，游戏记录 ${games}，在局里 ${inGame} 人`);
+        check(1000 + c.n, tableOpen(c, T) === 1, () => `提交后崩溃重启后这张桌上开着的局应恰好 1 个，实际 ${tableOpen(c, T)}`);
+        for (const x of c.who) check(1000 + c.n, atTable(c, x, T), `${x.name} 在开局崩溃重启后不在桌边`);
+      }
+      c.snap('开局崩溃重启后');
+    });
+  }
+
+  run('局进行中重启：短停机继续，长停机中止并放人（位置合法，桌子空出来）', (c) => {
+    const T = 'arcade:table2';
+    const { a, activityId } = openLobby(c, T);
+    const started = c.cmd(a, { type: 'start_game', activityId });
+    check(1000 + c.n, started.status === 'accepted', '开局失败');
+    c.advanceTo(clock.t + 10 * SEC);
+    // 短停机（30 秒）：局继续，人还在局里，桌子仍被占着
+    c.reopen(true, 30 * SEC);
+    check(1000 + c.n, c.w.db.get('SELECT status FROM activities WHERE activity_id = ?', activityId)!.status === 'running', '短停机后这一局应继续');
+    check(1000 + c.n, tableOpen(c, T) === 1, '短停机后桌子应仍被这一局占着');
+    for (const x of c.who) check(1000 + c.n, c.w.mustResident(x.residentId).activity_id === activityId && atTable(c, x, T), `${x.name} 短停机后应仍在局里、在桌边`);
+    // 长停机（5 分钟，超过 120 秒上限）：中止，人回到世界，奖励不发，桌子空出来
+    c.reopen(true, 5 * MIN);
+    c.advanceTo(clock.t + 5 * SEC);
+    const end = c.w.db.get('SELECT status FROM activities WHERE activity_id = ?', activityId)!.status;
+    check(1000 + c.n, end === 'aborted', () => `长停机后这一局应中止，实际 ${end}`);
+    check(1000 + c.n, tableOpen(c, T) === 0, '中止后桌子应空出来');
+    check(1000 + c.n, c.w.db.scalar("SELECT COUNT(*) FROM ledger_transactions WHERE cause_key LIKE ?", `game:${activityId}:%`) === 0, '中止的局不应有奖励');
+    for (const x of c.who) {
+      check(1000 + c.n, c.w.mustResident(x.residentId).activity_id === null, `${x.name} 中止后应回到世界`);
+      check(1000 + c.n, atTable(c, x, T), `${x.name} 中止后应留在桌边的原位`);
+    }
+    // 回到世界的人能继续走，桌子可以重新凑
+    const mv = c.cmd(a, { type: 'navigate', to: 'plaza' });
+    check(1000 + c.n, mv.status === 'accepted', '中止后居民不能再走路');
+    const again = c.cmd(c.who[1]!, { type: 'propose_game', game: 'number_bomb', objectId: T });
+    check(1000 + c.n, again.status === 'accepted', '中止后同一张桌不能重新凑桌');
+    c.snap('局进行中重启后');
+  });
   return done;
 }
 

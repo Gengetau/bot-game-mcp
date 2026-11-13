@@ -563,8 +563,10 @@ describe('财物：报价（送礼与交换）', () => {
   it('进入小游戏 → 报价自动撤销；对游戏里的人也不能发起', () => {
     const { t, a, b } = twoAtPlaza();
     const c = t.join('阿木');
+    // 先都到游戏馆（小游戏要在桌边凑），再在馆里发起报价：进入小游戏时才被撤销，而不是因为走开
+    for (const x of [a, b, c]) x.go('arcade:table1');
     const o = c.act('offer', { kind: 'gift', to: a.residentId, give: { coins: 4 } });
-    const p = a.act('propose_game', { game: 'number_bomb' });
+    const p = a.act('propose_game', { game: 'number_bomb', objectId: 'arcade:table1' });
     b.act('join_game', { activityId: p.activity.id });
     a.act('start_game', { activityId: p.activity.id });
     expect(t.w.db.get('SELECT status FROM offers WHERE offer_id = ?', o.offer.id)!.status).toBe('cancelled');

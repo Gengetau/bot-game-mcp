@@ -147,6 +147,14 @@ async function walkMcp(env: Env, client: Client): Promise<void> {
   throw new Error('走了太久还没到');
 }
 
+/** 小游戏按桌入局：先走到游戏桌旁边。 */
+async function toTable(env: Env, clients: Client[], table = 'arcade:table1'): Promise<void> {
+  for (const c of clients) {
+    await wact(c, { type: 'navigate', to: table });
+    await walkMcp(env, c);
+  }
+}
+
 /** 按视图轮流出手，直到这些客户端都不在游戏里。返回出手次数。 */
 async function driveGame(env: Env, clients: Client[]): Promise<number> {
   let turns = 0;
@@ -581,7 +589,8 @@ describe('MCP 小镇：world_act', () => {
     const { client: a } = await enter(env, QING, { name: '青青' });
     const { client: b } = await enter(env, MO, { name: '小墨' });
     const va0 = await call(a, 'get_my_view');
-    const p = await wact(a, { type: 'propose_game', game: 'number_bomb' });
+    await toTable(env, [a, b]);
+    const p = await wact(a, { type: 'propose_game', game: 'number_bomb', objectId: 'arcade:table1' });
     await wact(b, { type: 'join_game', activityId: p.activity.id });
     await wact(a, { type: 'start_game', activityId: p.activity.id });
     const va = await call(a, 'get_my_view');
@@ -958,7 +967,8 @@ describe('MCP 小镇：AI 通过 MCP 玩完整的内嵌小游戏', () => {
     const clients = [a, b];
     const coins0 = (await Promise.all(clients.map((c) => call(c, 'get_my_view')))).map((v) => v.coins as number);
 
-    const p = await wact(a, { type: 'propose_game', game: 'number_bomb' });
+    await toTable(env, [a, b]);
+    const p = await wact(a, { type: 'propose_game', game: 'number_bomb', objectId: 'arcade:table1' });
     expect(p.activity.id).toBeTruthy();
     // 凑桌期间对方视图里能看到这桌
     const seen = await call(b, 'get_my_view');
@@ -1012,7 +1022,8 @@ describe('MCP 小镇：AI 通过 MCP 玩完整的内嵌小游戏', () => {
     const env = makeEnv();
     const { client: a } = await enter(env, QING, { name: '青青' });
     const { client: b } = await enter(env, MO, { name: '小墨' });
-    const p = await wact(a, { type: 'propose_game', game: 'number_bomb' });
+    await toTable(env, [a, b]);
+    const p = await wact(a, { type: 'propose_game', game: 'number_bomb', objectId: 'arcade:table1' });
     await wact(b, { type: 'join_game', activityId: p.activity.id });
     await wact(a, { type: 'start_game', activityId: p.activity.id });
     const va = await call(a, 'get_my_view');

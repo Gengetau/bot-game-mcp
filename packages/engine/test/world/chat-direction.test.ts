@@ -77,10 +77,10 @@ describe('方向输入 × 对局中', () => {
     const a = t.join('阿灯');
     const b = t.join('小岚');
     const out = t.join('小满', 'agent');
-    a.go('arcade');
-    b.go('arcade');
+    a.go('arcade:table1');
+    b.go('arcade:table1');
     [a, b, out].forEach((x) => x.heartbeat());
-    const id = a.act('propose_game', { game: 'number_bomb' }).activity.id as string;
+    const id = a.act('propose_game', { game: 'number_bomb', objectId: 'arcade:table1' }).activity.id as string;
     b.act('join_game', { activityId: id });
     a.act('start_game', { activityId: id });
     const kb = new Keys(b);

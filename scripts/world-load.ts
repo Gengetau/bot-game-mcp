@@ -48,8 +48,8 @@ import {
   type DistSummary,
   type NavTrack,
 } from './world-lib.js';
-import { PUBLIC_OBJECTS } from '../packages/engine/src/world/content.js';
-import { directionInput, sceneKeyOfResident } from '../packages/engine/src/world/space.js';
+import { GAME_TABLES, PUBLIC_OBJECTS } from '../packages/engine/src/world/content.js';
+import { directionInput, objectReach, sceneKeyOfResident } from '../packages/engine/src/world/space.js';
 import { DEFAULT_MIN_SCENE_MS } from '../packages/engine/src/world/ws.js';
 
 const { values: args } = parseArgs({
@@ -118,6 +118,8 @@ interface Table {
   id: number;
   game: 'number_bomb' | 'liars_dice' | 'sealed_auction';
   members: R[];
+  /** 占着哪张游戏桌（小游戏按桌入局：先走到桌边） */
+  tableId: string;
   stage: 'gather' | 'forming' | 'running' | 'done';
   activityId: string | null;
   since: number;
@@ -438,14 +440,14 @@ function manageTables(now: number): void {
     if (t.stage === 'gather') {
       const ready = t.members.every((m) => {
         const r = w.mustResident(m.p.residentId);
-        return r.location_id === 'arcade';
+        return r.location_id === 'arcade' && objectReach(w, m.p.residentId, t.tableId, now)?.near === true;
       });
       if (ready) {
         const host = t.members[0]!;
-        const o = act(host, 'propose_game', { game: t.game });
+        const o = act(host, 'propose_game', { game: t.game, objectId: t.tableId });
         if (o.ok) {
           t.activityId = (w.db.get("SELECT activity_id FROM activities WHERE host_id = ? AND status = 'forming' ORDER BY created_at DESC LIMIT 1", host.p.residentId)?.activity_id as string) ?? null;
-          for (const m of t.members.slice(1)) act(m, 'join_game', { activityId: t.activityId });
+          for (const m of t.members.slice(1)) act(m, 'join_game', { activityId: t.activityId, objectId: t.tableId });
           const o2 = act(host, 'start_game', { activityId: t.activityId });
           if (o2.ok) {
             t.stage = 'running';
@@ -517,20 +519,23 @@ function finish(t: Table): void {
 }
 
 function ensureTables(now: number): void {
-  const active = tables.filter((t) => t.stage !== 'done').length;
-  for (let i = active; i < GAMES; i++) {
+  const live = tables.filter((t) => t.stage !== 'done');
+  for (let i = live.length; i < Math.min(GAMES, GAME_TABLES.length); i++) {
     const game = GAME_ROT[tableSeq % GAME_ROT.length]!;
     const free = freeResident();
-    const size = game === 'sealed_auction' ? 3 : 3;
+    const size = 3;
     if (free.length < size) return;
+    // 一张桌同时只有一局：挑一张没有被别的牌局占着、库里也没有开着的局的桌子
+    const taken = new Set(tables.filter((t) => t.stage !== 'done').map((t) => t.tableId));
+    const tbl = GAME_TABLES.find((x) => !taken.has(x.id) && !w.db.get("SELECT 1 AS x FROM activities WHERE table_id = ? AND status IN ('forming','ready','running','settling')", x.id));
+    if (!tbl) return;
     const members: R[] = [];
     while (members.length < size) members.push(free.splice(rnd.int(free.length), 1)[0]!);
-    const t: Table = { id: ++tableSeq, game, members, stage: 'gather', activityId: null, since: now };
+    const t: Table = { id: ++tableSeq, game, members, tableId: tbl.id, stage: 'gather', activityId: null, since: now };
     tables.push(t);
     for (const m of members) {
       m.table = t;
-      const v = timedView(m);
-      if (v.location.space !== 'arcade') navigate(m, 'arcade');
+      navigate(m, tbl.id);
     }
   }
 }

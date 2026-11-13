@@ -275,9 +275,9 @@ describe('附近聊天：受众由权威位置决定', () => {
   it('小游戏期间不接收周围的普通附近聊天', () => {
     const t = makeTown({ params: LOOSE });
     const [p1, p2, watcher] = [t.join('甲'), t.join('乙', 'agent'), t.join('丙')];
-    for (const x of [p1, p2, watcher]) x.go('arcade');
+    for (const x of [p1, p2, watcher]) x.go('arcade:table1');
     pulse(p1, p2, watcher);
-    const host = p1.act('propose_game', { game: 'number_bomb' });
+    const host = p1.act('propose_game', { game: 'number_bomb', objectId: 'arcade:table1' });
     p2.act('join_game', { activityId: host.activity.id });
     p1.act('start_game', { activityId: host.activity.id });
     pulse(p1, p2, watcher);
@@ -376,10 +376,10 @@ describe('全镇公屏：谁能读、谁能发', () => {
   it('对局中只读：发被拒绝，读照常；对局结束后又能发', () => {
     const t = makeTown({ params: LOOSE_TOWN });
     const [p1, p2, other] = [t.join('甲'), t.join('乙', 'agent'), t.join('丙')];
-    for (const x of [p1, p2]) x.go('arcade');
+    for (const x of [p1, p2]) x.go('arcade:table1');
     pulse(p1, p2, other);
     sayTown(other, '开局之前的公屏');
-    const g = p1.act('propose_game', { game: 'number_bomb' });
+    const g = p1.act('propose_game', { game: 'number_bomb', objectId: 'arcade:table1' });
     p2.act('join_game', { activityId: g.activity.id });
     p1.act('start_game', { activityId: g.activity.id });
     pulse(p1, p2, other);
@@ -398,9 +398,9 @@ describe('全镇公屏：谁能读、谁能发', () => {
   it('公屏内容不进入对局 AI 的观察上下文：视图、事件、摘要都没有', () => {
     const t = makeTown({ params: LOOSE_TOWN });
     const [p1, p2, other] = [t.join('甲'), t.join('乙', 'agent'), t.join('丙')];
-    for (const x of [p1, p2]) x.go('arcade');
+    for (const x of [p1, p2]) x.go('arcade:table1');
     pulse(p1, p2, other);
-    const g = p1.act('propose_game', { game: 'number_bomb' });
+    const g = p1.act('propose_game', { game: 'number_bomb', objectId: 'arcade:table1' });
     p2.act('join_game', { activityId: g.activity.id });
     p1.act('start_game', { activityId: g.activity.id });
     pulse(p1, p2, other);
@@ -699,9 +699,9 @@ describe('全镇公屏：AI 唤醒与摘要', () => {
     const away = t.join('小夏', 'agent');
     muted.act('update_profile', { muteTownChat: true });
     away.leave();
-    for (const x of [player, mate]) x.go('arcade');
+    for (const x of [player, mate]) x.go('arcade:table1');
     pulse(a, player, mate, muted);
-    const g = mate.act('propose_game', { game: 'number_bomb' });
+    const g = mate.act('propose_game', { game: 'number_bomb', objectId: 'arcade:table1' });
     player.act('join_game', { activityId: g.activity.id });
     mate.act('start_game', { activityId: g.activity.id });
     pulse(a, player, mate, muted);

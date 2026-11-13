@@ -42,7 +42,7 @@ export function loadSqlite(): SqliteModule {
 export type Row = Record<string, any>;
 export type Param = SQLInputValue;
 
-export const SCHEMA_VERSION = 4;
+export const SCHEMA_VERSION = 5;
 
 const MIGRATIONS: readonly string[] = [
   // ───── v1 ─────
@@ -615,6 +615,14 @@ const MIGRATIONS: readonly string[] = [
   ) STRICT, WITHOUT ROWID;
   CREATE INDEX town_chat_time ON town_chat_messages(world_id, sent_at);
   CREATE INDEX town_chat_sender ON town_chat_messages(world_id, sender_id, seq);
+  `,
+  // ───── v5 ─────
+  // 小游戏按桌入局（地图 town-p1.0）：活动记在哪张游戏桌上。旧记录没有桌子（NULL），照常读、照常结算。
+  // 同一张桌同时只能有一个凑桌中或进行中的局，由部分唯一索引兜底。
+  `
+  ALTER TABLE activities ADD COLUMN table_id TEXT;
+  CREATE UNIQUE INDEX IF NOT EXISTS activities_table_open ON activities(table_id)
+    WHERE table_id IS NOT NULL AND status IN ('forming','ready','running','settling');
   `,
 ];
 

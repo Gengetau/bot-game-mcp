@@ -1,5 +1,12 @@
 /**
- * 栖灯镇的地图源（P0 灰盒版）。
+ * 栖灯镇的地图源（P0 灰盒版，现为 town-p1.0）。
+ *
+ * town-p1.0 相对 town-p0.1 的变化（一次换版本，后面的 NPC 段不用再换）：
+ *  - 游戏馆的两张桌（arcade:table1 / arcade:table2）从纯障碍变成可交互物件（kind = game_table）：
+ *    占地仍是原来的 2x2、位置不变，所以可走范围一格不变；四面各有一个使用位，reach 2 米。小游戏凑桌 / 加入要走到桌边。
+ *  - 新增只作标记、不挡路的锚点（落在可走格上）：tea_house.counter.staff（柜台后的店员站位）、tea_house.counter.front（柜台前的顾客位）、
+ *    plaza.bench1.sit / plaza.bench2.sit（广场长椅的坐位）、bookshop.shelf.stand（书架旁的站位）。
+ *  - 广场没有加新障碍物。
  *
  * 一张公共场景 town：六个公共地点、连接它们的路、公共住宅接入点都在同一张网格里；室内就是被墙围起来、留了门洞的一块。
  * 一张私宅场景 home：每户一个实例（实例号 = 房主），所有人家共用这一张图。进出只经过接入点的会馆门口。
@@ -48,11 +55,12 @@ function building(id: string, name: string, inner: Rect, door: Door, h = 3.2): {
   return { walk: [inner, step], zone: { id, name, rects: [inner, step], indoor: true }, walls };
 }
 
-/** 一件占地一米见方的物件，四面都能站人。 */
-function boxObject(id: string, kind: string, name: string, x: number, z: number, sides: ('n' | 's' | 'e' | 'w')[]): InteractableSource {
-  const off = 1.25;
+/** 一件方形占地的物件（缺省一米见方），四面都能站人；使用位离物件边缘 0.75 米。 */
+function boxObject(id: string, kind: string, name: string, x: number, z: number, sides: ('n' | 's' | 'e' | 'w')[], size = 1, reach?: number): InteractableSource {
+  const off = size / 2 + 0.75;
   const at = { n: { x, z: z - off }, s: { x, z: z + off }, e: { x: x + off, z }, w: { x: x - off, z } };
-  return { id, kind, name, x, z, footprint: { x: x - 0.5, z: z - 0.5, w: 1, d: 1 }, useAnchors: sides.map((s) => at[s]) };
+  const half = size / 2;
+  return { id, kind, name, x, z, footprint: { x: x - half, z: z - half, w: size, d: size }, useAnchors: sides.map((s) => at[s]), ...(reach === undefined ? {} : { reach }) };
 }
 
 const teaHouse = building('tea_house', '栖灯茶馆', { x: 4, z: 2, w: 14, d: 10 }, { side: 's', from: 10, to: 12 });
@@ -89,6 +97,12 @@ const TOWN_ANCHORS: AnchorSource[] = [
   { id: 'residential', x: 9, z: 26.25, facing: -Math.PI / 2 },
   // 会馆门口：进出私宅实例只经过这里
   { id: 'residential.door', x: 3.25, z: 26.25, facing: -Math.PI / 2 },
+  // 只作标记、不挡路的站位（town-p1.0 新增）
+  { id: 'tea_house.counter.staff', x: 16.25, z: 8.75, facing: Math.PI },
+  { id: 'tea_house.counter.front', x: 16.25, z: 11.25, facing: 0 },
+  { id: 'plaza.bench1.sit', x: 25.25, z: 30.75, facing: Math.PI },
+  { id: 'plaza.bench2.sit', x: 39.25, z: 30.75, facing: Math.PI },
+  { id: 'bookshop.shelf.stand', x: 32.25, z: 3.75, facing: 0 },
 ];
 
 const TOWN: SceneSource = {
@@ -113,8 +127,7 @@ const TOWN: SceneSource = {
     prop('bookshop.counter', { x: 30.5, z: 9.5, w: 3, d: 1 }, 1.1),
     prop('kitchen.pantry', { x: 44.5, z: 9, w: 1.5, d: 2.5 }, 1.8),
     prop('garden.shed', { x: 48.5, z: 30.5, w: 2.5, d: 3 }, 2.4),
-    prop('arcade.table1', { x: 26.5, z: 43.5, w: 2, d: 2 }, 0.8),
-    prop('arcade.table2', { x: 35.5, z: 43.5, w: 2, d: 2 }, 0.8),
+    // 游戏馆的桌子在 interactables 里（game_table）
     // 会馆（只是外观：私宅不在这张图上）
     prop('residential.hall', { x: 0.2, z: 21, w: 1.4, d: 10 }, 4.5, 'building'),
     // 路灯
@@ -132,6 +145,9 @@ const TOWN: SceneSource = {
     { id: 'bookshop:shelf', kind: 'bookshelf', name: '镇上的藏书架', x: 28, z: 2.5, footprint: { x: 25, z: 2, w: 6, d: 1 }, useAnchors: [{ x: 26.25, z: 3.75 }, { x: 28.25, z: 3.75 }, { x: 30.25, z: 3.75 }], reach: 3.6 },
     { id: 'kitchen:stove1', kind: 'stove', name: '左边的灶台', x: 48, z: 2.75, footprint: { x: 47, z: 2, w: 2, d: 1.5 }, useAnchors: [{ x: 47.75, z: 4.25 }, { x: 48.75, z: 4.25 }] },
     { id: 'kitchen:stove2', kind: 'stove', name: '右边的灶台', x: 54, z: 2.75, footprint: { x: 53, z: 2, w: 2, d: 1.5 }, useAnchors: [{ x: 53.75, z: 4.25 }, { x: 54.75, z: 4.25 }] },
+    // 游戏馆的两张桌：占地 2x2（和 town-p0.1 的障碍一样），中心 (27.5,44.5) / (36.5,44.5)，四面都能坐
+    boxObject('arcade:table1', 'game_table', '靠门的游戏桌', 27.5, 44.5, ['n', 's', 'e', 'w'], 2, 2),
+    boxObject('arcade:table2', 'game_table', '里侧的游戏桌', 36.5, 44.5, ['n', 's', 'e', 'w'], 2, 2),
     boxObject('garden:planter1', 'planter', '门边的花箱', 52, 22, ['s', 'e', 'w']),
     boxObject('garden:planter2', 'planter', '墙角的花箱', 60, 32, ['n', 'w']),
     boxObject('garden:planter3', 'planter', '向阳的花箱', 56, 28, ['n', 's', 'e', 'w']),
@@ -165,7 +181,7 @@ const HOME: SceneSource = {
 };
 
 export const TOWN_MAP_SOURCE: MapSource = {
-  mapVersion: 'town-p0.1',
+  mapVersion: 'town-p1.0',
   agentRadius: 0.3,
   speed: 2.4,
   interactDistance: 1.8,

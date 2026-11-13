@@ -3,6 +3,7 @@
  */
 import { afterEach, describe, expect, it } from 'vitest';
 import { SCHEMA_VERSION } from '../../src/world/db.js';
+import { rewindSchema } from './schema-rewind.js';
 import { WorldError } from '../../src/world/errors.js';
 import { actorOf, controlDisconnected, mapManifest, renewNavigation, sceneView, whereabouts } from '../../src/world/space.js';
 import { zoneAt } from '../../src/world/spatial/grid.js';
@@ -756,11 +757,11 @@ describe('场景快照', () => {
     const a = t.join('阿灯');
     const b = t.join('小岚');
     const c = t.join('阿树');
-    for (const x of [a, b]) x.go('arcade');
+    for (const x of [a, b]) x.go('arcade:table1');
     const keys: string[][] = [];
     t.w.onSpace((k) => keys.push(k));
     const seen = () => keys.splice(0).flat();
-    const p = a.act('propose_game', { game: 'number_bomb' });
+    const p = a.act('propose_game', { game: 'number_bomb', objectId: 'arcade:table1' });
     b.act('join_game', { activityId: p.activity.id });
     seen();
     a.act('start_game', { activityId: p.activity.id });
@@ -889,9 +890,7 @@ describe('重启与迁移', () => {
     const now = t.clock.t;
     // 把库改回 v2 的样子
     const raw = t.w.db.db;
-    raw.exec('DROP TABLE world_actors');
-    raw.exec('DROP TABLE town_chat_messages');
-    raw.exec('PRAGMA user_version = 2');
+    rewindSchema(raw, 2);
     raw.prepare("UPDATE residents SET location_id = 'street_east' WHERE resident_id = ?").run(a.residentId);
     raw.prepare("UPDATE chat_messages SET space_id = 'street_west'").run();
     raw.prepare("INSERT INTO scheduled_jobs(dedupe_key, due_at, priority, kind, payload, status, created_at) VALUES ('move:legacy:1', ?, 1, 'move_arrive', '{}', 'pending', ?)").run(now + 5000, now);

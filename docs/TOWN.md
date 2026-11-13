@@ -105,6 +105,13 @@ packages/engine/town/             旧的网页前端（静态文件；会被 God
 
 **地图**。一份地图源（`spatial/town-map.ts`）：可走范围、障碍、区域、落脚点、可互动物件的位置和使用位置、进出口。启动时编译成 0.5 米的可行走网格（障碍按角色半径外扩），并算出校验值。校验值盖住地图源和栅格化出来的结果（每个场景的可行走网格和区域划分），栅格化的算法变了它也会变；单个场景最多 65536 格，寻路的展开上限就是这张网格的格数。客户端通过 `GET /map` 拿到地图源和**服务器栅格化之后的同一份网格**，不自己栅格化，所以两边不会对同一堵墙有不同看法。地图发布后不原地改：改了可走范围、落脚点或物件位置就换 `mapVersion`；启动时位置在新地图上不合法的人会被挪到所在区域的落脚点，位置还合法但区域划分变了的，区域标签改成脚下的区域；换版本时正走在路上的人，旧路线直接作废（不拿新地图去结算旧折线），人留在那一段的起点再按上面的规则校正。后端不需要安装 Blender 或 Godot。
 
+**地图版本**。当前是 `town-p1.0`（上一版 `town-p0.1`）。p1.0 一次放进了 P1 需要的所有地图改动，之后的 NPC 段不用再换版本：
+
+- 游戏馆的两张桌 `arcade:table1`（靠门，中心 27.5, 44.5）、`arcade:table2`（里侧，中心 36.5, 44.5）从纯障碍变成可交互物件（`kind = game_table`）：占地仍是原来的 2x2、位置不变，所以可走范围一格没变；四面各有一个使用位，够得着的距离是 2 米。小游戏凑桌 / 加入要走到桌边（见「小游戏」）。
+- 新增只作标记、不挡路的锚点（落在可走格上，互相可达；`GET /map` 的 `anchors` 里有）：`tea_house.counter.staff`（茶馆柜台后的店员站位）、`tea_house.counter.front`（柜台前的顾客位）、`plaza.bench1.sit` / `plaza.bench2.sit`（广场两条长椅的坐位）、`bookshop.shelf.stand`（书架旁的站位）。锚点现在没有任何游戏规则，是给后面的 NPC 站位用的。
+- 广场没有加新障碍物。房间划分不变（`hearing.ts` 的「同房间」按区域推，有测试核对换版本前后可走格和区域一致）。
+- 换版本时在新地图上站在不可走位置的居民，按上面的规则被挪到所在区域的落脚点。
+
 **导航**。居民（真人和 AI 一样）只提交目的地，路线由服务器用 A* 规划：
 
 - `navigate {to}`：地点编号、`home`、`home:<居民id>`、公共物件编号、居民编号、地图点 `{x, z}`（点偏了取 2.5 米内最近的可走点）；`{approach: 居民id}` 走到对方身边一米处。
@@ -131,7 +138,7 @@ packages/engine/town/             旧的网页前端（静态文件；会被 God
 
 **区域**。地图把可走范围划成区域：六个公共地点、`road`（灯笼路，只是路过的地方）、`residential`（灯巷会馆：进出所有私宅的唯一公共接入点）。`residents.location_id` 是区域标签，只在跨区域那一刻由空间模块改写，同一事务里触发各模块的离开 / 到达处理（撤销没完成的交换、退出报名、记录登门）并通知两边在场的人。**走在路上的人属于脚下的区域**：能说话、能被听见、能做事。别的模块按区域判断「在不在一起」。走路的人自己跨区域时不收事件（模型不该为每一步路被叫醒）：续租的回答和场景快照里都带着此刻的 `space`，客户端看到它变了就重读现场。
 
-**够得着**。公共物件（茶桌、藏书架、灶台、花箱）在地图上有位置：发起或加入它上面的共同活动，人要在 1.8 米内（藏书架 3.6 米），否则被拒绝：错误码是 `precondition_failed`（HTTP 422），细分原因 `reason: "too_far"`，错误体顶层的 `navigateTo` 是可以走过去的物件编号。`navigate {to: 物件编号}` 走到最近的使用位置。坐下之后迈步走开就算退出，哪怕没走出这片区域。家里的家具在屋里就够得着。
+**够得着**。公共物件（茶桌、藏书架、灶台、花箱、游戏桌）在地图上有位置：发起或加入它上面的共同活动，人要在 1.8 米内（藏书架 3.6 米，游戏桌 2 米），否则被拒绝：错误码是 `precondition_failed`（HTTP 422），细分原因 `reason: "too_far"`，错误体顶层的 `navigateTo` 是可以走过去的物件编号。`navigate {to: 物件编号}` 走到最近的使用位置。坐下之后迈步走开就算退出，哪怕没走出这片区域。家里的家具在屋里就够得着。
 
 **人和人的够得着**。当面互动（`ask_hobby`、`invite`、`offer` 与 `accept_offer`、当面 `return_item`）按权威位置量距离，不看区域标签：同一个场景实例、双方都有效在场、都不在小游戏里、这一刻的距离 ≤ `personReach`（参数，默认 3.0 米：大于物件的使用距离 1.8 米、小于听力距离 9 米；放在参数里，不放地图，改它不换 `mapVersion`）。位置按折线和时间现算，走着的人也一样；隔着区域边界但很近的两个人可以互动，同一区域里相距很远的不行。判定在 `world/reach.ts`，只读位置，不写 `world_actors`；「有效在场、不在小游戏里、现算位置」和附近聊天共用 `hearing.ts` 的 `interactivePos`，不留两套定义。键盘方向输入的短路线同样按现算位置判定。两种失败：
 - 同一场景实例、在场、不在小游戏里，但距离不够：`precondition_failed` / `reason: "too_far"`，错误体顶层的 `navigateTo` 是对方的居民编号，原样放进 `navigate {approach: …}` 就能走到 ta 身边（一米处）。
@@ -283,8 +290,9 @@ packages/engine/town/             旧的网页前端（静态文件；会被 God
 | `leave_interaction` | — | 开始前发起人退出 = 取消并退回投入；开始后退出没有这次的收获。迈步走开也算退出 |
 | `replace_goal` | `goalId` | 换掉一个短期愿望（每天一次） |
 | `choose_goal` | `goalId` | 长期愿望完成后，从本人视图 `goals` 里 `status: "offered"` 的候选中选一个作为新的长期愿望，其余候选作废 |
-| `propose_game` | `game` | 在允许的公共场所凑一桌 |
-| `join_game` / `leave_game_lobby` / `start_game` | `activityId` | 加入、退出、发起人开局 |
+| `propose_game` | `game, objectId` | 在游戏馆的一张游戏桌旁凑一桌。`objectId` 是桌子编号（视图 `here.tables[].id`）：必须是当前场所的游戏桌，写错 / 伪造 / 缺失 → `bad_request`（缺）或 `precondition_failed`（`not_a_table`）；人要站在桌边，否则 `too_far`（`navigateTo` 是桌子编号）；这张桌已有凑桌中或进行中的局 → `table_busy`。通过距离校验时正在走的人会站住 |
+| `join_game` | `activityId, objectId?` | 加入凑桌中的一桌，同样要站在那张桌边（`too_far`）。`objectId` 可省，写了必须是这一桌所在的桌子（否则 `wrong_table`）。旧版本留下的没有桌子的凑桌 → `not_open` |
+| `leave_game_lobby` / `start_game` | `activityId` | 退出、发起人开局（发起人自己也要在桌边；开局时每位成员重新核对，不在桌边的被剔除，剩下的人够就照常开；剩下的人不够就不开，`not_enough` 并说明谁不在桌边，名单不变，走回来再开） |
 | `game_act` | `phaseId, input, gameId?` | 局内动作。`input` 的格式来自小游戏视图里的 `todo.actions` |
 | `quit_game` | — | 中途退出：人回到场所，座位按超时规则自动处理 |
 
@@ -320,7 +328,7 @@ packages/engine/town/             旧的网页前端（静态文件；会被 God
 | `interaction` | `{interaction, reason?}` | 身边的共同活动有变化 |
 | `interaction_done` | `{interactionId, name, text}` | 我参与的活动完成了，`text` 是我的收获 |
 | `goal` | `{goal, completed?, reward?, title?}` | 愿望进度 / 完成 |
-| `activity` | `{activity, reason?, ended?}` | 身边凑桌的变化 |
+| `activity` | `{activity, reason?, ended?, dropped?}` | 身边凑桌的变化。`activity.tableId` 是占着的游戏桌；开局时有人不在桌边被剔除，`dropped` 是被剔除者的居民编号 |
 | `game_started` | `{activityId, gameId, name, seat}` | 我进了一局 |
 | `game` | `{activityId, gameId, phaseId, yourTurn, waiting?}` | 我所在的一局有新进展（内容去 `/game` 取） |
 | `game_out` | `{activityId, gameId, text}` | 我出局并回到了场所 |
@@ -371,7 +379,7 @@ packages/engine/town/             旧的网页前端（静态文件；会被 God
 - `PublicView`：`world`（时间、天气）、`places[]`（公共区域和在场居民；`through: true` 的是灯笼路）、`residential`（住宅区的人，不分在会馆门前还是谁家里）、`events`（今天的公共事件）、`counts`。没有坐标。
 - `MeView`：`world`、`me`（资料、需要、情绪、称号、家）、`control`、`context`、`actionWindow`、`cursor`、`location`（`space, name, scene, x, z, navigation`：只有自己的坐标）、`here`（现场：身边的人、物件、商店、凑桌、可去的地方、门牌、最近的发言）、`inventory`、`goals`、`mail`、`invites`、`offers`、`interaction`、`game`、`events`、`suggestions`、`recap?`。
 - 在小游戏里时 `here` 为 `null`。走路时 `here` 是脚下区域的现场。
-- `here.exits` 是所有可去的目的地（带大概要走多少秒）；`here.objects[].near` 表示此刻够不够得着。
+- `here.exits` 是所有可去的目的地（带大概要走多少秒）；`here.objects[].near` 表示此刻够不够得着。`here.tables[]`（`id, name, activityId, near`）是这个场所里的游戏桌和占着它的那一局，`here.activities[].tableId` 同理；AI 的精简视图里是 `here.tables[]`（`far: true` 表示还没走到桌边）和 `here.activities[].table`。公共场所里谁在哪张桌凑桌是公开信息，所以在这个场所里的人都看得到；公开视图各地点的 `activities[].tableId` 也带上。
 - `SceneView`（`space.ts`）：同一个场景实例里在场的人。公共场景的快照里没有任何私宅里的人；私宅的快照只给屋里的人；自己不在场（离线）时快照里只有自己。
 - AI 用的紧凑视图 `agentView` 是同样的权限、去掉了展示用的冗余：`location: {space, name, walking?}`（`walking: {to, navigation_id, revision, arrive_at, lease_until, renew_every_ms}`，接手一位正在走的居民时照这个立刻续一次租），够不着的物件带 `far: true`。
 - 门牌（`here.doors`，只在灯巷会馆）只列：自己家、已经得知且已经生效的邀请对应的家、此刻在场的邻居的家。信还在路上、送达了没读、生效时间没到的邀请都不会让寄信人的门出现。
@@ -463,9 +471,9 @@ packages/engine/town/             旧的网页前端（静态文件；会被 God
 
 | 游戏 | 场所 | 人数 | 世界给定的选项 |
 |---|---|---|---|
-| 数字炸弹 `number_bomb` | 游戏馆、广场 | 2~8 | 单局、每手 45 秒 |
+| 数字炸弹 `number_bomb` | 游戏馆 | 2~8 | 单局、每手 45 秒 |
 | 密封竞拍 `sealed_auction` | 游戏馆 | 3~6 | 4 轮、每轮 45 秒 |
-| 大话骰 `liars_dice` | 游戏馆、茶馆 | 2~6 | 2 条命、每手 40 秒 |
+| 大话骰 `liars_dice` | 游戏馆 | 2~6 | 2 条命、每手 40 秒 |
 
 接入检查的标准：没有自由发言通道、公开规则信息和秘密状态分得开、每个待办都有超时托管路径、选项在原规则范围内。游戏定义上的 `embeddable: true` 是内部创建路径的授权依据。
 
@@ -473,7 +481,10 @@ packages/engine/town/             旧的网页前端（静态文件；会被 God
 
 行为：
 
-- 流程：`propose_game` → `join_game` → 发起人 `start_game`。开局时重新确认每个人都在场、都在这个场所；同时进行的局数有上限（默认 3）。
+- 流程：先 `navigate` 到游戏桌，再 `propose_game {game, objectId}` → 别人也走到那张桌子旁 `join_game` → 发起人 `start_game`。**按桌入局**：小游戏属于一张桌子（游戏馆有 `arcade:table1`、`arcade:table2`），一张桌同时只有一局凑桌中或进行中的局（不同桌可以同时开），数据库里 `activities.table_id` 记着，并有部分唯一索引兜底；视图 `here.tables[]`（`id, name, activityId, near`）、`here.activities[].tableId`、公开视图里各地点 `activities[].tableId` 让客户端知道哪张桌有人在凑（公共场所里谁在凑桌是公开信息）。
+- 距离：`propose_game` / `join_game` / `start_game` 都用物件够得着的规则（桌子 2 米），通过后会让正在走的人（点地或键盘方向输入的路线一样）站住。`objectId` 先对白名单校验（必须是当前场所的游戏桌），再量距离，所以伪造的编号不会落到「地图上查不到就放行」。开局时重新核对每位成员：在这个场所、此刻的权威位置还在桌边，不在的剔除（回执的 `dropped` 里是名字），剩下的人不够就不开（整条命令回滚，名单不变）。
+- 结束后人留在原位（桌边的合法位置），区域标签不变，可以接着走。开局、中途退出、提前出局、结束时都会通知同一场景实例里的人（场景快照里带「是否在一局小游戏里」）。
+- 同时进行的局数有上限（默认 3）；现在只有两张游戏桌、一桌一局，所以实际最多两局，这个上限要等地图上增加更多桌子之后才会起作用。旧版本留下、没有桌子的凑桌不能加入也不能开局，到期自然解散。
 - 嵌入的一局不产生任何 QQ 消息（`delivery = 'embedded_web'`，在统一的投递出口拦截），也不发座位链接。
 - 进入和离开都递增 `contextVersion`。局内动作必须带 `phaseId`；到期的阶段先由定时任务结算，上一阶段迟到的动作返回 `phase_stale`。
 - 中途 `quit_game`：人回到场所，座位留在局里按超时规则自动处理；没有这局的记录和奖励。所有人都走了，这局中止。

@@ -550,6 +550,28 @@ export class Invariants {
     }
     bad('activity_consistency', actBad, '小游戏占座 / 上下文不一致');
 
+    // 小游戏按桌入局：一张桌同时只有一局（凑桌中或进行中）；开着的局都挂在自己场所的游戏桌上；
+    // 进行中的局里还没回到世界的人，位置此刻（独立重算）仍在桌边——局里不能走路，所以开局时在桌边就一直在
+    const tableBad: unknown[] = [];
+    // 不依赖 v5 的部分唯一索引（索引在就不可能触发）：按在席参与者和未结束的对局记录各自独立统计每张桌上有几个局
+    for (const t of db.all("SELECT a.table_id, COUNT(DISTINCT a.activity_id) n FROM activity_participants p JOIN activities a ON a.activity_id = p.activity_id WHERE p.active = 1 AND a.table_id IS NOT NULL AND a.status IN ('forming','ready','running','settling') GROUP BY a.table_id HAVING n > 1")) tableBad.push({ table: t.table_id, open: t.n, why: '一张桌上有多个局都有在席的人' });
+    for (const t of db.all("SELECT a.table_id, COUNT(DISTINCT g.game_id) n FROM game_records g JOIN activities a ON a.activity_id = g.activity_id WHERE g.status = 'running' AND a.table_id IS NOT NULL GROUP BY a.table_id HAVING n > 1")) tableBad.push({ table: t.table_id, running: t.n, why: '一张桌上有多局在进行的对局记录' });
+    const townScene = w.map.scenes.get(w.map.spawn.scene)!;
+    for (const a of db.all("SELECT activity_id, venue_id, table_id, status FROM activities WHERE status IN ('forming','ready','running','settling')")) {
+      const it = a.table_id ? townScene.interactables.get(String(a.table_id)) : undefined;
+      if (!it || it.kind !== 'game_table' || !String(a.table_id).startsWith(`${a.venue_id}:`)) {
+        tableBad.push({ activity: a.activity_id, venue: a.venue_id, table: a.table_id, why: '开着的局没有挂在本场所的游戏桌上' });
+        continue;
+      }
+      if (a.status !== 'running') continue;
+      for (const p of db.all('SELECT resident_id FROM activity_participants WHERE activity_id = ? AND active = 1', a.activity_id)) {
+        const pos = positionOfResident(w, String(p.resident_id), now);
+        const d = pos ? Math.hypot(pos.x - it.x, pos.z - it.z) : Infinity;
+        if (!pos || pos.scene !== townScene.id || d > (it.reach ?? w.map.interactDistance) + 0.011) tableBad.push({ activity: a.activity_id, r: p.resident_id, table: a.table_id, dist: d, why: '进行中的局里的人不在桌边' });
+      }
+    }
+    bad('table_exclusive', tableBad, '游戏桌被重复占用 / 局没有挂在游戏桌上 / 局里的人不在桌边');
+
     // 离线居民不在任何现场名单、不占开放中的席位
     const offBad: unknown[] = [];
     for (const r of db.all('SELECT resident_id FROM residents WHERE present_since IS NULL')) {

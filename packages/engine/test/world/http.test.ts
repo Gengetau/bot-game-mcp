@@ -14,7 +14,7 @@ import { issueTicket, devLoginSession } from '../../src/world/identity.js';
 import { createWorld } from '../../src/world/index.js';
 import type { WorldService } from '../../src/world/service.js';
 import { FakeClock } from '../helpers.js';
-import { makeTown, type Actor, type Town } from './helpers.js';
+import { Actor, makeTown, type Town } from './helpers.js';
 
 // ───────────────────────── 测试辅助 ─────────────────────────
 
@@ -250,6 +250,20 @@ async function alive(t: Town, ms: number, webs: Web[], actors: Actor[] = []): Pr
     t.w.tick();
     left -= step;
   }
+}
+
+
+/** 把网页居民和 AI 居民都走到游戏馆的第一张桌边（小游戏要站在桌边才能凑桌 / 加入）。 */
+async function seatAtTable(t: Town, webs: Web[], actors: Actor[] = []): Promise<void> {
+  // 先让网页居民心跳一下：前面花在别处的时间可能已经让它的控制租约过期
+  for (const w of webs) await w.post('/town/api/heartbeat', { clientId: w.clientId, presenceEpoch: t.w.resident(w.residentId)!.presence_epoch });
+  for (const x of actors) x.go('arcade:table1');
+  for (const w of webs) {
+    const r = t.w.mustResident(w.residentId);
+    // HTTP 层给客户端编号加了 web: 前缀
+    new Actor(t, r.principal_id, r.resident_id, `web:${w.clientId}`, r.name).go('arcade:table1');
+  }
+  await alive(t, 1_000, webs, actors);
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -681,7 +695,8 @@ describe('HTTP：enter / me / actions', () => {
     const { t, app } = await serveTown();
     const a = await new Web(app.base).login('甲');
     const b = await new Web(app.base).login('乙');
-    const p = await a.act({ type: 'propose_game', game: 'number_bomb' });
+    await seatAtTable(t, [a, b]);
+    const p = await a.act({ type: 'propose_game', game: 'number_bomb', objectId: 'arcade:table1' });
     expect(p.status).toBe(200);
     const id = p.json.activity.id;
     expect((await b.act({ type: 'join_game', activityId: id })).status).toBe(200);
@@ -823,7 +838,8 @@ describe('HTTP：enter / me / actions', () => {
     errShape(g, 409, 'context_stale');
     expect(g.json).toMatchObject({ contextVersion: expect.any(Number), activityId: null });
     // 凑一桌：game 与 public/game
-    const p = await a.act({ type: 'propose_game', game: 'number_bomb' });
+    await seatAtTable(t, [a], [bAct]);
+    const p = await a.act({ type: 'propose_game', game: 'number_bomb', objectId: 'arcade:table1' });
     expect(p.status, p.text).toBe(200);
     bAct.act('join_game', { activityId: p.json.activity.id });
     await a.act({ type: 'start_game', activityId: p.json.activity.id });
@@ -836,7 +852,7 @@ describe('HTTP：enter / me / actions', () => {
     const anon = new Web(app.base);
     const pg = await anon.get(`/town/api/public/game/${p.json.activity.id}`);
     expect(pg.status).toBe(200);
-    expect(pg.json).toMatchObject({ type: 'number_bomb', status: 'running', activityId: p.json.activity.id, venue: 'plaza' });
+    expect(pg.json).toMatchObject({ type: 'number_bomb', status: 'running', activityId: p.json.activity.id, venue: 'arcade' });
     expect(pg.json.you).toBeUndefined();
     expect(pg.json.todo).toBeUndefined();
     expect(pg.text).not.toContain('"bomb"');
@@ -1177,7 +1193,8 @@ describe('HTTP：SSE 事件流', () => {
     const { t, app, a, b } = await pair();
     const sse = await stream(app, a);
     await sse.waitFor((e) => e.event === 'hello');
-    const p = await a.act({ type: 'propose_game', game: 'number_bomb' });
+    await seatAtTable(t, [a], [b]);
+    const p = await a.act({ type: 'propose_game', game: 'number_bomb', objectId: 'arcade:table1' });
     b.act('join_game', { activityId: p.json.activity.id });
     await a.act({ type: 'start_game', activityId: p.json.activity.id });
     await sse.waitFor((e) => e.event === 'private' && e.data.type === 'game_started');
