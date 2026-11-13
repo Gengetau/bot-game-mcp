@@ -1561,15 +1561,13 @@ async function main() {
       return x.layers.amb_fountain.playing === (x.layers.amb_fountain.gain > 0.002) ? x : null;
     }, 20_000, '喷泉声增益稳定');
     const fNear = { d: s.fountainDist, g: s.layers.amb_fountain.gain };
-    // 镜头跟着人走，一次点不到 26 米外：分两跳
-    for (const [hx, hz] of [[40, 27], [47, 27], [54, 28], [58, 28]]) {
-      await clickWorld(C, hx, hz);
-      await sleep(1500);
-      await until(async () => !selfActor(await serverScene(C))?.nav, 90_000, 'C 走到远处');
-    }
+    // 走到花园东北角，离喷泉约 27 米（喷泉声到 22 米衰减完）。屏幕外的点 clickWorld 会往自己这边缩，一跳走不到：
+    // 按路点一段段走，walkTo 每段都等服务器位置真的到了。以前固定点四下就算走远，终点其实落在离喷泉 22.0 到 23.1 米之间，
+    // 刚好压在 22 米的门槛上，差几十厘米就红。
+    for (const [hx, hz] of [[28, 27], [40, 27], [47, 26.5], [59, 25]]) await walkTo(C, hx, hz);
     s = await until(async () => {
       const x = await snd(C);
-      return x.fountainDist > 22 && x.layers.amb_fountain.gain < 0.01 ? x : null;
+      return x.fountainDist > 25 && x.layers.amb_fountain.gain < 0.01 ? x : null;
     }, 30_000, '走远后听不到喷泉').catch(async (e) => {
       const x = await snd(C);
       throw new Error(`${e.message} ${JSON.stringify({ d: x.fountainDist, g: x.layers.amb_fountain.gain, indoor: x.indoor, scene: x.scene })}`);
