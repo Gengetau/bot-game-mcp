@@ -55,7 +55,7 @@ import {
   type Person,
   type WorldService,
 } from './world-lib.js';
-import { NPCS, PUBLIC_OBJECTS } from '../packages/engine/src/world/content.js';
+import { NPCS, PUBLIC_OBJECTS, SHOPS } from '../packages/engine/src/world/content.js';
 import { actorOf, posOf } from '../packages/engine/src/world/space.js';
 import { zoneAt } from '../packages/engine/src/world/spatial/grid.js';
 import { exchangeTicket, issueTicket, sessionPrincipal } from '../packages/engine/src/index.js';
@@ -349,6 +349,7 @@ class Sim {
       }
     } else if (out.out.replayed && this.fingerprint(ag.p.residentId) !== fp) this.rejectEffect(type, fields, 'replayed');
     if (out.ok && !out.out.replayed) this.inv.checkFaceToFace(this.w, type, ag.p.residentId, fields, this.clock.t);
+    if (out.ok && !out.out.replayed) this.inv.checkNpcReach(this.w, type, ag.p.residentId, fields, this.clock.t);
     if (out.ok && !out.out.replayed && !o.neg) {
       ag.ring.push({ conn, req, out: JSON.parse(JSON.stringify(out.out)), at: this.clock.t });
       if (ag.ring.length > 12) ag.ring.shift();
@@ -682,6 +683,14 @@ class Sim {
     const p = this.w.presentCount();
     if (p > this.presentMax) this.presentMax = p;
     this.sampleNpcs();
+  }
+
+  /** 闲逛者此刻停留任务的到期时间和已延长量（覆盖断言用）；正在走路或没有待办返回 null。 */
+  private npcStay(npcId: string): { due: number; extended: number } | null {
+    const job = this.w.db.get("SELECT due_at, payload FROM scheduled_jobs WHERE dedupe_key = ? AND status = 'pending'", `npc_step:${npcId}`);
+    if (!job) return null;
+    const p = JSON.parse(String(job.payload)) as { phase?: string; extendedMs?: number };
+    return p.phase === 'stay' ? { due: Number(job.due_at), extended: Number(p.extendedMs ?? 0) } : null;
   }
 
   /** 氛围 NPC 的覆盖：记下它停靠过的每个锚点和路线版本（每走一趟版本至少加 2：出发、到达）。 */
@@ -1211,7 +1220,9 @@ class Sim {
     intents.push(['speak', residentsHere.length > 0 ? 6 : 0.6]);
     intents.push(['town', 1.4]);
     intents.push(['ask', residentsHere.length > 0 ? 1.5 : 0]);
-    intents.push(['buy', here && here.shops.length > 0 ? 3 : 0]);
+    intents.push(['buy', here && here.shops.some((s) => shopReachable(here, s.id)) ? 3 : 0]);
+    // 和 NPC 打交道：够不着就先走到它身边（掌柜卖茶、问话、搭话闲逛者）
+    intents.push(['npc', here && here.npcs.length > 0 ? 2.5 : 0]);
     intents.push(['use', energy < 75 && (avail('soup') > 0 || avail('cookie') > 0) ? 2.5 : 0]);
     intents.push(['decor', atHome ? 3 : 0]);
     intents.push(['offer', residentsHere.length > 0 ? 2.5 : 0]);
@@ -1409,7 +1420,7 @@ class Sim {
       }
       case 'buy': {
         const goods: { shop: string; sku: string; price: number; stock: number }[] = [];
-        for (const s of here!.shops) for (const g of s.goods) if (g.stock > 0 && g.price <= inv.coins.available) goods.push({ shop: s.id, sku: g.sku, price: g.price, stock: g.stock });
+        for (const s of here!.shops) for (const g of shopReachable(here!, s.id) ? s.goods : []) if (g.stock > 0 && g.price <= inv.coins.available) goods.push({ shop: s.id, sku: g.sku, price: g.price, stock: g.stock });
         if (goods.length === 0) return null;
         // 偏好便宜的消耗品；书和家具偶尔买
         const g = rnd.weighted(goods.map((x) => [x, x.price >= 6 ? 0.6 : 2] as const))!;
@@ -1425,6 +1436,42 @@ class Sim {
           this.buyPerDay.set(key, total);
           const cap = DAILY_STOCK[g.sku];
           if (cap !== undefined && total > cap) this.inv.fail('stock_cap', `${g.sku} 当天售出 ${total} 件，超过日库存 ${cap}`, { day }, now);
+        }
+        return short();
+      }
+      case 'npc': {
+        const npcs = here!.npcs;
+        if (npcs.length === 0) return null;
+        // 有钱就偏向掌柜（买茶），否则找闲逛者搭话
+        const keeper = npcs.find((n) => n.shop);
+        const pick = keeper && inv.coins.available >= 2 && rnd.chance(0.55) ? keeper : rnd.pick(npcs);
+        if (!pick.near) {
+          this.bump('npc_walk');
+          return this.moveTo(ag, conn, pick.id, 'approach');
+        }
+        const stay = pick.shop ? null : this.npcStay(pick.id);
+        if (pick.shop && inv.coins.available >= 2 && rnd.chance(0.6)) {
+          const o = this.exec(ag, conn, 'buy', { shop: pick.shop, sku: 'tea_leaves', qty: 1 });
+          if (o.ok) {
+            this.bump('npc_buy');
+            const key = `${pick.shop}|tea_leaves|${this.w.today(now)}`;
+            const total = (this.buyPerDay.get(key) ?? 0) + 1;
+            this.buyPerDay.set(key, total);
+            if (total > DAILY_STOCK.tea_leaves!) this.inv.fail('stock_cap', `tea_leaves 当天售出 ${total} 件，超过日库存 ${DAILY_STOCK.tea_leaves}`, { day: this.w.today(now) }, now);
+          }
+          return short();
+        }
+        // 偶尔问个不存在的话题：按默认话题回答，不报错
+        const topic = rnd.chance(0.15) ? 'no_such_topic' : rnd.pick(pick.topics).id;
+        const o = this.exec(ag, conn, 'ask_npc', { npcId: pick.id, topic });
+        if (o.ok) {
+          this.bump(`npc_ask:${pick.id}`);
+          const out = o.out as { spoken?: boolean };
+          if (out.spoken) this.bump('npc_spoke');
+          if (stay) {
+            const after = this.npcStay(pick.id);
+            if (after && after.due > stay.due && after.extended > stay.extended) this.bump('npc_hold_extended');
+          }
         }
         return short();
       }
@@ -1913,6 +1960,12 @@ class Sim {
 }
 
 /** 商店日库存（和 content.ts 对账用）。 */
+/** 这家店现在能不能买：有掌柜的店要掌柜就在够得着的地方（here.npcs 的 near）；没有掌柜的店只看人在不在这一处。 */
+function shopReachable(here: NonNullable<MeView['here']>, shopId: string): boolean {
+  const keeper = here.npcs.find((n) => n.shop === shopId);
+  return keeper ? keeper.near : !SHOPS.some((s) => s.id === shopId && s.keeper);
+}
+
 const DAILY_STOCK: Record<string, number> = { cookie: 20, lantern: 6, paper_lamp: 10, tea_leaves: 30, vegetables: 30, stove_kit: 3, seeds: 30, planter_box: 3 };
 for (const b of ['rain_lane', 'bread_stars', 'gardener_notes', 'polite_dice', 'slow_fire', 'twelve_letters']) DAILY_STOCK[`book:${b}`] = 1;
 
@@ -2339,6 +2392,16 @@ if (DAYS >= 1) {
     }
   }
 }
+if (DAYS >= 1 && N >= 8) {
+  // 掌柜卖茶、问话、搭话闲逛者：一天里都要真的发生，且闲逛者被搭话后至少有一次停留被延长（日程照常继续由上面的移动次数保证）
+  const c = (k: string) => sim.counters.get(k) ?? 0;
+  if (c('npc_buy') < 2) coverageMissing.push(`经掌柜的买茶一天里只成交了 ${c('npc_buy')} 次（至少 2 次）`);
+  if (c('npc_ask:npc:teahouse_keeper') < 2) coverageMissing.push(`问掌柜一天里只成功了 ${c('npc_ask:npc:teahouse_keeper')} 次（至少 2 次）`);
+  if (c('npc_ask:npc:plaza_stroller') < 2) coverageMissing.push(`搭话闲逛者一天里只成功了 ${c('npc_ask:npc:plaza_stroller')} 次（至少 2 次）`);
+  if (c('npc_hold_extended') < 1) coverageMissing.push('闲逛者被搭话后停留被延长从未发生（npc_hold_extended）');
+  if (c('npc_spoke') < 1) coverageMissing.push('NPC 从未在附近聊天里开过口（npc_spoke）');
+}
+console.log(`NPC 互动：买茶 ${sim.counters.get('npc_buy') ?? 0}，问掌柜 ${sim.counters.get('npc_ask:npc:teahouse_keeper') ?? 0}，搭话闲逛者 ${sim.counters.get('npc_ask:npc:plaza_stroller') ?? 0}，开口 ${sim.counters.get('npc_spoke') ?? 0}，延长停留 ${sim.counters.get('npc_hold_extended') ?? 0}`);
 console.log(`NPC：${NPCS.map((n) => `${n.name} 路线版本 ${sim.counters.get(`npc_revision:${n.id}`) ?? '—'}`).join('，')}；到过的锚点 ${[...sim.counters].filter(([k]) => k.startsWith('npc_visit:')).map(([k]) => k.slice(10)).join('、') || '无'}`);
 if (coverageMissing.length) {
   console.log('\n覆盖不足：');

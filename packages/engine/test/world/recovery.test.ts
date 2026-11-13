@@ -14,7 +14,7 @@ import { createWorld, enterWorld } from '../../src/world/index.js';
 import { report } from '../../src/world/reports.js';
 import type { WorldService } from '../../src/world/service.js';
 import { localToUtc, nextDate } from '../../src/world/time.js';
-import { Actor, makeTown, tempDb, type Town } from './helpers.js';
+import { Actor, KEEPER, makeTown, tempDb, type Town } from './helpers.js';
 import { checkSpaceInvariants } from './invariants.js';
 
 const MIN = 60_000;
@@ -173,7 +173,7 @@ describe('启动恢复：停机期间到期的事务各结算一次，保留应�
     const { t } = fileTown();
     const a = t.join('阿灯');
     const b = t.join('小岚', 'agent');
-    a.go('tea_house');
+    a.go(KEEPER);
     b.go('tea_house');
     a.act('buy', { shop: 'tea_counter', sku: 'tea_leaves', qty: 1 });
     const table = a.view().here!.objects.find((o) => o.type === 'tea_table')!;
@@ -333,7 +333,7 @@ describe('启动恢复：跨世界日边界的停机', () => {
     const { t } = fileTown();
     const a = t.join('阿灯');
     const b = t.join('小岚', 'agent');
-    a.go('tea_house');
+    a.go(KEEPER);
     a.act('buy', { shop: 'tea_counter', sku: 'tea_leaves', qty: 3 });
     const day0 = t.w.today();
     // 愿望缺一个：把一个短期愿望标成已更换
@@ -414,7 +414,7 @@ describe('崩溃一致性：提交边界（failpoint）', () => {
     const { t } = fileTown();
     const a = t.join('阿灯');
     const b = t.join('小岚', 'agent');
-    a.go('tea_house');
+    a.go(KEEPER);
     b.go('tea_house');
     return { t, a, b };
   }

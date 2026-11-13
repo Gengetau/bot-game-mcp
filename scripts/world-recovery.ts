@@ -19,7 +19,7 @@ import { join } from 'node:path';
 import { parseArgs } from 'node:util';
 import { SeededRng, WorldError, createRegistry, createWorld, enterWorld, agentPrincipal, townHeartbeat, town, type WorldService } from '../packages/engine/src/index.js';
 import { actorOf, posOf, npcActorOf, positionOfNpc, positionOfResident, renewNavigation, whereabouts } from '../packages/engine/src/world/space.js';
-import { NPCS } from '../packages/engine/src/world/content.js';
+import { NPCS, npcLineMatches } from '../packages/engine/src/world/content.js';
 import { isWalkable, zoneAt } from '../packages/engine/src/world/spatial/grid.js';
 import { arrivalAt, positionAt } from '../packages/engine/src/world/spatial/motion.js';
 
@@ -127,6 +127,18 @@ interface Planned {
 
 const PLACES = ['plaza', 'tea_house', 'bookshop', 'kitchen', 'garden', 'arcade', 'residential', 'home'];
 const SHOPS = town.townContent.SHOPS;
+const KEEPER_ID = 'npc:teahouse_keeper';
+const STROLLER_ID = 'npc:plaza_stroller';
+/** 已执行的 ask_npc 和经掌柜成交的 buy 的条数（每条恰好让该 NPC 的「回答计数」加一，也只会说至多一句话） */
+let npcActs = 0;
+/** 居民此刻是否站在某个 NPC 的 personReach 内（独立于实现，用位置现算；离线或在对局里不算） */
+function nearNpc(x: Who, npcId: string): boolean {
+  const r = w.mustResident(x.residentId);
+  if (r.present_since === null || r.activity_id) return false;
+  const p = positionOfResident(w, x.residentId, clock.t);
+  const n = positionOfNpc(w, npcId, clock.t);
+  return !!p && !!n && p.scene === n.scene && p.instance === n.instance && Math.hypot(p.x - n.x, p.z - n.z) <= w.params.personReach - 0.05;
+}
 let reqSeq = 0;
 const newRequestId = (round: number) => `rec-${SEED}-${round}-${++reqSeq}`;
 
@@ -137,10 +149,37 @@ function planAction(round: number): Planned {
   const actor = forced ? who.find((x) => x.residentId === forced.to_id)! : pick(who);
   const r = w.mustResident(actor.residentId);
   const requestId = newRequestId(round);
-  const kind = forced ? pick(['accept', 'accept', 'accept', 'decline']) : pick(['speak', 'speak', 'town', 'move', 'move', 'move', 'buy', 'buy', 'offer', 'offer', 'accept', 'accept', 'decline', 'cancel', 'letter', 'use', 'profile', 'invite']);
+  let kind = forced ? pick(['accept', 'accept', 'accept', 'decline']) : pick(['speak', 'speak', 'town', 'move', 'move', 'move', 'buy', 'buy', 'offer', 'offer', 'accept', 'accept', 'decline', 'cancel', 'letter', 'use', 'profile', 'invite', 'npcgo', 'npcask', 'npcask', 'npcbuy', 'npcbuy']);
   const here = r.location_id;
   const others = who.filter((o) => o !== actor);
+  // NPC：问话和经掌柜买茶要挑一个此刻真的站在 NPC 身边的居民（这样成功的次数才够多）；没有就先让某人走过去
+  if (kind === 'npcask' || kind === 'npcbuy') {
+    const npcId = kind === 'npcbuy' ? KEEPER_ID : pick([KEEPER_ID, STROLLER_ID]);
+    const near = who.filter((x) => nearNpc(x, npcId));
+    if (near.length === 0) kind = 'npcgo';
+    else {
+      const a = pick(near);
+      if (kind === 'npcbuy') {
+        const good = SHOPS.find((sh) => sh.id === 'tea_counter')!.goods[0]!;
+        const qty = 1 + rng.int(2);
+        return {
+          actor: a,
+          requestId,
+          action: { type: 'buy', shop: 'tea_counter', sku: good.sku, qty },
+          onExecuted: () => {
+            bump(good.type, qty);
+            expectedSink += good.price * qty;
+            buyRequests.push({ requestId, residentId: a.residentId, cost: good.price * qty, round });
+            npcActs++;
+          },
+        };
+      }
+      return { actor: a, requestId, action: { type: 'ask_npc', npcId, ...(chance(0.8) ? { topic: pick(['hello', 'tea', 'town', 'bench', 'books', 'nope']) } : {}) }, onExecuted: () => npcActs++ };
+    }
+  }
   switch (kind) {
+    case 'npcgo':
+      return { actor, requestId, action: { type: 'navigate', approach: pick([KEEPER_ID, STROLLER_ID]) } };
     case 'speak':
       return { actor, requestId, action: { type: 'speak', text: `第 ${round} 轮的一句话` } };
     case 'town':
@@ -150,6 +189,7 @@ function planAction(round: number): Planned {
     case 'buy': {
       const shops = SHOPS.filter((s) => s.place === here);
       const shop = shops.length ? pick(shops) : pick(SHOPS);
+      // 有掌柜的店要走到掌柜身边：这里多半被规则拒绝（too_far），成功时照常计入模型
       const good = pick(shop.goods.filter((g) => !g.onlyDuringEvent));
       const qty = 1 + rng.int(2);
       return {
@@ -160,6 +200,7 @@ function planAction(round: number): Planned {
           bump(good.type, qty);
           expectedSink += good.price * qty;
           buyRequests.push({ requestId, residentId: actor.residentId, cost: good.price * qty, round });
+          if (shop.keeper) npcActs++;
         },
       };
     }
@@ -313,6 +354,10 @@ function checkInvariants(round: number): void {
   check(round, delivered === mailEvents, () => `送达的信 ${delivered} 封，「有新信」事件 ${mailEvents} 条`);
   check(round, db.scalar('SELECT COUNT(*) FROM letters WHERE delivered_at IS NOT NULL AND delivered_at <> deliver_at') === 0, '有信件的送达时间不是应送达时间');
   check(round, db.scalar('SELECT COUNT(*) FROM letters WHERE delivered_at IS NULL AND deliver_at <= ?', clock.t) === 0, '有已经到时间却没送达的信');
+  // NPC 的回答计数：每条已执行（有回执）的 ask_npc / 经掌柜成交的 buy 恰好让对应 NPC 的计数加一；说出口的话不会比回答多（间隔内不说）
+  const said = Number(db.scalar("SELECT COALESCE(SUM(high_water), 0) FROM stream_heads WHERE stream_key LIKE 'npcsay:%'"));
+  check(round, said === npcActs, () => `NPC 回答计数 ${said}，已执行的 ask_npc / 经掌柜的购买 ${npcActs}`);
+  check(round, db.scalar("SELECT COUNT(*) FROM chat_messages WHERE sender_id LIKE 'npc:%'") <= npcActs, 'NPC 说的话比被问的次数还多');
   // 空间
   checkSpace(round);
 
@@ -381,7 +426,22 @@ function checkSpace(round: number, label = '', ww: WorldService = w, ppl: Who[] 
     const jobs = db.scalar("SELECT COUNT(*) FROM scheduled_jobs WHERE kind = 'npc_step' AND status = 'pending' AND dedupe_key = ?", `npc_step:${def.id}`);
     check(round, jobs === (def.schedule ? 1 : 0), () => `${tag}${def.name} 的待办 npc_step 应为 ${def.schedule ? 1 : 0}，实际 ${jobs}`);
   }
-  check(round, db.scalar("SELECT COUNT(*) FROM recipient_events WHERE projection LIKE '%npc:%'") + db.scalar("SELECT COUNT(*) FROM public_events WHERE projection LIKE '%npc:%'") + db.scalar("SELECT COUNT(*) FROM world_events WHERE payload LIKE '%npc:%'") === 0, `${tag}有事件或事实提到了 NPC`);
+  // 提到 NPC 编号的事件只允许两种：居民的 you_arrived / nav_stopped 里的 target，和 chat 事件的 from（NPC 在附近聊天里开口）；公开流和事实里一概不许
+  const npcMentions = db.all("SELECT type, projection FROM recipient_events WHERE projection LIKE '%npc:%'").filter((e) => {
+    const v = JSON.parse(String(e.projection)) as Record<string, any>;
+    if ((e.type === 'you_arrived' || e.type === 'nav_stopped') && v.target?.kind === 'npc') return JSON.stringify({ ...v, target: null }).includes('npc:');
+    if (e.type === 'chat' && v.from?.kind === 'npc' && v.scope === 'nearby' && NPCS.some((n) => n.id === v.from.id && n.name === v.from.name)) return JSON.stringify({ ...v, from: null }).includes('npc:');
+    return true;
+  });
+  check(round, npcMentions.length === 0, () => `${tag}有 ${npcMentions.length} 条居民事件以不允许的形状提到了 NPC：${JSON.stringify(npcMentions.slice(0, 2))}`);
+  check(round, db.scalar("SELECT COUNT(*) FROM recipient_events WHERE resident_id LIKE 'npc:%'") + db.scalar("SELECT COUNT(*) FROM public_events WHERE projection LIKE '%npc:%'") + db.scalar("SELECT COUNT(*) FROM world_events WHERE payload LIKE '%npc:%'") === 0, `${tag}有公开事件或事实提到了 NPC，或 NPC 当了事件的接收者`);
+  // NPC 的话：说话人是定义的 NPC、受众都是居民、不进 NPC 当听众、每句都出自模板；每个受众恰好一条 chat 事件
+  const npcMsgs = db.all("SELECT message_id, sender_id, body FROM chat_messages WHERE sender_id LIKE 'npc:%'");
+  check(round, db.scalar("SELECT COUNT(*) FROM chat_audience WHERE resident_id LIKE 'npc:%'") === 0, `${tag}NPC 进了听众`);
+  check(round, npcMsgs.every((m) => NPCS.some((n) => n.id === m.sender_id) && npcLineMatches(String(m.sender_id), String(m.body))), () => `${tag}有 NPC 的话对不上台词模板`);
+  const audienceRows = db.scalar("SELECT COUNT(*) FROM chat_audience a JOIN chat_messages m ON m.message_id = a.message_id WHERE m.sender_id LIKE 'npc:%'");
+  const npcChatEvents = db.scalar("SELECT COUNT(*) FROM recipient_events WHERE type = 'chat' AND projection LIKE '%\"kind\":\"npc\"%'");
+  check(round, audienceRows === npcChatEvents, () => `${tag}NPC 的话的受众行 ${audienceRows} 条，对应的 chat 事件 ${npcChatEvents} 条`);
   const pendingNav = new Set(db.all("SELECT dedupe_key FROM scheduled_jobs WHERE kind = 'nav_step' AND status = 'pending'").map((j) => String(j.dedupe_key)));
   for (const x of ppl) {
     const a = actorOf(ww, x.residentId);
@@ -916,7 +976,163 @@ function navFaultScenarios(): { name: string; checks: number }[] {
   return done;
 }
 
+// ───────────────────────── NPC 故障场景 ─────────────────────────
+
+/**
+ * ask_npc 和经掌柜的 buy 各在「提交前」「提交后」崩溃一次（还有闲逛者被搭话时延长停留的那一次）：
+ *   before_commit：重启后命令完全没发生（钱、货、库存、回答计数、NPC 的话、听众的 chat 事件、待办都原样）；同一请求号重试是全新执行，只发生一次
+ *   after_commit：重启后已经发生过一次；同一请求号重试是重放，不多扣钱、不多发货、不多一句话、不少一条待办
+ * 每个场景有两位居民：甲站在 NPC 身边发命令，乙站在甲旁边当听众。
+ */
+function npcFaultScenarios(): { name: string; checks: number }[] {
+  const done: { name: string; checks: number }[] = [];
+  let no = 0;
+  for (const action of ['ask_npc', 'buy', 'ask_stroller'] as const) {
+    for (const point of ['before_commit', 'after_commit'] as const) {
+      no++;
+      const name = `${action} ${point} 崩溃`;
+      const before = stats.checks;
+      const rd = 2000 + no;
+      const path = join(dir, `npc-scn-${no}.db`);
+      let opens3 = 0;
+      const open = (): WorldService => {
+        // 闲逛者场景：停留固定一段时间，方便把时间推到「快要出发」再被搭话
+        const ww = createWorld({ dbPath: path, registry: createRegistry({}), now: () => clock.t, rng: new SeededRng(`npcids:${SEED}:${no}:${++opens3}`), seed: `npc:${SEED}:${no}`, log: () => undefined, devLogin: true, params: { npcStayMinMs: 120_000, npcStayMaxMs: 120_000 } });
+        ww.startSync();
+        return ww;
+      };
+      let ww = open();
+      const people: Who[] = [];
+      for (let i = 0; i < 2; i++) {
+        const nm = ['甲', '乙'][i]!;
+        const p = agentPrincipal(ww, { id: `6${no}0${i}`, name: nm });
+        const out = enterWorld(ww, { principalId: p.principal_id, clientId: `mcp:npc-${no}-${i}` }, { clientKind: 'mcp', profile: { name: nm } });
+        people.push({ name: nm, principalId: p.principal_id, clientId: `mcp:npc-${no}-${i}`, residentId: out.enter.residentId });
+      }
+      const [a, b] = people as [Who, Who];
+      const auth = (x: Who) => ({ principalId: x.principalId, clientId: x.clientId });
+      let hb = clock.t;
+      const advanceTo = (t: number) => {
+        while (clock.t < t) {
+          clock.t = Math.min(t, clock.t + ww.params.navRenewEveryMs);
+          for (const x of people) {
+            const nav = whereabouts(ww, ww.mustResident(x.residentId), clock.t).navigation;
+            if (!nav) continue;
+            try {
+              renewNavigation(ww, auth(x), { navigationId: nav.navigationId, revision: nav.revision });
+            } catch (e) {
+              if (!(e instanceof WorldError)) throw e;
+            }
+          }
+          if (clock.t - hb >= 15 * SEC) {
+            hb = clock.t;
+            for (const x of people) {
+              try {
+                townHeartbeat(ww, auth(x), ww.mustResident(x.residentId).presence_epoch);
+              } catch {
+                enterWorld(ww, auth(x), { clientKind: 'mcp' });
+              }
+            }
+          }
+          ww.tick();
+        }
+      };
+      const cmd = (x: Who, act: { type: string; [k: string]: unknown }, requestId: string) => {
+        const r = ww.mustResident(x.residentId);
+        return ww.command(auth(x), { requestId, actionWindow: ww.issueActionWindow(x.residentId), expected: { contextVersion: r.context_version, controlEpoch: r.control_epoch, activityId: r.activity_id }, action: act }) as Record<string, any>;
+      };
+      const target = action === 'ask_stroller' ? STROLLER_ID : KEEPER_ID;
+      // 甲、乙都走到 NPC 身边（闲逛者此刻在岗位上，停留 120 秒后才出发）
+      for (const x of people) cmd(x, { type: 'navigate', approach: target }, `npcscn-${no}-go-${x.name}`);
+      advanceTo(clock.t + 40 * SEC);
+      const reach = (x: Who) => {
+        const p = positionOfResident(ww, x.residentId, clock.t);
+        const n = positionOfNpc(ww, target, clock.t);
+        return !!p && !!n && Math.hypot(p.x - n.x, p.z - n.z) <= ww.params.personReach;
+      };
+      check(rd, reach(a) && reach(b), `${name}：甲乙没走到 ${target} 身边`);
+      if (action === 'ask_stroller') {
+        // 推到闲逛者快要出发（还剩 3 秒）：搭话应把这次停留延到 现在 + 8 秒
+        const job0 = ww.db.get("SELECT due_at FROM scheduled_jobs WHERE dedupe_key = ? AND status = 'pending'", `npc_step:${STROLLER_ID}`)!;
+        advanceTo(Number(job0.due_at) - 3 * SEC);
+      }
+      const snap = () => ({
+        coins: Number(ww.db.scalar("SELECT balance FROM accounts WHERE resident_id = ?", a.residentId)),
+        tea: Number(ww.db.scalar("SELECT COALESCE(SUM(quantity), 0) FROM items WHERE owner_id = ? AND type = 'tea_leaves'", a.residentId)),
+        stock: ww.db.get("SELECT stock FROM shop_stock WHERE shop_id = 'tea_counter' AND sku = 'tea_leaves'")?.stock ?? null,
+        said: Number(ww.db.scalar("SELECT COALESCE(SUM(high_water), 0) FROM stream_heads WHERE stream_key LIKE 'npcsay:%'")),
+        msgs: Number(ww.db.scalar("SELECT COUNT(*) FROM chat_messages WHERE sender_id LIKE 'npc:%'")),
+        heardB: Number(ww.db.scalar("SELECT COUNT(*) FROM recipient_events WHERE resident_id = ? AND type = 'chat' AND projection LIKE '%\"kind\":\"npc\"%'", b.residentId)),
+        heardA: Number(ww.db.scalar("SELECT COUNT(*) FROM recipient_events WHERE resident_id = ? AND type = 'chat' AND projection LIKE '%\"kind\":\"npc\"%'", a.residentId)),
+        job: JSON.stringify(ww.db.all("SELECT dedupe_key, due_at, payload FROM scheduled_jobs WHERE kind = 'npc_step' AND status = 'pending' ORDER BY dedupe_key")),
+        pending: Number(ww.db.scalar("SELECT COUNT(*) FROM scheduled_jobs WHERE kind = 'npc_step' AND status = 'pending'")),
+      });
+      const s0 = snap();
+      const act = action === 'buy' ? { type: 'buy', shop: 'tea_counter', sku: 'tea_leaves', qty: 1 } : { type: 'ask_npc', npcId: target, topic: 'hello' };
+      const requestId = `npcscn-${no}-req`;
+      let fired = false;
+      ww.db.failpoint = (pt) => {
+        if (!fired && pt === point) {
+          fired = true;
+          throw new Error(`注入的崩溃：${pt}`);
+        }
+      };
+      let threw = false;
+      try {
+        cmd(a, act, requestId);
+      } catch {
+        threw = true;
+      }
+      ww.db.failpoint = null;
+      check(rd, fired && threw, `${name}：注入点没有触发`);
+      // 进程被杀，重启
+      ww.db.db.close();
+      clock.t += 500; // 很短的停机：不让闲逛者的停留到期
+      ww = open();
+      for (const x of people) enterWorld(ww, auth(x), { clientKind: 'mcp' });
+      hb = clock.t;
+      const s1 = snap();
+      if (point === 'before_commit') {
+        check(rd, JSON.stringify(s1) === JSON.stringify(s0), () => `${name}：提交前崩溃后状态变了：${JSON.stringify(s0)} → ${JSON.stringify(s1)}`);
+        check(rd, !ww.db.get('SELECT 1 AS x FROM request_receipts WHERE resident_id = ? AND request_id = ?', a.residentId, requestId), `${name}：提交前崩溃后留着回执`);
+      } else {
+        const bought = action === 'buy' ? 1 : 0;
+        check(rd, s1.coins === s0.coins - 2 * bought && s1.tea === s0.tea + bought && s1.stock === (action === 'buy' ? 29 : s0.stock), () => `${name}：提交后崩溃的账货不对：${JSON.stringify(s0)} → ${JSON.stringify(s1)}`);
+        check(rd, s1.said === s0.said + 1 && s1.msgs === s0.msgs + 1 && s1.heardB === s0.heardB + 1 && s1.heardA === s0.heardA + 1, () => `${name}：提交后崩溃的回答 / 话 / 事件不对：${JSON.stringify(s0)} → ${JSON.stringify(s1)}`);
+        check(rd, s1.pending === s0.pending, `${name}：提交后崩溃后 npc_step 待办数变了`);
+      }
+      // 用原请求号重试：把心跳补上（重启后大家在场），时间不动
+      let replayed: boolean | null = null;
+      try {
+        replayed = cmd(a, act, requestId).replayed === true;
+      } catch (e) {
+        if (!(e instanceof WorldError)) throw e;
+        check(rd, false, `${name}：重试被拒绝：${e.code} ${e.message}`);
+      }
+      check(rd, point === 'after_commit' ? replayed === true : replayed === false, () => `${name}：重试${replayed ? '是重放' : '是全新执行'}，与预期相反`);
+      const s2 = snap();
+      const bought2 = action === 'buy' ? 1 : 0;
+      // 不管哪种崩溃，重试之后都恰好发生了一次：多扣钱、多发货、多一句话、少一条待办都会在这里抓到
+      check(rd, s2.coins === s0.coins - 2 * bought2 && s2.tea === s0.tea + bought2 && (action !== 'buy' || s2.stock === 29), () => `${name}：重试后账货不是恰好一次：${JSON.stringify(s0)} → ${JSON.stringify(s2)}`);
+      check(rd, s2.said === s0.said + 1 && s2.msgs === s0.msgs + 1 && s2.heardB === s0.heardB + 1 && s2.heardA === s0.heardA + 1, () => `${name}：重试后回答 / 话 / 事件不是恰好一次：${JSON.stringify(s0)} → ${JSON.stringify(s2)}`);
+      check(rd, s2.pending === s0.pending, `${name}：重试后 npc_step 待办数变了`);
+      if (action === 'ask_stroller') {
+        const j = ww.db.get("SELECT due_at, payload FROM scheduled_jobs WHERE dedupe_key = ? AND status = 'pending'", `npc_step:${STROLLER_ID}`)!;
+        const p = JSON.parse(String(j.payload)) as { phase?: string; extendedMs?: number };
+        // 快要出发时被搭话：停留被延到 搭话时刻 + npcTalkHoldMs，只延长这一次
+        const askedAt = clock.t;
+        check(rd, p.phase === 'stay' && Number(j.due_at) >= askedAt + ww.params.npcTalkHoldMs - 1000 && Number(j.due_at) <= askedAt + ww.params.npcTalkHoldMs + 6 * SEC && (p.extendedMs ?? 0) > 0 && (p.extendedMs ?? 0) <= ww.params.npcTalkHoldMaxMs, () => `${name}：搭话后停留没有按规则延长：${JSON.stringify(p)} due=${j.due_at} now=${askedAt}`);
+      }
+      checkSpace(rd, name, ww, people);
+      ww.close();
+      done.push({ name, checks: stats.checks - before });
+    }
+  }
+  return done;
+}
+
 const navScenarioResults = navFaultScenarios();
+const npcScenarioResults = npcFaultScenarios();
 
 const secs = ((performance.now() - started) / 1000).toFixed(1);
 console.log('');
@@ -930,6 +1146,7 @@ console.log(`重放（replayed）：${stats.replays} 次`);
 console.log(`不变量检查：${stats.checks} 次`);
 console.log(`导航：随机轮里 navigate ${executedByType.get('navigate') ?? 0} 次，走路期间续租 ${navStats.renewed} 次（见到在走的人次 ${navStats.walkersSeen}）`);
 console.log(`导航故障场景：${navScenarioResults.map((r) => `${r.name} ${r.checks} 项`).join('；')}`);
+console.log(`NPC 故障场景：${npcScenarioResults.map((r) => `${r.name} ${r.checks} 项`).join('；')}；随机轮里 ask_npc ${executedByType.get('ask_npc') ?? 0} 次，经掌柜的购买与问话合计 ${npcActs} 次`);
 console.log(`耗时：${secs} 秒`);
 if (violations.length) {
   console.log(`\n发现 ${violations.length} 处违例：`);

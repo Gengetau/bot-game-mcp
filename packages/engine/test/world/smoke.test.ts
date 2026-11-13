@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { publicView } from '../../src/world/views.js';
-import { makeTown } from './helpers.js';
+import { KEEPER, makeTown } from './helpers.js';
 import { checkInvariants } from './invariants.js';
 
 describe('栖灯镇：主流程冒烟', () => {
@@ -17,7 +17,7 @@ describe('栖灯镇：主流程冒烟', () => {
     b.act('speak', { text: '你好' });
     expect(b.view().here?.chat.map((c) => c.text)).toEqual(['你好呀', '你好']);
 
-    a.go('tea_house');
+    a.go(KEEPER);
     b.go('tea_house');
     expect(a.view().here?.space).toBe('tea_house');
     a.act('buy', { shop: 'tea_counter', sku: 'tea_leaves', qty: 1 });
