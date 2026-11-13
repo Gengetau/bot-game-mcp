@@ -10,7 +10,7 @@
  *   离线、控制权被接管、控制连接断开，都立即停步。服务器重启后停在最后一个耐久检查点。
  * - 私宅是独立实例：进出只经过公共住宅接入点的会馆门口；门口再查一次权限。别人只看到有人走到会馆门口。
  */
-import { homeId, homeOwner, isHome, placeDef } from './content.js';
+import { homeId, homeOwner, isHome, npcDef, placeDef, type NpcDef, type NpcPose, type NpcRole } from './content.js';
 import { parseJson, type Row } from './db.js';
 import { WorldError, precondition } from './errors.js';
 import { checkHomeAccess, spaceName, takeToken } from './life.js';
@@ -102,8 +102,15 @@ function hydrate(row: Row): ActorRow {
   return { ...(row as ActorRow), nav: parseJson<NavState | null>(row.nav_json, null) };
 }
 
+/** 居民的角色行。只认 kind='resident'：拿 NPC 的编号来问，等于没有这一行（居民路径碰不到 NPC）。 */
 export function actorOf(w: WorldService, residentId: string): ActorRow | undefined {
-  const row = w.db.get('SELECT * FROM world_actors WHERE actor_id = ? AND world_id = ?', residentId, w.worldId);
+  const row = w.db.get("SELECT * FROM world_actors WHERE actor_id = ? AND world_id = ? AND kind = 'resident'", residentId, w.worldId);
+  return row ? hydrate(row) : undefined;
+}
+
+/** NPC 的角色行（kind='npc'）。 */
+export function npcActorOf(w: WorldService, npcId: string): ActorRow | undefined {
+  const row = w.db.get("SELECT * FROM world_actors WHERE actor_id = ? AND world_id = ? AND kind = 'npc'", npcId, w.worldId);
   return row ? hydrate(row) : undefined;
 }
 
@@ -233,7 +240,7 @@ function changeSpace(w: WorldService, residentId: string, to: string, at: number
 /** 站定之后核对一次：区域标签必须等于脚下的区域（防止毫秒取整让标签和坐标差一格）。 */
 function reconcileLabel(w: WorldService, a: ActorRow, at: number): void {
   const scene = w.map.scenes.get(a.scene_id);
-  if (!scene || scene.instanced || !a.resident_id) return;
+  if (!scene || scene.instanced || a.kind === 'npc' || !a.resident_id) return;
   const zone = zoneAt(scene, a.x, a.z).id;
   if (zone !== w.mustResident(a.resident_id).location_id) changeSpace(w, a.resident_id, zone, at);
 }
@@ -302,6 +309,7 @@ function noteArrival(w: WorldService, residentId: string, fromSpace: string, at:
  * reroute 不记「到过某处」、不发通知：紧接着就会装上新的路线。
  */
 function halt(w: WorldService, a: ActorRow, at: number, reason: StopReason): ActorRow {
+  if (a.kind === 'npc') return haltNpc(w, a, at);
   const nav = a.nav;
   if (!nav) return a;
   const s = positionAt(motionOf(nav), at);
@@ -328,6 +336,7 @@ function halt(w: WorldService, a: ActorRow, at: number, reason: StopReason): Act
 
 /** 走完一段：穿过进出口、接着走下一段，或者真的到了。 */
 function finishLeg(w: WorldService, a: ActorRow, at: number): ActorRow {
+  if (a.kind === 'npc') return finishNpcNav(w, a, at);
   const nav = a.nav!;
   const rid = a.resident_id!;
   const L = layout(w);
@@ -389,6 +398,7 @@ function finishLeg(w: WorldService, a: ActorRow, at: number): ActorRow {
  * 结算用的是事件各自应该发生的时刻（保留应到达时间），不是处理的时刻。
  */
 function settle(w: WorldService, a: ActorRow, upTo: number): ActorRow {
+  if (a.kind === 'npc') return settleNpc(w, a, upTo);
   for (let guard = 0; a.nav && guard < 64; guard++) {
     const nav = a.nav;
     const limit = Math.min(upTo, nav.leaseUntil);
@@ -425,6 +435,151 @@ export function stopNav(w: WorldService, residentId: string, at: number, reason:
   if (!a.nav) return true;
   halt(w, a, at, reason);
   return true;
+}
+
+// ───────────────────────── NPC 的放置与走动 ─────────────────────────
+//
+// NPC 是 world_actors 里 kind='npc'、resident_id 为空的行。位置仍然只在这里写，但它和居民是两条路径：
+// 没有导航控制租约（路线的截止时刻就是到达时刻）、没有区域标签、不进私宅、不触发任何离开 / 到达钩子、不发任何事件。
+// 日程（去哪儿、停多久、什么姿态）在 npc.ts；这里只管放置、装路线、结算到达，以及让同场景的订阅者拿到新快照。
+
+/** NPC 日程任务的去重键（每名会走动的 NPC 同一时刻至多一条待办）。 */
+export const npcJobKey = (npcId: string): string => `npc_step:${npcId}`;
+
+/** 一个地图锚点在公共场景里的落脚点；锚点不存在（地图没有它）就落到出生点。 */
+export function anchorSpot(w: WorldService, anchorId: string): { x: number; z: number; heading: number } {
+  const town = layout(w).town;
+  const a = town.anchors.get(anchorId) ?? town.anchors.get(w.map.spawn.anchor)!;
+  return { x: a.x, z: a.z, heading: a.facing ?? 0 };
+}
+
+/** 幂等地种下一名 NPC：角色行（公共场景、站在岗位上）和姿态行。已有的不动。 */
+export function seedNpc(w: WorldService, def: NpcDef, at: number): void {
+  if (!npcActorOf(w, def.id)) {
+    const spot = anchorSpot(w, def.post.anchor);
+    w.db.run(
+      `INSERT INTO world_actors(actor_id, world_id, kind, resident_id, scene_id, instance_id, x, z, heading, anchor_at, map_version)
+       VALUES (?,?,'npc',NULL,?,'',?,?,?,?,?)`,
+      def.id,
+      w.worldId,
+      layout(w).town.id,
+      spot.x,
+      spot.z,
+      spot.heading,
+      at,
+      w.map.mapVersion,
+    );
+  }
+  w.db.run('INSERT OR IGNORE INTO npc_state(actor_id, pose, stop_anchor) VALUES (?,?,?)', def.id, def.post.pose, def.post.anchor);
+}
+
+export function npcStateOf(w: WorldService, npcId: string): { pose: NpcPose; stopAnchor: string } | undefined {
+  const row = w.db.get('SELECT pose, stop_anchor FROM npc_state WHERE actor_id = ?', npcId);
+  return row ? { pose: row.pose as NpcPose, stopAnchor: String(row.stop_anchor) } : undefined;
+}
+
+/** 改姿态和当前（或正在前往的）站点；姿态变了通知同场景的人。 */
+export function setNpcState(w: WorldService, npcId: string, pose: NpcPose, stopAnchor: string): void {
+  const before = npcStateOf(w, npcId);
+  w.db.run('UPDATE npc_state SET pose = ?, stop_anchor = ? WHERE actor_id = ?', pose, stopAnchor, npcId);
+  const a = npcActorOf(w, npcId);
+  if (a && before?.pose !== pose) w.bumpSpace(sceneKeyOf(a));
+}
+
+/** 直接把 NPC 放到公共场景的某点（站定，没有路线）。导航编号照样加一，让旧路线对不上。 */
+export function placeNpc(w: WorldService, npcId: string, spot: { x: number; z: number; heading: number }, at: number): ActorRow | undefined {
+  const a = npcActorOf(w, npcId);
+  if (!a) return undefined;
+  a.scene_id = layout(w).town.id;
+  a.instance_id = '';
+  a.x = spot.x;
+  a.z = spot.z;
+  a.heading = spot.heading;
+  a.anchor_at = at;
+  a.nav = null;
+  a.nav_revision += 1;
+  saveActor(w, a);
+  w.bumpSpace(sceneKeyOf(a));
+  return npcActorOf(w, npcId);
+}
+
+/**
+ * 让 NPC 从现在的位置走向公共场景里的一点。路线的截止（leaseUntil）就是到达时刻，没有人需要也没有人能续。
+ * 走不到（没有路）返回 null；已经在那里返回 { arriveAt: at }（调用方当作到了）。
+ */
+export function navigateNpc(w: WorldService, npcId: string, goal: { x: number; z: number }, at: number, target: NavTarget): { arriveAt: number; navigationId: string; revision: number } | null {
+  const a = npcActorOf(w, npcId);
+  if (!a || a.nav) return null;
+  const town = layout(w).town;
+  if (a.scene_id !== town.id) return null;
+  const path = findPath(town, { x: a.x, z: a.z }, goal);
+  if (!path) return null;
+  if (path.length <= 0.01 || path.points.length < 2) return { arriveAt: at, navigationId: '', revision: a.nav_revision };
+  const speed = w.map.speed * w.params.npcSpeedFactor;
+  const arriveAt = Math.ceil(arrivalAt({ points: path.points, speed, startedAt: at }));
+  a.nav_revision += 1;
+  a.anchor_at = at;
+  a.nav = {
+    // 编号由 NPC 编号和导航版本决定：不碰 w.rng（居民的随机序列不受 NPC 走动影响）
+    navigationId: `nav_${a.actor_id.replace(/^npc:/, '')}_${a.nav_revision}`,
+    revision: a.nav_revision,
+    points: path.points,
+    speed,
+    startedAt: at,
+    leaseUntil: arriveAt,
+    checkpointAt: at,
+    crossings: [],
+    target,
+    fromSpace: '',
+    after: [],
+  };
+  saveActor(w, a);
+  w.bumpSpace(sceneKeyOf(a));
+  return { arriveAt, navigationId: a.nav.navigationId, revision: a.nav.revision };
+}
+
+/** 走完了：停在折线的终点。 */
+function finishNpcNav(w: WorldService, a: ActorRow, at: number): ActorRow {
+  const nav = a.nav;
+  if (!nav) return a;
+  const end = nav.points[nav.points.length - 1]!;
+  a.heading = positionAt(motionOf(nav), at).heading;
+  a.x = end.x;
+  a.z = end.z;
+  a.anchor_at = Math.min(at, nav.leaseUntil);
+  a.nav = null;
+  a.nav_revision += 1;
+  saveActor(w, a);
+  w.bumpSpace(sceneKeyOf(a));
+  return npcActorOf(w, a.actor_id)!;
+}
+
+/** 在 at 这一刻停下（站在折线上的当前点）。 */
+function haltNpc(w: WorldService, a: ActorRow, at: number): ActorRow {
+  const nav = a.nav;
+  if (!nav) return a;
+  const s = positionAt(motionOf(nav), at);
+  a.x = s.x;
+  a.z = s.z;
+  a.heading = s.heading;
+  a.anchor_at = Math.min(at, nav.leaseUntil);
+  a.nav = null;
+  a.nav_revision += 1;
+  saveActor(w, a);
+  w.bumpSpace(sceneKeyOf(a));
+  return npcActorOf(w, a.actor_id)!;
+}
+
+/** NPC 没有区域变化可结算：只看到没到达。 */
+function settleNpc(w: WorldService, a: ActorRow, upTo: number): ActorRow {
+  if (a.nav && legArrival(a.nav) <= upTo) return finishNpcNav(w, a, legArrival(a.nav));
+  return a;
+}
+
+/** NPC 的此刻位置（按折线和时间现算）；没有这名 NPC 返回 null。 */
+export function positionOfNpc(w: WorldService, npcId: string, now: number): Pos | null {
+  const a = npcActorOf(w, npcId);
+  return a ? posOf(a, now) : null;
 }
 
 // ───────────────────────── 规划路线 ─────────────────────────
@@ -541,6 +696,7 @@ function plan(w: WorldService, r: ResidentRow, a: ActorRow, to: unknown, now: nu
   const alias = w.map.aliases[id];
   const object = L.town.interactables.get(id);
   const other = id && id !== r.resident_id ? w.resident(id) : undefined;
+  const npc = id && !alias && !object && !other && npcDef(id) ? npcActorOf(w, id) : undefined;
   if (alias && alias.scene === L.town.id) {
     const anchor = L.town.anchors.get(alias.anchor)!;
     const zone = zoneAt(L.town, anchor.x, anchor.z).id;
@@ -555,6 +711,13 @@ function plan(w: WorldService, r: ResidentRow, a: ActorRow, to: unknown, now: nu
     goal = reachable;
     target = { kind: 'object', id, name: object.name };
     already = !inHome && distance(from, object) <= (object.reach ?? w.map.interactDistance);
+  } else if (npc) {
+    // NPC 编号是公开的：走到它此刻位置旁边（走动中的按出发这一刻算），和走到居民身边同一套停靠距离
+    if (npc.scene_id !== a.scene_id || npc.instance_id !== a.instance_id) throw precondition('这个人不在你看得见的地方。', 'not_here');
+    const p = posOf(npc, now);
+    target = { kind: 'npc', id: npc.actor_id, name: npcDef(npc.actor_id)!.name };
+    if (distance(from, p) <= APPROACH_GAP + 0.25) return { points: [from, from], target, after: [], already: 'near' };
+    return { points: trimEnd(pathOrThrow(here, from, { x: p.x, z: p.z }), APPROACH_GAP), target, after: [] };
   } else if (other) {
     const oa = actorOf(w, other.resident_id);
     if (!oa || other.present_since === null || oa.scene_id !== a.scene_id || oa.instance_id !== a.instance_id) throw precondition('这个人不在你看得见的地方。', 'not_here');
@@ -664,6 +827,19 @@ export interface ActorView {
   nav?: { id: string; revision: number; points: Vec2[]; speed: number; startedAt: number; until: number };
 }
 
+export interface NpcView {
+  id: string;
+  name: string;
+  role: NpcRole;
+  /** 站着、坐着、站着看书；走路时是 stand */
+  pose: NpcPose;
+  x: number;
+  z: number;
+  heading: number;
+  /** 正在走：形状和 ActorView.nav 一样，客户端按它插值；NPC 没有控制租约，until 就是到达时刻 */
+  nav?: { id: string; revision: number; points: Vec2[]; speed: number; startedAt: number; until: number };
+}
+
 export interface SceneView {
   protocol: 1;
   mapVersion: string;
@@ -674,6 +850,8 @@ export interface SceneView {
   serverTime: number;
   self: string;
   actors: ActorView[];
+  /** 公共场景里的 NPC（单独一个数组，不混进 actors）。私宅实例的快照没有这个字段。 */
+  npcs?: NpcView[];
 }
 
 /**
@@ -700,12 +878,37 @@ export function sceneView(w: WorldService, viewer: ResidentRow, now: number): Sc
     const p = posOf(a, now);
     const view: ActorView = { id: a.actor_id, name: String(row.r_name), kind: row.r_kind as 'human' | 'agent', x: round3(p.x), z: round3(p.z), heading: round3(p.heading) };
     if (row.r_activity) view.busy = 'game';
-    if (a.nav && p.moving) {
-      view.nav = { id: a.nav.navigationId, revision: a.nav.revision, points: a.nav.points.map((q) => ({ x: round3(q.x), z: round3(q.z) })), speed: a.nav.speed, startedAt: a.nav.startedAt, until: Math.min(a.nav.leaseUntil, legArrival(a.nav)) };
-    }
+    if (a.nav && p.moving) view.nav = navShape(a.nav);
     return view;
   });
-  return { protocol: 1, mapVersion: w.map.mapVersion, checksum: w.map.checksum, scene: sceneId, space: viewer.location_id, serverTime: now, self: viewer.resident_id, actors };
+  const view: SceneView = { protocol: 1, mapVersion: w.map.mapVersion, checksum: w.map.checksum, scene: sceneId, space: viewer.location_id, serverTime: now, self: viewer.resident_id, actors };
+  if (instanceId === '' && !w.map.scenes.get(sceneId)?.instanced) view.npcs = npcViews(w, sceneId, now);
+  return view;
+}
+
+function navShape(nav: NavState): NonNullable<ActorView['nav']> {
+  return { id: nav.navigationId, revision: nav.revision, points: nav.points.map((q) => ({ x: round3(q.x), z: round3(q.z) })), speed: nav.speed, startedAt: nav.startedAt, until: Math.min(nav.leaseUntil, legArrival(nav)) };
+}
+
+/** 公共场景里的 NPC。NPC 的存在和位置是公开的（和公共地点一样），不依赖看的人在不在场。 */
+function npcViews(w: WorldService, sceneId: string, now: number): NpcView[] {
+  const rows = w.db.all(
+    `SELECT a.*, s.pose AS s_pose FROM world_actors a JOIN npc_state s ON s.actor_id = a.actor_id
+     WHERE a.world_id = ? AND a.kind = 'npc' AND a.scene_id = ? AND a.instance_id = '' ORDER BY a.actor_id`,
+    w.worldId,
+    sceneId,
+  );
+  const out: NpcView[] = [];
+  for (const row of rows) {
+    const def = npcDef(String(row.actor_id));
+    if (!def) continue;
+    const a = hydrate(row);
+    const p = posOf(a, now);
+    const v: NpcView = { id: def.id, name: def.name, role: def.role, pose: p.moving ? 'stand' : (row.s_pose as NpcPose), x: round3(p.x), z: round3(p.z), heading: round3(p.heading) };
+    if (a.nav && p.moving) v.nav = navShape(a.nav);
+    out.push(v);
+  }
+  return out;
 }
 
 /**
@@ -1041,12 +1244,40 @@ function settleLegacyMoves(w: WorldService, cutoff: number): void {
   }
 }
 
+/** 地图换了版本之后的 NPC：路线作废；位置在新地图上不合法（或不在公共场景）就挪回岗位锚点，姿态跟着回到岗位。 */
+function revalidateNpc(w: WorldService, a: ActorRow, now: number): void {
+  const def = npcDef(a.actor_id);
+  const town = layout(w).town;
+  const spot = a.scene_id === town.id && a.instance_id === '' ? nearestWalkable(town, { x: a.x, z: a.z }, 0) : null;
+  a.nav = null;
+  a.nav_revision += 1;
+  a.map_version = w.map.mapVersion;
+  if (!spot && def) {
+    const post = anchorSpot(w, def.post.anchor);
+    a.scene_id = town.id;
+    a.instance_id = '';
+    a.x = post.x;
+    a.z = post.z;
+    a.heading = post.heading;
+    a.anchor_at = now;
+    w.db.run('UPDATE npc_state SET pose = ?, stop_anchor = ? WHERE actor_id = ?', def.post.pose, def.post.anchor, a.actor_id);
+    // 日程任务作废：npc.ts 的恢复钩子随后按岗位重新安排
+    w.cancelJob(npcJobKey(a.actor_id));
+  }
+  saveActor(w, a);
+  w.bumpSpace(sceneKeyOf(a));
+}
+
 /** 地图换了版本：位置在新地图上不合法的人，挪到所在区域的落脚点；区域划分变了的，标签跟着脚下走。不拿新地图去猜旧路线。 */
 function revalidatePositions(w: WorldService, now: number): void {
   const stale = w.db.all('SELECT * FROM world_actors WHERE world_id = ? AND map_version <> ?', w.worldId, w.map.mapVersion).map(hydrate);
   for (const a of stale) {
     const scene = w.map.scenes.get(a.scene_id);
     const r = a.resident_id ? w.resident(a.resident_id) : undefined;
+    if (a.kind === 'npc') {
+      revalidateNpc(w, a, now);
+      continue;
+    }
     const ownerOk = !scene?.instanced || Boolean(w.resident(a.instance_id));
     const spot = scene && ownerOk ? nearestWalkable(scene, { x: a.x, z: a.z }, 0) : null;
     a.nav = null;

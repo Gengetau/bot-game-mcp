@@ -85,6 +85,8 @@ export type JobHandler = (payload: Record<string, any>, job: JobRow, now: number
 /** 定时任务的固定优先级：同一时刻先处理到达与失效，再处理别的。数字小的先执行。 */
 export const JOB_PRIORITY: Record<string, number> = {
   nav_step: 1,
+  // NPC 的日程：和居民的到达同级，同一时刻先于别的事务
+  npc_step: 1,
   // 旧版的到达任务：v3 迁移时已全部作废，留着优先级只为读旧库
   move_arrive: 1,
   grant_expire: 2,
