@@ -180,7 +180,8 @@ describe('ask_npc', () => {
     expect(a.row().location_id).toBe(`home:${a.residentId}`);
     expect(err(a.fail('ask_npc', { npcId: KEEPER }))).toBe('precondition_failed/not_here');
     expect(err(a.fail('ask_npc', { npcId: STROLLER }))).toBe('precondition_failed/not_here');
-    // 回到镇上，再走到掌柜身边又可以了
+    // 回到镇上（走出家门），再走到掌柜身边又可以了
+    a.go('plaza');
     a.go(KEEPER);
     expect(a.act('ask_npc', { npcId: KEEPER }).status).toBe('completed');
   });
@@ -467,39 +468,43 @@ describe('闲逛者被搭话：别转身就走', () => {
   it('快要出发时被问：出发时刻被推后；它没有被钉死——连续搭话到上限后照常出发，期间待办始终恰好一条', () => {
     const t = makeTown({ params: STILL });
     const a = t.join('阿灯');
+    const b = t.join('小岚');
     a.go(STROLLER);
+    b.go(STROLLER);
     const base = job(t).due;
     const hold = t.w.params.npcTalkHoldMs;
     const max = t.w.params.npcTalkHoldMaxMs;
     // 推到快要出发（还剩 2 秒）
-    t.advanceAlive(base - 2_000 - t.clock.t, [a], 2_000);
+    t.advanceAlive(base - 2_000 - t.clock.t, [a, b], 2_000);
     expect(job(t).due).toBe(base);
     a.act('ask_npc', { npcId: STROLLER });
     const first = job(t);
     expect(first.due).toBe(t.clock.t + hold);
     expect(first.due).toBeGreaterThan(base);
     expect(first.payload.extendedMs).toBe(first.due - base);
-    // 持续搭话：每次都在快要出发时再问，直到到上限
+    // 持续搭话：每次都只推到「到期前 1 秒」（不越过到期），在那时问一次；两个人轮流问，避开每人的令牌桶
     let guard = 0;
-    while (job(t).due < base + max && guard++ < 40) {
-      t.advanceAlive(job(t).due - 1_000 - t.clock.t, [a], 1_000);
+    let rounds = 0;
+    while ((job(t).payload.extendedMs ?? 0) < max && guard++ < 40) {
+      const before = job(t);
+      const wait = before.due - 1_000 - t.clock.t;
+      if (wait > 0) t.advanceAlive(wait, [a, b], 1_000);
+      expect(t.clock.t).toBeLessThan(before.due);
       expect(positionOfNpc(t.w, STROLLER, t.clock.t)!.moving).toBe(false); // 还没走
-      t.advance(3_000 - 2_000 + 1_000); // 经过一点冷却，避免命中限流
-      a.heartbeat();
-      if (t.clock.t >= job(t).due) break;
-      a.act('ask_npc', { npcId: STROLLER });
+      (rounds++ % 2 === 0 ? a : b).act('ask_npc', { npcId: STROLLER });
+      expect(job(t).due).toBeGreaterThan(before.due); // 每次都真的延长了
     }
-    expect(job(t).due).toBeLessThanOrEqual(base + max);
-    expect(job(t).payload.extendedMs).toBeLessThanOrEqual(max);
-    // 上限之后不再延长：再问一次，到期时间不变，到期后照常出发
-    const capped = job(t).due;
-    if (t.clock.t < capped - 1_000) {
-      t.advanceAlive(capped - 500 - t.clock.t, [a], 500);
-      a.act('ask_npc', { npcId: STROLLER });
-      expect(job(t).due).toBe(Math.min(capped, job(t).due));
-    }
+    expect(rounds).toBeGreaterThanOrEqual(Math.floor(max / hold)); // 真的连续问到了上限
+    const capped = job(t);
+    expect(capped.payload.extendedMs).toBe(max);
+    expect(capped.due).toBe(base + max);
+    // 上限之后不再延长：到期前 1 秒再问一次，到期时间与已延长量都不变
+    t.advanceAlive(capped.due - 1_000 - t.clock.t, [a, b], 1_000);
+    expect(positionOfNpc(t.w, STROLLER, t.clock.t)!.moving).toBe(false);
+    a.act('ask_npc', { npcId: STROLLER });
+    expect(job(t)).toEqual(capped);
     const before = t.w.db.get('SELECT nav_revision FROM world_actors WHERE actor_id = ?', STROLLER)!.nav_revision as number;
-    t.advanceAlive(capped + 1_000 - t.clock.t, [a], 1_000);
+    t.advanceAlive(capped.due + 1_000 - t.clock.t, [a, b], 1_000);
     expect(positionOfNpc(t.w, STROLLER, t.clock.t)!.moving).toBe(true);
     expect(t.w.db.get('SELECT nav_revision FROM world_actors WHERE actor_id = ?', STROLLER)!.nav_revision as number).toBeGreaterThan(before);
     expect(pendingJobs(t)).toHaveLength(1);

@@ -175,6 +175,8 @@ class Sim {
   restartPlan: { at: number; downtime: number; clean: boolean; prefer: boolean; postponed: number }[] = [];
   purchases = { book: 0, planter_box: 0, stove_kit: 0 };
   readonly buyPerDay = new Map<string, number>();
+  /** 「等到闲逛者快要出发再搭话」的居民：居民编号 -> NPC 编号。下一次决策直接去问（覆盖「延长停留」不靠随机碰上最后几秒） */
+  private readonly lingerAsk = new Map<string, string>();
   readonly actionCount = new Map<string, number>();
   readonly internal: { type: string; fields: unknown; error: string; stack: string }[] = [];
   internalCount = 0;
@@ -1237,6 +1239,12 @@ class Sim {
     intents.push(['goal', 0.15]);
     intents.push(['profile', 0.1]);
     intents.push(['wander', space === 'plaza' ? 5 : 3]);
+    const ling = this.lingerAsk.get(v.me.id);
+    if (ling) {
+      this.lingerAsk.delete(v.me.id);
+      const d = this.intent(ag, conn, v, 'npc', { lm, openEvent: openEvent ?? eventSoon, residentsHere, atHome, space }, ling);
+      if (d !== null) return d;
+    }
     for (let attempt = 0; attempt < 5; attempt++) {
       const intent = rnd.weighted(intents);
       if (!intent) break;
@@ -1373,7 +1381,7 @@ class Sim {
     return rnd.pick(['plaza', 'tea_house', 'bookshop', 'kitchen', 'garden', 'arcade', 'residential', 'home'].filter((d) => d !== space && !(d === 'home' && atHome)));
   }
 
-  private intent(ag: Ag, conn: Conn, v: MeView, intent: string, c: { lm: number; openEvent: MeView['events'][number] | undefined; residentsHere: NonNullable<MeView['here']>['residents']; atHome: boolean; space: string }): number | null {
+  private intent(ag: Ag, conn: Conn, v: MeView, intent: string, c: { lm: number; openEvent: MeView['events'][number] | undefined; residentsHere: NonNullable<MeView['here']>['residents']; atHome: boolean; space: string }, forceNpc?: string): number | null {
     const rnd = ag.rnd;
     const now = this.clock.t;
     const here = v.here;
@@ -1444,12 +1452,19 @@ class Sim {
         if (npcs.length === 0) return null;
         // 有钱就偏向掌柜（买茶），否则找闲逛者搭话
         const keeper = npcs.find((n) => n.shop);
-        const pick = keeper && inv.coins.available >= 2 && rnd.chance(0.55) ? keeper : rnd.pick(npcs);
+        const forced = forceNpc ? npcs.find((n) => n.id === forceNpc) : undefined;
+        const pick = forced ?? (keeper && inv.coins.available >= 2 && rnd.chance(0.55) ? keeper : rnd.pick(npcs));
         if (!pick.near) {
           this.bump('npc_walk');
           return this.moveTo(ag, conn, pick.id, 'approach');
         }
         const stay = pick.shop ? null : this.npcStay(pick.id);
+        // 有的居民会等闲逛者快要出发再搭话（停留任务的到期时间是公开的程序状态，这里读它只是模拟居民的「看时间」）：
+        // 先等到离出发只剩 3 秒，下一次决策直接去问，这样「被搭话延长停留」每天都稳定发生，不靠随机碰上最后几秒
+        if (!forced && stay && !pick.shop && stay.due - now > this.w.params.npcTalkHoldMs + 4000 && rnd.chance(0.5)) {
+          this.lingerAsk.set(me, pick.id);
+          return stay.due - now - 3000;
+        }
         if (pick.shop && inv.coins.available >= 2 && rnd.chance(0.6)) {
           const o = this.exec(ag, conn, 'buy', { shop: pick.shop, sku: 'tea_leaves', qty: 1 });
           if (o.ok) {
