@@ -451,9 +451,10 @@ export default async function run(h) {
     await shot(B.page, '60-mobile-card');
     // 点卡空白处不穿透成点地走路
     const nav0 = apiCount(B, 'navigate');
-    const pt = { x: c.rect.left + 6, y: c.rect.top + 6 };
+    const cNow = await peopleCard(B.page); // 开卡之后资料会补全、卡片高度会变：用此刻的矩形
+    const pt = { x: cNow.rect.left + 10, y: cNow.rect.top + 10 };
     const top = await hitTest(B.page, pt.x, pt.y);
-    check(await B.page.evaluate(([x, y]) => !!document.elementFromPoint(x, y)?.closest('#peopleCard'), [pt.x, pt.y]), `点位应落在卡片上：${JSON.stringify(top)}`);
+    check(await B.page.evaluate(([x, y]) => !!document.elementFromPoint(x, y)?.closest('#peopleCard'), [pt.x, pt.y]), `点位应落在卡片上：${JSON.stringify(top)} 点 ${JSON.stringify(pt)} 卡 ${JSON.stringify(cNow.rect)} 开卡时 ${JSON.stringify(c.rect)}`);
     await B.page.touchscreen.tap(pt.x, pt.y);
     await frames(B.page, 4);
     await sleep(800);
