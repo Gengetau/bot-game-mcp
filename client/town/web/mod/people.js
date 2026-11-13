@@ -44,7 +44,7 @@
 
       var T = host.t;
       var names = function (arr) {
-        return (arr || []).slice().reverse().join(T('hobby.sep'));
+        return (arr || []).join(T('hobby.sep'));
       };
 
       /* ── 卡片位置：贴在 #bottombar 上沿之上 ── */
