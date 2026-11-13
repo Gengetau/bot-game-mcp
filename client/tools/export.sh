@@ -63,6 +63,11 @@ if [ -d "$PROJ/stream" ]; then
   done
 fi
 
+# 开源许可：由引擎自己生成（Godot 的 MIT 许可、内置第三方组件的版权与许可、素材致谢），页面进入面板底部的「开源许可」链接指向它。
+echo "[export] 生成开源许可文本…"
+"$GODOT" --headless --path "$PROJ" --script "$ROOT/client/tools/gen_licenses.gd" -- "$OUT/licenses.txt" >/dev/null
+grep -q "Permission is hereby granted" "$OUT/licenses.txt" || { echo "[export] 许可文本生成失败" >&2; exit 1; }
+
 if [ "${SKIP_COMPRESS:-0}" != "1" ]; then
   echo "[export] 生成预压缩副本（.br / .gz）…"
   OUT="$OUT" node --input-type=module -e '

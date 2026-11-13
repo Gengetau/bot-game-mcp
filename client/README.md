@@ -42,7 +42,7 @@ npm run dev -w bot-game-mcp -- serve
 
 ```bash
 npm run client:export   # 先导出
-npm run client:e2e      # 约 4.3 分钟，不进 CI；需要完整导出（含 .br）。修完后连续两遍 271、265 秒，导出脚本修掉资源包问题后又跑了一遍 257 秒，记录取最后这一遍
+npm run client:e2e      # 完整一遍约 12 分钟（其中步骤 15「声音」约 7 分钟），不进 CI；需要完整导出（含 .br）。开发中用 --only=<步骤号> 跑子集
 ```
 
 脚本 `scripts/client-e2e.mjs` 自己起引擎（子进程、开发登录、keys 认证里放一个测试 AI 密钥、临时库、随机端口），
@@ -97,11 +97,11 @@ client/art_source/, client/ASSETS.md   素材来源与台账（audio/ 是音频�
 - **总线**：Godot 里建三条总线 `Music` / `Ambience` / `SFX`，都送到 `Master`。音量变化、总静音、后台静音一律经过平滑（时间常数约 0.12 秒），不会突响。
 - **音乐放在 pck 之外**：`client/town/stream/music/{day,night}.ogg`（目录里有 `.gdignore`，Godot 不导入，不进 pck）。`client/tools/export.sh` 把 `client/town/stream/` 下的子目录原样拷到产物里
   （`build/web/music/`），引擎照常托管（`/town/3d/music/day.ogg`，`Cache-Control: no-cache` + ETag）。客户端在用户点「进入小镇」之后才用 `HTTPRequest` 取（先取当前时段的那一首），
-  取到后 `AudioStreamOggVorbis.load_from_buffer`，所以不占首屏的下载量，也不拖慢「进入」按钮出现；取不到会隔 20 秒重试，共 3 轮，之后就没有音乐，环境声和音效不受影响。
+  取到后 `AudioStreamOggVorbis.load_from_buffer`，所以不占首屏的下载量，也不拖慢「进入」按钮出现；每个请求 30 秒超时，两首各自独立取、各自重试（一首卡住不拖另一首）；取不到会隔 20 秒重试，共 3 轮，之后就没有音乐，环境声和音效不受影响。
   环境声和音效很小（0.58 MB），留在 pck 里。`index.pck` 因此从约 113 KB 变成约 743 KB（br 约 653 KB），见下面「包体与耗时」。
 - **昼夜**：取自服务器世界时间，不看设备时区。`clock.server_now()`（对时后的服务器毫秒）经 `boot.js` 的 `TownHost.worldHour(时区, 毫秒)` 换成世界时区的钟点
   （时区来自 `GET /config` 的 `world.timezone`），18:00 到次日 06:00 放夜晚曲 + 虫鸣，其余放白天曲 + 鸟风。每 2 秒重算一次，换时段时两首音乐 6 秒交叉淡入淡出，环境声 3 秒；
-  两首都一直保持播放位置（淡出到 0 时暂停，不销毁），所以不会「重新从头放」。调试：`?debug=1&hour=21` 强制钟点（页面运行中改地址栏参数也生效）。
+  两首都一直保持播放位置（淡出到 0 时暂停，不销毁），所以不会「重新从头放」。**光照（`daynight.gd`）用同一个钟点来源**：同样经 `TownHost.worldHour` 取钟点（Intl，认夏令时、任意 IANA 时区；Godot 里没有时区偏移表），至多每秒向 JS 要一次，服务器时间没对上（`clock.has_sync` 为假）之前不更新光照；不在网页环境（没有 `bridge.web`）时退路是东京时间（UTC+9），与音频的退路一致。`__town.hour` 是光照当前用的钟点。调试：`?debug=1&hour=21` 强制钟点；**光照读 `hour` 参数的方式是页面加载时读一次**（`bridge.gd`），音频一侧经 `boot.js` 每次现读所以改地址栏也生效，但想让光照也固定在某个钟点，要带着 `?debug=1&hour=` 重新加载页面。
 - **环境声切换**：按所在区域的 `indoor` 标记（来自 `/map` 清单的区域表）判断室内外。进室内：室内环境声（壁炉 + 房间底声）淡入，室外环境声降到 12%；出来切回。
   室内外变化时响一声门（刚进入、刚重连时的第一次判断不响）。喷泉：取地图里 id 以 `fountain` 结尾的障碍的中心，按自己到它的距离衰减（4 米内满，22 米外无，之间平方衰减），室内听不到。
 - **音量设置**：顶栏「声音：开 / 关」是总静音（原有），旁边新增「音量」按钮，展开 `#soundPanel`：音乐、环境声、音效三条滑块和「切到后台时静音」勾选。

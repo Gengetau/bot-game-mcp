@@ -44,6 +44,7 @@ var _glows: Dictionary = {}  # scene -> Array[Transform3D]
 var _lamps: Dictionary = {}  # scene -> Array[Vector4]
 var _kind_cache: Dictionary = {}
 var _warmed: Dictionary = {}
+var _bakes: Array = []  # 地面烘焙的 SubViewport（挂在自己下面，clear_all 要一并释放）
 var _cur: Dictionary = {}  # 正在构建的场景的上下文
 var rejected: int = 0
 var placed: int = 0
@@ -53,6 +54,11 @@ func clear_all() -> void:
 	for k in roots:
 		(roots[k] as Node).queue_free()
 	roots.clear()
+	for bv in _bakes:
+		if is_instance_valid(bv):
+			(bv as Node).queue_free()
+	_bakes.clear()
+	_warmed.clear()
 	objects.clear()
 	zone_labels.clear()
 	portals.clear()
@@ -620,6 +626,7 @@ func _build_ground(sid: String, cell: float, ox: float, oz: float, cols: int, ro
 	svp.render_target_update_mode = SubViewport.UPDATE_ONCE
 	svp.msaa_3d = Viewport.MSAA_DISABLED
 	add_child(svp)
+	_bakes.append(svp)
 	var bp := MeshInstance3D.new()
 	var bpm := PlaneMesh.new()
 	bpm.size = Vector2(wm, hm)
@@ -741,6 +748,10 @@ func _mul(c: Color, k: float) -> Color:
 	return Color(c.r * k, c.g * k, c.b * k, c.a)
 
 
+## 可互动物件画出来的高度（米）：书架按参数画，灶台以 town_art.gd 里烟囱的顶（2.6 + 0.45）为准，茶桌以茶壶嘴为准，花箱以花丛顶为准。
+const INTERACTABLE_MODEL_H := {"bookshelf": 2.5, "stove": 3.05, "tea_table": 1.0, "planter": 0.9}
+
+
 func _build_interactables(sc: Dictionary, sid: String, root: Node3D) -> void:
 	var objs: Array = []
 	for it in sc.get("interactables", []):
@@ -751,6 +762,8 @@ func _build_interactables(sc: Dictionary, sid: String, root: Node3D) -> void:
 		var cz: float = float(fp.get("z", float(it["z"]) - 0.5)) + fd * 0.5
 		var kind: String = str(it.get("kind", ""))
 		var oh: float = 1.8 if kind == "bookshelf" else (1.0 if kind == "stove" else 0.8)
+		# 画出来的模型高度（点击盒至少要罩住它，否则点物件上部的射线会穿过去落到后面的地面）
+		var mh: float = float(INTERACTABLE_MODEL_H.get(kind, 0.0))
 		match kind:
 			"tea_table":
 				put("prop.table_round", cx, cz, 0.0, 1.0, -1.0)
@@ -760,7 +773,7 @@ func _build_interactables(sc: Dictionary, sid: String, root: Node3D) -> void:
 					put("stool", ax, az, 0.0, 1.0, -1.0)
 				glow(Vector3(cx, 1.35, cz), 1.1)
 			"bookshelf":
-				put("prop.bookshelf", cx, cz, 0.0, 1.0, -1.0, -1.0, {"w": fw, "h": 2.5, "d": fd * 0.95})
+				put("prop.bookshelf", cx, cz, 0.0, 1.0, -1.0, -1.0, {"w": fw, "h": mh, "d": fd * 0.95})
 			"stove":
 				put("prop.stove", cx, cz, 0.0, 1.0, -1.0, -1.0, {"w": fw, "d": fd})
 				glow(Vector3(cx, 0.55, cz + fd * 0.5 + 0.05), 1.2)
@@ -777,7 +790,7 @@ func _build_interactables(sc: Dictionary, sid: String, root: Node3D) -> void:
 				"name": str(it.get("name", it["id"])),
 				"kind": kind,
 				"pos": Vector3(cx, oh + 0.1, cz),
-				"aabb": AABB(Vector3(cx - fw * 0.5 - 0.3, 0.0, cz - fd * 0.5 - 0.3), Vector3(fw + 0.6, oh + 0.3, fd + 0.6)),
+				"aabb": AABB(Vector3(cx - fw * 0.5 - 0.3, 0.0, cz - fd * 0.5 - 0.3), Vector3(fw + 0.6, maxf(oh + 0.3, mh), fd + 0.6)),
 				"x": float(it["x"]),
 				"z": float(it["z"]),
 			}

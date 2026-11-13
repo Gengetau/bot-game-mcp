@@ -11,6 +11,8 @@ extends Node
 const SFX_DIR := "res://assets/audio/sfx/"
 const AMB_DIR := "res://assets/audio/ambience/"
 const MUSIC_PATH := "/town/3d/music/"
+## 取一首音乐的请求超时（秒）。
+const FETCH_TIMEOUT_S := 30.0
 const SFX_NAMES := ["confirm", "step", "tap", "fail", "start", "mail", "panel_open", "panel_close", "coin", "door"]
 const AMB_NAMES := ["day", "night", "indoor", "fountain"]
 const MUSIC_NAMES := ["day", "night"]
@@ -45,6 +47,7 @@ var _cur := {"master": 1.0, "music": 0.6, "amb": 0.7, "sfx": 0.8}  # 平滑后�
 var _sfx_streams := {}
 var _sfx_players: Array = []
 var _sfx_last := {}  # 名字 -> 上次播放的毫秒
+var _first_play := {}  # 初始化后第一声音效播放时总线的分贝（调试用：验证已保存的静音在第一声前就生效）
 var _plays := {}  # 名字 -> 实际播放过的次数（调试用）
 
 var _amb_players := {}
@@ -115,6 +118,7 @@ func init_after_gesture() -> void:
 		add_child(p)
 		_music_players[n] = p
 	_update_phase()
+	_apply_buses(true)  # 已保存的静音 / 音量在进入前就发来了，立刻生效，免得第一声确认音按默认增益漏出来
 	_load_music()
 
 
@@ -259,29 +263,32 @@ func _update_ambience(dt: float) -> void:
 func _load_music() -> void:
 	if bridge == null or not bridge.web:
 		return
+	# 两首各自独立取、各自重试：一首卡住（半通的网络）不会拖住另一首
 	var order: Array = ["night", "day"] if _night else ["day", "night"]
+	for n in order:
+		_load_track(n)
+
+
+func _load_track(n: String) -> void:
 	for attempt in range(3):
-		for n in order:
-			if bool(_music_loaded[n]):
-				continue
-			var data: PackedByteArray = await _fetch(bridge.origin + MUSIC_PATH + n + ".ogg")
-			if data.size() < 1000:
-				continue
-			var s := AudioStreamOggVorbis.load_from_buffer(data)
-			if s == null:
-				continue
-			s.loop = true
-			(_music_players[n] as AudioStreamPlayer).stream = s
-			_music_loaded[n] = true
-		_music_tried = attempt + 1
-		if bool(_music_loaded["day"]) and bool(_music_loaded["night"]):
+		if bool(_music_loaded[n]):
 			return
+		var data: PackedByteArray = await _fetch(bridge.origin + MUSIC_PATH + n + ".ogg")
+		_music_tried = maxi(_music_tried, attempt + 1)
+		if data.size() >= 1000:
+			var s := AudioStreamOggVorbis.load_from_buffer(data)
+			if s != null:
+				s.loop = true
+				(_music_players[n] as AudioStreamPlayer).stream = s
+				_music_loaded[n] = true
+				return
 		await get_tree().create_timer(20.0).timeout
 
 
 func _fetch(url: String) -> PackedByteArray:
 	var req := HTTPRequest.new()
 	req.accept_gzip = false
+	req.timeout = FETCH_TIMEOUT_S  # 连上了但不返回的请求不能一直拖住后面的曲子和重试
 	add_child(req)
 	if req.request(url) != OK:
 		req.queue_free()
@@ -345,6 +352,8 @@ func sfx(nm: String, pitch: float = 1.0, min_gap_ms: float = 60.0) -> void:
 	if now - float(_sfx_last.get(nm, -1.0e9)) < min_gap_ms:
 		return
 	_sfx_last[nm] = now
+	if _first_play.is_empty():
+		_first_play = {"name": nm, "masterDb": AudioServer.get_bus_volume_db(0), "sfxDb": AudioServer.get_bus_volume_db(int(_bus["SFX"])) if _bus.has("SFX") else 0.0}
 	_plays[nm] = int(_plays.get(nm, 0)) + 1
 	var pick: AudioStreamPlayer = null
 	for p in _sfx_players:
@@ -430,4 +439,4 @@ func debug_info() -> Dictionary:
 			"amb": AudioServer.get_bus_volume_db(int(_bus["Ambience"])),
 			"sfx": AudioServer.get_bus_volume_db(int(_bus["SFX"])),
 		}
-	return {"inited": inited, "enabled": enabled, "hidden": hidden, "bgMute": bg_mute, "vol": vol, "night": _night, "hour": _hour, "indoor": _indoor, "scene": _scene, "busDb": bus_db, "layers": pl, "sfxLoaded": _sfx_streams.keys(), "plays": _plays, "musicTried": _music_tried, "fountains": _fountains.keys(), "fountainDist": snappedf(_listener.distance_to(_fountains[_scene]), 0.1) if _fountains.has(_scene) else -1.0}
+	return {"inited": inited, "enabled": enabled, "hidden": hidden, "bgMute": bg_mute, "vol": vol, "night": _night, "hour": _hour, "indoor": _indoor, "scene": _scene, "busDb": bus_db, "layers": pl, "sfxLoaded": _sfx_streams.keys(), "plays": _plays, "firstPlay": _first_play, "musicTried": _music_tried, "fountains": _fountains.keys(), "fountainDist": snappedf(_listener.distance_to(_fountains[_scene]), 0.1) if _fountains.has(_scene) else -1.0}

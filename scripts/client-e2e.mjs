@@ -376,6 +376,13 @@ async function login(p, name, { shotEnter } = {}) {
   if (shotEnter) await shot(p.page, shotEnter);
   // 点「进入小镇」之前：Godot 建出来的 AudioContext 的状态（TownHost.audioState 只返回状态字符串，不暴露对象）
   const audioBefore = await p.page.evaluate(() => window.TownHost.audioState());
+  // 进入面板底部要有可见的「开源许可」链接：新窗口打开 licenses.txt
+  const licLink = await p.page.evaluate(() => {
+    const a = document.getElementById('licLink');
+    if (!a) return null;
+    const r = a.getBoundingClientRect();
+    return { text: a.textContent, href: a.getAttribute('href'), target: a.target, visible: r.width > 0 && r.height > 0 && getComputedStyle(a).visibility !== 'hidden' };
+  });
   const t1 = Date.now();
   await p.page.click('#enterBtn');
   await p.page.waitForSelector('#nameInput', { state: 'visible', timeout: 30_000 });
@@ -395,7 +402,7 @@ async function login(p, name, { shotEnter } = {}) {
     await sleep(200);
     audioAfter = await p.page.evaluate(() => window.TownHost.audioState());
   }
-  return { toButtonMs: tButton, toPlayingMs, audioBefore, audioAfter };
+  return { toButtonMs: tButton, toPlayingMs, audioBefore, audioAfter, licLink };
 }
 
 const snap = (page) =>
@@ -605,6 +612,18 @@ async function main() {
     await until(async () => (await snap(A.page)).actors.some((a) => a.id === B.id) && (await snap(B.page)).actors.some((a) => a.id === A.id), 15_000, '两个页面互相看到对方');
     check((await snap(A.page)).actors.length >= 2 && (await snap(B.page)).actors.length >= 2, '__town.actors 里应有两个人');
     note(`A=${A.id}（${nameA}），B=${B.id}（${nameB}），都在 ${sa.space}（${sa.spaceName}）`);
+    // 开源许可入口：进入面板上有可见的链接（新窗口打开），文件取得到、Content-Type 是文本、内容里有 Godot 的 MIT 许可文字和素材致谢
+    for (const [tag, l] of [['桌面', la], ['手机', lb]]) {
+      check(l.licLink && l.licLink.visible && l.licLink.text === '开源许可' && l.licLink.href === 'licenses.txt' && l.licLink.target === '_blank', `${tag}页进入面板应有可见的「开源许可」链接（新窗口打开 licenses.txt），实际 ${JSON.stringify(l.licLink)}`);
+    }
+    {
+      const lr = await A.ctx.request.get(`${BASE}/town/3d/licenses.txt`);
+      const lt = await lr.text();
+      check(lr.status() === 200, `licenses.txt 应能取到，实际 ${lr.status()}`);
+      check(/^text\/plain/.test(lr.headers()['content-type'] ?? ''), `licenses.txt 的 Content-Type 应是 text/plain，实际 ${lr.headers()['content-type']}`);
+      check(lt.includes('Permission is hereby granted, free of charge') && lt.includes('Godot Engine contributors') && lt.includes('CC0'), 'licenses.txt 里应有 Godot 的 MIT 许可文字、版权行和素材致谢');
+      note(`开源许可文本 ${lt.length} 字符，Content-Type ${lr.headers()['content-type']}`);
+    }
     // 引擎对 /town/3d/ 的包体：确认预压缩确实被选用（br）
     const r = await A.ctx.request.get(`${BASE}/town/3d/index.pck`, { headers: { 'Accept-Encoding': 'br' } });
     check(r.headers()['content-encoding'] === 'br', `index.pck 应发 br 预压缩，实际 content-encoding=${r.headers()['content-encoding']}`);
@@ -1006,6 +1025,55 @@ async function main() {
     await until(async () => (await seen(A.page, B.id))?.moving, 8000, 'A 页面里 B 在走');
     await sleep(700);
     await shot(B.page, '03-mobile-walking');
+    // 手机竖屏（390 宽）顶栏：地点胶囊完整显示地点名（不被省略号截断），顶栏不超出屏幕。平时的状态，再加一次最长情形（五个汉字的地点名 + 重连中文字）
+    {
+      const topbar = () =>
+        B.page.evaluate(() => {
+          const sp = document.getElementById('space');
+          const where = document.getElementById('where');
+          const bar = document.getElementById('topbar');
+          const kids = [...bar.children].filter((e) => getComputedStyle(e).display !== 'none' && !e.classList.contains('spacer'));
+          return {
+            vw: window.innerWidth,
+            space: sp.textContent,
+            spaceScroll: sp.scrollWidth,
+            spaceClient: sp.clientWidth,
+            whereScroll: where.scrollWidth,
+            whereClient: where.clientWidth,
+            barScroll: bar.scrollWidth,
+            barClient: bar.clientWidth,
+            maxRight: Math.max(...kids.map((e) => e.getBoundingClientRect().right)),
+            minLeft: Math.min(...kids.map((e) => e.getBoundingClientRect().left)),
+            docScroll: document.documentElement.scrollWidth,
+            rows: new Set(kids.map((e) => Math.round(e.getBoundingClientRect().top))).size,
+          };
+        });
+      const okTop = (t, tag) => {
+        check(t.spaceScroll <= t.spaceClient, `${tag}：地点胶囊的文字被截断了（scrollWidth ${t.spaceScroll} > clientWidth ${t.spaceClient}，「${t.space}」）`);
+        check(t.whereScroll <= t.whereClient, `${tag}：地点胶囊内容溢出（${t.whereScroll} > ${t.whereClient}）`);
+        check(t.barScroll <= t.barClient && t.maxRight <= t.vw && t.minLeft >= 0 && t.docScroll <= t.vw, `${tag}：顶栏超出屏幕宽度 ${JSON.stringify(t)}`);
+        check(t.rows === 1, `${tag}：顶栏应保持一行，实际 ${t.rows} 行`);
+      };
+      const t0 = await topbar();
+      okTop(t0, '手机顶栏');
+      const stress = await B.page.evaluate(() => {
+        const sp = document.getElementById('space');
+        const ct = document.getElementById('connText');
+        const old = [sp.textContent, ct.textContent, ct.hidden];
+        sp.textContent = '栖灯茶馆会';
+        ct.textContent = '重连中…';
+        ct.hidden = false;
+        return old;
+      });
+      const t1 = await topbar();
+      await B.page.evaluate((old) => {
+        document.getElementById('space').textContent = old[0];
+        document.getElementById('connText').textContent = old[1];
+        document.getElementById('connText').hidden = old[2];
+      }, stress);
+      okTop(t1, '手机顶栏（五字地点名 + 重连中文字）');
+      note(`手机顶栏 ${t0.vw} 宽：地点「${t0.space}」${t0.spaceScroll}/${t0.spaceClient}，最右 ${Math.round(t0.maxRight)}；最长情形最右 ${Math.round(t1.maxRight)}，${t1.rows} 行`);
+    }
     await until(async () => !selfActor(await serverScene(B))?.nav, 30_000, 'B 走到');
     const start = selfActor(await serverScene(B));
     const nAct = B.w.actions.length;
@@ -1428,6 +1496,15 @@ async function main() {
     const dh = Math.min(Math.abs(s.hour - hnow), 24 - Math.abs(s.hour - hnow));
     check(dh < 0.1, `音频用的世界钟点 ${s.hour} 与按服务器时间 ${tz} 现算的 ${hnow} 不一致`);
     check(s.night === (s.hour >= 18 || s.hour < 6), `night=${s.night} 与钟点 ${s.hour} 不符`);
+    // 光照用的钟点（__town.hour）与音频同源：不带 ?hour= 时，等于「服务器时间按世界时区换算的钟点」，且昼夜判定与音频一致
+    {
+      const lh = (await C.page.evaluate(() => window.__town.hour));
+      const dl = Math.min(Math.abs(lh - hnow), 24 - Math.abs(lh - hnow));
+      check(lh >= 0 && dl < 0.1, `光照用的钟点 ${lh} 与按服务器时间 ${tz} 现算的 ${hnow} 不一致（差 ${dl.toFixed(3)} 小时）`);
+      const edge = (h) => Math.min(Math.abs(h - 6), Math.abs(h - 18)) < 0.12;
+      check(edge(lh) || (lh >= 18 || lh < 6) === s.night, `光照钟点 ${lh} 的昼夜与音频 night=${s.night} 不一致`);
+      note(`光照钟点 ${lh.toFixed(2)}，音频钟点 ${s.hour.toFixed(2)}，现算 ${hnow.toFixed(2)}（${tz}）`);
+    }
     note(`世界时区 ${tz}，当前钟点 ${s.hour.toFixed(2)}，放${s.night ? '夜晚' : '白天'}曲；同一时刻东京 ${hours.tokyo} 点、纽约 ${hours.ny} 点（与设备时区无关）`);
 
     // 音乐从 /town/3d/music/ 流式取到并淡入；环境声和音效在包里
@@ -1540,11 +1617,13 @@ async function main() {
     check(afterReload.m === '30' && afterReload.a === '40' && afterReload.s === '50' && afterReload.bg === false && afterReload.snd === '声音：关', `刷新后设置应保持，实际 ${JSON.stringify(afterReload)}`);
     await C.page.click('#enterBtn');
     await C.page.waitForFunction(() => window.__town && window.__town.actors.length > 0 && document.body.dataset.phase === 'playing', null, { timeout: 60_000 });
-    await until(async () => {
+    const sEnter = await until(async () => {
       const x = await snd(C);
       return x && x.inited && near(x.vol.music, 0.3, 0.001) && near(x.vol.amb, 0.4, 0.001) && near(x.vol.sfx, 0.5, 0.001) && x.enabled === false && x.bgMute === false && near(x.busDb.music, dbOf(0.3), 0.6) && x.busDb.master <= -60 ? x : null;
     }, 30_000, '刷新后进入：音量、总静音、后台静音设置都已作用');
     note('刷新后：音量 30/40/50、总静音、后台静音（关）都保持，并在进入后作用到总线');
+    // 进入时的第一声（确认音）播放的那一刻，已保存的总静音就已经作用在总线上（不是等下一帧才衰减下去）
+    check(sEnter.firstPlay && sEnter.firstPlay.name === 'confirm' && sEnter.firstPlay.masterDb <= -60, `静音状态下进入：第一声确认音播放时主总线应已是静音，实际 ${JSON.stringify(sEnter.firstPlay)}`);
     await C.page.click('#soundBtn');
     await until(async () => {
       const x = await snd(C);

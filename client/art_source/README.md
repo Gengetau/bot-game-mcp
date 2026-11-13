@@ -1,17 +1,15 @@
 # art_source：美术源文件与导出约定
 
 > 居民和街景已换成 KayKit + Kenney Fantasy Town（见 `client/ASSETS.md`）。重新生成用 `recolor_kenney.py`、`build_residents.sh`/`build_residents.gd`、`recolor_residents.py`。
-> 下面「目录」里的 `build_resident.py`、`check_resident.gd` 和 Mini Characters 是旧流程（P0 验证用），运行时已不再使用，只作历史记录。
+> P0 的 Kenney Mini Characters 旧流程（`build_resident.py`、`check_resident.gd`、原始 glb 与贴图、License）已从仓库删除，见 `ASSETS.md` 的「旧资产说明」。
 
 这里放 Blender 脚本、第三方原始素材（只留用到的文件）、许可证文本和导出约定。
 运行时资产在 `client/town/assets/`；台账和授权见 `client/ASSETS.md`。
 
 ## 目录
 
-- `build_resident.py`：原始角色 GLB -> `town/assets/models/characters/resident.glb`（bpy，可重复运行）。
 - `audio/`：音频的再生成脚本（`build_audio.py`，调用同目录的 `loop.py`、`segpick.py`；需要 ffmpeg + numpy）。输出 `town/stream/music/`（音乐，不进 pck）、`town/assets/audio/ambience/`、`town/assets/audio/sfx/`。原始素材体积大不进仓库，来源和 sha256 见 `../ASSETS.md`，许可证据见 `third_party/opengameart/`。
-- `check_resident.gd`：Godot 里检查导入结果的脚本（验收用，不属于游戏工程）。
-- `source/`：脚本的输入。`kenney_mini_character_male_a.glb` 和它引用的 `Textures/colormap.png`（导入 Blender 时需要这张贴图在原位置）、`audio/*.ogg`。
+- `source/audio/*.ogg`：音效脚本的输入。
 - `third_party/<包名>/License.txt`：随素材放的许可证原文。
 
 ## 导出约定
@@ -27,12 +25,4 @@
 
 ## 验收（Godot 导入）
 
-```bash
-mkdir -p /tmp/glbcheck && cp client/town/assets/models/characters/resident.glb client/art_source/check_resident.gd /tmp/glbcheck/
-printf 'config_version=5\n[application]\nconfig/name="glb-check"\n[rendering]\nrenderer/rendering_method="gl_compatibility"\n' > /tmp/glbcheck/project.godot
-/opt/godot/godot --headless --path /tmp/glbcheck --import
-/opt/godot/godot --headless --path /tmp/glbcheck --script check_resident.gd   # 最后一行应是 RESULT PASS
-```
-
-检查内容：`AnimationPlayer` 里有 `idle`、`walk`；有 `Skeleton3D` 和 7 根骨；世界包围盒高度约 1.7、最低点约 0；walk 播放时腿骨旋转确实在变。
-朝向用渲染截图确认（xvfb + `--display-driver x11 --rendering-driver opengl3`，相机放在 +Z 看向原点，能看到脸）。
+居民模型的导入验收随 `build_residents.sh` 的流程做（身体、动画库导入后在 Godot 里检查骨架与动作）。

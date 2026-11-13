@@ -16,15 +16,15 @@ const KEYS := [
 	[20.3, 1.0, Color(0.55, 0.62, 0.95), 0.30, 48.0, -40.0, Color(0.30, 0.36, 0.58), 0.95, Color(0.07, 0.09, 0.17)],
 	[24.0, 1.0, Color(0.55, 0.62, 0.95), 0.30, 48.0, -40.0, Color(0.30, 0.36, 0.58), 0.95, Color(0.07, 0.09, 0.17)],
 ]
-const TZ_OFFSETS := {
-	"Asia/Tokyo": 9.0, "Asia/Seoul": 9.0, "Asia/Shanghai": 8.0, "Asia/Hong_Kong": 8.0, "Asia/Taipei": 8.0, "Asia/Singapore": 8.0,
-	"Asia/Kolkata": 5.5, "Europe/London": 0.0, "Europe/Paris": 1.0, "Europe/Berlin": 1.0, "UTC": 0.0, "Etc/UTC": 0.0,
-	"America/New_York": -5.0, "America/Chicago": -6.0, "America/Denver": -7.0, "America/Los_Angeles": -8.0, "Australia/Sydney": 10.0,
-}
 
 var light: DirectionalLight3D
 var env: Environment
-var tz_hours: float = 9.0
+var tz_name: String = "Asia/Tokyo"
+## 网页桥（TBridge）。钟点取自 boot.js 的 worldHour（Intl，认夏令时、任意 IANA 时区），和音频同一个来源；没有桥（非网页环境）时退路是东京时间（UTC+9），与音频的退路一致。
+var bridge = null
+## 钟点至多每秒向 JS 要一次，不每帧调用。
+const HOUR_REFRESH_MS := 1000
+var _hour_ticks: int = -1000000
 var debug_hour: float = -1.0
 var hour: float = 12.0
 var night: float = 0.0
@@ -56,7 +56,9 @@ func _ready() -> void:
 
 
 func set_timezone(name: String) -> void:
-	tz_hours = float(TZ_OFFSETS.get(name, 9.0))
+	if name != "" and name != tz_name:
+		tz_name = name
+		_hour_ticks = -1000000  # 时区换了，下一次 tick 马上重算
 
 
 func set_quality(high: bool) -> void:
@@ -66,14 +68,30 @@ func set_quality(high: bool) -> void:
 		light.light_energy = _energy * (HQ_ENERGY if high else 1.0)
 
 
-## 世界钟点（0..24）。
-func hour_at(server_now: float) -> float:
-	var h: float = fposmod(server_now / 3600.0 + tz_hours, 24.0)
-	return h
+## 世界钟点（0..24）。server_ms 是服务器毫秒时间（clock.server_now()）。
+func hour_at(server_ms: float) -> float:
+	if bridge != null and bridge.web:
+		var h: float = float(bridge.host.worldHour(tz_name, server_ms))
+		if h >= 0.0:
+			return h
+	var dt: Dictionary = Time.get_datetime_dict_from_unix_time(int(server_ms / 1000.0) + 9 * 3600)
+	return float(dt["hour"]) + float(dt["minute"]) / 60.0
 
 
-func tick(server_now: float) -> void:
-	apply_hour(debug_hour if debug_hour >= 0.0 else hour_at(server_now))
+## synced：服务器时间已经对上（clock.has_sync）。没对上之前保持上一次的光照，不按错的钟点闪一下。
+## debug_hour >= 0 时固定在那个钟点，不受 synced 影响。
+func tick(server_ms: float, synced: bool = true) -> void:
+	if debug_hour >= 0.0:
+		if hour != debug_hour:
+			apply_hour(debug_hour)
+		return
+	if not synced:
+		return
+	var t: int = Time.get_ticks_msec()
+	if t - _hour_ticks < HOUR_REFRESH_MS:
+		return
+	_hour_ticks = t
+	apply_hour(hour_at(server_ms))
 
 
 func apply_hour(h: float) -> void:

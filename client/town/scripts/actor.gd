@@ -372,6 +372,9 @@ func tick(dt: float, now_ms: float) -> void:
 	_apply_transform()
 	if moving:
 		_once = false
+		# 起身 / 坐下动画被走路顶掉时 Godot 不发 animation_finished，阶段要在这里清零，否则站定后永远不再回到 idle
+		if _sit_phase == 1 or _sit_phase == 3:
+			_sit_phase = 0
 		_play("walk", clampf(nav_speed / 2.0, 0.6, 1.8))
 	elif _sit_phase == 0 and not _once:
 		_play("idle")
