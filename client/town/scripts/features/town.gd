@@ -247,7 +247,7 @@ func _load_initial(sg: int, g: int) -> String:
 		return "fail"
 	if not _msgs.is_empty():
 		_clear_list()
-	_ingest_tail(arr, false)
+	_ingest_tail(arr, false, true)
 	_after = str(d.get("cursor", ""))
 	var older = d.get("older")
 	_has_older = older != null and str(older) != ""
@@ -269,7 +269,7 @@ func _load_catchup(sg: int, g: int) -> String:
 		var arr = d.get("messages")
 		if not (arr is Array):
 			return "fail"
-		_ingest_tail(arr, true)
+		_ingest_tail(arr, true, true)
 		var c: String = str(d.get("cursor", ""))
 		if c != "":
 			_after = c
@@ -301,6 +301,7 @@ func _load_older() -> void:
 	_older_busy = true
 	var g: int = _gen
 	var ep: int = _epoch
+	var front: String = str(_msgs[0]["sid"])  # 发请求时最旧的一条：回来时它必须还是最旧的，这一页才接得上
 	var lim: int = maxi(1, mini(_page, MAX_MSGS - _msgs.size()))
 	var r: Dictionary = await ctx.api_get("/town-chat?before=%s&limit=%d" % [_older.uri_encode(), lim])
 	if g != _gen or ep != _epoch:
@@ -312,10 +313,19 @@ func _load_older() -> void:
 	if bool(d.get("resync", false)):
 		_has_older = false
 		return
+	if _msgs.is_empty() or str(_msgs[0]["sid"]) != front:
+		# 等待期间追新把最旧的几条挤掉了（封顶）：这页和现在的最前面之间会缺几条，接上去就断档。丢掉，用户再点一次按当前最旧一条重读
+		return
 	var arr = d.get("messages")
-	if arr is Array:
-		_ingest_older(arr)
 	var older = d.get("older")
+	if arr is Array:
+		var room: int = MAX_MSGS - _msgs.size()  # 等待期间追新也可能把列表填满了
+		if room <= 0:
+			return
+		if arr.size() > room:
+			arr = arr.slice(arr.size() - room)  # 只留紧挨着现在最前面的那几条
+			older = (arr[0] as Dictionary).get("id", "")  # 这一页被截了：更早的从截断处接着读
+		_ingest_older(arr)
 	_has_older = older != null and str(older) != ""
 	_older = str(older) if _has_older else ""
 
@@ -346,7 +356,7 @@ func _item_of(m: Dictionary, ord: int) -> Dictionary:
 
 
 ## 追新：按到达顺序编号（页内按页的顺序，页是旧的在前）
-func _ingest_tail(list: Array, live: bool) -> void:
+func _ingest_tail(list: Array, live: bool, from_http: bool = false) -> void:
 	var out: Array = []
 	for m in list:
 		if not (m is Dictionary):
@@ -356,6 +366,8 @@ func _ingest_tail(list: Array, live: bool) -> void:
 			continue
 		if _seen.has(sid):
 			_dupes += 1
+			if from_http:
+				_rcpt.erase(sid)  # HTTP 页的 cursor 已经把 _after 推过它了：之后回声帧不能再把 _after 拨回去
 			continue
 		_hi += 1
 		var it: Dictionary = _item_of(m, _hi)
@@ -527,6 +539,8 @@ func _set_mute(v: bool) -> void:
 
 
 func tick(dt: float, _now_ms: float) -> void:
+	if _left:
+		return  # 离开之后到下一次进入之前不推 state：面板里是登出状态，推了只会显示「正在读公屏…」
 	_acc += dt
 	if _acc < 0.25:
 		return
