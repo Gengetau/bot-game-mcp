@@ -1588,40 +1588,40 @@ async function main() {
   });
 
   // ── 15 ──
-  await step(15, '声音：手势后 AudioContext 为 running；昼夜按服务器世界时间；三个音量与总静音生效并在刷新后保持；后台挂起/回前台不叠播；断线重连不重新起播；进屋切环境声；音乐文件取不到时照常运行', async () => {
-    const snd = (p) => p.page.evaluate(() => (window.__town ? window.__town.snd : null));
-    // 等音乐的几处共用：超时的时候把当时的声音状态一起报出来（两首音乐的 loaded/playing/gain、night、hour、enabled、busDb、vol，
-    // 以及音频代码里「取文件」的状态 musicFetch：正在取、第几次、结果码、HTTP 码、字节数、耗时、是否在等重试）
-    const musicState = (x) =>
-      x
-        ? JSON.stringify({
-            night: x.night,
-            hour: x.hour,
-            enabled: x.enabled,
-            hidden: x.hidden,
-            bgMute: x.bgMute,
-            busDb: x.busDb,
-            vol: x.vol,
-            music_day: x.layers.music_day,
-            music_night: x.layers.music_night,
-            musicTried: x.musicTried,
-            musicFetch: x.musicFetch,
-            ticksMs: x.ticksMs,
-          })
-        : 'null';
-    const untilMusic = async (C_, fn, ms, what, every) => {
+  const snd = (p) => p.page.evaluate(() => (window.__town ? window.__town.snd : null));
+  // 等音乐的几处共用：超时的时候把当时的声音状态一起报出来（两首音乐的 loaded/playing/gain、night、hour、enabled、busDb、vol，
+  // 以及音频代码里「取文件」的状态 musicFetch：正在取、第几次、结果码、HTTP 码、字节数、耗时、是否在等重试）
+  const musicState = (x) =>
+    x
+      ? JSON.stringify({
+          night: x.night,
+          hour: x.hour,
+          enabled: x.enabled,
+          hidden: x.hidden,
+          bgMute: x.bgMute,
+          busDb: x.busDb,
+          vol: x.vol,
+          music_day: x.layers.music_day,
+          music_night: x.layers.music_night,
+          musicTried: x.musicTried,
+          musicFetch: x.musicFetch,
+          ticksMs: x.ticksMs,
+        })
+      : 'null';
+  const untilMusic = async (C_, fn, ms, what, every) => {
+    try {
+      return await until(fn, ms, what, every);
+    } catch (e) {
+      let st;
       try {
-        return await until(fn, ms, what, every);
-      } catch (e) {
-        let st;
-        try {
-          st = musicState(await snd(C_));
-        } catch (e2) {
-          st = `读声音状态失败：${e2.message}`;
-        }
-        throw new Error(`${e.message}；当时的声音状态 ${st}`);
+        st = musicState(await snd(C_));
+      } catch (e2) {
+        st = `读声音状态失败：${e2.message}`;
       }
-    };
+      throw new Error(`${e.message}；当时的声音状态 ${st}`);
+    }
+  };
+  await step(15, '声音：手势后 AudioContext 为 running；昼夜按服务器世界时间；三个音量与总静音生效并在刷新后保持；后台挂起/回前台不叠播；断线重连不重新起播；进屋切环境声；音乐文件取不到时照常运行', async () => {
     const near = (a, b, tol) => typeof a === 'number' && Math.abs(a - b) <= tol;
     const dbOf = (v) => (v <= 0.0001 ? -80 : 20 * Math.log10(v));
     const setRange = (p, id, v) =>
@@ -1905,6 +1905,54 @@ async function main() {
     note('音乐被 404：客户端照常进入并运行，环境声和音效正常，没有页面错误');
     D.w.closing = true;
     await D.ctx.close();
+  });
+
+  // 步骤 15 里「刷新后音乐重新淡入」只走整遍恰好跑到的那个时段（夜里跑整遍就只测夜晚曲，白天跑就只测白天曲），
+  // 夜晚那一支曾在 18 点到 24 点的整遍里超时、白天却一直是绿的。这里用 ?debug=1&hour= 把钟点固定住，夜晚（22 点）和白天（12 点）
+  // 各做一遍：刷新 → 静音进入 → 取消静音 → 该时段的音乐淡入到满、另一首不在放，不再依赖整遍在哪个钟点跑。
+  await step(15.1, '声音：钟点固定在夜晚（22 点）和白天（12 点），各做一遍「刷新 → 静音进入 → 取消静音 → 该时段的音乐淡入、另一首不在放」', async () => {
+    const near = (a, b, tol) => typeof a === 'number' && Math.abs(a - b) <= tol;
+    const E = await newPlayer(chromiumBrowserA, 'E 钟点', { viewport: { width: 1000, height: 700 }, deviceScaleFactor: 1 });
+    extra.push(E);
+    await login(E, `阿钟${rnd()}`, { query: '&hour=22' }); // 第一次进入：登录、建居民（地址栏带着 hour=22）
+    if (process.env.E2E_THROTTLE) await (await E.ctx.newCDPSession(E.page)).send('Emulation.setCPUThrottlingRate', { rate: Number(process.env.E2E_THROTTLE) }); // EXPERIMENT
+    await until(async () => {
+      const x = await snd(E);
+      return x && x.inited ? x : null;
+    }, 20_000, '音频初始化');
+    for (const [hour, want, other] of [[22, 'night', 'day'], [12, 'day', 'night']]) {
+      const t0 = Date.now();
+      // 让总静音是开着的（上一遍结束时是取消静音的），然后刷新：第一遍用 reload 保持地址栏的 hour=22，第二遍换成 hour=12 重新载入
+      if ((await snd(E)).enabled) await E.page.click('#soundBtn');
+      await until(async () => (await snd(E)).enabled === false && (await E.page.$eval('#soundBtn', (e) => e.textContent)) === '声音：关', 10_000, `钟点 ${hour}：总静音已开`);
+      E.w.closing = true;
+      if (hour === 22) await E.page.reload();
+      else await E.page.goto(`${BASE}/town/3d/?debug=1&hour=${hour}`);
+      await E.page.waitForSelector('#enterBtn:not([hidden])', { timeout: 120_000 });
+      E.w.closing = false;
+      check((await E.page.evaluate(() => location.search)).includes(`hour=${hour}`), `刷新后地址栏应还带着 hour=${hour}`);
+      await E.page.click('#enterBtn');
+      await E.page.waitForFunction(() => window.__town && window.__town.actors.length > 0 && document.body.dataset.phase === 'playing', null, { timeout: 60_000 });
+      const sEnter = await untilMusic(E, async () => {
+        const x = await snd(E);
+        return x && x.inited && x.enabled === false && x.busDb.master <= -60 && x.night === (want === 'night') && near(x.hour, hour, 0.01) ? x : null;
+      }, 30_000, `钟点 ${hour}：静音进入，音频钟点与昼夜判定对得上`);
+      check(sEnter.firstPlay && sEnter.firstPlay.masterDb <= -60, `钟点 ${hour}：静音进入的第一声应已是静音，实际 ${JSON.stringify(sEnter.firstPlay)}`);
+      await E.page.click('#soundBtn'); // 取消总静音
+      await until(async () => {
+        const x = await snd(E);
+        return x.enabled && near(x.busDb.master, 0, 0.5) ? x : null;
+      }, 10_000, `钟点 ${hour}：取消总静音后主总线恢复`);
+      const s = await untilMusic(E, async () => {
+        const x = await snd(E);
+        const l = x.layers[`music_${want}`];
+        return l.loaded && l.playing && l.gain > 0.99 ? x : null;
+      }, 90_000, `钟点 ${hour}：刷新后${want === 'night' ? '夜晚' : '白天'}曲载入并淡入`);
+      check(!s.layers[`music_${other}`].playing, `钟点 ${hour}：另一首（${other}）不应在放（不叠播）`);
+      note(`钟点固定 ${hour}：静音进入 → 取消静音后 ${want} 曲淡入（增益 ${s.layers[`music_${want}`].gain}），${other} 不在放，用时 ${((Date.now() - t0) / 1000).toFixed(0)} 秒`);
+    }
+    E.w.closing = true;
+    await E.ctx.close();
   });
 
   await runStepFiles(h);

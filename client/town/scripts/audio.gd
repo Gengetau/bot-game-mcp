@@ -293,6 +293,12 @@ func _load_track(n: String) -> void:
 func _fetch(url: String, track: String = "", attempt: int = 0) -> PackedByteArray:
 	var info := {"fetching": true, "attempt": attempt, "startMs": Time.get_ticks_msec(), "result": -1, "http": -1, "bytes": -1, "elapsedMs": 0, "retryWait": false, "decoded": false, "reqErr": 0}
 	if track != "":
+		# 同一首的前几次结果留在 history 里（调试口只读）：只看最后一次，看不出前面是超时还是别的
+		var prev: Dictionary = _music_fetch.get(track, {})
+		var hist: Array = (prev.get("history", []) as Array).duplicate()
+		if prev.has("result"):
+			hist.append({"attempt": prev.get("attempt"), "result": prev.get("result"), "http": prev.get("http"), "bytes": prev.get("bytes"), "elapsedMs": prev.get("elapsedMs")})
+		info["history"] = hist
 		_music_fetch[track] = info
 	var req := HTTPRequest.new()
 	req.accept_gzip = false
