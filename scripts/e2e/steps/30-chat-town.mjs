@@ -7,7 +7,7 @@
 import { poll, dockState, modState, godotFeature, openDock, closeDock, hitTest, rectOf, frames } from '../lib/ui.mjs';
 import { apiSay, apiSayWait, apiAct, apiHistory, expectReject } from '../lib/chat.mjs';
 import {
-  TOWN, townRows, openTown, tabOrder, townUnread, townCompose, townBank, townChrome, uiTownSay, apiTownSay, apiTownSayWait, apiTownPage, noteTownSent, bubbles, bubbleFeature, emitTown,
+  TOWN, townRows, openTown, tabOrder, townUnread, badgeOk, townCompose, townBank, townChrome, uiTownSay, apiTownSay, apiTownSayWait, apiTownPage, noteTownSent, bubbles, bubbleFeature, emitTown,
 } from '../lib/town.mjs';
 
 export const meta = { id: 'chat-town', n: 30, title: '全镇公屏、头顶气泡与静音' };
@@ -95,7 +95,7 @@ export default async function run(h) {
       check(await modState(p.page, 'town'), `${p.label} 应有 __dock.town`);
       check(await townF(p), `${p.label} 应有 features.town`);
       const u = await townUnread(p.page);
-      check(u.badgeHidden && u.sum === 0 && !u.dot, `${p.label} 初始角标应隐藏、没有小点：${JSON.stringify(u)}`);
+      check(u.town === 0 && !u.dot && badgeOk(u), `${p.label} 初始全镇未读应为 0、没有小点，启动按钮角标等于各模块未读之和（为 0 时隐藏）：${JSON.stringify(u)}`);
     }
     await openTown(A.page);
     await until(async () => !(await townCompose(A.page)).disabled, 25_000, 'A 的全镇输入框可用（Godot 推来了 canSend）');
@@ -126,16 +126,18 @@ export default async function run(h) {
     check((await rowsWith(A, t1)).length === 1, 'A 自己的话回执加回声应恰好一条');
     // B：面板关着，并且停在「附近」页签
     check(!(await dockState(B.page)).open && (await dockState(B.page)).tab === 'nearby', 'B 此时应关着面板、停在附近页签');
+    // 角标是所有模块未读之和（跨段约定第 1 条）：不写死总数，只断言「全镇」这一份让总数恰好 +1
+    const others0 = (await townUnread(B.page)).sum - ((await townUnread(B.page)).town ?? 0);
     await until(async () => {
       const u = await townUnread(B.page);
-      return u.town === 1 && u.badge === '1' && u.dot;
-    }, 25_000, 'B 的启动按钮出现角标 1、「全镇」页签小点可见');
+      return u.town === 1 && u.dot && !u.badgeHidden && badgeOk(u) && u.sum === others0 + 1;
+    }, 25_000, `B 的启动按钮角标比其它模块的未读之和多 1（${others0} -> ${others0 + 1}）、「全镇」页签小点可见`);
     note(`B 角标 ${JSON.stringify(await townUnread(B.page))}`);
     await openTown(B.page);
     await until(async () => {
       const u = await townUnread(B.page);
-      return u.town === 0 && u.badgeHidden && !u.dot;
-    }, 10_000, 'B 打开全镇后角标清零、小点消失');
+      return u.town === 0 && !u.dot && badgeOk(u) && u.sum === others0;
+    }, 10_000, 'B 打开全镇后「全镇」的那一份清零、小点消失，角标回到其它模块的未读之和');
     const rowsB = await rowsWith(B, t1);
     check(rowsB.length === 1 && rowsB[0].from === A.id && !rowsB[0].mine, `B 应恰有同一条（!mine、data-from=A）：${JSON.stringify(rowsB)}`);
     const t2 = uniq('公屏收到');
@@ -156,6 +158,10 @@ export default async function run(h) {
     await until(async () => (await snap(B.page)).scene === 'home', 120_000, 'B 进到自己家');
     const Y = uniq('门外附近话');
     const X = uniq('公屏照样到');
+    // 「B 没有 A 的气泡」不能只在事后看一眼 #tags（气泡 3 秒就没了，页面慢时检查可能已经过期）：
+    // Godot 一侧累计「给 A 冒过几次气泡」(shown_by)，与气泡存活时间无关，发话前后不变才算真没冒过
+    const shownByA = async (p) => (await bubbleFeature(p.page))?.shown_by?.[A.id] ?? 0;
+    const sh0 = await shownByA(B);
     const ry = await apiSayWait(A, Y);
     check(ry.status === 200, 'A 的附近话应发成功');
     const fB = await framesOf(B);
@@ -174,6 +180,7 @@ export default async function run(h) {
     check(!nearbyRowsB.includes(Y), `B 在私宅里，附近列表不应有 A 的附近话：${JSON.stringify(nearbyRowsB)}`);
     check(!(await apiHistory(B)).some((m) => m.text === Y), 'B 的服务端附近历史里也不应有 Y');
     check((await bubbleOf(B, A.id)).length === 0, 'B 的页面不应有 A 的气泡');
+    check((await shownByA(B)) === sh0, `B 的 Godot 一侧从没为 A 冒过气泡（累计次数 ${sh0} 不变）：${await shownByA(B)}`);
     check((await rowsWith(B, Y)).length === 0, 'Y 是附近话，不应出现在 B 的全镇列表');
     check((await rowsWith(A, Y)).length === 0 && (await rowsWith(A, X)).length === 1, 'A 的全镇列表：X 恰一条、没有 Y');
     note(`B 在「${(await snap(B.page)).spaceName}」（原先「${place0}」）仍收到全镇公屏 X`);
@@ -377,7 +384,7 @@ export default async function run(h) {
     check(i1 >= 0 && i2 > i1 && rows[i1].mid < rows[i2].mid, '顺序应是 M1 在 M2 之前');
     const u = await townUnread(B.page);
     check(u.town === 2 && u.dot, `补读的话计未读，恰为 2：${JSON.stringify(u)}`);
-    check(u.badge === String(u.sum) || u.sum > 9, `启动按钮角标应等于各模块未读之和：${JSON.stringify(u)}`);
+    check(badgeOk(u), `启动按钮角标应等于各模块未读之和：${JSON.stringify(u)}`);
     check(await uniqueMids(B), '没有重复的 data-mid');
     const t1 = await townF(B);
     check(t1.catchups === t0.catchups + 1 && (t1.resyncs ?? 0) === (t0.resyncs ?? 0), `catchups 应 +1、resyncs 不变：${t0.catchups}->${t1.catchups}，${t0.resyncs}->${t1.resyncs}`);
@@ -398,6 +405,18 @@ export default async function run(h) {
   await step(30.75, 'resync：B 把 _after 改成无效游标并断线，A 发 M3；重连后请求返回 resync:true，列表整体重建，与服务端最近一页逐条一致，resyncs===1，重读的话不计未读', async () => {
     await openTown(B.page); // 先看完，未读清零
     await until(async () => (await townUnread(B.page)).town === 0, 10_000, '先清零未读');
+    // 造「旧列表里有已滑出最近一页的行」：页大小改成 5，再点「看更早的话」把列表读长。
+    // 重读的最近一页只有 5 条，旧列表若不整体清掉，滑出这一页的老行会残留下来，列表就比服务端长
+    await emitTown(B.page, 'debug_page', '5');
+    await until(async () => (await townRows(B.page)).length === 5 && (await townF(B)).page === 5, 25_000, 'B 的列表恰 5 条');
+    for (let i = 0; i < 4 && (await townRows(B.page)).length < 11 && (await townChrome(B.page)).older; i++) {
+      const n = (await townRows(B.page)).length;
+      await B.page.click(`${TOWN} [data-role="older"]`);
+      await until(async () => (await townRows(B.page)).length > n, 25_000, '点「看更早的话」后列表变长');
+    }
+    const longBefore = (await townRows(B.page)).length;
+    check(longBefore >= 11, `重同步之前旧列表应比最近一页（5 条）长得多：${longBefore}`);
+    await until(async () => (await townUnread(B.page)).town === 0, 10_000, '读更早不计未读');
     await closeDock(B.page);
     const rq = townReqs(B);
     await emitTown(B.page, 'debug_after');
@@ -411,8 +430,9 @@ export default async function run(h) {
     check(rs.status === 200 && rs.body.resync === true && rs.body.messages.length === 0, `服务端应对无效游标返回 200 + resync:true：${JSON.stringify(rs.body)}`);
     await until(async () => (await rowsWith(B, M3)).length === 1, 25_000, 'B 重读后列表包含 M3');
     await frames(B.page, 3);
-    const truth = (await apiTownPage(B)).messages.map((m) => m.text);
+    const truth = (await apiTownPage(B, 'limit=5')).messages.map((m) => m.text);
     const got = (await townRows(B.page)).map((r) => r.text);
+    check(got.length === 5 && longBefore > got.length, `重同步后旧列表的老行应被清掉，只剩最近一页的 5 条：${longBefore} -> ${got.length}`);
     check(JSON.stringify(got) === JSON.stringify(truth), `B 的列表应与服务端最近一页逐条一致（顺序一致）：\n 列表 ${JSON.stringify(got.slice(-4))}\n 服务端 ${JSON.stringify(truth.slice(-4))}（${got.length} / ${truth.length}）`);
     check(await uniqueMids(B), 'data-mid 唯一');
     const f = await townF(B);
@@ -420,6 +440,28 @@ export default async function run(h) {
     const u = await townUnread(B.page);
     check(u.town === 0 && !u.dot, `重读的话不计未读：${JSON.stringify(u)}`);
     rq.stop();
+  });
+
+  // ───────────────────────── 30.76 重读不清发送状态 ─────────────────────────
+  await step(30.76, '整体重读（rebuild）只清列表：限流倒计时、提示、发送钮禁用、ArrowUp 记录、草稿都留着', async () => {
+    await openTown(B.page);
+    const draft = uniq('重读时的草稿');
+    await B.page.fill(IN, draft);
+    const k0 = await modState(B.page, 'town');
+    check(k0.hist > 0, `B 此前发过话，应有 ArrowUp 记录（否则「记录还在」是空断言）：${k0.hist}`);
+    // 造一个限流倒计时（界面状态驱动，不真的去触发服务端限流）
+    await B.page.evaluate((n) => window.TownDock.feed('town', 'ack', JSON.stringify({ n, ok: false, code: 'rate_limited', retryMs: 9000 })), k0.seq);
+    await until(async () => (await townCompose(B.page)).hintClass.includes('cool'), 5000, '出现限流倒计时');
+    await B.page.evaluate(() => window.TownDock.feed('town', 'rebuild', 'null'));
+    await until(async () => (await townRows(B.page)).length === 0, 5000, '整体重读：列表被清空');
+    const c = await townCompose(B.page);
+    const k1 = await modState(B.page, 'town');
+    check(c.hintClass.includes('cool') && /\d/.test(c.hint), `重读之后限流倒计时与提示还在：${JSON.stringify(c)}`);
+    check(c.sendDisabled && k1.cool > 0, `重读之后发送钮仍禁用、倒计时仍在跑：${JSON.stringify({ sendDisabled: c.sendDisabled, cool: k1.cool })}`);
+    check(c.value === draft, `草稿还在：${JSON.stringify(c.value)}`);
+    check(k1.hist === k0.hist, `ArrowUp 记录还在：${k0.hist} -> ${k1.hist}`);
+    await until(async () => !(await townCompose(B.page)).hintClass.includes('cool'), 20_000, '倒计时自然结束');
+    await B.page.fill(IN, '');
   });
 
   // ───────────────────────── 30.8 刷新重建与去重 ─────────────────────────
@@ -431,7 +473,7 @@ export default async function run(h) {
     const got = (await townRows(B.page)).map((r) => r.text);
     check(JSON.stringify(got) === JSON.stringify(truth), `刷新后的列表应与服务端最近一页逐条一致：${got.length}/${truth.length}`);
     const u = await townUnread(B.page);
-    check(u.badgeHidden && u.town === 0, `刷新后读的历史不计未读：${JSON.stringify(u)}`);
+    check(u.town === 0 && badgeOk(u), `刷新后读的历史不计未读：${JSON.stringify(u)}`);
     check(await uniqueMids(B), '没有重复的 data-mid');
     // 先让 A 说一条，B 收到一帧，才有东西可重放
     const M4 = uniq('重放之前');
@@ -528,7 +570,7 @@ export default async function run(h) {
     await waitFrames(A, fA, 'A 收到 T5 所在的帧');
     await frames(A.page, 3);
     const u = await townUnread(A.page);
-    check(u.town === 0 && u.badgeHidden && !u.dot, `静音期间不计未读、不亮小点：${JSON.stringify(u)}`);
+    check(u.town === 0 && !u.dot && badgeOk(u), `静音期间不计未读、不亮小点：${JSON.stringify(u)}`);
     // 刷新：静音状态从 /me 恢复
     await reloadIn(A);
     await openTown(A.page);
@@ -659,6 +701,7 @@ export default async function run(h) {
     await B.page.click('#homeBtn');
     await until(async () => (await snap(B.page)).scene === 'home', 120_000, 'B 进到自己家');
     const G5 = uniq('隔墙的话');
+    const by0 = (await bubbleFeature(B.page))?.shown_by?.[A.id] ?? 0;
     await apiSayWait(A, G5);
     await until(async () => (await bubbleOf(A, A.id)).length > 0, 20_000, 'A 的气泡出现', 100);
     const Z = uniq('隔墙之后公屏');
@@ -668,11 +711,57 @@ export default async function run(h) {
     await waitFrames(B, fB, 'B 收到 Z 所在的帧');
     await frames(B.page, 3);
     check((await bubbleOf(B, A.id)).length === 0, 'B 在私宅里不应有 A 的气泡');
+    check(((await bubbleFeature(B.page))?.shown_by?.[A.id] ?? 0) === by0, `B 的 Godot 一侧从没为 A 冒过气泡（累计次数 ${by0} 不变，与气泡存活时间无关）`);
     check(!(await apiHistory(B)).some((m) => m.text === G5), '服务端 B 的附近历史没有 G5');
     await B.page.click('#homeBtn');
     await until(async () => (await snap(B.page)).scene !== 'home', 120_000, 'B 出门');
     await come(B, A, 5);
     await until(async () => (await bubbleOf(A, A.id)).length === 0, 20_000, 'A 的气泡消失', 150);
+  });
+
+  await step(31.5, '两人挨着各说一句长话：两块气泡互不相交，也不压在对方的名牌上，整块在顶栏之下（A、B 两个页面各核对一遍）', async () => {
+    await closeDock(A.page);
+    await closeDock(B.page);
+    await until(async () => (await bubbleOf(A, A.id)).length === 0 && (await bubbleOf(B, A.id)).length === 0 && (await bubbleOf(A, B.id)).length === 0, 20_000, '此前的气泡已消失', 150);
+    await come(B, A, 3);
+    const long1 = uniq('今天广场上有好多人在放灯要不要一起去看看呀');
+    const long2 = uniq('好呀好呀我们现在就出发吧顺便带上茶');
+    await apiSayWait(A, long1);
+    await apiSayWait(B, long2);
+    await until(async () => (await bubbles(A.page)).length === 2 && (await bubbles(B.page)).length === 2, 20_000, 'A、B 页面都同时有两个气泡', 80);
+    // 抬高量是平滑过去的（人走动、前一个气泡过期时不一帧跳变），所以等排版稳定下来再断言
+    const layout = (p) =>
+      p.page.evaluate(() => {
+        const R = (e) => e.getBoundingClientRect().toJSON();
+        const tags = [...document.querySelectorAll('#tags .tag')];
+        const bubs = tags.filter((e) => e.classList.contains('b'));
+        const names = tags.filter((e) => e.classList.contains('s') || e.classList.contains('a'));
+        const topbar = R(document.getElementById('topbar'));
+        const inter = (a, b) => a.left < b.right - 1 && b.left < a.right - 1 && a.top < b.bottom - 1 && b.top < a.bottom - 1;
+        const issues = [];
+        for (let i = 0; i < bubs.length; i++) {
+          const r = R(bubs[i]);
+          const id = bubs[i].getAttribute('data-id').replace(/^b:/, '');
+          for (let j = i + 1; j < bubs.length; j++) if (inter(r, R(bubs[j]))) issues.push('气泡互相重叠');
+          for (const n of names) if (n.getAttribute('data-id') !== id && inter(r, R(n))) issues.push('气泡压在别人的名牌上');
+          if (r.top < topbar.bottom) issues.push('气泡压进顶栏');
+          if (r.left < 0 || r.right > window.innerWidth) issues.push('气泡出了屏幕左右边');
+        }
+        return { n: bubs.length, issues: [...new Set(issues)], rects: bubs.map((e) => R(e)).map((r) => [Math.round(r.left), Math.round(r.top), Math.round(r.width), Math.round(r.height)]) };
+      });
+    for (const p of [A, B]) {
+      const ok = await until(async () => {
+        const l = await layout(p);
+        return l.n === 2 && l.issues.length === 0 ? l : null;
+      }, 12_000, `${p.label} 页面两块气泡互不相交、不压别人的名牌、不压顶栏`, 120).catch(async (e) => {
+        throw new Error(`${e.message}；最后一次：${JSON.stringify(await layout(p))}`);
+      });
+      note(`${p.label} 两块气泡矩形 ${JSON.stringify(ok.rects)}`);
+      await frames(p.page, 3);
+      const again = await layout(p);
+      check(again.n === 0 || again.issues.length === 0, `${p.label} 稳定之后仍不重叠：${JSON.stringify(again)}`);
+    }
+    await until(async () => (await bubbles(A.page)).length === 0 && (await bubbles(B.page)).length === 0, 20_000, '气泡淡出', 150);
   });
 
   // ───────────────────────── 32 @ 高亮、未读与 XSS ─────────────────────────
@@ -764,7 +853,7 @@ export default async function run(h) {
     check(f.size === rows.length && f.seen === rows.length, `Godot 一侧 _msgs / _seen 只含新居民读到的：${JSON.stringify({ size: f.size, seen: f.seen, rows: rows.length })}`);
     check(f.muted === false && !(await townChrome(B.page)).muted, '新居民未静音');
     const u = await townUnread(B.page);
-    check(u.town === 0 && u.badgeHidden, `新居民未读 0：${JSON.stringify(u)}`);
+    check(u.town === 0 && badgeOk(u), `新居民未读 0：${JSON.stringify(u)}`);
     check((await bubbles(B.page)).length === 0 && ((await bubbleFeature(B.page))?.active ?? [1]).length === 0, '新居民没有气泡');
     await openTown(B.page);
     await B.page.click(IN);

@@ -28,6 +28,8 @@ class StubCtx:
 	var pending: Array = []
 	var calls: Array = []
 	var acts: Array = []
+	var ctl: bool = true
+	var game: bool = false
 
 	func bridge() -> TBridge:
 		return br
@@ -36,10 +38,10 @@ class StubCtx:
 		return "me"
 
 	func control_mine() -> bool:
-		return true
+		return ctl
 
 	func in_game() -> bool:
-		return false
+		return game
 
 	func conn() -> String:
 		return "ok"
@@ -152,6 +154,7 @@ func _run() -> void:
 	await t_tick_after_leave()
 	await t_older_cap()
 	await t_older_truncate()
+	await t_send_checks()
 
 
 # 读更早与追新并发：更早那页回来之前列表因封顶从前面弹掉了几条，这页不能再接到最前面（否则中间断档）
@@ -362,3 +365,36 @@ func t_older_truncate() -> void:
 	check(t._msgs.size() == 200, "截断: 恰 200 条（%d）" % t._msgs.size())
 	check(str(t._msgs[0]["sid"]) == "m93", "截断: 最前面是紧挨着原来最前面的 m93..m99 里最旧的（%s）" % str(t._msgs[0]["sid"]))
 	check(t._older == "m93" and t._has_older, "截断: _older 是现在最旧一条（%s）" % t._older)
+
+
+func acks(c: StubCtx) -> Array:
+	var out: Array = []
+	for e in c.br.log:
+		if e["k"] == "ack":
+			out.append(e["d"])
+	return out
+
+
+# 发话前的本地检查：超长、只读、对局中都在本地拒绝，不发请求
+func t_send_checks() -> void:
+	var r = make()
+	var t = r[0]
+	var c: StubCtx = r[1]
+	await boot(t, c, [msg("a1")], "c1", null)
+	var long: String = "😀".repeat(60) + "a".repeat(61)
+	check(long.length() == 121, "构造的文字是 121 个码点")
+	await t._send(1, long, "chat", "")
+	check(c.acts.is_empty(), "超长: 不发请求")
+	check(acks(c).back()["code"] == "text_too_long" and acks(c).back()["maxChars"] == 120, "超长: 本地 ack text_too_long，带上限 120")
+	c.ctl = false
+	await t._send(2, "你好", "chat", "")
+	check(c.acts.is_empty() and acks(c).back()["code"] == "readonly", "只读: 本地拒绝")
+	c.ctl = true
+	c.game = true
+	await t._send(3, "你好", "chat", "")
+	check(c.acts.is_empty() and acks(c).back()["code"] == "in_activity", "对局中: 本地拒绝")
+	c.game = false
+	await t._send(4, "你好", "bogus", "nowhere")
+	check(c.acts.size() == 1 and c.acts[0]["kind"] == "chat" and not c.acts[0].has("place"), "白名单: 非法类型按闲聊、非法地点丢掉（%s）" % str(c.acts))
+	await t._send(5, "走吧", "activity", "arcade")
+	check(c.acts.size() == 2 and c.acts[1]["kind"] == "activity" and c.acts[1]["place"] == "arcade", "白名单: 合法的类型与地点照发")

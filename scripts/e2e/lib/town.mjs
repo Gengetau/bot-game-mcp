@@ -55,6 +55,9 @@ export const townUnread = (page) =>
     return { town: d.town?.unread ?? null, per, sum, badge: b && !b.hidden ? b.textContent : '', badgeHidden: !b || b.hidden, dot: !!dot && !dot.hidden, label: document.getElementById('dockBtn').getAttribute('aria-label') };
   });
 
+/** 启动按钮角标与各模块未读之和一致（和为 0 时隐藏；超过 9 显示的是「9+」之类，只要求可见）。不写死总数：别的页签并入后也成立。 */
+export const badgeOk = (u) => (u.sum === 0 ? u.badgeHidden : !u.badgeHidden && (u.badge === String(u.sum) || u.sum > 9));
+
 /** 输入栏现状（全镇页签）。 */
 export const townCompose = (page) =>
   page.evaluate((root) => {

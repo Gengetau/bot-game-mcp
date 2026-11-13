@@ -14,6 +14,7 @@ const Layout := preload("res://scripts/features/bubble_layout.gd")
 
 var _b: Dictionary = {}  # 说话人编号 -> {text, born, show_ms, lift（正在显示的抬高量，CSS 像素）, lt（上次更新的时刻）}
 var _shown: int = 0
+var _shown_by: Dictionary = {}  # 说话人编号 -> 累计冒过几次（端到端用它证明「没有给某人冒过气泡」，不受气泡存活时间影响）
 var _skipped_stale: int = 0
 
 
@@ -67,6 +68,7 @@ func _on_heard(m: Dictionary) -> void:
 		_b.erase(oldest)
 	_b[speaker] = {"text": text, "born": now, "show_ms": clampf(2200.0 + 80.0 * n, 3000.0, 6500.0), "lift": -1.0, "lt": now}
 	_shown += 1
+	_shown_by[speaker] = int(_shown_by.get(speaker, 0)) + 1
 
 
 ## 压成一行：换行 / 制表符 / 连续空白变成一个空格
@@ -149,4 +151,4 @@ func debug() -> Dictionary:
 	for k in _b:
 		var e: Dictionary = _b[k]
 		act.append({"id": k, "len": str(e["text"]).length(), "phase": "fade" if now - float(e["born"]) >= float(e["show_ms"]) else "show"})
-	return {"active": act, "shown": _shown, "skipped_stale": _skipped_stale}
+	return {"active": act, "shown": _shown, "shown_by": _shown_by.duplicate(), "skipped_stale": _skipped_stale}
