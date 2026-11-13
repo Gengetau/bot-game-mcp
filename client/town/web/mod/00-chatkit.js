@@ -6,6 +6,7 @@
  *   kit.append(items, live)   items = [{id, from, name, kind, text, at, space, spaceName, mine}]；按 id 去重、按 id 升序；live=false 的（历史补读）永不计未读
  *   kit.onAck(ack)      ack = {n, ok, heardBy?, code?, reason?, message?, retryMs?, maxChars?}
  *   kit.reset()         离开 / 换人：清列表、草稿、ArrowUp 历史、倒计时（聊天内容只放内存）
+ *   kit.clearList()     只清列表与未读（整体重读用），不动发送中状态、倒计时、提示、历史、草稿
  *   kit.onShow() / kit.forceSend(text) / kit.debug()
  * options：
  *   msgTpl     消息行模板的 id（独立顶层 <template>，不嵌套）
@@ -123,20 +124,24 @@
     }
 
     function startCooldown(sec) {
+      /* cool 是「还要禁用几秒」：第一次显示不减，之后每秒先减再显示，减到 0 才恢复。
+       * （原来第一次显示就减一，倒计时只有 1 秒时 cool 立刻变 0，发送钮没禁用提示就消失，最后一秒也提前放开了） */
       cool = Math.max(1, sec | 0);
       clearInterval(coolTimer);
+      var first = true;
       var tick = function () {
-        if (cool > 0) setHint(host.t('err.rate_limited', { n: cool }), 'cool');
-        if (cool <= 0) {
+        if (!first) cool--;
+        first = false;
+        if (cool > 0) {
+          setHint(host.t('err.rate_limited', { n: cool }), 'cool');
+        } else {
           clearInterval(coolTimer);
           if (hintKind === 'cool') setHint('');
-          updateSend();
         }
-        cool--;
+        updateSend();
       };
       tick();
       coolTimer = setInterval(tick, 1000);
-      updateSend();
     }
 
     function onAck(a) {
@@ -379,6 +384,21 @@
       updateCount();
     }
 
+    /* 只清列表（整体重读用）：不动发送中、限流倒计时、提示、ArrowUp 历史、草稿；未读清零（重读的是历史，不计未读） */
+    function clearList() {
+      pendingIn = [];
+      if (rafId) {
+        cancelAnimationFrame(rafId);
+        rafId = 0;
+      }
+      items = [];
+      byId = {};
+      list.textContent = '';
+      jump.hidden = true;
+      unread = 0;
+      host.setUnread(0);
+    }
+
     function onShow() {
       requestAnimationFrame(toBottom);
       if (unread) {
@@ -406,7 +426,7 @@
     }
 
     updateCount();
-    return { setState: setState, append: append, onAck: onAck, reset: reset, onShow: onShow, forceSend: forceSend, debug: debug, addSystem: addSystem };
+    return { setState: setState, append: append, onAck: onAck, reset: reset, clearList: clearList, onShow: onShow, forceSend: forceSend, debug: debug, addSystem: addSystem };
   }
 
   window.TownChatKit = { create: create };

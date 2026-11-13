@@ -132,7 +132,11 @@ func feature(fid: String):
 	return m.features.get_feature(fid)
 
 
-# ───────────────────────── C1b 分区（预留，空）─────────────────────────
+# ───────────────────────── C1b 分区 ─────────────────────────
+## 走到某个公共地点（只是走过去，不替玩家入座或做别的）。必须走 main._do_navigate：它管续租、序号栅栏、落点标记、只读与对局中的拦截。
+func navigate_to_place(place_id: String) -> void:
+	m.selected_obj = ""
+	await m._do_navigate({"to": place_id}, "")
 # ─────────────────────────────────────────────────────────────────────────
 
 
