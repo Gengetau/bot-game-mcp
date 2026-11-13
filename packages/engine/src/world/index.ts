@@ -10,6 +10,7 @@ import { installInteract } from './interact.js';
 import { installLife } from './life.js';
 import { installMail } from './mail.js';
 import { installNpc } from './npc.js';
+import { installNpcTalk } from './npc-talk.js';
 import { installProperty } from './property.js';
 import { installReports } from './reports.js';
 import { WorldService, type Auth, type WorldOptions } from './service.js';
@@ -24,6 +25,7 @@ export function createWorld(opts: WorldOptions): WorldService {
   installChat(w);
   installSpace(w);
   installNpc(w);
+  installNpcTalk(w);
   installProperty(w);
   installMail(w);
   installInteract(w);

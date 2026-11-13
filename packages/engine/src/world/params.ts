@@ -39,6 +39,14 @@ export const townParamsSchema = z.object({
   npcSpeedFactor: z.number().min(0.1).max(1).default(0.6),
   /** NPC 找不到路时多久以后再试 */
   npcRetryMs: ms(30_000, 1000),
+  /** NPC 说话（ask_npc 的回答）：每位居民的限流桶，容量和每分钟补充的个数 */
+  npcAskBurst: int(4, 1, 100),
+  npcAskPerMinute: int(6, 1, 600),
+  /** 每名 NPC 开口（广播给附近的人）的最小间隔：间隔内再被问，提问人照样拿到回答，但不再广播 */
+  npcSpeakCooldownMs: ms(2_500, 0),
+  /** 闲逛者停留时被搭话：这次停留至少延到「现在 + 这个」；一次停留被延长的总量不超过 npcTalkHoldMaxMs */
+  npcTalkHoldMs: ms(8_000, 0),
+  npcTalkHoldMaxMs: ms(60_000, 0),
   /** 信件从寄出到进信箱 */
   letterDeliveryDelayMs: ms(60_000),
   /** 住宅邀请有效期 */
