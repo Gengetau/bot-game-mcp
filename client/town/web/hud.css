@@ -165,10 +165,10 @@ button.big { font-size: 18px; padding: 12px 28px; min-height: 48px; }
   body { font-size: 14px; }
   .chip { padding: 5px 10px; }
   /* 顶栏收紧：地点胶囊完整显示地点名（最长约五个汉字，不再被省略号截断），次要的「旧页面」收起，其余按钮缩小字号和内边距 */
-  #topbar { gap: 6px; }
+  #topbar { gap: 4px; }
   #topbar .chip { min-height: 32px; }
-  #topbar .chip.btn { font-size: 13px; padding: 4px 8px; }
-  #where { flex: none; gap: 6px; padding: 4px 10px; }
+  #topbar .chip.btn { font-size: 13px; padding: 4px 6px; }
+  #where { flex: none; gap: 5px; padding: 4px 8px; }
   #space { overflow: visible; text-overflow: clip; }
   #oldLink { display: none; }
   #controls button { min-width: 64px; padding: 8px 10px; }
