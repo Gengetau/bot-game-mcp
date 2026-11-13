@@ -24,6 +24,7 @@ var _busy: bool = false
 var _walk_busy: bool = false
 var _walk_oid: String = ""
 var _walk_at: int = 0
+var _warn: String = ""  # 走开提示文字：_mine 变动时算好，blocks_input 每帧只读它（方向键按着不放时每帧都问，不能每帧拼字符串）
 var _begin_mark: String = ""  # 我刚点了「开始」的活动编号：它的开始事件不再弹「开始了」
 var _events: int = 0
 var _last_act: Dictionary = {}
@@ -51,6 +52,7 @@ func on_leave() -> void:
 	_gen += 1
 	_me_id = ""
 	_mine = {}
+	_warn = ""
 	_objs = {}
 	_order = []
 	_tags = []
@@ -90,6 +92,7 @@ func on_me(view: Dictionary) -> void:
 		_me_id = mid
 	var old_id: String = str(_mine.get("id", ""))
 	_mine = _parse_mine(view.get("interaction"))
+	_refresh_warn()
 	var new_id: String = str(_mine.get("id", ""))
 	if new_id != old_id:
 		Logic.gate_clear(_gate)  # 这是最危险的地方：活动没了，走开拦截必须立刻回到空串
@@ -106,6 +109,7 @@ func on_me(view: Dictionary) -> void:
 
 func _reset_person() -> void:
 	_mine = {}
+	_warn = ""
 	_objs = {}
 	_order = []
 	_tags = []
@@ -119,6 +123,16 @@ func _reset_person() -> void:
 	_last_act = {}
 	_last_done = {}
 	_gen += 1
+
+
+## 走开提示文字：等人且我是发起人 / 等人且我是参与者 / 进行中。_mine 或它的状态变了就重算一次
+func _refresh_warn() -> void:
+	if _mine.is_empty():
+		_warn = ""
+		return
+	var ini = _mine.get("initiator")
+	var is_ini: bool = ini is Dictionary and str(ini.get("id", "")) == _me_id
+	_warn = Logic.warn_text(str(_mine.get("status", "")), is_ini, str(_mine.get("name", "")))
 
 
 ## 缺字段、类型不对都当没有
@@ -264,6 +278,7 @@ func on_event(ev: Dictionary) -> void:
 		_last = {"name": str(data.get("name", "")), "text": str(data.get("text", ""))}
 		# 活动已经结算：走开拦截立刻放开，不等 /me
 		_mine = {}
+		_warn = ""
 		_people = {}
 		Logic.gate_clear(_gate)
 		_begin_mark = ""
@@ -281,6 +296,7 @@ func on_event(ev: Dictionary) -> void:
 		if not mine_ini or reason.find(LOBBY_REASON_KEY) >= 0:
 			ctx.toast("这一桌散了：" + reason if reason != "" else "这一桌散了。", "warn")
 		_mine = {}
+		_warn = ""
 		_people = {}
 		Logic.gate_clear(_gate)
 		_begin_mark = ""
@@ -301,6 +317,7 @@ func on_event(ev: Dictionary) -> void:
 			ctx.toast("开始了，大约 %s。" % Logic.dur_text(ms), "info")
 		_begin_mark = ""
 		_mine["status"] = "running"
+		_refresh_warn()
 
 
 # ───────────────────────── 按钮 ─────────────────────────
@@ -473,10 +490,7 @@ func blocks_input() -> String:
 	var now: int = Time.get_ticks_msec()
 	if now < int(_gate["confirmed_until"]):
 		return ""
-	var ini = _mine.get("initiator")
-	var is_ini: bool = ini is Dictionary and str(ini.get("id", "")) == _me_id
-	var text: String = Logic.warn_text(str(_mine.get("status", "")), is_ini, str(_mine.get("name", "")))
-	return Logic.gate(_gate, now, text)
+	return Logic.gate(_gate, now, _warn)
 
 
 # ───────────────────────── 桌牌 ─────────────────────────
