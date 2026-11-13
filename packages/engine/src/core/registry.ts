@@ -39,9 +39,10 @@ export interface GameDefinition<O = any> {
   /**
    * 按选项定下的上场人数（不含裁判），比如剧本杀按剧本人数。设了它，报名上限、开局人数都按它算，
    * 而且裁判要从报名玩家里抽时自动多留一个位置；报名超出时按报名先后入座，多出的人这局不上场。
+   * lobby 为当前或拟提交的报名名单，可用于仅给已报名 DM 留额外席位。
    * 返回 null 表示还定不下来（比如还没选剧本），这时用 minPlayers~maxPlayers。
    */
-  playerRange?(options: O): { min: number; max: number } | null;
+  playerRange?(options: O, lobby: readonly { id: string; name: string }[]): { min: number; max: number } | null;
   /** 配合 playerRange：报名的人（已去掉裁判）比 max 多时，实际入座几人。不填就是 max。 */
   seatsFor?(options: O, entries: readonly { id: string; name: string }[]): number;
   /** 开局时必须上场、不能被抽去当裁判的报名者（QQ 号或昵称），例如剧本杀指定的 DM。lobby 为当前报名名单。 */
