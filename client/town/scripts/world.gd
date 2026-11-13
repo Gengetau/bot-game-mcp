@@ -703,11 +703,6 @@ func _build_obstacles(sc: Dictionary, sid: String) -> void:
 				put("prop.pantry", cx, cz, 0.0, 1.0, -1.0, -1.0, {"w": w, "d": d, "h": 1.8})
 			"garden.shed":
 				put("prop.shed", cx, cz, 0.0, 1.0, -1.0, -1.0, {"w": w, "d": d, "h": 2.1})
-			"arcade.table1", "arcade.table2":
-				put("prop.arcade_table", cx, cz, 0.0, 1.0, -1.0, -1.0, {"w": w, "d": d})
-				put("stool", cx - 0.9, cz + 1.4, 0.0, 0.8, -1.0)
-				put("stool", cx + 0.9, cz + 1.4, 0.0, 0.8, -1.0)
-				glow(Vector3(cx, 1.4, cz), 1.6)
 			"lamp.1", "lamp.2", "lamp.3", "lamp.4":
 				put("lamp", cx, cz, 0.0, 1.0, -1.0)
 				pool(cx, cz, 5.2, 1.0)
@@ -748,8 +743,8 @@ func _mul(c: Color, k: float) -> Color:
 	return Color(c.r * k, c.g * k, c.b * k, c.a)
 
 
-## 可互动物件画出来的高度（米）：书架按参数画，灶台以 town_art.gd 里烟囱的顶（2.6 + 0.45）为准，茶桌以茶壶嘴为准，花箱以花丛顶为准。
-const INTERACTABLE_MODEL_H := {"bookshelf": 2.5, "stove": 3.05, "tea_table": 1.0, "planter": 0.9}
+## 可互动物件画出来的高度（米）：书架按参数画，灶台以 town_art.gd 里烟囱的顶（2.6 + 0.45）为准，茶桌以茶壶嘴为准，花箱以花丛顶为准，游戏桌以桌面上的骰子为准。
+const INTERACTABLE_MODEL_H := {"bookshelf": 2.5, "stove": 3.05, "tea_table": 1.0, "planter": 0.9, "game_table": 0.95}
 
 
 func _build_interactables(sc: Dictionary, sid: String, root: Node3D) -> void:
@@ -779,6 +774,12 @@ func _build_interactables(sc: Dictionary, sid: String, root: Node3D) -> void:
 				glow(Vector3(cx, 0.55, cz + fd * 0.5 + 0.05), 1.2)
 			"planter":
 				put("prop.planter", cx, cz, 0.0, 1.0, -1.0, -1.0, {"w": fw * 0.92, "d": fd * 0.92})
+			"game_table":
+				# 地图 town-p1.0 起游戏桌是可交互物件（之前是 obstacles 里的 arcade.table1 / arcade.table2）
+				put("prop.arcade_table", cx, cz, 0.0, 1.0, -1.0, -1.0, {"w": fw, "d": fd})
+				put("stool", cx - 0.9, cz + 1.4, 0.0, 0.8, -1.0)
+				put("stool", cx + 0.9, cz + 1.4, 0.0, 0.8, -1.0)
+				glow(Vector3(cx, 1.4, cz), 1.6)
 		var anchor_pts: Array = []
 		for ua in it.get("useAnchors", []):
 			anchor_pts.append(Vector2(float(ua["x"]), float(ua["z"])))
