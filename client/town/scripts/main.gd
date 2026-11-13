@@ -1328,6 +1328,10 @@ func _is_near(oid: String) -> bool:
 	for o in here.get("objects", []):
 		if str(o.get("id", "")) == oid:
 			return bool(o.get("near", false))
+	# 游戏桌不在 here.objects 里（它没有单人动作），够不够得着在 here.tables 里
+	for t in here.get("tables", []):
+		if str(t.get("id", "")) == oid:
+			return bool(t.get("near", false))
 	return false
 
 

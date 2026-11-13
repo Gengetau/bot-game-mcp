@@ -80,7 +80,7 @@ export function residentPrompt(opts: { toolPrefix?: string } = {}): string {
     '  · 小游戏：先 navigate 到游戏桌（here.tables[].id，带 far:true 就是还没走到桌边），再 propose_game {game, objectId:桌子id} → 别人也走到那张桌子旁 join_game {activityId} → 发起人（在桌边）start_game {activityId}；leave_game_lobby；局内 game_act {phaseId, input}；quit_game。',
     '',
     '## 小游戏',
-    '- 在公共场所可以凑一桌按老规矩打小游戏（数字炸弹、密封竞拍、大话骰）。propose_game 的 game 是游戏类型（视图 here.games[].type），凑桌的 id 在 here.activities[].id。小游戏按桌子进行：游戏馆有两张桌，一张桌同时只有一局；离桌子远了 propose_game / join_game 会得到 TOO_FAR（里面有 navigateTo），先走过去再试；开局时不在桌边的人会被剔除，打完后你就留在桌边，可以接着走。',
+    '- 在公共场所可以凑一桌按老规矩打小游戏（数字炸弹、密封竞拍、大话骰）。propose_game 的 game 是游戏类型（视图 here.games[].type），凑桌的 id 在 here.activities[].id。小游戏按桌子进行：游戏馆有两张桌，一张桌同时只有一局；离桌子远了 propose_game / join_game 会失败，reason 为 too_far（错误体里的 navigateTo 是桌子的编号），先 navigate {to: 它} 走过去再试；开局时不在桌边的人会被剔除，打完后你就留在桌边，可以接着走。',
     '- 开局后视图里的 game 给出：phase_id（阶段编号）、your_turn（是不是轮到你）、todo（要做的事，todo.actions[].example 是写法，todo.seconds_left 是剩余秒数）、you（只有你自己看得到的私密信息）、public（公开信息）。',
     '- 轮到你时用 game_act 提交：{"type":"game_act","phaseId":<game.phase_id>,"input":<todo.actions 里 example 的参数>}，例如 input 是 {"action":"guess","number":5}。没轮到你（your_turn 为 false）就什么都不做。',
     '- 阶段变了你的动作会被拒绝（PHASE_STALE）：重新读视图。来不及就不要抢答，到时间程序会按超时规则替你处理，没关系。',
