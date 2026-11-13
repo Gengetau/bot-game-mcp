@@ -10,16 +10,17 @@
 | Character Animations (1.1) | Kay Lousberg (www.kaylousberg.com) | https://kaylousberg.itch.io/kaykit-character-animations | 2026-11-13 | CC0 1.0（`art_source/third_party/kaykit_character-animations/License.txt`）；zip 的 sha256 `65882f31f905ad2e953819648a59287cdeab8f623908d5ef701971d3758be20f` | `town/assets/models/characters/residents_anims.res`（约 93 KB） | `build_residents.gd` 只摘出用到的动作（idle、walk、sit 三段、wave、interact 等）合成一个动画库，循环动作设成 LOOP_LINEAR；其余动作没有进仓库 |
 | Interface Sounds (1.0) | Kenney (www.kenney.nl) | https://kenney.nl/assets/interface-sounds | 2026-11-12 | CC0 1.0（`art_source/third_party/kenney_interface-sounds/License.txt`） | 输入：`art_source/source/audio/kenney_interface_confirmation_001.ogg`；输出：`town/assets/audio/sfx/confirm.ogg` | `art_source/audio/build_audio.py`：去开头静音，峰值归一到 -9 dBFS，末尾 15 ms 渐出，单声道 Ogg Vorbis（q3）。详见下面「音频台账」 |
 | Impact Sounds (1.0) | Kenney (www.kenney.nl) | https://kenney.nl/assets/impact-sounds | 2026-11-12 | CC0 1.0（`art_source/third_party/kenney_impact-sounds/License.txt`） | 输入：`art_source/source/audio/kenney_impact_footstep_concrete_001.ogg`；输出：`town/assets/audio/sfx/step.ogg` | 同上（峰值 -16 dBFS，比确认音轻） |
-| Godot Engine (4.7.2.stable) | Godot Engine contributors | https://godotengine.org | 以 `/opt/godot/godot --headless --version` 确认：`4.7.2.stable.official.ed1daf0bf` | MIT；引擎内置的第三方组件各有自己的许可（完整清单见 Godot 自带的 `COPYRIGHT.txt`，或引擎「第三方许可」页面） | 网页导出产物里的引擎 `index.wasm`、`index.js` 等（`client/town/build/web/`） | 引擎随网页导出一起分发；没有核对过是否用了官方模板、有无自行改动 |
+| Godot Engine (4.7.2.stable) | Godot Engine contributors | https://godotengine.org | 以 `/opt/godot/godot --headless --version` 确认：`4.7.2.stable.official.ed1daf0bf` | MIT；引擎内置的第三方组件各有自己的许可（完整清单见 Godot 自带的 `COPYRIGHT.txt`，或引擎「第三方许可」页面） | 网页导出产物里的引擎 `index.wasm`、`index.js` 等（`client/town/build/web/`） | 引擎随网页导出一起分发；许可入口见下面「Godot 引擎的许可」；模板核对见同一节 |
 
 取得方式：用 Playwright 打开 Kenney 素材页，点页面自己的「Download」和「Continue without donating」按钮下载（正常访客流程），
 压缩包解压在独立的空目录里当不可信数据处理，只把上表列出的文件和包内 License.txt 拷进仓库。其余文件没有进仓库。
 
-**Godot 引擎的许可（发布前事项）**：随包分发的引擎二进制要求保留 Godot 的版权声明和 MIT 许可文本，并保留内置第三方组件各自的许可声明；本台账不抄写组件清单，以 Godot 自带的 `COPYRIGHT.txt` 为准。目前导出产物和页面里都没有这些许可文本的入口。**公开发布之前**必须在页面上提供入口（例如「关于」里链接到随包附带的许可文本），这一项尚未做。
+**Godot 引擎的许可**：随包分发的引擎二进制要求保留 Godot 的版权声明和 MIT 许可文本，并保留内置第三方组件各自的许可声明。做法：`client/tools/gen_licenses.gd`（无界面 GDScript，`godot --headless --script` 跑）把引擎自己的 `Engine.get_license_text()`、`get_copyright_info()`、`get_license_info()` 整理成一份纯文本，开头写明「这个页面用 Godot Engine 构建；美术与音频素材均为 CC0，来源见 `client/ASSETS.md`」并列出各素材包的作者致谢；`client/tools/export.sh` 在导出后生成它，放进导出目录 `licenses.txt`（约 100 KB，不进 pck、不预压缩）；进入面板底部有一个「开源许可」链接（新窗口打开）。引擎托管 `/town/3d/` 时 `.txt` 的类型是 `text/plain; charset=utf-8`（`packages/engine/src/world/http.ts`，`client-host.test.ts` 有用例）；端到端步骤 1 断言链接可见、文件取得到且含 Godot 的 MIT 许可文字。组件清单不在本台账抄写，以引擎给出的为准。
+**官方模板核对（2026-11-13）**：`/opt/godot/godot --version` 是 `4.7.2.stable.official.ed1daf0bf`；`~/.local/share/godot/export_templates/4.7.2.stable/version.txt` 是 `4.7.2.stable`（与引擎版本一致），`client/town/export_presets.cfg` 的 `custom_template/debug`、`custom_template/release` 都为空，即用的是装在模板目录里的标准模板（单线程 `web_nothreads_release.zip`）。导出产物的 `index.wasm`（sha256 `fc74679e3b97f76878947fcd4fbe1268cbfa6188182a2e33bbc3f5dc9bfa57d0`）和 `index.js`（`33c94cb3175f3333b82e2a3be5e8e86f77986f0aa2042b1631f6367a4e5bb6ba`）与模板压缩包里的 `godot.wasm`、`godot.js` 逐字节相同，说明导出没有改动引擎。**核对不了的部分**：没有拿 Godot 官方发布的模板校验和比对（这台机器上没有取得它的途径），所以只能证明「用的是模板目录里这份、没被导出过程改过」，不能证明模板目录里这份就是官方原件。
 
 CC0 不要求署名；按 Kenney 的建议，游戏的「关于」里可以写一句 Kenney (www.kenney.nl)。
 
-**旧资产说明**：P0 的 Kenney Mini Characters (2.0，CC0，2026-11-12 取得) 已不再使用，运行时文件 `resident.glb` 等已删除；`art_source/` 里还留着它的原始输入、`build_resident.py`、`check_resident.gd` 和 License.txt，仅作历史记录，可以整体删除。
+**旧资产说明**：P0 曾用 Kenney Mini Characters (2.0，CC0，2026-11-12 取得)，已不再使用；其原始输入、转换脚本和 License.txt 已于 2026-11-13 从仓库删除（核对过没有任何引用），仅留此历史记录。
 
 ## 居民模型的实测属性（Godot 4.7.2 导入后）
 

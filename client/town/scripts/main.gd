@@ -168,6 +168,7 @@ func _build_environment() -> void:
 	daynight = TDayNight.new()
 	add_child(daynight)
 	daynight.debug_hour = bridge.debug_hour
+	daynight.bridge = bridge
 	_set_quality(not DisplayServer.is_touchscreen_available())
 
 
@@ -1453,7 +1454,7 @@ func _update_sitting(a: TActor) -> void:
 ## 昼夜（服务器世界时间）、遮挡淡出（屋顶、树）。
 func _update_scenery(dt: float, now_s: float) -> void:
 	if daynight != null:
-		daynight.tick(now_s)
+		daynight.tick(now_s, clock.has_sync)
 		world.set_night(daynight.night)
 	var heads: Array = []
 	for id in actors:

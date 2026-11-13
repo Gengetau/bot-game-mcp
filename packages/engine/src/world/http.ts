@@ -73,6 +73,7 @@ const TYPES_3D: Record<string, string> = {
   wav: 'audio/wav',
   mp3: 'audio/mpeg',
   ico: 'image/x-icon',
+  txt: 'text/plain; charset=utf-8', // 开源许可文本 licenses.txt（export.sh 生成）
 };
 
 const CSP =

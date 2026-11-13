@@ -15,7 +15,7 @@
 | 桌面上下文 | 1440x900，deviceScaleFactor 1，鼠标 |
 | 手机上下文 | 390x844，deviceScaleFactor 2，`isMobile` + `hasTouch`，触摸 |
 
-跑法：`npm run client:export`（完整导出（含 brotli 11）约 1.8 分钟（实测 108 秒）），然后 `npm run client:e2e`（约 4.3 分钟，最近一遍 257 秒，不进 CI）。脚本是 `scripts/client-e2e.mjs`。
+跑法：`npm run client:export`（完整导出（含 brotli 11）约 1.8 分钟（实测 108 秒）），然后 `npm run client:e2e`（完整一遍约 12 分钟，其中步骤 15「声音」约 7 分钟，不进 CI）。脚本是 `scripts/client-e2e.mjs`。
 只有全部步骤通过的完整运行才会把结果写进 `client/demo/results.json`、把截图换进本目录；失败的运行只写 `results.failed.json`（已 gitignore），截图先写在临时目录。
 
 桌面用 dsf 1 而不是 2 的原因：桌面 dsf 2 是 2880x1800（520 万像素），SwiftShader 只剩 1 到 2 帧每秒，
@@ -77,7 +77,7 @@
 | 文件 | 原始 | gzip | brotli |
 |---|---|---|---|
 | index.wasm | 39,514,754 | 10,153,810 | 6,902,599 |
-| index.pck | 113,072 | 107,364 | 105,610 |
+| index.pck | 1,786,832 | 1,684,894 | 1,628,588 |
 | index.js | 279,815 | 68,917 | 59,854 |
 
 引擎对带 `Accept-Encoding: br` 的请求直接发 `.br`（脚本在步骤 1 里断言 `content-encoding: br`）。首屏到可操作的耗时见步骤 1：本机回环、brotli，约 1.9 秒出现「进入小镇」，点进入加输入名字到可操作约 3.9 秒（含网络往返，两个浏览器同时软件渲染）。真实网络下主要看 wasm 的 6.9 MB。
