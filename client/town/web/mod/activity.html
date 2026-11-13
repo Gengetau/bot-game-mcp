@@ -1,0 +1,59 @@
+<template id="tpl-dock-activity" data-mod="activity" data-tab-label="一起" data-order="30" data-layout="tab">
+  <section class="dock-pane act-pane" data-pane="activity">
+    <div class="act-scroll" data-role="scroll">
+      <article class="act-card act-mine" data-role="mine" hidden>
+        <header class="act-head">
+          <span class="act-title" data-role="title"></span>
+          <span class="act-where" data-role="where"></span>
+        </header>
+        <div role="status" aria-live="polite">
+          <span class="act-status" data-role="status" data-status="open"></span>
+          <p class="act-need" data-role="need"></p>
+        </div>
+        <ol class="act-people" data-role="people"></ol>
+        <p class="act-remain" data-role="remain"></p>
+        <div class="act-bar" data-role="barwrap" hidden><span class="act-fill" data-role="bar"></span></div>
+        <p class="act-cost" data-role="cost"></p>
+      </article>
+      <section class="act-tables" data-role="tableswrap" hidden>
+        <h3 class="act-h" data-role="tablesH"></h3>
+        <ul class="act-list" data-role="tables"></ul>
+      </section>
+      <article class="act-card act-last" data-role="last" hidden>
+        <h3 class="act-h" data-role="lastH"></h3>
+        <p class="act-lastname" data-role="lastName"></p>
+        <p class="act-lasttext" data-role="lastText"></p>
+      </article>
+      <p class="act-empty" data-role="empty" hidden></p>
+    </div>
+    <div hidden data-bank>
+      <span data-t="h.tables">这里的桌子</span>
+      <span data-t="h.last">刚才</span>
+      <span data-t="empty">这里没有可以一起做的事。去茶馆的茶桌或书屋的藏书架看看。</span>
+      <span data-t="status.open">等人</span>
+      <span data-t="status.running">进行中</span>
+      <span data-t="need.lack">还差 {n} 人才能开始</span>
+      <span data-t="need.ready_ini">人够了，点下面的「开始」</span>
+      <span data-t="need.wait_ini">等 {name} 开始</span>
+      <span data-t="need.running">一起进行中</span>
+      <span data-t="remain.open">再等 {t} 就散场</span>
+      <span data-t="remain.running">还剩 {t}</span>
+      <span data-t="tag.ai">AI</span>
+      <span data-t="tag.ini">发起</span>
+      <span data-t="tag.you">你</span>
+      <span data-t="table.free">空着</span>
+      <span data-t="table.open">等人 {n}/{min}</span>
+      <span data-t="table.ready">可开始 {n}/{max}</span>
+      <span data-t="table.running">进行中 · 剩 {t}</span>
+      <span data-t="table.far_join">走到桌边才能加入</span>
+      <span data-t="table.far_start">走到桌边才能约人</span>
+      <span data-t="table.sep">、</span>
+    </div>
+  </section>
+</template>
+<template id="tpl-activity-person">
+  <li class="act-person"><span class="act-nm" data-role="name"></span><span class="act-ai" data-role="ai" hidden></span><span class="act-ini" data-role="ini" hidden></span><span class="act-you" data-role="you" hidden></span></li>
+</template>
+<template id="tpl-activity-table">
+  <li class="act-table"><span class="act-tn" data-role="name"></span><span class="act-ts" data-role="state"></span><span class="act-tp" data-role="who"></span><span class="act-th" data-role="hint"></span></li>
+</template>

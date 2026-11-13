@@ -140,7 +140,33 @@ func navigate_to_place(place_id: String) -> void:
 # ─────────────────────────────────────────────────────────────────────────
 
 
-# ───────────────────────── C2 分区（预留，空）─────────────────────────
+# ───────────────────────── C2 分区 ─────────────────────────
+## 场景里的物件（world.gd 的 find_object）：anchors（使用位，Vector2 数组）、center、pos、kind、name；家里的物件没有，返回 {}
+func object_info(oid: String) -> Dictionary:
+	return m.world.find_object(m.cur_scene, oid)
+
+
+## 走到某个地图点（选座）。必须走 main._do_navigate：它管续租、序号栅栏、落点标记、只读与拦截；绝不用 act 直接发 navigate（租约没人续，走一半停下）。
+## 清掉 selected_obj：不让旧的「走过去」按钮留着。
+func walk_to(to: Dictionary, label: String, mark = null) -> void:
+	m.selected_obj = ""
+	await m._do_navigate(to, label, mark)
+
+
+## 现在够得着这件物件吗（/me 的 near 且位置没在动）
+func near_ok(oid: String) -> bool:
+	return m.near_valid and m._is_near(oid)
+
+
+## 够不够得着的缓存作废（too_far 之后）：按钮收起，等下一次 /me
+func invalidate_near() -> void:
+	m.near_valid = false
+	m._dirty = true
+
+
+## 刷新 /me 并等它读完；正有一次在读时返回 false（读完会再读一次，on_me 照常到）
+func refresh_me_wait() -> bool:
+	return await m._refresh_me()
 # ─────────────────────────────────────────────────────────────────────────
 
 
