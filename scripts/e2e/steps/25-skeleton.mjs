@@ -1,6 +1,6 @@
 // S0：骨架小补丁。页签条放得下五六个页签（四种视口）、E 键先问功能模块（on_pick）、测试口只在 ?debug=1 下存在。
 // A 桌面 1440x900（侧栏），B 手机 390x844 触摸（抽屉）。假页签、假接管测完都卸掉，后面的 30、60 号文件不受影响。
-// 末尾有一段「怎么让它失败」，这段清单是计划：下面「实测」一节记录实际做过的那几条，没记录的没验证过。
+// 末尾有一段「怎么让它失败」：分「实测过」和「只是推演、没验证」两部分，别把后一部分当成验证过的。
 import { poll, dockState, godotFeature, openDock, closeDock, rectOf, frames } from '../lib/ui.mjs';
 import { apiAct } from '../lib/chat.mjs';
 
@@ -368,18 +368,18 @@ export default async function run(h) {
 }
 
 /* ───────────────────────── 怎么让它失败（反向验证）─────────────────────────
- * 以下每条临时改动后，指定的子步骤变红；改回去再跑变绿。破坏清单和脚本不入库。
- *  - dock.css 把 `#dock .dock-tab` 的 padding 改回 0 14px：25（五个页签时在 1100 / 360 视口里要滚动，且 note 里的宽度变大；点不到的断言本身靠下一条）。
- *  - dock.css 去掉 #dockTabs 的 overflow-x:auto（改成 visible）：25（六个页签时最后一个被关闭钮盖住，「最后一个页签中心点命中自己」超时）。
- *  - dock.css 把 #dockTabs 的 padding-right 改成 0：25（最后一个页签的右沿超出关闭钮左沿）。
- *  - dock.js 的 revealTab 改成空函数：25（选中最后一个页签后没有自动滚进可见）。
- *  - dock.css 去掉抽屉里 `.dock-tab::before { top: -14px }`（或把抽屉条高改回 40）：25（抽屉里页签条高应 >= 44 / 顶端点不到）。
- *  - dock.css 去掉 `#dock #dockTabs[data-count="1"] .dock-tab` 那条：25（只剩一个页签时不再是不可点标题）。
- *  - dock.js 的 unregister 不重建页签条：25（假页签卸干净后只剩真页签超时）。
- *  - dock.js 把 `if (DEBUG) window.TownDock.test = test` 的条件去掉：25.1（不带 debug 的页面上不应有测试口）。
- *  - main.gd 的 _do_interact 里去掉 `features.on_pick(best_kind, best_id, src)` 那三行：25.4（有假接管时记录里没有这一次 / 记录的 n 不增长，超时）。
- *  - main.gd 的 _do_interact 里把 on_pick 放到 `if best_kind == "":` 之前，或放在 `_can_control()` 之前：25.2 / 25.3 不红（只改顺序、不改结果），这类顺序靠代码评审，不靠这个文件。
- *  - main.gd 的 _do_interact 里 on_pick 返回 true 后不 return（继续走旧逻辑）：25.4（被接管后不应发出 navigate）。
- *  - hub.gd 的 on_pick 里不记 _last_pick 的 src（固定写 tap）：25.2（记录里来源应是 key）。
- *  - main.gd 的 "interact" 分支里把 src 固定为 "tap"：25.2。
+ * 实测过（临时改坏、跑 --only=1,skeleton，看红在哪，改回后绿）：
+ *  - dock.css 删掉 `#dock .dock-tab.sel:hover:not(:disabled)` 那条：步骤 25 红，「悬停时选中页签的背景应仍是纸色 …，实际 rgb(91, 61, 39)」。
+ *  - dock.js 把 `if (DEBUG) {` 换成 `if (true) {`（测试口对所有页面开放）：步骤 25.1 红，「不带 ?debug=1 时不应有测试口：{test:object, dock:object, …}」。
+ *  - dock.js 的 revealTab 开头加 return（空函数）：步骤 25 红，等待超时「选中最后一个页签后自动滚进可见（右沿在关闭钮之左）」。
+ *  - hub.gd 的 on_pick 记录里把来源固定写成 "tap"：步骤 25.2、25.3、25.4 都红（「记录应是 (…, key, …)」，实际 src 是 tap）。
+ * 只是推演、没验证过（改坏时应红的位置是按代码读出来的，没有真的改坏跑过）：
+ *  - main.gd 的 _do_interact 里 on_pick 返回 true 后不 return：本次和上一条一起改坏，25.4 在更前面的「来源应是 key」就红了，
+ *    「被接管后不应发出 navigate」这条没有单独被触发过。
+ *  - main.gd 里去掉 `features.on_pick(best_kind, best_id, src)` 那三行：25.2 的记录出不来（超时）。
+ *  - dock.css 里 #dockTabs 去掉 overflow-x:auto / padding-right 改 0 / 内边距改回 14：六个页签的「最后一个页签中心点命中自己」「右沿在关闭钮之内」会红。
+ *  - dock.css 去掉抽屉里 `.dock-tab::before { top: -14px }` 或条高改回 40：抽屉里「页签条高应 >= 44」「顶端点不到」会红。
+ *  - dock.css 去掉 `#dock #dockTabs[data-count="1"] .dock-tab`：真页签只有一个时「仍是不可点的标题」会红。
+ *  - dock.js 的 unregister 不重建页签条：「假页签卸干净」超时。
+ *  - 把 on_pick 放到 `_can_control()` 之前或 `if best_kind == "":` 之前：结果不变，靠代码评审，不靠这个文件。
  */
