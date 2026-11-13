@@ -65,7 +65,7 @@ GDScript 一侧（`client/town/scripts/features/`）：
 
 ## 7. 之后各段怎么接
 
-通用规则：只加自己的新文件；`feature.gd`、`ctx.gd` 的公共部分、`hub.gd`、`manifest.gd`、`dock.js`、`dock.css`、`mod/00-chatkit.*` 由 C1a 拥有并冻结；`main.gd`、`hud.js`、`shell.html`、`export.sh`、`client-e2e.mjs` 不再为新功能改动。缺钩子时先单独提只加钩子的小补丁并合并（C7 开工前审一遍钩子）。
+通用规则：只加自己的新文件；`feature.gd`、`ctx.gd` 的公共部分、`hub.gd`、`manifest.gd`、`dock.js`、`dock.css`、`mod/00-chatkit.*` 由 C1a 拥有并冻结；`main.gd`、`hud.js`、`shell.html`、`export.sh`、`client-e2e.mjs` 不再为新功能改动（S0 补丁之外，见下面「S0 之后」）。缺钩子时先单独提只加钩子的小补丁并合并（C7 开工前审一遍钩子）。
 
 新功能的步骤：
 1. GDScript：填 `scripts/features/<id>.gd`（桩文件已在 `manifest.gd` 里占好，**不用加注册行**）。要从 main 读新东西，只在 `ctx.gd` 自己那段预留分区里加访问器；转发协程的包装函数必须 `return await …`。
@@ -77,13 +77,22 @@ GDScript 一侧（`client/town/scripts/features/`）：
 |---|---|---|
 | C1b 公屏 + 头顶气泡 | `town.gd`、`bubbles.gd`；`mod/town.*`（复用 `TownChatKit`，要改行为先加 options，不改内部）、`bubbles.css` | `frame_types = ["town_chat"]`（hello 里有 `townChat.cursor`，历史走 `GET /town-chat`，**旧的在前**，和 `GET /history` 相反）；气泡用 `tags` 钩子追加 `k:'b'` 条目（hud.js 的 `setTags` 只渲染一段纯文字，类名 `tag b`，`.tag` 默认 nowrap / 深色药丸，需在 `bubbles.css` 覆盖）；订阅 `ctx.feature("nearby").heard`（只在 live 消息时发，历史补读不发） |
 | C2 共同活动 | `activity.gd`、`mod/activity.*` | `actions(out)` 追加按钮，id 必须以 `f:activity:` 开头，`on_action(verb, arg)` 收到去掉前缀的部分；按钮的 `mode` 只能用已有样式 do / go / busy，或在自己的 css 里加类 |
-| C3 入座玩小游戏 | `game.gd`、`mod/game.*`（`data-layout="overlay"`，挂到 `#dockOverlays`） | `blocks_input()` 返回非空原因就屏蔽点地和方向键（方向键提示 3 秒节流）；`on_pick(kind, id)` 返回 true 接管点选；**补 nearby 的真实「对局中不能说话」断言**（见已知缺口） |
-| C4 点人 / 居民卡 / 邀请 / 入户 | `people.gd`、`mod/people.*` | `on_pick`、`tags`（门牌，同样受 `setTags` 字段限制） |
+| C3 入座玩小游戏 | `game.gd`、`mod/game.*`（`data-layout="overlay"`，挂到 `#dockOverlays`） | `blocks_input()` 返回非空原因就屏蔽点地和方向键（方向键提示 3 秒节流）；`on_pick(kind, id)` 返回 true 接管点选（点击和 E 键都先问它，S0 之后）；**补 nearby 的真实「对局中不能说话」断言**（见已知缺口） |
+| C4 点人 / 居民卡 / 邀请 / 入户 | `people.gd`、`mod/people.*` | `on_pick`（点击和 E 键都会先问；E 键选的是最近的人或物件，8 米内）、`tags`（门牌，同样受 `setTags` 字段限制） |
 | C5 信箱 | `mail.gd`、`mod/mail.*`（`data-layout="full"`，入口在 dock 内，不占 controls；`limits.letterMaxChars`） | 未读用 `host.setUnread`，汇入 `#dockBtn` 角标 |
 | C6 NPC | `npc.gd`、`mod/npc.*`；改 `actor.gd`（只有 C6 改） | NPC 的 `from.kind` 若不是 human / agent，`TChatUtil.kind_of` 当 human，要特别处理就通过 chatkit 的 options；注意 NPC 会让 nearby 的「附近没人」便签不出现（见已知缺口） |
 | C7 收尾 | `session.gd`、`mod/session.*`（`data-slot="controls"` 只能占 1 个：390 宽的 `#controls` 只容得下约 5 个按钮，现有 4 个） | 「离开小镇」要调 main 私有的 `_enter_left_state`，经 `ctx.gd` 的 C7 分区加访问器；评估镜头留白（rig inset）、老 Android 画布缩放、首次进入提示（默认关闭的面板新玩家可能发现不了，现在靠角标和 `#keyHint` 的 Enter 提示）；汇总各段文档 |
 
 `mod/*` 的合并顺序是文件名排序（`00-chatkit` 先）；模板里不要嵌套 `<template>`（嵌套克隆行为没有在本仓库验证过，消息行骨架是独立的顶层模板）。聊天内容、草稿、ArrowUp 历史只放内存，不写 localStorage / sessionStorage / IndexedDB（只允许界面偏好：面板开关、最后页签）。
+
+### S0 之后（骨架小补丁）
+
+- **E 键和 `on_pick`**：`_do_interact(src)` 选出最近的目标（8 米内的物件或居民）之后、走旧逻辑之前，先调 `features.on_pick(kind, id, src)`；返回 true 就结束（不发 navigate、不记 selected、不弹提示）。等待（`me_busy`、`/me` 刷新）仍在选目标之前，`_can_control()` 仍在最前。所以 C4「点人出居民卡」、C3「点桌子入座」、C2「点茶桌一起喝茶」用键盘也进得去；没有功能接管时行为和以前一样。`on_pick` 的第三个参数（来源：`tap` / `key` / `button`）只给 hub 记录用，功能的 `on_pick(kind, id)` 签名不变。
+- **给 C7 的「互动」按钮留的入口**：网页层 `emit('interact', 'button')`（键盘 E 是 `emit('interact')`，来源记为 `key`）就进同一个 `_do_interact`；C7 只要加按钮、发这个事件，不用改 main.gd。这一段没有加按钮。
+- **调试记录和测试口（只在 `?debug=1`）**：`__town.features._pick` 是最近一次 `on_pick` 的记录 `{kind, id, src, taken, n}`；`__town.pickStub(id)` 装一个「对这个编号返回 true」的假接管（空串撤掉；`main.gd` 只在 `bridge.debug` 下认 `debug_pick_stub`）；`TownDock.test.unregister(id)` 卸掉一个模块（端到端用它卸假页签）、`TownDock.test.select(id)` 选中页签。正式页面上这些都不存在（25.1 在不带 debug 的页面上核对）。
+- **页签条的容量**：`.dock-tab` 左右内边距 14 改 9 像素、页签间距 4 改 2 像素；`#dockTabs` 横向可滚动（隐藏滚动条）、右边留 44 像素给关闭钮，选中的页签自动滚进可见范围（`revealTab`）；关闭钮画木色底，滚动时不透出下面的字。抽屉里的条高 40 改 44 像素，保证触摸点按区不小于 44 像素。样式前缀 `#dock`：以前 `.dock-tab` 的背景、字体、颜色、内边距被 `#dock button` 的重置盖掉了（特异性更低），页签的「木牌」样式一直没生效，现在生效了；只有一个页签时用 `#dock #dockTabs[data-count="1"] .dock-tab` 还原成之前的样子（不可点的标题）。
+- **端到端的小镇参数**：`scripts/client-e2e.mjs` 起引擎时传 `town.params`（`interactionTimeScale` 0.075、`letterDeliveryDelayMs` 4000、`activityLobbyTtlMs` 25000，理由在那个常量上面的注释），步骤文件用 `h.townParams` 读，按参数算等待。服务端的 `interactionTimeScale` 是只给测试用的开服参数（只能缩短，没有运行时入口），见 `docs/TOWN.md`。
+- **`scripts/e2e/steps/25-skeleton.mjs`** 验证：四种视口（1440x900 和 1100x800 的侧栏、390x844 和 360x740 的抽屉）下五个、六个页签都点得到、关闭钮不盖页签、最后一个可滚到可见并点中、选中的自动滚进可见、抽屉里点按区不小于 44 像素、只剩一个页签时仍是标题；测试口只在 debug 下；E 键对物件和居民的记录与旧行为，假接管下旧行为不发生。假页签和假接管测完卸掉。
 
 ## 8. 验证记录
 

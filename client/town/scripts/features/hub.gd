@@ -11,6 +11,10 @@ var _by_frame: Dictionary = {}  # t -> Array[TFeature]
 var _tickers: Array = []
 var _entered: bool = false
 var _entered_self: String = ""
+## 最近一次 on_pick 的记录（kind、id、来源 tap / key / button、有没有被接管、第几次）：只进 debug()，给端到端核对
+var _last_pick: Dictionary = {}
+## 只在 ?debug=1 下由 main 设置：对这个 id 的 on_pick 直接算「被接管」（端到端的假接管），不调任何功能
+var _pick_stub: String = ""
 
 
 func setup(main_node) -> void:
@@ -133,11 +137,21 @@ func on_action(arg: String) -> void:
 	(f as TFeature).on_action(parts[1], parts[2] if parts.size() > 2 else "")
 
 
-func on_pick(kind: String, pid: String) -> bool:
-	for f in _features:
-		if (f as TFeature).on_pick(kind, pid):
-			return true
-	return false
+func on_pick(kind: String, pid: String, src: String = "tap") -> bool:
+	var taken: bool = false
+	if _pick_stub != "" and pid == _pick_stub:
+		taken = true
+	else:
+		for f in _features:
+			if (f as TFeature).on_pick(kind, pid):
+				taken = true
+				break
+	_last_pick = {"kind": kind, "id": pid, "src": src, "taken": taken, "n": int(_last_pick.get("n", 0)) + 1}
+	return taken
+
+
+func set_pick_stub(pid: String) -> void:
+	_pick_stub = pid
 
 
 func blocks_input() -> String:
@@ -159,4 +173,6 @@ func debug() -> Dictionary:
 		var x: Dictionary = (f as TFeature).debug()
 		if not x.is_empty():
 			d[(f as TFeature).id] = x
+	if not _last_pick.is_empty():
+		d["_pick"] = _last_pick
 	return d
