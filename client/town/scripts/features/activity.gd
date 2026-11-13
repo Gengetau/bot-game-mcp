@@ -9,6 +9,7 @@ const SELECT_NEAR := 15.0  # 和 main 的名牌同一口径：离物件超过这
 const TAG_LIFT := 1.0  # 桌牌比物件锚点高多少米（物件名牌在锚点本身，头顶名牌在 2.05 米）
 const LOBBY_REASON_KEY := "太久"  # 服务器取消原因里「等了太久没凑齐人」的关键字：只用来判断要不要对发起人自己提示，文字原样展示
 const WALK_STALE_MS := 10000
+const RECENT_MS := 1500  # 刚发出（或刚发完）去某张桌的导航后这么久内，再点同一张桌不重复发
 
 var _gen: int = 0  # 离开 / 换人时加一，在途结果回来后丢弃
 var _me_id: String = ""
@@ -60,7 +61,9 @@ func on_leave() -> void:
 	_walk_oid = ""
 	_walk_at = 0
 	_begin_mark = ""
-	Logic.gate_clear(_gate)
+	_gate = Logic.new_gate()  # 换人 / 离开：计数也归零
+	_events = 0
+	_picks = 0
 	_last_act = {}
 	_last_done = {}
 	feed("reset")
@@ -112,7 +115,8 @@ func _reset_person() -> void:
 	_walk_busy = false
 	_walk_oid = ""
 	_begin_mark = ""
-	Logic.gate_clear(_gate)
+	_gate = Logic.new_gate()
+	_last_act = {}
 	_last_done = {}
 	_gen += 1
 
@@ -420,6 +424,10 @@ func on_pick(kind: String, pick_id: String) -> bool:
 	var anchors = info.get("anchors")
 	if not (anchors is Array) or (anchors as Array).size() < 2:
 		return false
+	# 只有茶桌有「坐在座位上」的说法。藏书架、灶台、花箱够得着时走 main 的老路（E 键对空着的物件直接做单人的事、点一下给出动作按钮），
+	# 还够不着才替玩家挑一个没人站的使用位走过去
+	if str(info.get("kind", "")) != "tea_table" and ctx.near_ok(pick_id):
+		return false
 	var sa = ctx.actors().get(ctx.self_id())
 	if sa == null:
 		return false
@@ -433,9 +441,9 @@ func on_pick(kind: String, pick_id: String) -> bool:
 	var r: Dictionary = Logic.pick_seat(anchors, me, others)
 	if bool(r["seated"]):
 		return true  # 已经坐在这张桌的某个座位上：吞掉，不发导航，也不让 main 把它记成选中物件
-	# 防重入：同一张桌的路已经在发或在走（连按两下 E、双击）
+	# 防重入：同一张桌的路已经在发、刚发完（服务器的移动快照还没到）或在走（连按两下 E、双击）
 	var now: int = Time.get_ticks_msec()
-	if _walk_oid == pick_id and (_walk_busy or ((sa as TActor).moving and now - _walk_at < WALK_STALE_MS)):
+	if _walk_oid == pick_id and (_walk_busy or now - _walk_at < RECENT_MS or ((sa as TActor).moving and now - _walk_at < WALK_STALE_MS)):
 		return true
 	_picks += 1
 	_walk_oid = pick_id
