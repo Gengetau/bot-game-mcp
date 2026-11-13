@@ -7,6 +7,7 @@ extends TFeature
 const REACH_SLACK := 0.5  # 到达时快照位置可能还没更新：留余量
 const AUTO_CLOSE_DIST := 8.0
 const WANT_WINDOW := 3.0  # 走到了之后，等位置跟上的秒数
+const FAR_WINDOW := 90.0  # 点了远处的人之后，最多等这么久的 you_arrived（路再长也该走到了）
 const MEET_HYST := 0.6
 
 var _gen: int = 0
@@ -25,6 +26,11 @@ var _walk_ended: bool = false
 var _panel_open: bool = false  # 面板开着且停在「人家」页签（网页告知）：这时不再出「门牌」按钮
 var _want_id: String = ""
 var _want_until: float = 0.0
+## 在这个客户端里点过（或由卡片发起走向）的那个远处的人：只有 ta 的 you_arrived 才开卡。
+## 别处发起的走近（另一台设备握着控制权时、接口代发）到达后不弹卡、也不提示「走开了」
+var _far_id: String = ""
+var _far_until: float = 0.0
+var _arrivals: int = 0  # 收到过几次 you_arrived（只给端到端当屏障用）
 
 # 资料与缓存（都只在内存）
 var _res: Dictionary = {}  # 居民编号 -> here.residents 里的公开资料
@@ -82,6 +88,8 @@ func _reset_all() -> void:
 	_panel_open = false
 	_want_id = ""
 	_want_until = 0.0
+	_far_id = ""
+	_far_until = 0.0
 	_res.clear()
 	_hobby.clear()
 	_doors = null
@@ -260,14 +268,21 @@ func on_event(ev: Dictionary) -> void:
 		"nav_stopped":
 			# 路线被服务器停了（没续上、被拦、换了控制权……）：不再等着开卡，卡上也不再写「正在走向 ta」
 			_want_id = ""
+			_far_id = ""
 			_cancel_walk()
 		"you_arrived":
+			_arrivals += 1
 			var tg = data.get("target")
+			# 这次到达是不是在这里点出来的：每次到达都把记号用掉，不留给下一次
+			var mine: String = _far_id if _clock <= _far_until else ""
+			_far_id = ""
 			if tg is Dictionary and str(tg.get("kind", "")) == "resident":
 				var tid: String = str(tg.get("id", ""))
-				if tid != "" and tid != ctx.self_id():
+				if tid != "" and tid != ctx.self_id() and tid == mine:
 					_want_id = tid
 					_want_until = _clock + WANT_WINDOW
+				else:
+					_want_id = ""
 			else:
 				_want_id = ""
 				if tg is Dictionary and str(tg.get("kind", "")) == "home":
@@ -331,10 +346,15 @@ func _dist_to(pid: String) -> float:
 
 func on_pick(kind: String, pid: String) -> bool:
 	if kind != "actor" or not _pickable(pid):
+		_far_id = ""  # 改去点别的东西了：之前点的那个人不再等
 		return false
 	if _dist_to(pid) <= ctx.c4_person_reach():
+		_far_id = ""
 		_open_card(pid)
 		return true
+	# 远处：不接管，main 接着去 approach。记下是在这里点的，ta 的 you_arrived 到了才开卡
+	_far_id = pid
+	_far_until = _clock + FAR_WINDOW
 	return false
 
 
@@ -361,6 +381,8 @@ func _close_card() -> void:
 ## 开始「走向 ta」：c4_approach 确实发出了才调用。超时按路程算，给改道、被拦、对方走远留一条出路
 func _begin_walk(tid: String) -> void:
 	_card_walk = true
+	_far_id = tid  # 也是在这里发起的走近：路上把卡关了，走到时照旧再开
+	_far_until = _clock + FAR_WINDOW
 	_walk_nav = ""
 	_walk_ended = false
 	var d: float = _dist_to(tid)
@@ -756,6 +778,8 @@ func debug() -> Dictionary:
 		"walk": _card_walk,
 		"panel": _panel_open,
 		"want": _want_id,
+		"far": _far_id,
+		"arrivals": _arrivals,
 		"asks": _asks,
 		"invitesSent": _invites_sent,
 		"invites": _recv.size(),

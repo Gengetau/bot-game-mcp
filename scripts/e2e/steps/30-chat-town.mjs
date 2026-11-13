@@ -259,8 +259,10 @@ export default async function run(h) {
     let drained = null;
     let r429 = null;
     let rejected = null;
-    const R = uniq('被限流的话');
+    let R = '';
     for (let attempt = 0; attempt < 3 && !rejected; attempt++) {
+      // 每次尝试换一句：上一次如果因为页面慢而发成功了，同一句再发会被服务器当成重复（precondition_failed），不是限流
+      R = uniq('被限流的话');
       drained = [];
       r429 = null;
       for (let i = 0; i < 6 && !r429; i++) {
