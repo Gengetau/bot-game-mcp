@@ -18,7 +18,7 @@ describe('栖灯镇：主流程冒烟', () => {
     expect(b.view().here?.chat.map((c) => c.text)).toEqual(['你好呀', '你好']);
 
     a.go(KEEPER);
-    b.go('tea_house');
+    b.go(KEEPER);
     expect(a.view().here?.space).toBe('tea_house');
     a.act('buy', { shop: 'tea_counter', sku: 'tea_leaves', qty: 1 });
     expect(a.coins()).toBe(18);

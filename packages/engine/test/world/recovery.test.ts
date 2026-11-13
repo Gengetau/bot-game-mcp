@@ -174,7 +174,7 @@ describe('启动恢复：停机期间到期的事务各结算一次，保留应�
     const a = t.join('阿灯');
     const b = t.join('小岚', 'agent');
     a.go(KEEPER);
-    b.go('tea_house');
+    b.go(KEEPER);
     a.act('buy', { shop: 'tea_counter', sku: 'tea_leaves', qty: 1 });
     const table = a.view().here!.objects.find((o) => o.type === 'tea_table')!;
     a.go(table.id);
@@ -415,7 +415,7 @@ describe('崩溃一致性：提交边界（failpoint）', () => {
     const a = t.join('阿灯');
     const b = t.join('小岚', 'agent');
     a.go(KEEPER);
-    b.go('tea_house');
+    b.go(KEEPER);
     return { t, a, b };
   }
 
