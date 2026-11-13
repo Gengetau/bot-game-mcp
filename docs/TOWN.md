@@ -48,6 +48,7 @@ packages/engine/src/world/
   content.ts   内容数据：地点、物品、商店、共同活动、愿望、公共事件、可嵌入的小游戏
   identity.ts  主体、登录票据、会话、在场租约、控制权、注册
   space.ts     空间权威：位置、导航、停步、导航控制租约、区域变化、进出私宅、够得着判定
+  npc.ts       NPC 的日程：种下 NPC、npc_step 任务（走哪一站、停多久、什么姿态）
   spatial/     纯函数：地图源与编译（网格、区域）、寻路、按时间算位置；town-map.ts 是地图本身
   life.ts      询问爱好、需要、情绪、限流
   hearing.ts   谁听得见谁（距离、房间、在场）
@@ -114,7 +115,7 @@ packages/engine/town/             旧的网页前端（静态文件；会被 God
 
 **导航**。居民（真人和 AI 一样）只提交目的地，路线由服务器用 A* 规划：
 
-- `navigate {to}`：地点编号、`home`、`home:<居民id>`、公共物件编号、居民编号、地图点 `{x, z}`（点偏了取 2.5 米内最近的可走点）；`{approach: 居民id}` 走到对方身边一米处。
+- `navigate {to}`：地点编号、`home`、`home:<居民id>`、公共物件编号、居民编号、NPC 编号（`npc:…`，见「NPC」一节）、地图点 `{x, z}`（点偏了取 2.5 米内最近的可走点）；`{approach: 居民id 或 NPC 编号}` 走到对方身边一米处。
 - 回执只有导航的编号、版本、目的地、预计到达和租约时间，没有路径。路径随场景快照下发给同一场景里的人。
 - 走路时不存每帧坐标：存折线、速度（2.4 米 / 秒）和出发时刻，任何时刻的位置按时间现算，并且**截断在租约截止时刻**——就算到期任务晚处理，读位置的人也不会看到角色多走一段。
 - 开始、改道、停止、穿过门口、结束都是耐久变化：每次变化 `revision` 加一。定时任务（`nav_step`，一趟导航一条）必须对上导航编号和版本，否则作废。
@@ -264,7 +265,7 @@ packages/engine/town/             旧的网页前端（静态文件；会被 God
 
 | type | 字段 | 说明 |
 |---|---|---|
-| `navigate` | `to` 或 `approach` | 走过去。`to`：目的地 id、`home`（自己家）、`home:<id>`、公共物件编号、居民编号、地图点 `{x, z}`；`approach`：居民编号。返回 `navigation: {navigationId, revision, to, arriveAt, continues, leaseUntil, renewEveryMs}`；已经在旁边时是 `completed` + `already: "near"`。`continues: true` 表示这一段走完还要穿过门口接着走。失败原因：`already_here`、`no_such_place`、`no_access`、`no_route`、`unreachable`、`not_here`。走路时再发一次就是改道；正往外走的人说要去脚下这片区域（或者在家里正往门口走时说回家），是改主意要回来，照常走回落脚点，站着不动时才是 `already_here` |
+| `navigate` | `to` 或 `approach` | 走过去。`to`：目的地 id、`home`（自己家）、`home:<id>`、公共物件编号、居民编号、NPC 编号、地图点 `{x, z}`；`approach`：居民编号或 NPC 编号。返回 `navigation: {navigationId, revision, to, arriveAt, continues, leaseUntil, renewEveryMs}`；已经在旁边时是 `completed` + `already: "near"`。`continues: true` 表示这一段走完还要穿过门口接着走。失败原因：`already_here`、`no_such_place`、`no_access`、`no_route`、`unreachable`、`not_here`。走路时再发一次就是改道；正往外走的人说要去脚下这片区域（或者在家里正往门口走时说回家），是改主意要回来，照常走回落脚点，站着不动时才是 `already_here` |
 | `stop_navigation` | — | 停在这一刻的位置。返回 `{stopped, at: {space, x, z}}` |
 | `move` | `to` | 旧名字，等同 `navigate` |
 | `say_nearby` | `text` | 附近聊天，最多 120 字，超长明确报错 `text_too_long`。受众按提交那一刻的权威位置固定（见「附近聊天与全镇公屏」）。边走边说也可以 |
@@ -352,7 +353,7 @@ packages/engine/town/             旧的网页前端（静态文件；会被 God
 | 客户端 → | `{t:"renew", navigationId, revision}` | 续导航控制租约 |
 | 客户端 → | `{t:"dir", seq, epoch, x, z}` | 键盘方向输入，见「空间与导航」的「键盘方向输入」。成功没有回答 |
 | → 客户端 | `{t:"hello", v:1, serverTime, resident, map:{mapVersion, checksum}, renewEveryMs, dirLeaseMs, dirConn, cursor, townChat:{cursor}}` | |
-| → 客户端 | `{t:"scene", …SceneView}` | 完整快照：`scene`、`space`、`serverTime`、`self`、`actors[]`（`id, name, kind, x, z, heading, busy?, nav?`）。`nav: {id, revision, points, speed, startedAt, until}`：客户端按这条折线和服务器时间插值，走到 `until` 为止。所在场景里快照的内容变了就重发：有人起步、改道、停下、进出场景，有人上线、离线（包括在场租约到期）、改名、进出一局小游戏，或者自己换了场景。同一条连接每秒最多 10 次 |
+| → 客户端 | `{t:"scene", …SceneView}` | 完整快照：`scene`、`space`、`serverTime`、`self`、`actors[]`（`id, name, kind, x, z, heading, busy?, nav?`）、`npcs[]`（只有公共场景的快照有，私宅实例没有；见「NPC」一节）。`nav: {id, revision, points, speed, startedAt, until}`：客户端按这条折线和服务器时间插值，走到 `until` 为止。所在场景里快照的内容变了就重发：有人起步、改道、停下、进出场景，有人上线、离线（包括在场租约到期）、改名、进出一局小游戏，或者自己换了场景。同一条连接每秒最多 10 次 |
 | → 客户端 | `{t:"events", events, cursor}` / `{t:"resync", cursor}` | 耐久私有事件，同 SSE 的 `private` |
 | → 客户端 | `{t:"pong", n, serverTime}` / `{t:"renewed", ok, leaseUntil?, navigation, space}` / `{t:"dir_dropped", seq, reason}` / `{t:"error", code, reason?, message}` | |
 
@@ -407,6 +408,18 @@ packages/engine/town/             旧的网页前端（静态文件；会被 God
 - `act`：当前小游戏里的规则动作，需要 `request_id`、`phase_id`，以及 `game_id`（视图里的 `game.game_id`）或 `context_version` 之一：阶段编号每局都从 1 数起，要靠它们确认是哪一局。
 
 带普通对局的 `game_id`，或者会话没进世界上下文，仍是原来的桌游行为。说明文本在资源 `botgame://guide/town` 和提示词 `resident`。
+
+## NPC
+
+NPC 是程序驱动的角色：不用模型、不占在场名额、不被唤醒，关掉任何模型后照常走动。N1a 先让它们「作为世界里的角色存在，并按日程在锚点之间走动、停留」；台词、掌柜卖茶、视图里的 `here.npcs`、MCP 指南和居民提示词里的说明是下一段（N1b）的事。代码在 `world/npc.ts`（日程）和 `world/space.ts`（放置与走动），定义在 `world/content.ts` 的 `NPCS`。
+
+- **数据**。NPC 是 `world_actors` 里 `kind = 'npc'`、`resident_id` 为空的行，`actor_id` 就是 NPC 编号（形如 `npc:teahouse_keeper`），只在公共场景 `town`、实例为空。不借用 `residents`，所以 `presentCount`、`activeResidentLimit`、`world_full` 都不算它。姿态和当前（或正在前往的）站点放在 `npc_state(actor_id, pose, stop_anchor)`（schema v6，不放坐标）。启动时幂等地补种缺的行（有行就不动），地图换版本时 `revalidatePositions` 也照顾它们：位置在新地图上不合法就挪回岗位锚点，姿态一并回岗位，日程任务重新安排。
+- **两名 NPC**。`npc:teahouse_keeper` 茶馆掌柜（`role: service`）全天站在 `tea_house.counter.staff`，朝向用锚点的 `facing`，不走动。`npc:plaza_stroller` 广场闲逛者（`role: ambient`）在 `plaza.bench1.sit`、`plaza.bench2.sit`、`bookshop.shelf.stand` 之间走动、停留：到长椅是 `sit`，到书架旁是 `read`，其余和走路时是 `stand`。日程的数据结构（`NpcDef.schedule.stops`）能容纳更多 NPC 和按钟点的安排，现在没有「下班离场」。
+- **日程任务 `npc_step`**。每个会走动的 NPC 同一时刻恰好一条待办（去重键 `npc_step:<编号>`，不走动的没有）。停留结束 → 在其它站点里选下一站、起一条路线；路线到达 → 站到锚点上、摆姿态、开始下一次停留。停留时长在参数 `npcStayMinMs`～`npcStayMaxMs` 里选（默认 60～180 秒），走路速度是居民的 `npcSpeedFactor`（默认 0.6）倍，找不到路就原地停留，`npcRetryMs` 后再试。时间用 `w.now()`；随机在生产环境就是 `w.rng`，带种子的模拟 / 测试里每个决定从「种子 + NPC + 导航版本」派生一个小随机流，所以 NPC 走不走一步都不改变居民和小游戏的随机序列。停机恢复按 `due_at` 追赶，但每条任务只处理一次：长时间停机后直接落到合法状态（在某个锚点上，或一条新路线的起点），不把错过的每一步重放一遍。处理过程同步、不抛错。
+- **没有控制租约**。NPC 的路线截止时刻就是到达时刻，没有人续租，也没有人能续：`renewNavigation`、方向输入、`stop_navigation`、控制权换手都只作用在调用者自己的角色行上，拿 NPC 的路线编号或编号去碰什么也不改。居民路径上读角色行的 `actorOf` 只认 `kind = 'resident'`。NPC 只在公共场景里走，不进私宅，不触发离开 / 到达钩子。路线每次变化（开始、到达）照样递增 `nav_revision`。
+- **不发事件**。NPC 走动、停留、换姿态不发任何私有或公开事件，不叫醒任何 AI，不记 `w.fact`，没有账本分录、物品、报价、信件、关系；不是任何附近聊天的听众（`nearbyAudience` 只取居民，`chat_audience` 里没有它）。别人只通过场景快照看到它。
+- **谁能看到什么**。场景快照（`GET /scene`、WebSocket 的 `scene`）里有单独的 `npcs[]`，不混进 `actors[]`：`{id, name, role, pose, x, z, heading, nav?}`，`nav` 和 `actors[]` 里的形状一样（`id, revision, points, speed, startedAt, until`），客户端按它插值；走路时 `pose` 是 `stand`。只有公共场景的快照有 `npcs`，私宅实例的快照没有；NPC 的存在和位置是公开的，不依赖看的人在不在场。NPC 开始走、到站、换姿态都会通知同一场景实例里的订阅者（`bumpSpace`）。坐标只在场景快照里：事件、公开投影（公开地图、名录）、日报、公告里没有 NPC 的编号和坐标。
+- **走到 NPC 身边**。`navigate {approach: NPC 编号}`（`to` 也行）走到它此刻位置旁边，和走到居民身边同一套逻辑、同样停在约一米处；NPC 在走动时按发起那一刻的位置算；回执里 `to` 是 `{kind: "npc", id, name}`。NPC 编号是公开的。其它以居民编号为对象的动作（`invite`、`offer`、`ask_hobby`、`send_letter` 等）拿 NPC 编号来调，一律按「没有这个人」处理，响应和不存在的居民一字不差。
 
 ## 附近聊天与全镇公屏
 
@@ -527,8 +540,8 @@ npm run world:recovery                                       # 故障注入：�
 
 ## 还没做的
 
-- 三维客户端：P0 灰盒已经有了（街道、点击移动、角色和音频资源管线，见 `client/README.md`，由 `/town/3d/` 托管）。其中附近聊天面板已经有了（C1a，面板底座见 `client/docs/C1a.md`）；全镇公屏、头顶气泡、背包、信箱、小游戏界面、NPC 等仍只在旧的 `/town/` 页面里，三维客户端还没有。
-- NPC、住宅内部的摆设坐标、场景快照的增量同步：v2.0 的第二阶段。
+- 三维客户端：P0 灰盒已经有了（街道、点击移动、角色和音频资源管线，见 `client/README.md`，由 `/town/3d/` 托管）。其中附近聊天面板已经有了（C1a，面板底座见 `client/docs/C1a.md`）；全镇公屏、头顶气泡、背包、信箱、小游戏界面、NPC 的呈现等仍只在旧的 `/town/` 页面里或还没有，三维客户端还没有。
+- NPC 的台词、服务（掌柜卖茶）、视图里的 `here.npcs`、MCP 指南与居民提示词里的 NPC 说明（N1b）、三维客户端里 NPC 的呈现；住宅内部的摆设坐标、场景快照的增量同步：v2.0 的第二阶段。NPC 作为世界里的角色已经有了（见「NPC」一节）。
 - 全镇公屏的客户端界面（服务端已完成；附近聊天的三维客户端界面已在 C1a 做完）。读历史时注意两个接口顺序相反：`GET /history`（附近聊天）返回**新的在前**，`GET /town-chat`（全镇公屏）返回**旧的在前**。
 
 - AI 居民的叙述摘要（由模型写的长期记忆）没有进入服务端：服务端只保存结构化事实和模板化的共同经历。

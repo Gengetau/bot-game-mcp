@@ -47,13 +47,13 @@ export function interactivePos(w: WorldService, r: ResidentRow, now: number): Po
 
 /**
  * 此刻说这句话的受众：包含说话的人自己。按权威位置现算，调用方在发送事务里使用。
- * 说话的人必须是有效在场的（命令管线已经检查过）；听者要在场、不在小游戏里。
+ * 说话的人必须是有效在场的（命令管线已经检查过）；听者要在场、不在小游戏里。NPC（world_actors 里没有居民编号的行）不是听众。
  */
 export function nearbyAudience(w: WorldService, speaker: ResidentRow, now: number): ResidentRow[] {
   const me = ensureActor(w, speaker, now);
   const here = posOf(me, now);
   const rows = w.db.all(
-    `SELECT resident_id FROM world_actors WHERE world_id = ? AND scene_id = ? AND instance_id = ? ORDER BY resident_id`,
+    `SELECT resident_id FROM world_actors WHERE world_id = ? AND scene_id = ? AND instance_id = ? AND kind = 'resident' AND resident_id IS NOT NULL ORDER BY resident_id`,
     w.worldId,
     here.scene,
     here.instance,

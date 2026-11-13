@@ -18,7 +18,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parseArgs } from 'node:util';
 import { SeededRng, WorldError, createRegistry, createWorld, enterWorld, agentPrincipal, townHeartbeat, town, type WorldService } from '../packages/engine/src/index.js';
-import { actorOf, posOf, positionOfResident, renewNavigation, whereabouts } from '../packages/engine/src/world/space.js';
+import { actorOf, posOf, npcActorOf, positionOfNpc, positionOfResident, renewNavigation, whereabouts } from '../packages/engine/src/world/space.js';
+import { NPCS } from '../packages/engine/src/world/content.js';
 import { isWalkable, zoneAt } from '../packages/engine/src/world/spatial/grid.js';
 import { arrivalAt, positionAt } from '../packages/engine/src/world/spatial/motion.js';
 
@@ -368,7 +369,19 @@ function checkInvariants(round: number): void {
 function checkSpace(round: number, label = '', ww: WorldService = w, ppl: Who[] = who): void {
   const db = ww.db;
   const tag = label ? `[${label}] ` : '';
-  check(round, db.scalar('SELECT COUNT(*) FROM world_actors') === ppl.length && db.scalar('SELECT COUNT(DISTINCT resident_id) FROM world_actors') === ppl.length, `${tag}world_actors 行数不是每位居民恰好一条`);
+  check(round, db.scalar("SELECT COUNT(*) FROM world_actors WHERE kind = 'resident'") === ppl.length && db.scalar('SELECT COUNT(DISTINCT resident_id) FROM world_actors') === ppl.length, `${tag}world_actors 行数不是每位居民恰好一条`);
+  // NPC：行恰好是内容里定义的那些、没有居民编号、位置合法（公共场景）、会走动的恰好一条待办 npc_step
+  check(round, JSON.stringify(db.all("SELECT actor_id FROM world_actors WHERE kind = 'npc' AND resident_id IS NULL ORDER BY actor_id").map((r) => r.actor_id)) === JSON.stringify(NPCS.map((n) => n.id).sort()), `${tag}NPC 的行与内容里定义的不一致`);
+  for (const def of NPCS) {
+    const n = npcActorOf(ww, def.id);
+    check(round, Boolean(n), `${tag}${def.name} 没有 world_actors`);
+    if (!n) continue;
+    const np = posOf(n, clock.t);
+    check(round, np.scene === 'town' && n.instance_id === '' && isWalkable(ww.map.scenes.get('town')!, np.x, np.z), () => `${tag}${def.name} 的位置不在公共场景的可走格子上 (${np.x}, ${np.z})`);
+    const jobs = db.scalar("SELECT COUNT(*) FROM scheduled_jobs WHERE kind = 'npc_step' AND status = 'pending' AND dedupe_key = ?", `npc_step:${def.id}`);
+    check(round, jobs === (def.schedule ? 1 : 0), () => `${tag}${def.name} 的待办 npc_step 应为 ${def.schedule ? 1 : 0}，实际 ${jobs}`);
+  }
+  check(round, db.scalar("SELECT COUNT(*) FROM recipient_events WHERE projection LIKE '%npc:%'") + db.scalar("SELECT COUNT(*) FROM public_events WHERE projection LIKE '%npc:%'") + db.scalar("SELECT COUNT(*) FROM world_events WHERE payload LIKE '%npc:%'") === 0, `${tag}有事件或事实提到了 NPC`);
   const pendingNav = new Set(db.all("SELECT dedupe_key FROM scheduled_jobs WHERE kind = 'nav_step' AND status = 'pending'").map((j) => String(j.dedupe_key)));
   for (const x of ppl) {
     const a = actorOf(ww, x.residentId);
@@ -728,6 +741,48 @@ function navFaultScenarios(): { name: string; checks: number }[] {
       check(1000 + c.n, c.privEvents(d, 'arrived').filter((e) => e.resident?.id === a.residentId).length === 1, '花园里的丙应收到恰好一次“甲到达”');
       check(1000 + c.n, c.privEvents(a, 'you_arrived').length === 1, '甲应收到恰好一次 you_arrived');
       check(1000 + c.n, c.w.db.scalar("SELECT COUNT(*) FROM world_events WHERE type = 'arrived'") === 2, '“到过某处”的事实应是 2 条（丙、甲各一次）');
+    });
+  }
+
+  // B2. npc_step 处理到一半失败：提交前失败整体回滚、重试一次成功；提交后失败已经生效、重试不重复
+  for (const point of ['before_commit', 'after_commit'] as const) {
+    run(`npc_step ${point} 失败`, (c) => {
+      const S = 'npc:plaza_stroller';
+      const job = () => c.w.db.get('SELECT status, attempts, due_at FROM scheduled_jobs WHERE dedupe_key = ?', `npc_step:${S}`)!;
+      const rev = () => Number(c.w.db.get('SELECT nav_revision FROM world_actors WHERE actor_id = ?', S)!.nav_revision);
+      const jobsPending = () => c.w.db.scalar("SELECT COUNT(*) FROM scheduled_jobs WHERE kind = 'npc_step' AND status = 'pending' AND dedupe_key = ?", `npc_step:${S}`);
+      // 走两个来回，让失败既可能落在「出发」也可能落在「到站」
+      for (let round2 = 0; round2 < 4; round2++) {
+        const due = Number(job().due_at);
+        c.advanceTo(due - 500);
+        const rev0 = rev();
+        const posBefore = positionOfNpc(c.w, S, due - 500)!;
+        clock.t = due + 50;
+        let fired = false;
+        c.w.db.failpoint = (pt) => {
+          if (!fired && pt === point) {
+            fired = true;
+            throw new Error(`注入的崩溃：${pt}`);
+          }
+        };
+        c.w.tick();
+        c.w.db.failpoint = null;
+        check(1000 + c.n, fired, 'npc_step 的注入点没有触发');
+        if (point === 'before_commit') {
+          check(1000 + c.n, rev() === rev0 && jobsPending() === 1 && job().attempts === 1, () => `提交前失败后状态变了或任务丢了：版本 ${rev0}→${rev()}，任务 ${JSON.stringify(job())}`);
+        } else {
+          check(1000 + c.n, rev() === rev0 + 1 && jobsPending() === 1 && Number(job().due_at) > clock.t, () => `提交后失败：这一步应已生效一次：版本 ${rev0}→${rev()}，任务 ${JSON.stringify(job())}`);
+        }
+        c.w.tick(); // 重试
+        check(1000 + c.n, rev() === rev0 + 1 && jobsPending() === 1, () => `重试后版本应恰好加一（${rev0}→${rev()}），待办 ${jobsPending()} 条`);
+        const posAfter = positionOfNpc(c.w, S, clock.t)!;
+        check(1000 + c.n, isWalkable(c.w.map.scenes.get('town')!, posAfter.x, posAfter.z) && Number.isFinite(posBefore.x), 'npc_step 重试后位置不合法');
+        c.snap('npc_step 重试后');
+      }
+      // 之后照常走
+      const rev1 = rev();
+      c.advanceTo(clock.t + 10 * MIN);
+      check(1000 + c.n, rev() > rev1 && jobsPending() === 1, '失败恢复后闲逛者没有继续走');
     });
   }
 

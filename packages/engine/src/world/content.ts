@@ -686,3 +686,49 @@ export const EMBEDDED_GAMES: readonly EmbeddedGameDef[] = [
 ];
 
 export const embeddedGameDef = (type: string): EmbeddedGameDef | undefined => EMBEDDED_GAMES.find((g) => g.type === type);
+
+// ───────────────────────── NPC ─────────────────────────
+
+export type NpcRole = 'service' | 'ambient';
+/** 姿态：站着、坐着、站着看书。走路时是 stand（走没走由快照里的 nav 表示）。 */
+export type NpcPose = 'stand' | 'sit' | 'read';
+
+/** 日程里的一站：到了某个地图锚点，摆什么姿态。 */
+export interface NpcStop {
+  anchor: string;
+  pose: NpcPose;
+}
+
+/**
+ * 程序驱动的 NPC：不用模型、不占在场名额、不被唤醒、不发事件。
+ * 编号稳定（npc:<名字>），同时就是 world_actors 的 actor_id。
+ * schedule 为 null 的 NPC 全天站在岗位上；有 schedule 的在这些站点之间走动、停留（停留时长和下一站由 w.rng 选，范围在参数里）。
+ * 以后要加更多 NPC、按钟点分段的安排，在这里加定义，不改引擎代码。
+ */
+export interface NpcDef {
+  id: string;
+  name: string;
+  role: NpcRole;
+  /** 岗位（也是地图换版本后挪回的位置）：地图锚点编号 */
+  post: NpcStop;
+  schedule: { stops: NpcStop[] } | null;
+}
+
+export const NPCS: readonly NpcDef[] = [
+  { id: 'npc:teahouse_keeper', name: '茶馆掌柜', role: 'service', post: { anchor: 'tea_house.counter.staff', pose: 'stand' }, schedule: null },
+  {
+    id: 'npc:plaza_stroller',
+    name: '广场闲逛者',
+    role: 'ambient',
+    post: { anchor: 'plaza.bench1.sit', pose: 'sit' },
+    schedule: {
+      stops: [
+        { anchor: 'plaza.bench1.sit', pose: 'sit' },
+        { anchor: 'plaza.bench2.sit', pose: 'sit' },
+        { anchor: 'bookshop.shelf.stand', pose: 'read' },
+      ],
+    },
+  },
+];
+
+export const npcDef = (id: string): NpcDef | undefined => NPCS.find((n) => n.id === id);
