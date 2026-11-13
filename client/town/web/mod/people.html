@@ -1,0 +1,87 @@
+<template id="tpl-dock-people" data-mod="people" data-tab-label="人家" data-order="40" data-layout="tab">
+  <section class="dock-pane people-pane" data-pane="people">
+    <div class="people-scroll" data-role="scroll">
+      <p class="people-empty" data-role="empty">到灯巷会馆门前能看到各家的门牌；收到邀请后这里会有请柬。</p>
+      <section class="people-sec" data-role="house" hidden>
+        <h3 class="people-h"><span data-role="houseTitle"></span><b class="people-tag" data-role="houseTag"></b></h3>
+        <p class="people-who" data-role="houseWho"></p>
+        <ul class="people-decor" data-role="decor"></ul>
+        <p class="people-none" data-role="decorEmpty">屋里还没摆什么。</p>
+        <button class="people-btn" type="button" data-role="leave">出门</button>
+      </section>
+      <section class="people-sec" data-role="invites" hidden>
+        <h3 class="people-h">请柬</h3>
+        <ol class="people-list" data-role="inviteList"></ol>
+      </section>
+      <section class="people-sec" data-role="doors" hidden>
+        <h3 class="people-h">门牌</h3>
+        <ol class="people-list people-doors" data-role="doorList"></ol>
+      </section>
+    </div>
+    <div hidden data-bank>
+      <span data-t="card.label">居民卡</span>
+      <span data-t="card.close">关闭</span>
+      <span data-t="kind.human">真人</span>
+      <span data-t="kind.ai">AI</span>
+      <span data-t="btn.ask">问爱好</span>
+      <span data-t="btn.invite">邀请到家里</span>
+      <span data-t="btn.invited">已邀请</span>
+      <span data-t="invited.left">{n} 小时内有效</span>
+      <span data-t="invited.soon">不到 1 小时内有效</span>
+      <span data-t="hobby.has">喜欢：{list}</span>
+      <span data-t="hobby.none">还没说过自己喜欢什么</span>
+      <span data-t="hobby.sep">、</span>
+      <span data-t="mood">心情：{mood}</span>
+      <span data-t="note.far">离 ta 有点远，点按钮会先走过去。</span>
+      <span data-t="note.walking">正在走向 ta…</span>
+      <span data-t="note.arrived">到了，再点一次。</span>
+      <span data-t="note.busy">ta 正在玩游戏。</span>
+      <span data-t="note.invited">已经邀请过 ta 了。</span>
+      <span data-t="note.readonly">另一处握着你的居民，这里只能看</span>
+      <span data-t="note.game">对局中不能这样做</span>
+      <span data-t="note.offline">连不上小镇，恢复后再试</span>
+      <span data-t="err.net">网络不通，稍后再试，再点一次就好</span>
+      <span data-t="err.default">没能做成，稍后再试</span>
+      <span data-t="door.addr">{lane} {no} 号</span>
+      <span data-t="door.owner">{name}的家</span>
+      <span data-t="door.mine">你家</span>
+      <span data-t="door.enter">进门</span>
+      <span data-t="door.home">回家</span>
+      <span data-t="door.locked">需要主人的邀请</span>
+      <span data-t="house.title">{name}的家</span>
+      <span data-t="house.mine">你的家</span>
+      <span data-t="tag.owner">主人</span>
+      <span data-t="tag.guest">做客</span>
+      <span data-t="house.who">屋里还有：{list}</span>
+      <span data-t="house.alone">屋里只有你</span>
+      <span data-t="invite.left.hours">还有约 {n} 小时</span>
+      <span data-t="invite.left.soon">不到 1 小时</span>
+      <span data-t="btn.go">去做客</span>
+      <span data-t="btn.skip">先不去</span>
+    </div>
+  </section>
+</template>
+<template id="tpl-people-card">
+  <aside class="people-card" id="peopleCard" role="dialog" aria-label="居民卡" hidden>
+    <button class="people-x" type="button" data-role="close" aria-label="关闭"></button>
+    <div class="people-head"><span class="people-name" data-role="name"></span><b class="people-kind" data-role="kind"></b></div>
+    <div class="people-titles" data-role="titles"></div>
+    <div class="people-traits" data-role="traits"></div>
+    <p class="people-mood" data-role="mood" hidden></p>
+    <p class="people-bio" data-role="bio" hidden></p>
+    <p class="people-hobby" data-role="hobby" hidden></p>
+    <p class="people-cnote" data-role="note"></p>
+    <p class="people-hint" data-role="hint" role="status" aria-live="polite"></p>
+    <div class="people-btns">
+      <button class="people-btn" type="button" data-role="ask">问爱好</button>
+      <button class="people-btn main" type="button" data-role="invite">邀请到家里</button>
+    </div>
+    <p class="people-invleft" data-role="invleft"></p>
+  </aside>
+</template>
+<template id="tpl-people-door">
+  <li class="people-door"><div class="people-plate"><span class="people-addr" data-role="addr"></span><span class="people-own" data-role="owner"></span></div><button class="people-btn" type="button" data-role="enter"></button></li>
+</template>
+<template id="tpl-people-invite">
+  <li class="people-invite"><div class="people-note"><span class="people-host" data-role="host"></span><b class="people-kind" data-role="kind"></b><span class="people-left" data-role="left"></span></div><div class="people-row"><button class="people-btn main" type="button" data-role="go"></button><button class="people-btn" type="button" data-role="skip"></button></div></li>
+</template>

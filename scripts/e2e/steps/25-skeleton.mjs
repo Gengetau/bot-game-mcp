@@ -265,6 +265,13 @@ export default async function run(h) {
   const pressE = async (p) => {
     await p.page.keyboard.press('KeyE');
   };
+  // 已并入的真功能会接管一部分点选（居民卡接管 3 米内的人，共同活动、游戏桌以后会接管物件）。这个文件核对的是骨架：
+  // 「没有功能接管时旧行为照常」一律在「一律不接管」（pickStub('-')，hub 不问任何功能）下核对，真功能的接管由它们各自的步骤文件测
+  const setStub = async (p, v) => {
+    await p.page.evaluate((x) => window.__town.pickStub(x), v);
+    await until(async () => ((await godotFeature(p.page, '_stub')) ?? '') === v, 10_000, `假接管状态变成「${v}」`);
+  };
+  const clearStub = (p) => p.page.evaluate(() => window.__town.pickStub('')).catch(() => {});
   const idle = (p) => until(async () => !selfActor(await serverScene(p))?.nav, 60_000, `${p.label} 走完`, 700);
   const meInteraction = async (p) => {
     const cid = await p.page.evaluate(() => window.TownHud.clientId());
@@ -285,6 +292,7 @@ export default async function run(h) {
     const nearest = Math.min(...sc.objects.filter((o) => o.id !== SHELF).map((o) => dist(me, o)), ...sc.actors.filter((a) => a.id !== sc.self).map((a) => dist(me, a)));
     check(dist(me, shelf) < nearest, `藏书架应是 A 最近的可互动目标（别的最近 ${nearest.toFixed(1)}）`);
     await until(async () => (await snap(A.page)).nearValid === true, 15_000, 'A 的「够得着」状态有效');
+    await setStub(A, '-');
     const n0 = (await pickRec(A))?.n ?? 0;
     const s0 = actionsOf(A, 'start_interaction').length;
     await pressE(A);
@@ -297,6 +305,7 @@ export default async function run(h) {
     check(ok.status === 200, `旧行为的 start_interaction 应成功：${ok.status} ${ok.code}`);
     check((await snap(A.page)).selected === SHELF, `旧行为应记下 selected：${(await snap(A.page)).selected}`);
     await until(async () => (await meInteraction(A))?.def === 'read_book' || (await meInteraction(A)) !== null, 15_000, '服务器上 A 在做共同活动');
+    await clearStub(A);
     // 收拾：停下手上的事，等服务器确认
     const lv = await apiAct(A, { type: 'leave_interaction' });
     check(lv.status === 200, `A 停下读书：${JSON.stringify(lv.body)}`);
@@ -313,6 +322,7 @@ export default async function run(h) {
     const b = sc.actors.find((a) => a.id === B.id);
     const nearestObj = Math.min(...sc.objects.map((o) => dist(me, o)));
     check(b && dist(me, b) <= 8 && dist(me, b) < nearestObj, `B 应是 A 最近的可互动目标：B ${b ? dist(me, b).toFixed(1) : '不见了'}，最近的物件 ${nearestObj.toFixed(1)}`);
+    await setStub(A, '-');
     const n0 = (await pickRec(A))?.n ?? 0;
     const nav0 = actionsOf(A, 'navigate').length;
     await pressE(A);
@@ -323,10 +333,11 @@ export default async function run(h) {
     check(rec.kind === 'actor' && rec.id === B.id && rec.src === 'key' && rec.taken === false, `记录应是 (actor, ${B.id}, key, 没接管)：${JSON.stringify(rec)}`);
     await until(() => actionsOf(A, 'navigate').length > nav0, 20_000, '旧行为：发出 navigate（走到 ta 身边）');
     await idle(A);
+    await clearStub(A);
   });
 
   await step(25.4, '假接管：对 B 返回 true 之后按 E，记录是 (actor, B, key, 接管)，旧行为没有发生（屏障：之后的 /me 刷新和若干帧）；撤掉假接管后恢复旧行为', async () => {
-    await A.page.evaluate((id) => window.__town.pickStub(id), B.id);
+    await setStub(A, B.id);
     try {
     await frames(A.page, 3);
     const rec0 = await pickRec(A);
@@ -351,8 +362,9 @@ export default async function run(h) {
     check((await snap(A.page)).selected === sel0, `被接管后不应改 selected：${sel0} -> ${(await snap(A.page)).selected}`);
     check((await pickRec(A)).n === rec.n, `被接管后 on_pick 不应再被调：${rec.n} -> ${(await pickRec(A)).n}`);
     check(!selfActor(await serverScene(A)).nav, '被接管后 A 不应在走');
-    // 撤掉假接管：同样的一下 E 又走旧逻辑（正面对照，证明上面的「没有」不是按键根本没生效）
-    await A.page.evaluate(() => window.__town.pickStub(''));
+    // 假接管换成「一律不接管」：同样的一下 E 又走旧逻辑（正面对照，证明上面的「没有」不是按键根本没生效）。
+    // 不直接撤成空串：A 就站在 B 身边，空串下居民卡这个真功能会接管这一下（那是 60 号文件测的事）
+    await setStub(A, '-');
     await frames(A.page, 3);
     await pressE(A);
     const rec2 = await until(async () => {
@@ -364,19 +376,29 @@ export default async function run(h) {
     await idle(A);
     } finally {
       // 任何一条 check 抛出时也要撤掉假接管，免得它留在 A 页面上把后面步骤里对 B 的 E 键 / 点选都变成「被接管」
-      await A.page.evaluate(() => window.__town.pickStub('')).catch(() => {});
+      await clearStub(A);
     }
   });
 
-  await step(25.5, '假接管已撤干净：按 E 对 B 的记录是没接管（25.4 无论成败都不把假接管留给后面的步骤）', async () => {
+  await step(25.5, '假接管已撤干净：Godot 一侧不再有假接管状态（25.4 无论成败都不把它留给后面的步骤）；真功能恢复生效', async () => {
+    // 屏障：发一个无副作用的动作并等它有回应、再过几帧，保证 25.4 的 finally 发出的「撤掉」已经被 Godot 处理
+    const up0 = actionsOf(A, 'update_profile').length;
+    await A.page.evaluate(() => window.__town.act({ type: 'update_profile', muteTownChat: false }));
+    await until(() => actionsOf(A, 'update_profile').length > up0, 20_000, '屏障动作有回应');
+    await frames(A.page, 5);
+    const stub = (await godotFeature(A.page, '_stub')) ?? '';
+    check(stub === '', `25.4 之后不应还有假接管状态：「${stub}」`);
+    // 撤干净之后按 E：有没有被接管由真功能决定（A 在 B 身边：有居民卡功能就被它接管并出卡，没有就走旧逻辑）；这里只核对记录和真功能一致
     await until(async () => (await snap(A.page)).nearValid === true, 15_000, 'A 的「够得着」状态有效');
+    const hasPeople = (await godotFeature(A.page, 'people')) !== null;
     const n0 = (await pickRec(A))?.n ?? 0;
     await pressE(A);
     const rec = await until(async () => {
       const r = await pickRec(A);
       return r && r.n > n0 ? r : null;
     }, 20_000, 'on_pick 记录出现');
-    check(rec.taken === false, `25.4 之后不应还有假接管：${JSON.stringify(rec)}`);
+    check(rec.kind === 'actor' && rec.id === B.id && rec.taken === hasPeople, `撤干净后对身边的 B 按 E：接管与否应由真功能决定（居民卡功能${hasPeople ? '在' : '不在'}）：${JSON.stringify(rec)}`);
+    if (hasPeople) await A.page.keyboard.press('Escape');
     await idle(A);
   });
 
@@ -394,10 +416,15 @@ export default async function run(h) {
  *  - main.gd 的 _do_interact 里 on_pick 返回 true 后不 return：本次和上一条一起改坏，25.4 在更前面的「来源应是 key」就红了，
  *    「被接管后不应发出 navigate」这条没有单独被触发过。
  *  - main.gd 里去掉 `features.on_pick(best_kind, best_id, src)` 那三行：25.2 的记录出不来（超时）。
- *  - [实测过] 25.4 去掉 try/finally 并在假接管装上后立刻 throw（模拟中途 check 失败）：25.5 红，「25.4 之后不应还有假接管」。（实测：25.4 红「inject」、25.5 红「25.4 之后不应还有假接管 … taken:true」；改回后绿）
+ *  - 25.4 去掉 try/finally 并在假接管装上后立刻 throw（模拟中途 check 失败）：25.5 红，「25.4 之后不应还有假接管状态」。
+ *    （S0 当时实测过旧写法：25.4 红「inject」、25.5 红「… taken:true」。C4 并入后 25.5 改成直接读 Godot 的假接管状态 `_stub`，
+ *    因为居民卡这个真功能会接管身边的人，「taken 为假」不再成立；新写法的这条反向验证见下面「C4 并入后」。）
  *  - dock.css 里 #dockTabs 去掉 overflow-x:auto / padding-right 改 0 / 内边距改回 14：六个页签的「最后一个页签中心点命中自己」「右沿在关闭钮之内」会红。
  *  - dock.css 去掉抽屉里 `.dock-tab::before { top: -14px }` 或条高改回 40：抽屉里「页签条高应 >= 44」「顶端点不到」会红。
  *  - dock.css 去掉 `#dock #dockTabs[data-count="1"] .dock-tab`：真页签只有一个时「仍是不可点的标题」会红。
  *  - dock.js 的 unregister 不重建页签条：「假页签卸干净」超时。
  *  - 把 on_pick 放到 `_can_control()` 之前或 `if best_kind == "":` 之前：结果不变，靠代码评审，不靠这个文件。
+ * C4 并入后（居民卡会接管 3 米内的人）：25.2、25.3 和 25.4 的正面对照改在「一律不接管」（pickStub('-')）下核对旧行为；
+ * 25.5 直接读 `__town.features._stub`，并核对撤干净后按 E 的接管与否和真功能一致（有居民卡功能就是被接管）。
+ * __REVERSE_C4__
  */
