@@ -449,6 +449,40 @@ export class Invariants {
     this.echo(`\n!! 不变量违例 [${name}] ${message}\n   ${JSON.stringify(detail)?.slice(0, 600)}`);
   }
 
+  /**
+   * 面对面动作成功之后核对一次（不信任被测的 canInteractPerson，自己重新量）：
+   * 询问、邀请、报价、接受报价成交、当面归还的那一刻，双方在同一个场景实例里、距离不超过 personReach。
+   * 模拟里命令和检查用同一个时钟，成功提交后的位置就是判定时的位置。
+   */
+  checkFaceToFace(w: WorldService, type: string, actorId: string, fields: Record<string, unknown>, now: number): void {
+    let otherId: string | undefined;
+    if (type === 'offer' || type === 'invite') otherId = String(fields.to ?? '');
+    else if (type === 'ask_hobby') otherId = String(fields.target ?? '');
+    else if (type === 'accept_offer') otherId = w.db.get('SELECT from_id FROM offers WHERE offer_id = ?', String(fields.offerId ?? ''))?.from_id as string | undefined;
+    if (type === 'return_item') {
+      // 归还：只有「当面」那一条路要量距离（书屋、归还箱不要求）；方式以这次归还记下的事实为准
+      const ev = w.db.get(
+        `SELECT e.event_id, e.payload FROM world_events e JOIN event_parties p ON p.event_id = e.event_id AND p.resident_id = ? AND p.role = 'borrower'
+          WHERE e.type = 'loan_returned' ORDER BY e.event_id DESC LIMIT 1`,
+        actorId,
+      );
+      if (!ev || (JSON.parse(ev.payload) as { how?: string }).how !== 'in_person') return;
+      otherId = w.db.get("SELECT resident_id FROM event_parties WHERE event_id = ? AND role = 'owner'", ev.event_id)?.resident_id as string | undefined;
+    }
+    if (!otherId) return;
+    this.pass('face_to_face_in_reach');
+    const a = actorOf(w, actorId);
+    const b = actorOf(w, otherId);
+    if (!a || !b || a.scene_id !== b.scene_id || a.instance_id !== b.instance_id) {
+      this.fail('face_to_face_in_reach', `${type} 成功了，但双方不在同一个场景实例里`, { type, actorId, otherId, a: a && [a.scene_id, a.instance_id], b: b && [b.scene_id, b.instance_id] }, now);
+      return;
+    }
+    const pa = posOf(a, now);
+    const pb = posOf(b, now);
+    const d = Math.hypot(pa.x - pb.x, pa.z - pb.z);
+    if (d > w.params.personReach + 0.02) this.fail('face_to_face_in_reach', `${type} 成功了，但双方相距 ${d.toFixed(2)} 米，超过 personReach ${w.params.personReach}`, { type, actorId, otherId, d }, now);
+  }
+
   /** 做一轮检查。返回本轮新增的违例条数。 */
   check(w: WorldService, ctx: InvariantContext): number {
     const before = this.totalViolations;
@@ -515,6 +549,28 @@ export class Invariants {
       if (a.gs !== 'running') actBad.push({ activity: a.activity_id, gameStatus: a.gs, why: '进行中的活动，游戏记录却不在 running' });
     }
     bad('activity_consistency', actBad, '小游戏占座 / 上下文不一致');
+
+    // 小游戏按桌入局：一张桌同时只有一局（凑桌中或进行中）；开着的局都挂在自己场所的游戏桌上；
+    // 进行中的局里还没回到世界的人，位置此刻（独立重算）仍在桌边——局里不能走路，所以开局时在桌边就一直在
+    const tableBad: unknown[] = [];
+    // 不依赖 v5 的部分唯一索引（索引在就不可能触发）：按在席参与者和未结束的对局记录各自独立统计每张桌上有几个局
+    for (const t of db.all("SELECT a.table_id, COUNT(DISTINCT a.activity_id) n FROM activity_participants p JOIN activities a ON a.activity_id = p.activity_id WHERE p.active = 1 AND a.table_id IS NOT NULL AND a.status IN ('forming','ready','running','settling') GROUP BY a.table_id HAVING n > 1")) tableBad.push({ table: t.table_id, open: t.n, why: '一张桌上有多个局都有在席的人' });
+    for (const t of db.all("SELECT a.table_id, COUNT(DISTINCT g.game_id) n FROM game_records g JOIN activities a ON a.activity_id = g.activity_id WHERE g.status = 'running' AND a.table_id IS NOT NULL GROUP BY a.table_id HAVING n > 1")) tableBad.push({ table: t.table_id, running: t.n, why: '一张桌上有多局在进行的对局记录' });
+    const townScene = w.map.scenes.get(w.map.spawn.scene)!;
+    for (const a of db.all("SELECT activity_id, venue_id, table_id, status FROM activities WHERE status IN ('forming','ready','running','settling')")) {
+      const it = a.table_id ? townScene.interactables.get(String(a.table_id)) : undefined;
+      if (!it || it.kind !== 'game_table' || !String(a.table_id).startsWith(`${a.venue_id}:`)) {
+        tableBad.push({ activity: a.activity_id, venue: a.venue_id, table: a.table_id, why: '开着的局没有挂在本场所的游戏桌上' });
+        continue;
+      }
+      if (a.status !== 'running') continue;
+      for (const p of db.all('SELECT resident_id FROM activity_participants WHERE activity_id = ? AND active = 1', a.activity_id)) {
+        const pos = positionOfResident(w, String(p.resident_id), now);
+        const d = pos ? Math.hypot(pos.x - it.x, pos.z - it.z) : Infinity;
+        if (!pos || pos.scene !== townScene.id || d > (it.reach ?? w.map.interactDistance) + 0.011) tableBad.push({ activity: a.activity_id, r: p.resident_id, table: a.table_id, dist: d, why: '进行中的局里的人不在桌边' });
+      }
+    }
+    bad('table_exclusive', tableBad, '游戏桌被重复占用 / 局没有挂在游戏桌上 / 局里的人不在桌边');
 
     // 离线居民不在任何现场名单、不占开放中的席位
     const offBad: unknown[] = [];

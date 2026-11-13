@@ -56,7 +56,8 @@ import {
   type WorldService,
 } from './world-lib.js';
 import { PUBLIC_OBJECTS } from '../packages/engine/src/world/content.js';
-import { actorOf } from '../packages/engine/src/world/space.js';
+import { actorOf, posOf } from '../packages/engine/src/world/space.js';
+import { zoneAt } from '../packages/engine/src/world/spatial/grid.js';
 import { exchangeTicket, issueTicket, sessionPrincipal } from '../packages/engine/src/index.js';
 
 type MeView = ReturnType<typeof townMeView>;
@@ -139,6 +140,7 @@ interface Ag {
   /** 这一趟导航里还会续几次租约（stingy 用完就不再续），null = 一直续 */
   renewsLeft: number | null;
   /** 这一趟走到一半要做的事 */
+  lastTown: number;
   walkPlan: { kind: 'reroute' | 'halt' | 'ghost' | 'chat'; at: number } | null;
   /** 走到物件旁边之后要去用的物件 */
   useObject: string | null;
@@ -165,6 +167,8 @@ class Sim {
   readonly endT = TOWN_START + Math.round(DAYS * DAY);
   nextCheck = TOWN_START + CHECK_EVERY;
   chatSeq = 0;
+  townSeq = 0;
+  townMarks: string[] = [];
   letterSeq = 0;
   bootNo = 0;
   restarts: { at: number; downtime: number; clean: boolean; runningGames: number; abortedAfter: number; outageSeen: number; idempotent: boolean }[] = [];
@@ -226,6 +230,7 @@ class Sim {
         reclaimAt: 0,
         ring: [],
         lastSpeak: -1e15,
+        lastTown: -1e15,
         firstSeen: true,
         // 固定分配几种“不守规矩”的走路方式，保证小规模模拟里每种路径都会走到
         walk: (['steady', 'steady', 'stingy', 'fickle', 'halter', 'ghost', 'steady'] as const)[i % 7]!,
@@ -343,6 +348,7 @@ class Sim {
         this.failBy.set(k, (this.failBy.get(k) ?? 0) + 1);
       }
     } else if (out.out.replayed && this.fingerprint(ag.p.residentId) !== fp) this.rejectEffect(type, fields, 'replayed');
+    if (out.ok && !out.out.replayed) this.inv.checkFaceToFace(this.w, type, ag.p.residentId, fields, this.clock.t);
     if (out.ok && !out.out.replayed && !o.neg) {
       ag.ring.push({ conn, req, out: JSON.parse(JSON.stringify(out.out)), at: this.clock.t });
       if (ag.ring.length > 12) ag.ring.shift();
@@ -669,6 +675,10 @@ class Sim {
   private sample(): void {
     const n = this.w.db.scalar("SELECT COUNT(*) FROM activities WHERE status = 'running'");
     if (n > this.concurrentGamesMax) this.concurrentGamesMax = n;
+    const tables = this.w.db.scalar("SELECT COUNT(DISTINCT table_id) FROM activities WHERE status IN ('forming','ready','running','settling') AND table_id IS NOT NULL");
+    if (tables >= 2) this.bump('tables_both_running_samples');
+    const playing = this.w.db.scalar("SELECT COUNT(DISTINCT table_id) FROM activities WHERE status IN ('running','settling') AND table_id IS NOT NULL");
+    if (playing >= 2) this.bump('tables_both_playing_samples');
     const p = this.w.presentCount();
     if (p > this.presentMax) this.presentMax = p;
   }
@@ -678,6 +688,7 @@ class Sim {
     this.w.tick();
     const t0 = performance.now();
     this.inv.check(this.w, { now: this.clock.t, expectedResidents: this.ags.filter((a) => a.registered).length, purchases: this.purchases, rnd: this.rnd.fork(`priv${this.inv.checkRounds}`), privacySamples: PRIV });
+    this.townInvariants();
     this.bump('check_ms', performance.now() - t0);
     void final;
   }
@@ -863,6 +874,94 @@ class Sim {
 
   private localMs(): number {
     return (this.clock.t - TOWN_START) % DAY;
+  }
+
+  /** 附近聊天：发完之后按权威位置独立核对受众（不多不少），并检查事件里没有坐标。 */
+  private speakAudited(ag: Ag, conn: Conn): void {
+    const o = this.exec(ag, conn, 'speak', { text: this.chatText(ag) });
+    if (!o.ok || o.out.replayed) return;
+    this.bump('nearby_sent');
+    const now = this.clock.t;
+    const m = this.w.db.get('SELECT message_id FROM chat_messages WHERE sender_id = ? ORDER BY message_id DESC LIMIT 1', ag.p.residentId);
+    if (!m) return this.inv.fail('chat_nearby', '附近聊天发送成功却没有留下消息', { who: ag.p.name }, now);
+    const heard = new Set(this.w.db.all('SELECT resident_id FROM chat_audience WHERE message_id = ?', m.message_id).map((r) => String(r.resident_id)));
+    const speaker = actorOf(this.w, ag.p.residentId);
+    if (!speaker) return;
+    const sp = posOf(speaker, now);
+    const expected = new Set<string>();
+    for (const r of this.w.db.all('SELECT resident_id FROM residents WHERE present_since IS NOT NULL AND activity_id IS NULL')) {
+      const id = String(r.resident_id);
+      const a = actorOf(this.w, id);
+      if (id === ag.p.residentId || (a && this.hearsIndependently(sp, posOf(a, now)))) expected.add(id);
+    }
+    const missing = [...expected].filter((x) => !heard.has(x));
+    const extra = [...heard].filter((x) => !expected.has(x));
+    if (!heard.has(ag.p.residentId)) extra.push('(说话人不在受众里)');
+    if (missing.length || extra.length) this.inv.fail('chat_audience', `附近聊天受众与权威位置不符：缺 ${missing.length} 多 ${extra.length}`, { who: ag.p.name, missing, extra }, now);
+    else this.bump('nearby_audience_ok');
+    this.bump('nearby_heard_by_others', heard.size - 1);
+    const ev = this.w.db.all("SELECT projection AS payload FROM recipient_events WHERE type = 'chat' ORDER BY created_at DESC, cursor DESC LIMIT 3");
+    for (const e of ev) if (/"(x|z|path|arriveAt)"\s*:/.test(String(e.payload))) this.inv.fail('chat_event_coords', '聊天事件里有坐标或路线', { payload: String(e.payload).slice(0, 200) }, now);
+  }
+
+  /**
+   * 脚本里独立写的一份「听不听得到」，不调用被测的 canHear：同场景同实例、平面距离（自己开方）不超过地图的交谈距离、
+   * 房间相同（室内区域看自己的 room，室外都算一个）。在场和不在对局由调用处的 SQL 筛。
+   */
+  private hearsIndependently(a: { scene: string; instance: string; x: number; z: number }, b: { scene: string; instance: string; x: number; z: number }): boolean {
+    if (a.scene !== b.scene || a.instance !== b.instance) return false;
+    if (Math.sqrt((a.x - b.x) ** 2 + (a.z - b.z) ** 2) > this.w.map.hearDistance) return false;
+    const scene = this.w.map.scenes.get(a.scene);
+    if (!scene) return false;
+    const room = (p: { x: number; z: number }) => {
+      const z = zoneAt(scene, p.x, p.z);
+      return z.indoor ? `in:${z.room}` : 'out';
+    };
+    return room(a) === room(b);
+  }
+
+  /** 全镇公屏：在场且不在对局里才发得出去；对局中必须被拒；有时 @ 一位居民（唤醒规则由单元测试覆盖）。 */
+  private townAudited(ag: Ag, conn: Conn): void {
+    const rnd = ag.rnd;
+    const others = this.ags.filter((a) => a !== ag && a.registered);
+    const mention = others.length > 0 && rnd.chance(0.3) ? `@${rnd.pick(others).p.name} ` : '';
+    const kind = rnd.pick(['chat', 'chat', 'activity', 'help']);
+    const mark = `编号T${String(++this.townSeq).padStart(6, '0')}X`;
+    const text = `${mention}${rnd.pick(PHRASES)}（${mark}）`;
+    const place = kind === 'chat' ? undefined : rnd.pick(['plaza', 'tea_house', 'bookshop', 'arcade']);
+    const r0 = this.w.mustResident(ag.p.residentId);
+    const wasInGame = r0.activity_id !== null;
+    const o = this.exec(ag, conn, 'say_town', { text, kind, ...(place ? { place } : {}) });
+    const now = this.clock.t;
+    if (o.ok) {
+      if (wasInGame) this.inv.fail('town_chat_in_game', '对局中的居民发出了公屏消息', { who: ag.p.name }, now);
+      this.bump('town_sent');
+      this.townMarks.push(mark);
+      if (mention) this.bump('town_mention_sent');
+    } else if (wasInGame && o.reason !== 'in_activity' && o.code === 'precondition_failed') {
+      this.bump('town_refused_other');
+    } else if (wasInGame && o.code === 'precondition_failed') this.bump('town_refused_in_game');
+    else if (o.code === 'rate_limited') this.bump('town_rate_limited');
+  }
+
+  /** 公屏的全局检查：序号连续；公开投影里没有公屏文字；公屏发送者发送时在场。 */
+  private townInvariants(): void {
+    const now = this.clock.t;
+    const rows = this.w.db.all('SELECT seq FROM town_chat_messages ORDER BY seq');
+    let prev = 0;
+    for (const r of rows) {
+      const q = Number(r.seq);
+      if (prev && q !== prev + 1 && this.w.params.townChatRetentionMs > 3 * 24 * 3600 * 1000) this.inv.fail('town_chat_seq', `公屏序号不连续 ${prev} → ${q}`, null, now);
+      prev = q;
+    }
+    if (this.townMarks.length === 0) return;
+    const pub = JSON.stringify(townPublicView(this.w));
+    const sample = this.townMarks.slice(-40);
+    for (const mk of sample) if (pub.includes(mk)) this.inv.fail('town_chat_public_leak', `公开地图里出现了公屏文字 ${mk}`, null, now);
+    // 公屏文字也不能出现在附近聊天的存储里
+    for (const mk of sample.slice(-5)) {
+      if (this.w.db.scalar('SELECT COUNT(*) FROM chat_messages WHERE body LIKE ?', `%${mk}%`) > 0) this.inv.fail('town_chat_became_nearby', `公屏文字 ${mk} 进了附近聊天`, null, now);
+    }
   }
 
   private chatText(ag: Ag): string {
@@ -1093,6 +1192,7 @@ class Sim {
     intents.push(['visit', v.invites.received.length > 0 ? 2.5 : 0]);
     intents.push(['revoke', v.invites.sent.length > 0 ? 0.5 : 0]);
     intents.push(['speak', residentsHere.length > 0 ? 6 : 0.6]);
+    intents.push(['town', 1.4]);
     intents.push(['ask', residentsHere.length > 0 ? 1.5 : 0]);
     intents.push(['buy', here && here.shops.length > 0 ? 3 : 0]);
     intents.push(['use', energy < 75 && (avail('soup') > 0 || avail('cookie') > 0) ? 2.5 : 0]);
@@ -1103,7 +1203,7 @@ class Sim {
     intents.push(['letter', 1.3]);
     intents.push(['invite', residentsHere.length > 0 ? 1.2 : 0]);
     intents.push(['interact', here && here.objects.length > 0 ? 7 : 0]);
-    intents.push(['game', 2 + ag.playful * 8 + (here && here.activities.length > 0 ? 6 : 0)]);
+    intents.push(['game', 8 + ag.playful * 12 + (here && here.activities.length > 0 ? 6 : 0) + (here && here.tables.length > 0 ? 8 : 0)]);
     intents.push(['rest', energy < 45 ? 5 : 0.3]);
     intents.push(['event', openEvent || eventSoon ? 6 : 0]);
     intents.push(['goal', 0.15]);
@@ -1218,7 +1318,7 @@ class Sim {
           this.bump('walk_chat');
           if (now - ag.lastSpeak >= 12_000) {
             ag.lastSpeak = now;
-            this.exec(ag, conn, 'speak', { text: this.chatText(ag) });
+            this.speakAudited(ag, conn);
           }
           break;
         }
@@ -1276,7 +1376,13 @@ class Sim {
       case 'speak': {
         if (now - ag.lastSpeak < 12_000) return null;
         ag.lastSpeak = now;
-        this.exec(ag, conn, 'speak', { text: this.chatText(ag) });
+        this.speakAudited(ag, conn);
+        return short();
+      }
+      case 'town': {
+        if (now - ag.lastTown < 40_000) return null;
+        ag.lastTown = now;
+        this.townAudited(ag, conn);
         return short();
       }
       case 'ask': {
@@ -1483,25 +1589,92 @@ class Sim {
     return rnd.range(8, 20) * 1000;
   }
 
+  /**
+   * 独立重算「此刻这个人在不在这张桌边」：只用权威位置和地图源里桌子的中心 / 够得着距离，不调引擎的 objectReach / requireReach。
+   * 凑桌成员在加入（和发起）的那一刻必须在桌边；距离按位置现算，和被测代码互不依赖。
+   */
+  private atTableIndependent(residentId: string, tableId: string): { ok: boolean; dist: number } {
+    const p = positionOfResident(this.w, residentId, this.clock.t);
+    const town = this.w.map.scenes.get(this.w.map.spawn.scene)!;
+    const it = town.interactables.get(tableId);
+    if (!p || !it) return { ok: false, dist: Infinity };
+    const dist = Math.hypot(p.x - it.x, p.z - it.z);
+    return { ok: p.scene === town.id && dist <= (it.reach ?? this.w.map.interactDistance) + 0.011, dist };
+  }
+
+  private failStart(msg: string, detail: unknown): void {
+    this.rejectChecks.run++;
+    this.rejectChecks.failed++;
+    if (this.rejectChecks.samples.length < 10) this.rejectChecks.samples.push(msg);
+    this.inv.fail('table_start_members', msg, detail, this.clock.t);
+  }
+
+  /** 开局成功后：局里的人正好是开局那一刻独立重算「在桌边」的那些，被剔除的人数也对得上，被剔除的人不在局里。 */
+  private checkStartMembers(activityId: string, tableId: string, expectKeep: string[], expectDrop: number, reportedDrop: number): void {
+    this.rejectChecks.run++;
+    const inGame = this.w.db.all('SELECT resident_id FROM activity_participants WHERE activity_id = ?', activityId).map((r) => String(r.resident_id)).sort();
+    if (JSON.stringify(inGame) !== JSON.stringify(expectKeep) || expectDrop !== reportedDrop) {
+      this.failStart(`${tableId} 开局后的成员 ${inGame.length} 个、报告剔除 ${reportedDrop} 个，独立重算应留 ${expectKeep.length} 个、剔 ${expectDrop} 个`, { activityId, inGame, expectKeep, expectDrop, reportedDrop });
+    }
+  }
+
+  private checkTableMember(tag: string, residentId: string, name: string, tableId: string): void {
+    this.rejectChecks.run++;
+    const at = this.atTableIndependent(residentId, tableId);
+    if (!at.ok) {
+      this.rejectChecks.failed++;
+      const msg = `${tag}：${name} 加入 ${tableId} 时不在桌边（距离 ${at.dist.toFixed(2)} 米）`;
+      if (this.rejectChecks.samples.length < 10) this.rejectChecks.samples.push(msg);
+      this.inv.fail('table_member_near', msg, { who: name, tableId, dist: at.dist }, this.clock.t);
+    }
+  }
+
   private gameIntent(ag: Ag, conn: Conn, v: MeView, c: { space: string }): number | null {
     const rnd = ag.rnd;
     const now = this.clock.t;
     const here = v.here;
     const me = v.me.id;
-    const venues: Record<string, string[]> = { arcade: ['number_bomb', 'sealed_auction', 'liars_dice'], plaza: ['number_bomb'], tea_house: ['liars_dice'] };
-    if (!here || here.games.length === 0) {
-      const dest = rnd.weighted<string>([['arcade', 7], ['plaza', 1], ['tea_house', 1]])!;
-      if (dest === c.space) return null;
-      return this.moveTo(ag, conn, dest);
+    // 小游戏按桌入局：现在只有游戏馆有桌子（number_bomb / liars_dice 的场所也收窄到了游戏馆）
+    if (!here || here.games.length === 0 || here.tables.length === 0) {
+      if (c.space === 'arcade') return null;
+      return this.moveTo(ag, conn, 'arcade');
     }
-    void venues;
+    const tableById = new Map(here.tables.map((t) => [t.id, t]));
+    // 视图里的 near 必须和独立重算一致（只在没有走动时才比：走路中位置按时间现算，两边取同一时刻所以也一致，这里不特别排除）
+    for (const t of here.tables) {
+      const indep = this.atTableIndependent(ag.p.residentId, t.id);
+      this.rejectChecks.run++;
+      if (indep.ok !== t.near) {
+        this.rejectChecks.failed++;
+        const msg = `视图说 ${t.id} near=${t.near}，独立重算距离 ${indep.dist.toFixed(2)} 米（${indep.ok ? '该够得着' : '该够不着'}）`;
+        if (this.rejectChecks.samples.length < 10) this.rejectChecks.samples.push(msg);
+        this.inv.fail('table_near_view', msg, { who: ag.p.name, table: t.id, dist: indep.dist }, now);
+      }
+    }
     const mine = here.activities.find((a) => a.players.some((p) => p.id === me));
     if (mine) {
+      const tbl = mine.tableId ? tableById.get(mine.tableId) : undefined;
       if (mine.status === 'forming' && mine.host.id === me) {
         const created = mine.lobbyExpiresAt - this.w.params.activityLobbyTtlMs;
         const full = mine.players.length >= mine.max;
-        if (mine.players.length >= mine.min && (full || now - created > rnd.range(40, 150) * 1000 || rnd.chance(0.2))) {
-          this.exec(ag, conn, 'start_game', { activityId: mine.id });
+        // 人刚够数时多等一等（给凑桌成员走开留出机会，也让开局时的剔除分支走得到）
+        const waitMore = !full && mine.players.length === mine.min && mine.max > mine.min && now - created < 60_000 && rnd.chance(0.7);
+        if (mine.players.length >= mine.min && !waitMore && (full || now - created > rnd.range(40, 150) * 1000 || rnd.chance(0.2))) {
+          // 发起人自己走开了就先回桌边（引擎会 too_far）
+          if (tbl && !tbl.near) return this.moveTo(ag, conn, tbl.id);
+          // 开局前独立重算：谁此刻不在桌边（不调引擎的判断），开局后留在局里的人必须正好是在桌边的那些
+          const expectKeep = mine.players.filter((p) => p.id === me || this.atTableIndependent(p.id, mine.tableId!).ok).map((p) => p.id).sort();
+          const expectDrop = mine.players.length - expectKeep.length;
+          const out = this.exec(ag, conn, 'start_game', { activityId: mine.id });
+          if (out.ok) {
+            this.bump('table_start');
+            const dropped = (out.out as { dropped?: string[] }).dropped;
+            if (dropped?.length) this.bump('table_start_dropped');
+            this.checkStartMembers(mine.id, mine.tableId!, expectKeep, expectDrop, dropped?.length ?? 0);
+          } else if (!out.ok && out.reason === 'not_enough') {
+            this.bump('table_start_not_enough');
+            if (expectKeep.length >= mine.min) this.failStart(`开局报人数不够，但独立重算在桌边的有 ${expectKeep.length} 个（至少 ${mine.min}）`, { activity: mine.id });
+          }
           return rnd.range(3, 8) * 1000;
         }
         return rnd.range(8, 20) * 1000;
@@ -1510,21 +1683,64 @@ class Sim {
         this.exec(ag, conn, 'leave_game_lobby');
         return 5000;
       }
+      // 凑桌的成员有时走开（留在游戏馆里，离桌很远），等发起人开局时应被剔除
+      if (mine.status === 'forming' && mine.host.id !== me && tbl?.near && mine.players.length > mine.min && rnd.chance(0.7)) {
+        this.bump('table_member_walkoff');
+        return this.moveTo(ag, conn, 'arcade');
+      }
       return rnd.range(8, 20) * 1000;
     }
-    const open = here.activities.filter((a) => a.status === 'forming' && a.players.length < a.max);
+    const open = here.activities.filter((a) => a.status === 'forming' && a.players.length < a.max && a.tableId);
     if (open.length > 0 && rnd.chance(0.8)) {
-      this.exec(ag, conn, 'join_game', { activityId: rnd.pick(open).id });
+      const pick = rnd.pick(open);
+      const tbl = tableById.get(pick.tableId!);
+      if (tbl && !tbl.near) {
+        // 偶尔不走过去，直接加入：站得太远必须被 too_far 拒绝（距离由独立重算判断）
+        if (rnd.chance(0.25) && !this.atTableIndependent(ag.p.residentId, tbl.id).ok) {
+          const probe = this.exec(ag, conn, 'join_game', { activityId: pick.id });
+          this.expectReject(ag, '离桌太远时加入', probe, ['precondition_failed'], { table: tbl.id });
+          if (!probe.ok && probe.reason !== 'too_far') this.inv.fail('reject_expected', `离桌太远时加入：期望 too_far，实际 ${probe.reason}`, { table: tbl.id }, now);
+          return rnd.range(2, 6) * 1000;
+        }
+        return this.moveTo(ag, conn, tbl.id);
+      }
+      const out = this.exec(ag, conn, 'join_game', { activityId: pick.id, ...(rnd.chance(0.5) ? { objectId: pick.tableId } : {}) });
+      if (out.ok) this.checkTableMember('join_game', ag.p.residentId, ag.p.name, pick.tableId!);
       return rnd.range(5, 15) * 1000;
     }
-    // 自己凑一桌：优先玩得最少的那种（三种都要打到）
+    // 偶尔直接对被占着的桌凑桌：必须被 table_busy 拒绝（桌占用的判断在距离之前，站得再远也一样）
+    const busy = here.tables.filter((t) => t.activityId);
+    if (busy.length > 0 && rnd.chance(0.35)) {
+      const t = rnd.pick(busy);
+      const g0 = here.games[0]!;
+      const probe = this.exec(ag, conn, 'propose_game', { game: g0.type, objectId: t.id });
+      this.expectReject(ag, '占用中的桌再凑桌', probe, ['precondition_failed'], { table: t.id });
+      if (!probe.ok && probe.reason !== 'table_busy') this.inv.fail('reject_expected', `占用中的桌再凑桌：期望 table_busy，实际 ${probe.reason}`, { table: t.id }, now);
+      return rnd.range(2, 6) * 1000;
+    }
+    // 自己凑一桌：优先玩得最少的那种（三种都要打到），挑一张空桌（先看脚边的）
+    const free = here.tables.filter((t) => !t.activityId);
+    if (free.length === 0) return rnd.range(8, 20) * 1000;
     const offered = here.games.filter((g) => g.type !== 'sealed_auction' || here.residents.length + 1 >= g.min);
     if (offered.length === 0) return null;
     offered.sort((a, b) => (this.gameStarted.get(a.type) ?? 0) - (this.gameStarted.get(b.type) ?? 0));
     const least = offered.filter((g) => (this.gameStarted.get(g.type) ?? 0) === (this.gameStarted.get(offered[0]!.type) ?? 0));
     const g = rnd.pick(least);
-    const out = this.exec(ag, conn, 'propose_game', { game: g.type });
-    if (out.ok) this.bump(`propose_${g.type}`);
+    const table = free.find((t) => t.near) ?? rnd.pick(free);
+    if (!table.near) {
+      if (rnd.chance(0.25) && !this.atTableIndependent(ag.p.residentId, table.id).ok) {
+        const probe = this.exec(ag, conn, 'propose_game', { game: g.type, objectId: table.id });
+        this.expectReject(ag, '离桌太远时凑桌', probe, ['precondition_failed'], { table: table.id });
+        if (!probe.ok && probe.reason !== 'too_far') this.inv.fail('reject_expected', `离桌太远时凑桌：期望 too_far，实际 ${probe.reason}`, { table: table.id }, now);
+        return rnd.range(2, 6) * 1000;
+      }
+      return this.moveTo(ag, conn, table.id);
+    }
+    const out = this.exec(ag, conn, 'propose_game', { game: g.type, objectId: table.id });
+    if (out.ok) {
+      this.bump(`propose_${g.type}`);
+      this.checkTableMember('propose_game', ag.p.residentId, ag.p.name, table.id);
+    }
     return rnd.range(8, 20) * 1000;
   }
 
@@ -1666,7 +1882,7 @@ class Sim {
         return;
       }
       case 'non_game_in_game': {
-        const o = this.exec(ag, conn, rnd.pick(['navigate', 'move', 'speak', 'buy']), { to: 'plaza', text: 'hi', shop: 'stall', sku: 'cookie' }, nf);
+        const o = this.exec(ag, conn, rnd.pick(['navigate', 'move', 'speak', 'say_nearby', 'say_town', 'buy']), { to: 'plaza', text: 'hi', kind: 'chat', shop: 'stall', sku: 'cookie' }, nf);
         this.expectReject(ag, '在小游戏里做世界动作', o, ['precondition_failed']);
         return;
       }
@@ -1892,7 +2108,7 @@ function navScenarios(inv: Invariants): { name: string; ok: boolean; note: strin
   // 8. 邀请在路上被撤销：走到门口进不去，停在会馆门前
   {
     go(A, 'plaza');
-    go(B, 'plaza');
+    go(B, A.p.residentId); // 当面邀请要站得近：走到 A 身边
     A.c.send('invite', { to: B.p.residentId });
     const grant = w.db.get('SELECT grant_id FROM home_access_grants WHERE guest_id = ? AND revoked_at IS NULL', B.p.residentId);
     go(A, 'home');
@@ -2029,6 +2245,9 @@ console.log(
   `导航：navigate 成功 ${sim.counters.get('nav_accepted') ?? 0} 次（当场走完 ${sim.counters.get('nav_completed') ?? 0}）；续租 成功 ${sim.counters.get('renew_ok') ?? 0} / 已结束 ${sim.counters.get('renew_done') ?? 0} / 失去控制权 ${sim.counters.get('renew_lost') ?? 0}（其中途中换了版本 ${sim.counters.get('renew_adopted') ?? 0}）；故意不续租 ${sim.counters.get('renew_abandoned') ?? 0}；走到一半 改道 ${sim.counters.get('walk_reroute') ?? 0} / 停下 ${sim.counters.get('walk_halt') ?? 0} / 离线 ${sim.counters.get('walk_ghost') ?? 0} / 说话 ${sim.counters.get('walk_chat') ?? 0}；先走到物件旁再用 ${sim.counters.get('walk_to_use') ?? 0}`,
 );
 console.log(`导航结果：nav_stopped 按原因 ${JSON.stringify(navStops)}；you_arrived/left/arrived ${JSON.stringify(navEvents)}；公开 road 位置事件 ${roadPlaceEvents}；arrived 事实 ${arrivedFacts}；整套检查里在走路的人次 ${sim.inv.navSamples}；空间专项检查 ${sim.counters.get('space_probes') ?? 0} 轮；重启时在走路的人 ${sim.counters.get('restart_walkers') ?? 0}（场景变了 ${sim.counters.get('restart_walkers_scene_changed') ?? 0}，已走完这一段 ${sim.counters.get('restart_walkers_off_leg') ?? 0}）`);
+console.log(
+  `聊天：附近聊天发出 ${sim.counters.get('nearby_sent') ?? 0} 条（受众核对通过 ${sim.counters.get('nearby_audience_ok') ?? 0}，共被 ${sim.counters.get('nearby_heard_by_others') ?? 0} 人次听到）；全镇公屏发出 ${sim.counters.get('town_sent') ?? 0} 条（其中带名字提及 ${sim.counters.get('town_mention_sent') ?? 0}，限流 ${sim.counters.get('town_rate_limited') ?? 0}，对局中被拒 ${sim.counters.get('town_refused_in_game') ?? 0}）；公屏表 ${(sim.w.db.scalar('SELECT COUNT(*) FROM town_chat_messages') as number)} 行，唤醒事件 ${(sim.w.db.scalar("SELECT COUNT(*) FROM recipient_events WHERE type = 'town_chat_mention'") as number)} 条`,
+);
 console.log(`行为计数：${JSON.stringify(Object.fromEntries([...sim.counters].filter(([k]) => k !== 'check_ms')))}`);
 
 console.log('\n── 停机重启 ──');
@@ -2085,8 +2304,19 @@ if (warnLogs.length) {
 }
 console.log(`\n可复现摘要（同种子同参数应一致）：${digest}`);
 
-const failed = sim.inv.totalViolations > 0 || sim.internalCount > 0 || sim.rejectChecks.failed > 0 || scenarios.some((s) => !s.ok);
-console.log(`\n结论：${failed ? '未通过（见上面的违例 / 异常）' : '通过：未发现不变量违例、内部异常或拒绝检查失败'}`);
+// 覆盖断言：按桌入局的几条关键分支必须真的走到过，否则检查等于空转（只在够长的跑法里要求）
+const coverageMissing: string[] = [];
+if (DAYS >= 1 && N >= 8) {
+  if ((sim.counters.get('table_start_dropped') ?? 0) < 1) coverageMissing.push('开局时剔除走开的成员（table_start_dropped）从未发生');
+  if ((sim.negCount.get('占用中的桌再凑桌') ?? 0) < 1) coverageMissing.push('对被占的桌 propose_game 期望 table_busy 从未探测');
+  if ((sim.counters.get('tables_both_running_samples') ?? 0) < 1) coverageMissing.push('两张桌同时有局从未出现');
+}
+if (coverageMissing.length) {
+  console.log('\n覆盖不足：');
+  for (const c of coverageMissing) console.log(`  × ${c}`);
+}
+const failed = sim.inv.totalViolations > 0 || sim.internalCount > 0 || sim.rejectChecks.failed > 0 || scenarios.some((s) => !s.ok) || coverageMissing.length > 0;
+console.log(`\n结论：${failed ? '未通过（见上面的违例 / 异常 / 覆盖不足）' : '通过：未发现不变量违例、内部异常或拒绝检查失败'}`);
 
 if (args.json) {
   writeFileSync(

@@ -28,7 +28,11 @@ export const TOWN_ACTION_TYPES = [
   'stop_navigation',
   /** navigate 的旧名，仍可用 */
   'move',
+  /** 附近聊天（旧名 speak 同义）：交谈距离内、同一房间的人听得到 */
+  'say_nearby',
   'speak',
+  /** 全镇公屏 */
+  'say_town',
   'ask_hobby',
   'update_profile',
   'buy',
@@ -118,7 +122,9 @@ export interface TownView {
     objects?: { id: string; label: string; far?: true; can?: string; active?: unknown }[];
     /** 所有可去的目的地（navigate 的 to） */
     exits: { to: string; name: string }[];
-    activities: { id: string; name: string; status: string; players: string[]; need: number }[];
+    activities: { id: string; name: string; status: string; players: string[]; need: number; table?: string | null }[];
+    /** 游戏桌：far:true 表示够不着（先 navigate 到桌子 id）；activity 是占着它的那一局 */
+    tables?: { id: string; name: string; far?: true; activity?: string }[];
     games: { type: string; name: string; players: string }[];
     recent_chat: { from: string; text: string }[];
     [k: string]: unknown;
@@ -207,7 +213,7 @@ export interface WaitResult {
   present: boolean;
 }
 
-export type TownQueryWhat = 'public' | 'residents' | 'letters' | 'history' | 'relations' | 'report';
+export type TownQueryWhat = 'public' | 'residents' | 'letters' | 'history' | 'town_chat' | 'relations' | 'report';
 
 // ───────────────────────── 错误 ─────────────────────────
 
@@ -545,7 +551,7 @@ export class TownClient {
     return r;
   }
 
-  query(what: TownQueryWhat, opts: { box?: 'inbox' | 'sent'; before?: number; limit?: number; date?: string } = {}): Promise<any> {
+  query(what: TownQueryWhat, opts: { box?: 'inbox' | 'sent'; before?: number | string; limit?: number; date?: string } = {}): Promise<any> {
     return this.raw('world_query', {
       what,
       ...(opts.box ? { box: opts.box } : {}),
@@ -636,8 +642,27 @@ export class TownClient {
   move(to: string, o?: ActOptions) {
     return this.act({ type: 'move', to }, o);
   }
+  /** 附近聊天（旧名 speak，超长会被截断）。 */
   speak(text: string, o?: ActOptions) {
     return this.act({ type: 'speak', text }, o);
+  }
+  /** 附近聊天：超长明确报错。只有交谈距离内、同一房间的人听得到。 */
+  sayNearby(text: string, o?: ActOptions) {
+    return this.act({ type: 'say_nearby', text }, o);
+  }
+  /** 全镇公屏：所有居民都看得到。对局中只读。place 是公共地点编号（位置提示）。 */
+  sayTown(text: string, opts: { kind?: 'chat' | 'activity' | 'help'; place?: string } & ActOptions = {}) {
+    const { kind, place, ...o } = opts;
+    return this.act({ type: 'say_town', text, ...(kind ? { kind } : {}), ...(place ? { place } : {}) }, o);
+  }
+  /** 读全镇公屏：不带 cursor 是最近一页；direction=before 往前翻，after 追新。resync=true 就重读最近一页。 */
+  townChat(opts: { cursor?: string; direction?: 'before' | 'after'; limit?: number } = {}): Promise<any> {
+    return this.raw('world_query', {
+      what: 'town_chat',
+      ...(opts.cursor ? { cursor: opts.cursor } : {}),
+      ...(opts.direction ? { direction: opts.direction } : {}),
+      ...(opts.limit !== undefined ? { limit: opts.limit } : {}),
+    });
   }
   buy(shop: string, sku: string, qty = 1, o?: ActOptions) {
     return this.act({ type: 'buy', shop, sku, qty }, o);
@@ -655,11 +680,14 @@ export class TownClient {
 
   // ── 小游戏 ──
 
-  proposeGame(game: string, o?: ActOptions) {
-    return this.act({ type: 'propose_game', game }, o);
+  /** 在某张游戏桌凑一桌。objectId 是视图 here.tables[].id；人要先走到桌边，否则得到 too_far（reason 'too_far'，附带 navigateTo）。 */
+  proposeGame(game: string, objectId: string, o?: ActOptions) {
+    return this.act({ type: 'propose_game', game, objectId }, o);
   }
-  joinGame(activityId: string, o?: ActOptions) {
-    return this.act({ type: 'join_game', activityId }, o);
+  /** 加入凑桌中的一桌。同样要站在那张桌子旁边；objectId 可省略（服务器按这一桌所在的桌子判断），写了就必须对得上。 */
+  joinGame(activityId: string, o?: ActOptions & { objectId?: string }) {
+    const { objectId, ...opts } = o ?? {};
+    return this.act({ type: 'join_game', activityId, ...(objectId !== undefined ? { objectId } : {}) }, opts);
   }
   leaveGameLobby(activityId: string, o?: ActOptions) {
     return this.act({ type: 'leave_game_lobby', activityId }, o);

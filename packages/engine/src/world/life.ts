@@ -1,13 +1,12 @@
 /**
- * 日常生活：现场发言、询问爱好、三项软需要、短期情绪。（走路在 space.ts。）
+ * 日常生活：询问爱好、三项软需要、短期情绪。（走路在 space.ts，说话在 chat.ts。）
  *
- * - 现场发言：受众在提交那一刻固定（同一区域、在场、不在小游戏里），之后进来的人看不到这句。边走边说也可以。
  * - 需要是软的：数值低不会禁止任何动作，只影响建议和效果的大小。社交、兴趣按有效在场时间惰性下降，离线不掉。
  */
-import { sanitizeUserText } from '../core/text.js';
 import { INTERESTS, MOODS, homeOwner, isHome, placeDef } from './content.js';
 import { badRequest, precondition, WorldError } from './errors.js';
-import { card, zoneOf } from './project.js';
+import { card } from './project.js';
+import { requirePersonReach } from './reach.js';
 import type { WorldService } from './service.js';
 import type { NeedsState, ResidentRow } from './types.js';
 
@@ -151,53 +150,9 @@ export function pairScope(a: string, b: string): string {
 // ───────────────────────── 安装 ─────────────────────────
 
 export function installLife(w: WorldService): void {
-  // ── 现场发言 ──
-  w.handlers.set('speak', ({ r, action, now }) => {
-    const space = w.spaceOf(r);
-    const raw = typeof action.text === 'string' ? action.text : '';
-    const text = [...sanitizeUserText(raw).replace(/\s+/g, ' ').trim()].slice(0, w.params.chatMaxChars).join('');
-    if (!text) throw badRequest('说点什么吧。');
-    takeToken(w, r.resident_id, 'chat', w.params.chatBurst, w.params.chatPerMinute, now, '说话');
-    // 受众在提交这一刻固定
-    const audience = w.audienceIn(space);
-    const { lastInsertRowid: messageId } = w.db.run('INSERT INTO chat_messages(world_id, space_id, sender_id, body, sent_at) VALUES (?,?,?,?,?)', w.worldId, space, r.resident_id, text, now);
-    // 对外编号是每位居民自己连续的序号，不是全局 message_id（空档会暴露别处的发言量）
-    const seqOf = new Map<string, number>();
-    for (const a of audience) {
-      w.db.run('INSERT INTO chat_audience(resident_id, message_id) VALUES (?,?)', a.resident_id, messageId);
-      const key = `chat:${a.resident_id}`;
-      const seq = Number(w.db.scalar('SELECT high_water FROM stream_heads WHERE stream_key = ?', key) ?? 0) + 1;
-      w.db.run('INSERT INTO stream_heads(stream_key, high_water, retained_from) VALUES (?,?,1) ON CONFLICT(stream_key) DO UPDATE SET high_water = excluded.high_water', key, seq);
-      seqOf.set(a.resident_id, seq);
-      w.emitTo([a.resident_id], 'chat', { space, from: card(r), text, messageId: seq }, now);
-    }
-    // 有来有往才算一次交谈：对方在我上一句之后（五分钟内）在同一空间说过话，而且我当时听到了。
-    // 自己连着说几句、对方没有新话，后面的不算。
-    const myPrev = Number(w.db.scalar('SELECT MAX(message_id) FROM chat_messages WHERE sender_id = ? AND space_id = ? AND message_id < ?', r.resident_id, space, messageId) ?? 0);
-    for (const other of audience) {
-      if (other.resident_id === r.resident_id) continue;
-      const replied = w.db.get(
-        `SELECT m.message_id FROM chat_messages m JOIN chat_audience a ON a.message_id = m.message_id AND a.resident_id = ?
-         WHERE m.sender_id = ? AND m.space_id = ? AND m.sent_at > ? AND m.message_id > ? LIMIT 1`,
-        r.resident_id,
-        other.resident_id,
-        space,
-        now - 5 * 60_000,
-        myPrev,
-      );
-      // 每对居民每天只有前几次交谈形成事实（也就只有这几次带来熟悉度），刷屏不会堆出记录
-      if (replied && counter(w, pairScope(r.resident_id, other.resident_id), 'chat', w.today(now)) < w.params.relationshipRewardEvents) w.fact('conversation', [{ id: r.resident_id, role: 'speaker' }, { id: other.resident_id, role: 'speaker' }], { space: zoneOf(space) });
-    }
-    return { status: 'completed', messageId: seqOf.get(r.resident_id) ?? 0, heardBy: audience.length - 1 };
-  });
-
   // ── 询问爱好（结构化动作：不靠聊天文字判定） ──
   w.handlers.set('ask_hobby', ({ r, action, now }) => {
-    const space = w.spaceOf(r);
-    const target = w.resident(String(action.target ?? ''));
-    if (!target || target.resident_id === r.resident_id || !w.interactive(target) || w.spaceOf(target) !== space) {
-      throw precondition('对方不在你身边。', 'not_here');
-    }
+    const target = requirePersonReach(w, r, w.resident(String(action.target ?? '')), now);
     if (!target.state.settings.allowAskHobby) throw precondition(`${target.name}现在不太想聊这个。`, 'declined');
     takeToken(w, r.resident_id, 'ask', 2, 2, now, '询问');
     const interests = target.state.interests.map((id) => INTERESTS.find((i) => i.id === id)).filter((x): x is (typeof INTERESTS)[number] => Boolean(x));

@@ -58,7 +58,7 @@ beforeEach(() => {
   writeFileSync(join(root, 'game.js'), 'var big = 1;'.repeat(100));
   writeFileSync(join(root, 'game.js.gz'), gzipSync('GZIPPED'));
   writeFileSync(join(root, 'game.js.br'), 'BROTLI-BYTES');
-  writeFileSync(join(root, 'notes.txt'), 'x');
+  writeFileSync(join(root, 'notes.md'), 'x');
   writeFileSync(join(root, '.secret.json'), '{}');
   writeFileSync(join(outside, 'leak.json'), '{"leak":true}');
   symlinkSync(join(outside, 'leak.json'), join(root, 'link.json'));
@@ -178,8 +178,8 @@ describe('/town/3d/ 静态托管', () => {
     expect(Number(wasm.headers['content-length'])).toBe(8);
   });
 
-  it('文件类型表覆盖 glb / ogg / wav / mp3 / woff2 / ico / css / json / webp / svg', async () => {
-    for (const n of ['a.glb', 'a.ogg', 'a.wav', 'a.mp3', 'a.woff2', 'a.ico', 'a.css', 'a.json', 'a.webp', 'a.svg']) writeFileSync(join(root, n), 'x');
+  it('文件类型表覆盖 glb / ogg / wav / mp3 / woff2 / ico / css / json / webp / svg / txt', async () => {
+    for (const n of ['a.glb', 'a.ogg', 'a.wav', 'a.mp3', 'a.woff2', 'a.ico', 'a.css', 'a.json', 'a.webp', 'a.svg', 'a.txt']) writeFileSync(join(root, n), 'x');
     const { get } = await serve();
     const want: Record<string, string> = {
       glb: 'model/gltf-binary',
@@ -192,13 +192,14 @@ describe('/town/3d/ 静态托管', () => {
       json: 'application/json; charset=utf-8',
       webp: 'image/webp',
       svg: 'image/svg+xml',
+      txt: 'text/plain; charset=utf-8', // 开源许可文本 licenses.txt
     };
     for (const [ext, type] of Object.entries(want)) expect((await get(`/town/3d/a.${ext}`)).headers['content-type'], ext).toBe(type);
   });
 
   it('不认识的后缀 404（文件存在也一样）；预压缩文件不能被直接请求', async () => {
     const { get } = await serve();
-    expect((await get('/town/3d/notes.txt')).status).toBe(404);
+    expect((await get('/town/3d/notes.md')).status).toBe(404);
     expect((await get('/town/3d/game.js.gz')).status).toBe(404);
     expect((await get('/town/3d/game.js.br')).status).toBe(404);
     expect((await get('/town/3d/missing.js')).status).toBe(404);

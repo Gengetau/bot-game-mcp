@@ -51,9 +51,9 @@ describe('栖灯镇：主流程冒烟', () => {
     const t = makeTown();
     const a = t.join('阿灯');
     const b = t.join('小岚', 'agent');
-    a.go('arcade');
-    b.go('arcade');
-    const p = a.act('propose_game', { game: 'number_bomb' });
+    a.go('arcade:table1');
+    b.go('arcade:table1');
+    const p = a.act('propose_game', { game: 'number_bomb', objectId: 'arcade:table1' });
     b.act('join_game', { activityId: p.activity.id });
     a.act('start_game', { activityId: p.activity.id });
     expect(a.view().context.activityId).toBe(p.activity.id);

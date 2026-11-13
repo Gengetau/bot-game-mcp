@@ -54,6 +54,20 @@ for f in "$PROJ"/web/*; do
   esac
 done
 
+# 音乐等「进游戏后才取」的大文件放在 client/town/stream/（有 .gdignore，Godot 不导入，也就不进 pck），整个目录树拷到产物里：
+# client/town/stream/music/day.ogg -> build/web/music/day.ogg，客户端用 HTTPRequest 取。不预压缩（ogg 已是压缩格式）。
+if [ -d "$PROJ/stream" ]; then
+  echo "[export] 拷贝流式资源…"
+  for d in "$PROJ"/stream/*/; do
+    [ -d "$d" ] && cp -R "$d" "$OUT/$(basename "$d")"
+  done
+fi
+
+# 开源许可：由引擎自己生成（Godot 的 MIT 许可、内置第三方组件的版权与许可、素材致谢），页面进入面板底部的「开源许可」链接指向它。
+echo "[export] 生成开源许可文本…"
+"$GODOT" --headless --path "$PROJ" --script "$ROOT/client/tools/gen_licenses.gd" -- "$OUT/licenses.txt" >/dev/null
+grep -q "Permission is hereby granted" "$OUT/licenses.txt" || { echo "[export] 许可文本生成失败" >&2; exit 1; }
+
 if [ "${SKIP_COMPRESS:-0}" != "1" ]; then
   echo "[export] 生成预压缩副本（.br / .gz）…"
   OUT="$OUT" node --input-type=module -e '
@@ -79,6 +93,7 @@ echo "[export] 产物（字节）："
 printf '%-34s %12s %12s %12s\n' 文件 原始 gzip brotli
 for f in "$OUT"/*; do
   b="$(basename "$f")"
+  [ -f "$f" ] || continue
   case "$b" in *.br|*.gz) continue ;; esac
   # wc -c 在 GNU 和 BSD（macOS）上都能用；stat 的参数两边不一样
   raw="$(wc -c <"$f" | tr -d ' ')"

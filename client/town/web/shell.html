@@ -19,8 +19,18 @@
   <div id="topbar">
     <div class="chip" id="where"><span id="conn" class="dot" title="连接状态"></span><span id="connText" class="conn-text" hidden></span><span id="space">栖灯镇</span></div>
     <div class="spacer"></div>
+    <button class="chip btn" id="qualityBtn" type="button" aria-label="画质切换">画质：高</button>
     <button class="chip btn" id="soundBtn" type="button" aria-label="声音开关">声音：开</button>
+    <button class="chip btn" id="soundSetBtn" type="button" aria-label="音量设置" aria-expanded="false" aria-controls="soundPanel">音量</button>
     <a class="chip btn" id="oldLink" href="/town/">旧页面</a>
+  </div>
+
+  <!-- 音量设置：音乐、环境声、音效三条独立音量，加「切到后台时静音」；总静音是上面的「声音」按钮 -->
+  <div id="soundPanel" hidden role="dialog" aria-label="音量设置">
+    <label class="vol"><span>音乐</span><input id="volMusic" type="range" min="0" max="100" step="1"><output id="volMusicV"></output></label>
+    <label class="vol"><span>环境声</span><input id="volAmb" type="range" min="0" max="100" step="1"><output id="volAmbV"></output></label>
+    <label class="vol"><span>音效</span><input id="volSfx" type="range" min="0" max="100" step="1"><output id="volSfxV"></output></label>
+    <label class="chk"><input id="bgMute" type="checkbox"><span>切到后台时静音</span></label>
   </div>
 
   <!-- 只读横幅、状态条、提示条排在同一个纵向容器里：高度变了（窄屏换行）后面的自动往下排，不再互相压住 -->
@@ -40,6 +50,9 @@
 
     <div id="toasts" role="status" aria-live="polite"></div>
   </div>
+
+  <!-- 键位提示：只在有物理键盘和鼠标的设备上显示（hud.js 判断），界面文字都放在这里 -->
+  <div id="keyHint" class="chip" hidden aria-hidden="true"><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> 或方向键 移动 <span class="sep">·</span> <kbd>E</kbd> 互动 <span class="sep">·</span> <kbd>Esc</kbd> 停下</div>
 
   <div id="bottombar">
     <div id="destMenu" hidden></div>
@@ -65,6 +78,7 @@
       <button id="enterBtn" type="button" class="primary big" hidden>进入小镇</button>
       <button id="retryBtn" type="button" class="primary" hidden>重试</button>
       <a id="panelLink" href="/town/" hidden>去旧页面</a>
+      <a id="licLink" class="lic" href="licenses.txt" target="_blank" rel="noopener">开源许可</a>
     </div>
   </div>
 </div>

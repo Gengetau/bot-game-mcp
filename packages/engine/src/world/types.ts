@@ -23,12 +23,14 @@ export interface ResidentState {
     allowAskHobby: boolean;
     /** 真人自己设的情绪展示（null = 用程序建议的） */
     moodOverride: string | null;
+    /** 静音全镇公屏：不再因为公屏消息被唤醒，AI 视图里也不带公屏摘要（旧数据没有这个字段，当作 false） */
+    muteTownChat?: boolean;
   };
 }
 
 /** 导航的目标（给本人和运行器看的说明；路径另算）。 */
 export interface NavTarget {
-  kind: 'place' | 'home' | 'object' | 'resident' | 'point';
+  kind: 'place' | 'home' | 'object' | 'resident' | 'point' | 'dir';
   /** 地点编号、物件编号、居民编号；地图点没有 */
   id?: string;
   name: string;

@@ -230,12 +230,16 @@ export function dateTimeOf(ms, tz) {
  * @param {string} text
  * @param {'info' | 'ok' | 'warn' | 'error'} [kind]
  * @param {number} [ms]
+ * @param {{ label: string, onclick: () => void }} [action] 可选的一个按钮（例如「走过去」）
  */
-export function toast(text, kind = 'info', ms = 4200) {
+export function toast(text, kind = 'info', ms = 4200, action) {
   const box = document.getElementById('toasts');
   if (!box) return;
   for (const old of [...box.children]) if (old.textContent === text) old.remove();
   const el = h('div', { class: `toast ${kind}`, role: kind === 'error' ? 'alert' : 'status' }, text);
+  if (action) {
+    el.append(' ', h('button', { class: 'toast-action', type: 'button', onclick: () => ((el.remove()), action.onclick()) }, action.label));
+  }
   box.appendChild(el);
   while (box.children.length > 3) box.firstElementChild?.remove();
   setTimeout(() => {

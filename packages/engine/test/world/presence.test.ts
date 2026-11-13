@@ -663,14 +663,15 @@ describe('栖灯镇导航：用时由路程决定，路上属于脚下的区域'
     expect(a.row().location_id).toBe('bookshop');
   });
 
-  it('走过一片区域时听得到这里的话，走出去之后听不到；说话的受众是那一刻同一区域里在场的人', () => {
+  it('走过一片区域时听得到身边的话，走远之后听不到；说话的受众是那一刻交谈距离内的在场的人', () => {
     const t = makeTown();
     const a = t.join('阿灯');
     const b = t.join('小岚', 'agent');
     const c = t.join('小满');
     a.go('tea_house');
     c.go('garden');
-    // 阿灯从茶馆走向花园，途中路过广场（小岚在那里）
+    // 小岚站在广场西侧的入口附近；阿灯从茶馆走向花园，途中路过广场
+    b.go({ x: 23, z: 26 });
     a.act('navigate', { to: 'garden' });
     expect(a.row().location_id).toBe('tea_house');
     walkInto(t, 'plaza', [a, b, c], a);
@@ -874,8 +875,8 @@ describe('栖灯镇发言：受众在提交时固定', () => {
     a.act('speak', { text: '给小岚听的' });
     b.go('tea_house');
     expect(chatTexts(b)).toEqual(['给小岚听的']);
-    // 现场视图只展示本空间里自己听过的
-    expect(b.view().here?.chat).toEqual([]);
+    // （现场视图只按受众表和时间窗，不再按当前区域标签：b 当时听到了，走到茶馆后仍列着）
+    expect(b.view().here?.chat.map((m) => m.text)).toEqual(['给小岚听的']);
     const off = t.join('小满');
     off.leave();
     a.act('speak', { text: '小满不在' });
@@ -1047,10 +1048,29 @@ describe('栖灯镇：询问爱好（ask_hobby）', () => {
     const t = makeTown();
     const a = t.join('阿灯');
     const b = t.join('小岚', 'agent');
-    b.go('tea_house');
-    for (const target of [b.residentId, a.residentId, 'r_nobody', '']) {
-      expect(a.fail('ask_hobby', { target }).reason).toBe('not_here');
+    for (const target of [a.residentId, 'r_nobody', '']) {
+      const e = a.fail('ask_hobby', { target });
+      expect([e.reason, e.data]).toEqual(['not_here', undefined]);
     }
+    // 在别人家里：和不存在的人分不出来
+    b.go(`home:${b.residentId}`);
+    const home = a.fail('ask_hobby', { target: b.residentId });
+    expect([home.reason, home.message, home.data]).toEqual(['not_here', a.fail('ask_hobby', { target: 'r_nobody' }).message, undefined]);
+  });
+
+  it('ask_hobby 按距离：同一区域但远 → too_far（navigateTo 是对方）；走过去就成功；隔着区域边界但很近也成功', () => {
+    const t = makeTown();
+    const a = t.join('阿灯');
+    const b = t.join('小岚', 'agent');
+    b.go({ x: 21, z: 19 });
+    const e = a.fail('ask_hobby', { target: b.residentId });
+    expect([e.reason, e.data]).toEqual(['too_far', { navigateTo: b.residentId }]);
+    a.go(b.residentId);
+    expect(a.act('ask_hobby', { target: b.residentId }).status).toBe('completed');
+    a.go({ x: 43.5, z: 26.5 });
+    b.go({ x: 44.8, z: 26.5 });
+    expect([a.row().location_id, b.row().location_id]).toEqual(['plaza', 'road']);
+    expect(a.act('ask_hobby', { target: b.residentId }).status).toBe('completed');
   });
 
   it('限流：突发 2 次之后 rate_limited', () => {

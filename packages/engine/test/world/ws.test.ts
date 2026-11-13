@@ -310,10 +310,12 @@ describe('WS：票据与握手', () => {
     expect(await wrong.waitClosed()).toBe(4401);
 
     const u = await new User(app).login('阿灯');
+    const tk = await u.ticket(); // 取票（HTTP 往返）放在 open 之前，别占用 150ms 的 hello 超时
+    const tk2 = await u.ticket();
     const c = await Client.open(app.wsUrl);
-    c.hello(await u.ticket());
+    c.hello(tk);
     await c.type('hello');
-    c.hello(await u.ticket());
+    c.hello(tk2);
     expect((await c.type('error')).code).toBe('bad_request');
     c.send({ t: 'ping', n: 7 });
     expect(await c.type('pong')).toMatchObject({ n: 7, serverTime: app.t.clock.now() });
@@ -437,6 +439,125 @@ describe('WS：scene 同步', () => {
 });
 
 // ───────────────────────── 续租与断开 ─────────────────────────
+
+describe('WS：键盘方向输入', () => {
+  it('hello 带方向租约；dir 帧让角色沿方向走，scene 快照给出折线；松手发零向量就停；成功没有回答，不发坐标', async () => {
+    const app = await serve();
+    const { u, c, hello } = await connect(app, '阿灯');
+    expect(hello.dirLeaseMs).toBe(app.t.w.params.dirLeaseMs);
+    const epoch = u.actor.row().control_epoch;
+    const start = u.actor.pos();
+    const from = c.msgs.length;
+    c.send({ t: 'dir', seq: 1, epoch, x: 1, z: 0 });
+    const scene = await c.waitFor((m) => m.t === 'scene' && m.actors.some((x: any) => x.id === u.residentId && x.nav), 3000, from);
+    const me = scene.actors.find((x: any) => x.id === u.residentId);
+    expect(me.nav.until - me.nav.startedAt).toBeLessThanOrEqual(app.t.w.params.dirLeaseMs);
+    expect(me.nav.points[1].x).toBeGreaterThan(start.x);
+    app.t.advance(200);
+    expect(u.actor.pos().x).toBeGreaterThan(start.x);
+    const from2 = c.msgs.length;
+    c.send({ t: 'dir', seq: 2, epoch, x: 0, z: 0 });
+    await c.waitFor((m) => m.t === 'scene' && m.actors.every((x: any) => !x.nav), 3000, from2);
+    expect(c.msgs.slice(from).some((m) => m.t === 'error' || m.t === 'dir_dropped')).toBe(false);
+  });
+
+  it('旧序号 → dir_dropped(stale)；旧 epoch、不在场、非控制者 → error（连接不关）；坏参数 → bad_request', async () => {
+    const app = await serve();
+    const { u, c } = await connect(app, '阿灯');
+    const epoch = u.actor.row().control_epoch;
+    c.send({ t: 'dir', seq: 5, epoch, x: 0, z: 1 });
+    c.send({ t: 'dir', seq: 5, epoch, x: 1, z: 0 });
+    expect(await c.type('dir_dropped')).toMatchObject({ seq: 5, reason: 'stale' });
+    c.send({ t: 'dir', seq: 6, epoch: epoch + 7, x: 1, z: 0 });
+    expect((await c.type('error')).code).toBe('control_lost');
+    const n = c.count('error');
+    c.send({ t: 'dir', seq: 'x', epoch, x: 1, z: 0 });
+    await c.waitFor((m) => m.t === 'error' && m.code === 'bad_request', 3000);
+    expect(c.count('error')).toBe(n + 1);
+    c.send({ t: 'ping', n: 1 });
+    await c.type('pong');
+    expect(c.closed).toBeNull();
+    // 频率限制：一口气发很多条，超出的收到 dir_dropped(rate_limited)
+    for (let i = 0; i < 40; i++) c.send({ t: 'dir', seq: 100 + i, epoch, x: 0, z: 1 });
+    await c.waitFor((m) => m.t === 'dir_dropped' && m.reason === 'rate_limited', 3000);
+  });
+
+  it('重连：新连接的序号从头开始也被接受，旧连接迟到的输入被丢弃', async () => {
+    const app = await serve();
+    const { u, c } = await connect(app, '阿灯');
+    const epoch = u.actor.row().control_epoch;
+    c.send({ t: 'dir', seq: 300, epoch, x: 1, z: 0 });
+    await c.type('scene', 3000, 1);
+    const { c: c2 } = await attach(app, u);
+    c2.send({ t: 'dir', seq: 1, epoch, x: 0, z: 1 });
+    await c2.waitFor((m) => m.t === 'scene' && m.actors.some((x: any) => x.id === u.residentId && x.nav && x.nav.points[1].z > x.nav.points[0].z), 3000);
+    const rev = whereabouts(app.t.w, app.t.w.mustResident(u.residentId), app.t.w.now()).navigation!.revision;
+    c.send({ t: 'dir', seq: 301, epoch, x: -1, z: 0 });
+    expect(await c.type('dir_dropped')).toMatchObject({ reason: 'stale' });
+    expect(whereabouts(app.t.w, app.t.w.mustResident(u.residentId), app.t.w.now()).navigation!.revision).toBe(rev);
+  });
+});
+
+describe('WS：方向输入的推送范围与栅栏', () => {
+  it('同场景的 B 收到含 A 导航的 scene；私宅里的 C 不收到、C 的方向输入也不推给公共场景的连接', async () => {
+    const app = await serve();
+    const a = await connect(app, '阿灯');
+    const b = await connect(app, '小岚');
+    const c = await connect(app, '阿树');
+    c.u.actor.go('home');
+    await c.c.waitFor((m) => m.t === 'scene' && m.scene === 'home', 3000);
+    // 让 A、B 先收完 C 进家引起的变化
+    for (const x of [a, b]) x.c.send({ t: 'ping', n: 1 });
+    await a.c.type('pong');
+    await b.c.type('pong');
+    const epochA = a.u.actor.row().control_epoch;
+    const fromB = b.c.msgs.length;
+    const fromC = c.c.msgs.length;
+    a.c.send({ t: 'dir', seq: 1, epoch: epochA, x: 1, z: 0 });
+    const seen = await b.c.waitFor((m) => m.t === 'scene' && m.actors.some((x: any) => x.id === a.u.residentId && x.nav), 3000, fromB);
+    expect(seen.actors.find((x: any) => x.id === a.u.residentId).nav.points.length).toBeGreaterThanOrEqual(2);
+    c.c.send({ t: 'ping', n: 2 });
+    await c.c.type('pong', 3000, fromC);
+    expect(c.c.count('scene', fromC)).toBe(0);
+    // C 在私宅里按方向：只有 C 自己收到，A、B 的 scene 数不增加。
+    // 计数之前先让公共场景静下来：A 松手（否则 A 的 500 毫秒租约到期也会给 A、B 各推一帧），
+    // 等 A、B 都收到「A 停了」，再等过一个合并间隔，把还挂着的合并定时器放完
+    const fromA2 = a.c.msgs.length;
+    const fromB2 = b.c.msgs.length;
+    a.c.send({ t: 'dir', seq: 2, epoch: epochA, x: 0, z: 0 });
+    const stopped = (m: any): boolean => m.t === 'scene' && m.actors.some((x: any) => x.id === a.u.residentId && !x.nav);
+    await a.c.waitFor(stopped, 3000, fromA2);
+    await b.c.waitFor(stopped, 3000, fromB2);
+    await new Promise((r) => setTimeout(r, 200));
+    const nA = a.c.count('scene');
+    const nB = b.c.count('scene');
+    const epochC = c.u.actor.row().control_epoch;
+    c.c.send({ t: 'dir', seq: 1, epoch: epochC, x: 0, z: 1 });
+    await c.c.waitFor((m) => m.t === 'scene' && m.actors.some((x: any) => x.id === c.u.residentId && x.nav), 3000, fromC);
+    for (const x of [a, b]) x.c.send({ t: 'ping', n: 3 });
+    await new Promise((r) => setTimeout(r, 250));
+    expect(a.c.count('scene')).toBe(nA);
+    expect(b.c.count('scene')).toBe(nB);
+  });
+
+  it('hello 带连接序号；点地带栅栏后，在途的旧方向帧收到 stale，新序号的按键接手', async () => {
+    const app = await serve();
+    const { u, c, hello } = await connect(app, '阿灯');
+    expect(typeof hello.dirConn).toBe('number');
+    const epoch = u.actor.row().control_epoch;
+    c.send({ t: 'dir', seq: 1, epoch, x: 1, z: 0 });
+    await c.type('scene', 3000, 2);
+    const out = u.actor.act('navigate', { to: 'tea_house', dirFence: { conn: hello.dirConn, seq: 2 } });
+    expect(out.status).toBe('accepted');
+    const from = c.msgs.length;
+    c.send({ t: 'dir', seq: 2, epoch, x: 1, z: 0 });
+    expect(await c.waitFor((m) => m.t === 'dir_dropped', 3000, from)).toMatchObject({ seq: 2, reason: 'stale' });
+    expect(whereabouts(app.t.w, app.t.w.mustResident(u.residentId), app.t.w.now()).navigation!.to.kind).not.toBe('dir');
+    c.send({ t: 'dir', seq: 3, epoch, x: 1, z: 0 });
+    await c.waitFor((m) => m.t === 'scene' && m.actors.some((x: any) => x.id === u.residentId && x.nav && x.nav.until - x.nav.startedAt <= app.t.w.params.dirLeaseMs), 3000, from);
+    expect(whereabouts(app.t.w, app.t.w.mustResident(u.residentId), app.t.w.now()).navigation!.to.kind).toBe('dir');
+  });
+});
 
 describe('WS：renew 与断开', () => {
   it('renew：成功 / 旧版本号 ok:false / 没有导航 ok:false / 非控制者 control_lost（连接不关）', async () => {
@@ -718,8 +839,9 @@ describe('WS：关闭、限额与保活', () => {
   it('心跳：不回协议层 pong 的客户端被断开；会回的不受影响', async () => {
     const app = await serve({ ws: { pingMs: 40 } });
     const u = await new User(app).login('阿灯');
+    const ticket = await u.ticket(); // 取票放在 open 之前，别占用 pingMs 的计时
     const dead = await Client.open(app.wsUrl, { autoPong: false });
-    dead.hello(await u.ticket());
+    dead.hello(ticket);
     await dead.type('hello');
     const live = await attach(app, await new User(app).login('小满'));
     expect(await dead.waitClosed(3000)).toBe(1006);

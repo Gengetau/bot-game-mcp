@@ -115,9 +115,11 @@ describe('栖灯镇住宅：没有邀请进不了别人的家', () => {
 
   it('当面邀请要求对方在身边（同地点、在场）', () => {
     const { a, b } = town3();
-    b.go('tea_house');
-    expect(a.fail('invite', { to: b.residentId }).reason).toBe('not_here');
     expect(a.fail('invite', { to: a.residentId }).reason).toBe('not_here');
+    expect(a.fail('invite', { to: 'r_nobody' }).reason).toBe('not_here');
+    b.go('tea_house');
+    const far = a.fail('invite', { to: b.residentId });
+    expect([far.reason, far.data]).toEqual(['too_far', { navigateTo: b.residentId }]);
   });
 
   it('邀请 24 小时有效；恰好到期那一刻起出发被拒，邀请列表里也没有了', () => {
