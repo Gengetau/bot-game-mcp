@@ -1,6 +1,6 @@
 extends SceneTree
 ## people.gd 里纯逻辑的单测（不起浏览器、不连服务器）。
-## 用法（仓库根目录）：/opt/godot/godot --headless --path client/town --script ../tools/test-people.gd
+## 用法（仓库根目录）：npm run client:unit（或 /opt/godot/godot --headless --path client/town --script ../tests/people_logic_test.gd）
 ## 失败时退出码为 1。
 
 var _fails: int = 0

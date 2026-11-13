@@ -651,7 +651,7 @@
     d.act = function (action) {
       emit('debug_act', JSON.stringify(action));
     };
-    /* 端到端的假接管：对这个编号的 on_pick 直接算被接管（空串清除）；只在 ?debug=1 下有，main.gd 也只在 debug 下认 */
+    /* 端到端的假接管：对这个编号的 on_pick 直接算被接管；传 '-' 是一律算没接管（不问任何功能）；空串清除。只在 ?debug=1 下有，main.gd 也只在 debug 下认 */
     d.pickStub = function (id) {
       emit('debug_pick_stub', String(id || ''));
     };

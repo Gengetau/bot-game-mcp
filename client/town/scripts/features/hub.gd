@@ -13,7 +13,10 @@ var _entered: bool = false
 var _entered_self: String = ""
 ## 最近一次 on_pick 的记录（kind、id、来源 tap / key / button、有没有被接管、第几次）：只进 debug()，给端到端核对
 var _last_pick: Dictionary = {}
-## 只在 ?debug=1 下由 main 设置：对这个 id 的 on_pick 直接算「被接管」（端到端的假接管），不调任何功能
+## 只在 ?debug=1 下由 main 设置（端到端用），两种都不调任何功能：
+## 等于某个编号：对它的 on_pick 直接算「被接管」（假接管）；
+## 等于 PICK_MUTE：一律算「没接管」（骨架的端到端用它核对「没有功能接管时旧行为照常」，不受已并入的真功能影响）
+const PICK_MUTE := "-"
 var _pick_stub: String = ""
 
 
@@ -139,7 +142,9 @@ func on_action(arg: String) -> void:
 
 func on_pick(kind: String, pid: String, src: String = "tap") -> bool:
 	var taken: bool = false
-	if _pick_stub != "" and pid == _pick_stub:
+	if _pick_stub == PICK_MUTE:
+		pass
+	elif _pick_stub != "" and pid == _pick_stub:
 		taken = true
 	else:
 		for f in _features:
@@ -175,4 +180,6 @@ func debug() -> Dictionary:
 			d[(f as TFeature).id] = x
 	if not _last_pick.is_empty():
 		d["_pick"] = _last_pick
+	if _pick_stub != "":
+		d["_stub"] = _pick_stub
 	return d

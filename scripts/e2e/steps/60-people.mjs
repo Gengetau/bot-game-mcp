@@ -1,7 +1,7 @@
 // C4：居民卡、当面邀请、会馆门牌与入户。A 桌面 1440x900，B 手机 390x844 触摸。
 // 步骤号都是数字（60.15 就是「60.1 之后的一步」），文件内的子步骤按顺序互相依赖，只能整个文件一起跑。
 // 末尾有一段「怎么让它失败」，每条新断言都按那里写的做过反向验证。
-import { poll, frames, hitTest, rectOf } from '../lib/ui.mjs';
+import { poll, frames, hitTest, rectOf, godotFeature } from '../lib/ui.mjs';
 import { apiAct } from '../lib/chat.mjs';
 import { peopleCard, doorRows, inviteRows, houseInfo, godotPeople, bank, serverMe, screenOf, clickActor, actionButtons, toastTexts, badge, peopleDot, openPeopleTab, closePanel, clickDoor, hit, inside } from '../lib/people.mjs';
 
@@ -133,6 +133,39 @@ export default async function run(h) {
     await A.page.click(`${CARD} [data-role="close"]`);
     await cardClosed(A);
     await until(async () => (await godotPeople(A)).card === null, 10_000, '点 ✕ 之后 Godot 的 card 为 null');
+  });
+
+  // ───────────────────────── 60.16 E 键和点击走同一个入口（S0 之后）─────────────────────────
+  await step(60.16, 'E 键和点击一样：站在 B 身边按 E 立即出卡，on_pick 记录是 (actor, B, key, 接管)，不走路；卡开着再按一下 E 还是这一张卡、不走路', async () => {
+    await cardClosed(A);
+    check((await gapAB()) < 3, `A、B 应相距不到 3 米：${await gapAB()}`);
+    await until(async () => (await snap(A.page)).nearValid === true, 15_000, 'A 的「够得着」状态有效');
+    const sc = await snap(A.page);
+    const me = sc.actors.find((a) => a.id === sc.self);
+    const b = sc.actors.find((a) => a.id === B.id);
+    // E 键选的是 8 米内最近的物件或居民：B 必须是最近的那个，这一步才是在测「对人按 E」
+    const others = [...sc.objects.map((o) => dist(me, o)), ...sc.actors.filter((a) => a.id !== sc.self && a.id !== B.id).map((a) => dist(me, a))];
+    const nearestOther = others.length ? Math.min(...others) : Infinity;
+    check(b && dist(me, b) < nearestOther, `B 应是 A 最近的可互动目标：B ${b ? dist(me, b).toFixed(1) : '不见了'}，别的最近 ${nearestOther.toFixed(1)}`);
+    const pickN = async () => (await godotFeature(A.page, '_pick'))?.n ?? 0;
+    const n0 = await pickN();
+    const nav0 = apiCount(A, 'navigate');
+    await A.page.keyboard.press('KeyE');
+    const rec = await until(async () => { const r = await godotFeature(A.page, '_pick'); return r && r.n > n0 ? r : null; }, 20_000, '按 E 之后 on_pick 记录出现');
+    check(rec.kind === 'actor' && rec.id === B.id && rec.src === 'key' && rec.taken === true, `记录应是 (actor, ${B.id}, key, 接管)：${JSON.stringify(rec)}`);
+    await cardIs(A, B.id);
+    // 卡开着再按一下 E：同一个人、同一张卡，仍算接管（不落回旧逻辑去走路）
+    await A.page.keyboard.press('KeyE');
+    const rec2 = await until(async () => { const r = await godotFeature(A.page, '_pick'); return r && r.n > rec.n ? r : null; }, 20_000, '第二下 E 的 on_pick 记录出现');
+    check(rec2.id === B.id && rec2.src === 'key' && rec2.taken === true, `第二下 E 也应被居民卡接管：${JSON.stringify(rec2)}`);
+    // 屏障：旧逻辑若错误地继续，会在 on_pick 的同一帧里发 navigate；记录已经出现，再过几帧才断言「没有」
+    await frames(A.page, 5);
+    check(apiCount(A, 'navigate') === nav0, `对身边的人按 E 不应发 navigate：${nav0} -> ${apiCount(A, 'navigate')}`);
+    check(!(await sceneOf(A)).nav, '服务器里 A 不应在走');
+    const c = await peopleCard(A.page);
+    check(c.cardOpen && c.cardId === B.id, `卡应仍开着、还是 B：${JSON.stringify({ open: c.cardOpen, id: c.cardId })}`);
+    await A.page.keyboard.press('Escape');
+    await cardClosed(A);
   });
 
   // ───────────────────────── 60.2 远处点人先走过去 ─────────────────────────
