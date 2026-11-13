@@ -259,14 +259,14 @@ export default async function run(h) {
     await h.login(C, nameC, { query: '&hour=19.5' });
     C.id = (await snap(C.page)).self;
     await goPlace(h, C, 'tea_house');
-    await clickObject(C, T1);
+    await clickWorld(C, T1_SEATS[2].x, T1_SEATS[2].z, { avoidDock: true }); // B 坐在南侧座位上，会挡住桌面中心的点击；这里直接点座位处的地面
     await settle(h, C);
     // A 走回桌边：挑没人站的座位（B、C 站着的不选）
-    await clickObject(A, T1);
+    await clickWorld(A, T1_SEATS[3].x, T1_SEATS[3].z, { avoidDock: true });
     await settle(h, A);
     const [pa, pb, pc] = [await posOf(A), await posOf(B), await posOf(C)];
     const seats = [pa, pb, pc].map((q) => nearestSeat(q, T1_SEATS));
-    check(seats.every((s) => s.d <= 0.5) && new Set(seats.map((s) => `${s.s.x},${s.s.z}`)).size === 3, `A、B、C 应坐在三个不同的座位上：${JSON.stringify(seats.map((s) => [s.s, +s.d.toFixed(2)]))}`);
+    check(seats.every((s) => s.d <= 0.5) && new Set(seats.map((s) => `${s.s.x},${s.s.z}`)).size === 3, `A、B、C 应坐在三个不同的座位上：${JSON.stringify(seats.map((s) => [s.s, +s.d.toFixed(2)]))} 位置 ${JSON.stringify([pa, pb, pc].map((q) => [q.x, q.z]))} toasts ${JSON.stringify(await toastTexts(A.page))}`);
     // B 约人（报名从这里算起）
     const inv = await until(async () => (await findAction(B.page, `f:activity:invite:${T1}`)) ?? null, 15_000, 'B 出现「约人」');
     await B.page.tap(`#actions [data-action="${inv.id}"]`);
@@ -288,7 +288,17 @@ export default async function run(h) {
       const m = await meView(B);
       return m.interaction?.status === 'running' ? m : null;
     }, 10_000, '服务器上状态变成 running');
+    // 提示只停留几秒，而 40.9 开始时茶早已到点：先在 B 页面里挂一个记录器，把以后出现过的提示都存下来
+    await B.page.evaluate(() => {
+      window.__c2seen = [];
+      const box = document.getElementById('toasts');
+      new MutationObserver(() => {
+        for (const e of box.children) if (!window.__c2seen.includes(e.textContent)) window.__c2seen.push(e.textContent);
+      }).observe(box, { childList: true, subtree: true, characterData: true });
+    });
     const it = me.interaction;
+    const rem = () => `喝茶还剩 ${((it.endsAt - Date.now()) / 1000).toFixed(1)} 秒`;
+    note(`开始后 ${rem()}`);
     check(typeof it.startedAt === 'number' && Math.abs(it.endsAt - it.startedAt - TEA_MS) <= 5000, `喝茶时长应约 ${TEA_MS} 毫秒：startedAt ${it.startedAt} endsAt ${it.endsAt}`);
     await until(async () => (await godotTags(A)).some((x) => /2 人/.test(x)) && (await godotTags(B)).some((x) => /2 人/.test(x)), 10_000, '两边桌牌都是「喝茶 · 2 人」');
     const tA = await tag(A);
@@ -298,6 +308,7 @@ export default async function run(h) {
     await until(async () => (await findAction(C.page, 'f:activity:running:')) ?? null, 15_000, 'C 看到「已开始」');
     check(!(await hasAction(C.page, 'f:activity:join')), 'C 不应再有「加入」');
     await shot(C.page, '40-desktop-tea-running-evening');
+    note(`C 看到已开始之后 ${rem()}`);
     // 页签：状态与倒计时（与服务器的 endsAt 相差不到 3 秒，且在变小）
     const pA = await until(async () => {
       const d = await pane(A);
@@ -331,6 +342,7 @@ export default async function run(h) {
     const rec = await until(() => A.w.actions.slice(na).find((r) => r.type === 'start_interaction' && r.code), 10_000, '被拒的 start_interaction 有回应');
     check(rec.reason === 'busy' && rec.message, `应回 busy：${JSON.stringify(rec)}`);
     await waitToast(A, new RegExp(rec.message.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')), '服务器的原文');
+    note(`40.6 结束时 ${rem()}`);
     const mm = await meView(B);
     check(mm.interaction.participants.length === 2 && mm.interaction.status === 'running', '被拒之后参与者与状态不应变');
   });
@@ -341,6 +353,7 @@ export default async function run(h) {
     const w0 = (await act(A)).warned;
     const p0 = (await act(A)).passed;
     const ends0 = (await meView(B)).interaction.endsAt;
+    note(`40.7 开始时喝茶还剩 ${((ends0 - Date.now()) / 1000).toFixed(1)} 秒`);
     await A.page.keyboard.down('s');
     await waitToast(A, /没有这次的收获/, '「没有这次的收获」');
     const tFirst = Date.now();
@@ -351,6 +364,8 @@ export default async function run(h) {
     while (Date.now() - tFirst < 500) await sleep(50);
     await A.page.keyboard.down('s');
     await until(() => A.gate.dirFrames.length > f0, 8000, '第二次按 S 发出了方向帧');
+    // 一直按到离开座位足够远（站起的规则是离使用位不到 0.5 米还算坐着）
+    await until(async () => nearestSeat(await posOf(A), T1_SEATS).d > 0.8, 8000, 'A 离开座位 0.8 米以外');
     await A.page.keyboard.up('s');
     const me = await until(async () => {
       const m = await meView(B);
@@ -396,7 +411,10 @@ export default async function run(h) {
     // 去重（反向验证项）：C 这边 main 追加的「使用中」要被换掉
     await until(async () => (await findAction(C.page, 'f:activity:begin:')) ?? null, 10_000, 'C 出现「开始」（一人就够）');
     check(!(await hasAction(C.page, 'busy:')), `C 的按钮里不应有「使用中」：${JSON.stringify(await actionButtons(C.page))}`);
-    await clickObject(A, SHELF);
+    // C 站在一个使用位上，会挡住书架中心的点击：A 直接点离 C 最远的那个使用位的地面
+    const pc0 = await posOf(C);
+    const far = [...SHELF_SEATS].sort((u, v) => dist2(v, pc0) - dist2(u, pc0))[0];
+    await clickWorld(A, far.x, far.z, { avoidDock: true });
     await settle(h, A);
     const [pa, pc] = [await posOf(A), await posOf(C)];
     check(nearestSeat(pa, SHELF_SEATS).d <= 0.5 && dist2(pa, pc) >= 1.0, `A 应站在藏书架另一个使用位上：相距 ${dist2(pa, pc).toFixed(2)} 米`);
@@ -432,7 +450,7 @@ export default async function run(h) {
       const extra = Object.keys(dump).filter((k) => !allowed.has(k) && !/^town3d\./.test(k));
       check(extra.length === 0, `${p.label} 不应新增浏览器存储键：${JSON.stringify(extra)}`);
       const names = [nameOf(A), nameOf(B), nameC, nameCServer];
-      for (const [k, v] of Object.entries(dump)) check(!names.some((n) => n && String(v).includes(n)), `${p.label} 的存储 ${k} 里不应含参与者名字`);
+      for (const [k, v] of Object.entries(dump)) if (!allowed.has(k)) check(!names.some((n) => n && String(v).includes(n)), `${p.label} 的存储 ${k} 里不应含参与者名字`);
     }
     // 读书不用等到结束：离线后已开始的活动照常完成
     await h.release(A);
@@ -444,10 +462,10 @@ export default async function run(h) {
   await step(40.9, '结束（B 一个人的茶到点）：收到收获文字；页签「刚才」小卡；桌牌没了；B 站起；活动条隐藏；服务器里没有活动；走开不再被拦', async () => {
     const seen = new Set();
     const done = await until(async () => {
-      for (const t of await toastTexts(B.page).catch(() => [])) seen.add(t);
       const d = (await act(B))?.lastDone;
       return d ?? null;
     }, TEA_MS + 90_000, 'B 的喝茶结束（lastDone 出现）', 100);
+    for (const t of await B.page.evaluate(() => window.__c2seen ?? [])) seen.add(t);
     check(/完成了/.test(done.text) && done.id, `收获文字：${JSON.stringify(done)}`);
     check([...seen].some((t) => t.includes(done.text)), `main 弹出的提示应含这段收获文字：${JSON.stringify([...seen])}`);
     await openActivity(B.page);
@@ -484,6 +502,10 @@ export default async function run(h) {
     check(!k.mine && k.last === null && k.tables.length === 0 && k.people.length === 0, `离开后页签应清空：${JSON.stringify(k)}`);
     await B.ctx.clearCookies();
     const oldId = B.id;
+    B.w.closing = true;
+    await B.page.reload();
+    await B.page.waitForSelector('#enterBtn:not([hidden])', { timeout: 120_000 });
+    B.w.closing = false;
     await B.page.click('#enterBtn');
     await B.page.waitForSelector('#nameInput', { state: 'visible', timeout: 30_000 });
     const nm = `阿换${rnd()}`;

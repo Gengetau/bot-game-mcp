@@ -68,7 +68,7 @@ export async function openActivity(page) {
 }
 
 /** 点某件物件（鼠标或触摸），按它在页面里的投影位置；位置被面板盖住时先关面板。 */
-export async function clickObject(p, oid) {
+export async function clickObject(p, oid, { dy = 0 } = {}) {
   const read = () => p.page.evaluate((id) => window.__town.objects.find((o) => o.id === id) ?? null, oid);
   let o = await read();
   if (!o) throw new Error(`页面里没有物件 ${oid}`);
@@ -77,17 +77,20 @@ export async function clickObject(p, oid) {
     await closeDock(p.page);
     o = await read();
   }
-  if (p.touch) await p.page.touchscreen.tap(o.sx, o.sy);
-  else await p.page.mouse.click(o.sx, o.sy);
+  if (p.touch) await p.page.touchscreen.tap(o.sx, o.sy + dy);
+  else await p.page.mouse.click(o.sx, o.sy + dy);
   return o;
 }
 
-/** 等自己（按服务器）停下，并返回位置。 */
+/** 等自己（按服务器）停下，并返回位置。点击之后导航要过一会儿才出现在服务器视图里，所以先等一下，且要连续两次都看到停着才算。 */
 export async function settle(h, p, ms = 60_000) {
+  await sleep(900);
+  let still = 0;
   return h.until(async () => {
     const me = h.selfActor(await h.serverScene(p));
-    return me && !me.nav ? me : null;
-  }, ms, `${p.label} 走完`, 500);
+    still = me && !me.nav ? still + 1 : 0;
+    return still >= 2 ? me : null;
+  }, ms, `${p.label} 走完`, 400);
 }
 
 /** 用地点菜单走进某个地点（桌面点击、手机轻点），等进了那片区域并停下。 */
