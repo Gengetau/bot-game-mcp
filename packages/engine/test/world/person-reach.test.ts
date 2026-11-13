@@ -121,7 +121,10 @@ describe('面对面互动按距离：personReach', () => {
   it('在小游戏里的人够不着，也不能对他们发起（not_here）', () => {
     const { t, a, b } = two();
     const c = t.join('阿木');
-    const p = a.act('propose_game', { game: 'number_bomb' });
+    // 小游戏要在游戏馆的桌边凑：三个人都站到同一张桌旁，开局前 c 够得着 a，开局后才够不着
+    for (const x of [a, b, c]) x.go('arcade:table1');
+    expect(canInteractPerson(t.w, c.row(), a.row())).toBe(true);
+    const p = a.act('propose_game', { game: 'number_bomb', objectId: 'arcade:table1' });
     b.act('join_game', { activityId: p.activity.id });
     a.act('start_game', { activityId: p.activity.id });
     expect(c.fail('ask_hobby', { target: a.residentId }).reason).toBe('not_here');
@@ -203,13 +206,12 @@ describe('「在场」的定义和附近聊天共用', () => {
     const d = t.join('小雨');
     const ids = () => nearbyAudience(t.w, a.row(), t.w.now()).map((r) => r.resident_id);
     const reachable = () => [b, c, d].filter((x) => canInteractPerson(t.w, a.row(), x.row())).map((x) => x.residentId);
-    // 先把大家放到彼此很近的地方
-    for (const x of [b, c, d]) x.go({ x: 30, z: 27 });
-    a.go({ x: 30, z: 26 });
+    // 先把大家放到彼此很近的地方：游戏馆的同一张桌旁（小游戏要在桌边凑）
+    for (const x of [a, b, c, d]) x.go('arcade:table1');
     expect(ids().sort()).toEqual([a, b, c, d].map((x) => x.residentId).sort());
     expect(reachable().sort()).toEqual([b, c, d].map((x) => x.residentId).sort());
     c.leave();
-    const p = d.act('propose_game', { game: 'number_bomb' });
+    const p = d.act('propose_game', { game: 'number_bomb', objectId: 'arcade:table1' });
     b.act('join_game', { activityId: p.activity.id });
     d.act('start_game', { activityId: p.activity.id });
     expect(ids().sort()).toEqual([a.residentId]);
@@ -250,8 +252,10 @@ describe('报价与成交按距离', () => {
   it('进入小游戏撤销报价（双方任一方）', () => {
     const { t, a, b } = two();
     const c = t.join('阿木');
+    // 先都到游戏馆的桌边再发报价：报价是进入小游戏时被撤销的，不是因为谁走开
+    for (const x of [a, b, c]) x.go('arcade:table1');
     const o = c.act('offer', { kind: 'gift', to: a.residentId, give: { coins: 4 } });
-    const p = a.act('propose_game', { game: 'number_bomb' });
+    const p = a.act('propose_game', { game: 'number_bomb', objectId: 'arcade:table1' });
     b.act('join_game', { activityId: p.activity.id });
     a.act('start_game', { activityId: p.activity.id });
     expect(t.w.db.get('SELECT status FROM offers WHERE offer_id = ?', o.offer.id)!.status).toBe('cancelled');
