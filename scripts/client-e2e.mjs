@@ -1911,15 +1911,16 @@ async function main() {
   // 夜晚那一支曾在 18 点到 24 点的整遍里超时、白天却一直是绿的。这里用 ?debug=1&hour= 把钟点固定住，夜晚（22 点）和白天（12 点）
   // 各做一遍：刷新 → 静音进入 → 取消静音 → 该时段的音乐淡入到满、另一首不在放，不再依赖整遍在哪个钟点跑。
   // 怎么让 15.1 失败：把 audio.gd 的 _fetch 改回「req.timeout = 30」的总时长超时（去掉停滞计时和 download_chunk_size），重新导出：夜晚这一遍
-  // 里 night 曲第一次取会在 0 字节时超时、第二次才成功，「第一次取就应成功」那条断言变红。
+  // 里 night 曲第一次取会被总时长超时掐掉（result=13；注意超时时 bytes 恒为 0，不能说明有没有收到过数据）、第二次才成功，「第一次取就应成功」那条断言变红。
   await step(15.1, '声音：钟点固定在夜晚（22 点）和白天（12 点），各做一遍「刷新 → 静音进入 → 取消静音 → 该时段的音乐淡入、另一首不在放」', async () => {
     const near = (a, b, tol) => typeof a === 'number' && Math.abs(a - b) <= tol;
     const E = await newPlayer(chromiumBrowserA, 'E 钟点', { viewport: { width: 1000, height: 700 }, deviceScaleFactor: 1 });
     extra.push(E);
     await login(E, `阿钟${rnd()}`, { query: '&hour=22' }); // 第一次进入：登录、建居民（地址栏带着 hour=22）
     // 夜晚这一遍把页面的 CPU 压慢 8 倍（Chromium 的 CDP，只影响这个页面）：模拟「机器忙 / 弱设备」。刷新后进场景的预热会把主线程卡住十几秒，
-    // 以前音乐请求按「整个请求 30 秒」计时，卡一次就在还没收到第一个字节时被判超时，再空等 20 秒重试，整首曲子晚到近一分钟
-    // （整遍在 18 到 24 点、机器正忙时红过两次）。现在这一遍不论整遍几点跑、机器忙不忙都走同一条路径。
+    // 以前音乐请求按「整个请求 30 秒」计时，卡一次就被判超时（与有没有收到字节无关），再空等 20 秒重试，曲子晚一截
+    // （整遍在 18 到 24 点、机器正忙时红过两次；这条路径最坏约 71 秒，单靠它不一定能解释那两次真失败，那两次的 musicFetch 现场没有留下，
+    // 之后再红请看失败信息里的 musicFetch.history）。现在这一遍不论整遍几点跑、机器忙不忙都走同一条路径。
     // （点击都带 noWaitAfter：页面被压慢时 Playwright 点完后「等待可能的导航」会白等 30 秒）
     const cdp = await E.ctx.newCDPSession(E.page);
     const throttle = (rate) => cdp.send('Emulation.setCPUThrottlingRate', { rate });
