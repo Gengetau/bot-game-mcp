@@ -118,10 +118,11 @@ export default async function run(h) {
     await openDock(p.page);
     await frames(p.page, 2);
     const real = (await dockState(p.page)).mods.length;
-    check(real === 1, `这一段按「只有附近一个真页签」写（假页签凑到五个、六个）；现在真页签有 ${real} 个，后面的段并入后请调整 FAKE 的数量`);
-    // 五个：1 真 + 4 假
-    await addFakes(p, 0, 4);
-    await until(async () => (await stripInfo(p)).count === 5, 5000, `${tag} 页签条里有五个页签`);
+    // 不依赖真页签有几个：先数出来，再用假页签补到总数 5、6（真页签变多时假页签变少）
+    check(real >= 1 && real <= 5, `真页签应有 1 到 5 个（假页签补到五个、六个）：现在 ${real} 个`);
+    const nFive = 5 - real;
+    await addFakes(p, 0, nFive);
+    await until(async () => (await stripInfo(p)).count === 5, 5000, `${tag} 页签条里共五个页签（${real} 真 + ${nFive} 假）`);
     let s = await stripInfo(p);
     for (const t of s.tabs) check(t.hit, `${tag} 五个页签：${t.id} 的中心点命中的不是它自己，而是 ${t.hitWhat}`);
     const widths = s.tabs.map((t) => t.w.toFixed(1)).join('/');
@@ -147,6 +148,16 @@ export default async function run(h) {
       const other = s.tabs.find((t) => !t.sel).id;
       await p.page.hover(`#dockTabs [data-tab="${selId}"]`);
       await until(async () => (await p.page.evaluate((i) => document.querySelector(`#dockTabs [data-tab="${i}"]`).matches(':hover'), selId)) === true, 5000, `${tag} 鼠标悬停在选中页签上`);
+      const fg = (id) => p.page.evaluate((i) => getComputedStyle(document.querySelector(`#dockTabs [data-tab="${i}"]`)).color, id);
+      const ink = await p.page.evaluate(() => {
+        const e = document.createElement('i');
+        e.style.color = getComputedStyle(document.getElementById('dock')).getPropertyValue('--d-ink');
+        document.body.appendChild(e);
+        const c = getComputedStyle(e).color;
+        e.remove();
+        return c;
+      });
+      check((await fg(selId)) === ink, `${tag} 悬停时选中页签的字应仍是墨色 ${ink}，实际 ${await fg(selId)}`);
       check((await bg(selId)) === paper && paper !== wood, `${tag} 悬停时选中页签的背景应仍是纸色 ${paper}，实际 ${await bg(selId)}（木色底 ${wood}）`);
       await p.page.hover(`#dockTabs [data-tab="${other}"]`);
       await until(async () => (await p.page.evaluate((i) => document.querySelector(`#dockTabs [data-tab="${i}"]`).matches(':hover'), other)) === true, 5000, `${tag} 鼠标悬停在未选中页签上`);
@@ -154,9 +165,9 @@ export default async function run(h) {
       await p.page.mouse.move(5, 5);
     }
     // 六个：再加一个，最后一个必须能滚到可见并点中
-    await addFakes(p, 4, 5);
-    await until(async () => (await stripInfo(p)).count === 6, 5000, `${tag} 页签条里有六个页签`);
-    const lastId = FAKE_IDS[4];
+    await addFakes(p, nFive, nFive + 1);
+    await until(async () => (await stripInfo(p)).count === 6, 5000, `${tag} 页签条里共六个页签`);
+    const lastId = FAKE_IDS[nFive];
     // 给最后一个页签一个未读：小圆点不能被裁掉或被关闭钮盖住
     await p.page.evaluate((id) => window.__s0hosts[id].setUnread(2), lastId);
     await p.page.evaluate(() => {
@@ -197,17 +208,17 @@ export default async function run(h) {
       return l.sel && l.hit && l.right <= x.close.left + 0.5;
     }, 5000, `${tag} 选中最后一个页签后自动滚进可见（右沿在关闭钮之左）`);
     await removeFakes(p);
-    await until(async () => (await stripInfo(p)).count === 1, 5000, `${tag} 假页签卸干净，只剩真页签`);
+    await until(async () => (await stripInfo(p)).count === real, 5000, `${tag} 假页签卸干净，只剩 ${real} 个真页签`);
     s = await stripInfo(p);
-    check(s.dataCount === '1' && (await p.page.evaluate(() => getComputedStyle(document.querySelector('#dockTabs .dock-tab')).pointerEvents)) === 'none', `${tag} 只有一个页签时仍是不可点的标题`);
+    // 只有一个真页签时仍是不可点的标题（真页签变多以后这条不适用，由真页签数决定）
+    if (real === 1) check(s.dataCount === '1' && (await p.page.evaluate(() => getComputedStyle(document.querySelector('#dockTabs .dock-tab')).pointerEvents)) === 'none', `${tag} 只有一个页签时仍是不可点的标题`);
     check(s.box.scrollLeft === 0, `${tag} 页签卸掉后滚动位置回到 0：${s.box.scrollLeft}`);
   }
 
   await step(25, '页签条（侧栏 1440x900 与 1100x800，抽屉 390x844 与 360x740）：五个、六个页签都点得到；关闭钮不盖页签；选中的自动滚进可见；只剩一个时仍是标题', async () => {
     const saved = { A: await saveStore(A), B: await saveStore(B) };
     const wasOpen = { A: (await dockState(A.page)).open, B: (await dockState(B.page)).open };
-    const single = await stripInfo(A);
-    check(single.dataCount === '1' || single.count === 1, `开始时页签条应只有一个页签：${JSON.stringify(single.dataCount)}`);
+    const realAtStart = (await dockState(A.page)).mods.length;
     for (const [p, vp, lay] of [
       [A, { width: 1440, height: 900 }, 'side'],
       [A, { width: 1100, height: 800 }, 'side'],
@@ -226,7 +237,7 @@ export default async function run(h) {
     const dA = await dockState(A.page);
     const dB = await dockState(B.page);
     check(dA.layout === 'side' && dB.layout === 'drawer', `视口恢复后布局应是侧栏 / 抽屉：${dA.layout} ${dB.layout}`);
-    check(dA.mods.length === 1 && dB.mods.length === 1, `假页签应已卸掉：A ${dA.mods} B ${dB.mods}`);
+    check(dA.mods.length === realAtStart && dB.mods.length === realAtStart, `假页签应已卸掉，只剩 ${realAtStart} 个真页签：A ${dA.mods} B ${dB.mods}`);
   });
 
   // ───────────────────────── 测试口只在 ?debug=1 下 ─────────────────────────
