@@ -1045,16 +1045,37 @@ export default async function run(h) {
 }
 
 /* ───────────────────────── 反向验证：改了哪里 -> 哪一步红 ─────────────────────────
- * 下面是实际做过的破坏（同时打在不同步骤上，一次跑完 chat-town），破坏用的脚本不入库。改回去后整条重新全绿。
+ * 破坏用的脚本不入库；改回去后重新全绿。三种证据：端到端（改网页层 / 导出产物后跑 chat-town）、无头单测（npm run client:unit，
+ * client/tests/*_test.gd，破坏 town.gd / bubble_layout.gd 后哪一条红）、旧导出产物上跑新断言（评审修复前的构建就是「破坏」）。
+ *
+ * 端到端（第一轮实现时做的）：
  *  - town.gd on_leave 不清 _msgs / _seen                          -> 33 红（Godot 一侧 _msgs/_seen 含上一位的行）
  *  - town.gd _ingest_older 的序号改成 ++_hi（和新消息同向）          -> 30.9 红（更早 5 条的顺序与服务端不一致）
  *  - town.js 的 kit.append(items, live && !muted) 改成 live         -> 30.95 红（静音期间角标增加）
  *  - bubbles.gd 的 _on_heard 去掉 STALE_MS 过滤                     -> 31.3 红（skipped_stale 不增加）
  *  - bubbles.css 去掉 margin-top:-26px                              -> 31 红（气泡盖住名牌）
  *  - town.gd 去掉 on_hello 里的 _left 判断（401 事故的修复）          -> 全程检查红（换人后出现未声明的 401）
+ * 端到端（评审修复时做的）：
+ *  - town.js mentionsMe 改成永远返回 true                            -> 32 红（「不带 @ 的那一行不应有 mention」）
+ *  - 构建产物 town-modules.js 里 tx.textContent 改成 tx.innerHTML      -> 20.8 红（附近 XSS，chatkit 是共用的）；32 里 J1 先红，XSS 那一段没跑到，由 20.8 代表
+ *  - 00-chatkit.js 的 startCooldown 改回旧写法（第一次显示就减一）       -> 30.76 红（「1 秒的倒计时：出现提示的同时发送钮禁用」）
+ *  - 评审修复前的构建（整体重读走 kit.reset()、气泡按固定 36px 错开）上跑新断言 -> 30.76 红（ArrowUp 记录被清掉）、31.5 红（气泡互相重叠、压在别人的名牌上，B 在 A 的右后方）
+ * 无头单测（client/tests）：
+ *  - town.gd 回执推进 _after                                         -> 「回执不推进 _after」红
+ *  - town.gd 同步期间帧不进缓冲                                       -> 「同步期间: 帧不直接入列表」「同步后顺序」红
+ *  - town.gd 去掉 on_hello 的水位相等判断                             -> 「水位相等: 不发请求」红
+ *  - town.gd resync 分支与 _load_initial 里的 _clear_list 都去掉       -> 「resync: 列表只剩新读的」红（只去掉一处不红：两处互为冗余）
+ *  - town.gd 读更早的序号改成 ++_hi                                   -> 「ord: 严格升序」红
+ *  - town.gd on_leave 不清 _msgs / _seen / _muted                    -> 「离开: 列表与 _seen 清空」红
+ *  - town.gd tick 去掉 _left 判断                                    -> 「离开后 tick 不推 state」红
+ *  - town.gd HTTP 补读去重路径不清 _rcpt                              -> 「补读后排空缓冲: _after 仍是 HTTP 页的水位」红
+ *  - town.gd 读更早不按剩余位置截断                                   -> 「截断」三条红（没有并发时的整页接上去不受影响）
+ *  - town.gd 超长 / 地点白名单 / 类型白名单的本地检查去掉                -> 「超长: 不发请求」「白名单」红
+ *  - bubble_layout.gd 名牌不当障碍 / 排序不看屏幕位置 / 顶部不隐藏 / 平滑去掉 / 相交判断只看 120px -> 对应的「名牌」「顺序」「顶部」「平滑」「宽气泡」红
+ * 31.2「公屏帧也触发气泡」、31 的 .tag.b 定位 / pointer 改坏：靠订阅关系（bubbles.gd 只连 nearby.heard）和 CSS，没有重新做破坏验证（第一轮做过 margin-top）。
  * 没做出红灯、如实记录：
- *  - 30.75 resync：去掉两处 _clear_list 后仍绿，因为重读的最近一页与旧列表按 sid 去重后内容相同；
- *    要红需要造「旧列表里有已滑出最近一页的行」的场景，本步没有造。
- *  - 其余（_after 不被回执推进、同步期间帧缓冲、mentionsMe 永真、PLACES 白名单、innerHTML、限流文字、超长本地检查）
- *    没有逐条破坏验证，只有正向断言。
+ *  - 30.75 resync：旧列表整体清掉由 _clear_list 做，resync 分支和 _load_initial 各有一处（互为冗余），只去掉一处不会红；两处都去掉由无头单测抓到。
+ *    端到端里已造出「旧列表里有已滑出最近一页的行」的场景（页大小 5、先读长到 11 条以上），但没有对着去掉两处 _clear_list 的导出重跑（要多一次约 2 分钟的导出）。
+ *  - 地点白名单（PLACES）的 JS 一侧：Godot 一侧已先过滤，服务端也只会给合法地点，JS 一侧的白名单单独破坏看不出差别（纵深防御，同 C1a 的 canSend 长度检查）。
+ *  - 限流提示改成固定文字（30.5 的数字断言）：与「倒计时回到旧写法」共用同一段代码，同一轮里无法分开归因，没有单独做。
  */
