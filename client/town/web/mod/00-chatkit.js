@@ -124,20 +124,24 @@
     }
 
     function startCooldown(sec) {
+      /* cool 是「还要禁用几秒」：第一次显示不减，之后每秒先减再显示，减到 0 才恢复。
+       * （原来第一次显示就减一，倒计时只有 1 秒时 cool 立刻变 0，发送钮没禁用提示就消失，最后一秒也提前放开了） */
       cool = Math.max(1, sec | 0);
       clearInterval(coolTimer);
+      var first = true;
       var tick = function () {
-        if (cool > 0) setHint(host.t('err.rate_limited', { n: cool }), 'cool');
-        if (cool <= 0) {
+        if (!first) cool--;
+        first = false;
+        if (cool > 0) {
+          setHint(host.t('err.rate_limited', { n: cool }), 'cool');
+        } else {
           clearInterval(coolTimer);
           if (hintKind === 'cool') setHint('');
-          updateSend();
         }
-        cool--;
+        updateSend();
       };
       tick();
       coolTimer = setInterval(tick, 1000);
-      updateSend();
     }
 
     function onAck(a) {

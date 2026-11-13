@@ -462,6 +462,14 @@ export default async function run(h) {
     check(k1.hist === k0.hist, `ArrowUp 记录还在：${k0.hist} -> ${k1.hist}`);
     await until(async () => !(await townCompose(B.page)).hintClass.includes('cool'), 20_000, '倒计时自然结束');
     await B.page.fill(IN, '');
+    // 倒计时只有 1 秒时发送钮也要禁用（负载高时服务端回的 retryAfterMs 常常只有几百毫秒；原来的倒计时第一次显示就减一，1 秒的倒计时发送钮根本没禁用）
+    await B.page.fill(IN, uniq('短倒计时'));
+    const k2 = await modState(B.page, 'town');
+    await B.page.evaluate((n) => window.TownDock.feed('town', 'ack', JSON.stringify({ n, ok: false, code: 'rate_limited', retryMs: 1000 })), k2.seq);
+    const c1 = await townCompose(B.page);
+    check(c1.hintClass.includes('cool') && c1.sendDisabled, `1 秒的倒计时：出现提示的同时发送钮禁用：${JSON.stringify(c1)}`);
+    await until(async () => !(await townCompose(B.page)).hintClass.includes('cool') && !(await townCompose(B.page)).sendDisabled, 10_000, '1 秒倒计时结束后发送钮恢复');
+    await B.page.fill(IN, '');
   });
 
   // ───────────────────────── 30.8 刷新重建与去重 ─────────────────────────
