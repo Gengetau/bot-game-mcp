@@ -42,7 +42,7 @@ npm run dev -w bot-game-mcp -- serve
 
 ```bash
 npm run client:export   # 先导出
-npm run client:e2e      # 完整一遍约 12 分钟（其中步骤 15「声音」约 7 分钟），不进 CI；需要完整导出（含 .br）。开发中用 --only=<步骤号> 跑子集
+npm run client:e2e      # 完整一遍约 17 分钟（其中步骤 15「声音」约 6 分钟、附近聊天的 20 号步骤文件约 6 分钟），不进 CI；需要完整导出（含 .br）。开发中用 --only=<步骤号> 跑子集
 ```
 
 脚本 `scripts/client-e2e.mjs` 自己起引擎（子进程、开发登录、keys 认证里放一个测试 AI 密钥、临时库、随机端口），
