@@ -683,6 +683,9 @@ export default async function run(h) {
     await B.page.fill('#nameInput', nm);
     await B.page.click('#loginBtn');
     await B.page.waitForFunction(() => window.__town && window.__town.actors.length > 0 && document.body.dataset.phase === 'playing', null, { timeout: 60_000 });
+    // window.__town 是 Godot 每 0.1 到 0.5 秒推一次的快照：刚进入 playing 的那一刻读到的 self 可能还是上一位（负载高时偶发红的根因）。
+    // 先等快照里的自己换成新居民再读；断言不变：必须是另一位居民
+    await until(async () => ((await snap(B.page)).self || oldId) !== oldId, 30_000, '换名重进后快照里的自己是另一位居民', 300).catch(() => null);
     B.id = (await snap(B.page)).self;
     check(B.id !== oldId, '换名重进应是另一位居民');
     await until(() => hist.includes(200), 30_000, '新居民的 /history 补读返回（屏障）');
