@@ -127,7 +127,7 @@
         var left = q('invleft');
         if (left) {
           if (invited) {
-            var hours = Math.ceil(c.invited.mins / 60);
+            var hours = Math.max(1, Math.ceil((c.invited.mins - 5) / 60)); /* mins 已向上取整到 5 分钟：减掉，免得 24 小时显示成 25 */
             left.textContent = c.invited.mins <= 60 ? T('invited.soon') : T('invited.left', { n: hours });
           } else left.textContent = '';
         }
@@ -176,7 +176,7 @@
 
       /* ── 请柬、门牌、屋里 ── */
       function leftText(mins) {
-        return mins <= 60 ? T('invite.left.soon') : T('invite.left.hours', { n: Math.ceil(mins / 60) });
+        return mins <= 60 ? T('invite.left.soon') : T('invite.left.hours', { n: Math.max(1, Math.ceil((mins - 5) / 60)) });
       }
       function kindBadge(el, k) {
         el.textContent = T(k === 'agent' ? 'kind.ai' : 'kind.human');

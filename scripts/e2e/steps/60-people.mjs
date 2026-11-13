@@ -431,6 +431,11 @@ export default async function run(h) {
 
   // ───────────────────────── 60.9 手机 ─────────────────────────
   await step(60.9, '手机与布局：B 的卡不超出视口、按钮高 >= 44、不盖 controls；点卡空白处不走路；抽屉开着卡仍可见按钮可点；桌面侧栏开着时卡与 #dock 不相交', async () => {
+    // 60.8 留下的卡还开着（里面是 A 改过的简介）：先关掉再点，重新开卡会取最新资料
+    if ((await peopleCard(B.page)).cardOpen) {
+      await B.page.keyboard.press('Escape');
+      await cardClosed(B);
+    }
     await clickActor(B, A.id);
     const c = await cardIs(B, A.id);
     const vp = await B.page.evaluate(() => ({ w: window.innerWidth, h: window.innerHeight }));
@@ -442,6 +447,7 @@ export default async function run(h) {
     const sa = await screenOf(B.page, A.id);
     const sb = await screenOf(B.page, B.id);
     check(!inside(c.rect, sa) && !inside(c.rect, sb), `手机卡片不应盖住双方：${JSON.stringify({ sa, sb, rect: c.rect })}`);
+    await until(async () => !(await peopleCard(B.page)).text.includes('<img'), 20_000, '卡片取到最新资料（A 的简介已还原）后再截图', 300);
     await shot(B.page, '60-mobile-card');
     // 点卡空白处不穿透成点地走路
     const nav0 = apiCount(B, 'navigate');

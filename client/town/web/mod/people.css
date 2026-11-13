@@ -1,4 +1,4 @@
-/* 人家（页签）与居民卡的样式。颜色变量都在 dock.css 的 :root。类名全部以 people- 打头，选择器挂在 [data-pane="people"] 或 #peopleCard 下，不串味。
+/* 人家（页签）与居民卡的样式。颜色变量都在 dock.css 的 :root。类名全部以 people- 打头，选择器挂在 #dock [data-pane="people"] 或 #peopleCard 下，不串味。
  * 居民卡是一块小小的木框名牌纸（#dockOverlays 的直接子节点）；门牌是一排挂在会馆墙上的小木牌；请柬是递过来的便签。
  * 只用 transform / opacity 做动画；不用图片和字体文件（CSP 的 font-src 只有 self）。 */
 
@@ -50,52 +50,52 @@ body[data-dock="drawer"][data-dock-open="1"] #peopleCard .people-bio { display: 
 #peopleCard .people-x:hover:not(:disabled) { background: none; }
 
 /* 按钮：hud.css 的 button 默认是深色半透明，这里全部重新定义（纸面底、木色边） */
-#peopleCard .people-btn, [data-pane="people"] .people-btn {
+#peopleCard .people-btn, #dock [data-pane="people"] .people-btn {
   font: inherit; font-size: 14px; font-weight: 600; color: var(--d-ink); background: var(--d-paper-2); border: 2px solid var(--d-wood); border-radius: 8px; box-shadow: 0 2px 0 var(--d-wood-dark);
   min-height: 44px; padding: 4px 12px; cursor: pointer; touch-action: manipulation; overflow-wrap: anywhere;
 }
-#peopleCard .people-btn.main, [data-pane="people"] .people-btn.main { background: var(--d-leaf-bg); border-color: #6e9a69; box-shadow: 0 2px 0 #4d7449; }
-#peopleCard .people-btn:hover:not(:disabled), [data-pane="people"] .people-btn:hover:not(:disabled) { background: #f8f1df; }
-#peopleCard .people-btn.main:hover:not(:disabled), [data-pane="people"] .people-btn.main:hover:not(:disabled) { background: #eaf3dc; }
-#peopleCard .people-btn:disabled, [data-pane="people"] .people-btn:disabled { opacity: 0.55; cursor: default; box-shadow: none; }
-#peopleCard .people-btn:focus-visible, [data-pane="people"] .people-btn:focus-visible, #peopleCard .people-x:focus-visible { outline: 2px solid var(--d-ember); outline-offset: 1px; }
+#peopleCard .people-btn.main, #dock [data-pane="people"] .people-btn.main { background: var(--d-leaf-bg); border-color: #6e9a69; box-shadow: 0 2px 0 #4d7449; }
+#peopleCard .people-btn:hover:not(:disabled), #dock [data-pane="people"] .people-btn:hover:not(:disabled) { background: #f8f1df; }
+#peopleCard .people-btn.main:hover:not(:disabled), #dock [data-pane="people"] .people-btn.main:hover:not(:disabled) { background: #eaf3dc; }
+#peopleCard .people-btn:disabled, #dock [data-pane="people"] .people-btn:disabled { opacity: 0.55; cursor: default; box-shadow: none; }
+#peopleCard .people-btn:focus-visible, #dock [data-pane="people"] .people-btn:focus-visible, #peopleCard .people-x:focus-visible { outline: 2px solid var(--d-ember); outline-offset: 1px; }
 
 /* ───── 页签内容 ───── */
-[data-pane="people"] .people-scroll { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; padding: 8px 10px 12px; touch-action: pan-y; overscroll-behavior: contain; -webkit-overflow-scrolling: touch; }
-[data-pane="people"] .people-empty { margin: 14px 8px; padding: 8px 10px; background: var(--d-note); border: 1px dashed var(--d-wood-light); border-radius: 4px; font-size: 13px; color: var(--d-ink); }
-[data-pane="people"] [hidden] { display: none; }
-[data-pane="people"] .people-sec { margin-bottom: 12px; }
-[data-pane="people"] .people-h { display: flex; align-items: center; gap: 8px; margin: 0 0 6px; font: 700 15px/22px var(--d-serif); color: var(--d-wood-dark); }
-[data-pane="people"] .people-tag { font-size: 12px; font-weight: 700; line-height: 18px; padding: 0 7px; border-radius: 9px; background: var(--d-slate); color: #fff; }
-[data-pane="people"] .people-tag.owner { background: var(--d-wood); }
-[data-pane="people"] .people-who { margin: 0 0 6px; font-size: 13px; color: var(--d-ink-soft); overflow-wrap: anywhere; }
-[data-pane="people"] .people-none { margin: 0 0 8px; font-size: 13px; color: var(--d-ink-soft); }
-[data-pane="people"] .people-decor { margin: 0 0 8px; padding: 6px 10px 6px 26px; list-style: disc; border: 2px solid var(--d-wood-light); border-radius: 6px; background: var(--d-paper-2); font-size: 13px; overflow-wrap: anywhere; }
-[data-pane="people"] .people-list { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 8px; }
+#dock [data-pane="people"] .people-scroll { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; padding: 8px 10px 12px; touch-action: pan-y; overscroll-behavior: contain; -webkit-overflow-scrolling: touch; }
+#dock [data-pane="people"] .people-empty { margin: 14px 8px; padding: 8px 10px; background: var(--d-note); border: 1px dashed var(--d-wood-light); border-radius: 4px; font-size: 13px; color: var(--d-ink); }
+#dock [data-pane="people"] [hidden] { display: none; }
+#dock [data-pane="people"] .people-sec { margin-bottom: 12px; }
+#dock [data-pane="people"] .people-h { display: flex; align-items: center; gap: 8px; margin: 0 0 6px; font: 700 15px/22px var(--d-serif); color: var(--d-wood-dark); }
+#dock [data-pane="people"] .people-tag { font-size: 12px; font-weight: 700; line-height: 18px; padding: 0 7px; border-radius: 9px; background: var(--d-slate); color: #fff; }
+#dock [data-pane="people"] .people-tag.owner { background: var(--d-wood); }
+#dock [data-pane="people"] .people-who { margin: 0 0 6px; font-size: 13px; color: var(--d-ink-soft); overflow-wrap: anywhere; }
+#dock [data-pane="people"] .people-none { margin: 0 0 8px; font-size: 13px; color: var(--d-ink-soft); }
+#dock [data-pane="people"] .people-decor { margin: 0 0 8px; padding: 6px 10px 6px 26px; list-style: disc; border: 2px solid var(--d-wood-light); border-radius: 6px; background: var(--d-paper-2); font-size: 13px; overflow-wrap: anywhere; }
+#dock [data-pane="people"] .people-list { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 8px; }
 
 /* 请柬：便签黄，右上折角 */
-[data-pane="people"] .people-invite { position: relative; padding: 8px 12px 8px; background: var(--d-note); border: 1px solid var(--d-wood-light); border-radius: 3px 14px 3px 3px; box-shadow: 0 2px 0 var(--d-line); overflow: hidden; }
-[data-pane="people"] .people-invite::after { content: ""; position: absolute; right: 0; top: 0; width: 16px; height: 16px; background: linear-gradient(225deg, var(--d-paper) 50%, var(--d-paper-2) 50%); border-left: 1px solid var(--d-wood-light); border-bottom: 1px solid var(--d-wood-light); border-bottom-left-radius: 4px; }
-[data-pane="people"] .people-note { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; padding-right: 14px; }
-[data-pane="people"] .people-host { font: 700 15px/1.3 var(--d-serif); overflow-wrap: anywhere; min-width: 0; unicode-bidi: plaintext; }
-[data-pane="people"] .people-left { flex-basis: 100%; font-size: 12px; color: #a35f17; }
-[data-pane="people"] .people-invite.fresh { border-color: var(--d-ember); }
-[data-pane="people"] .people-row { display: flex; gap: 8px; margin-top: 6px; }
-[data-pane="people"] .people-row .people-btn { flex: 1 1 0; }
+#dock [data-pane="people"] .people-invite { position: relative; padding: 8px 12px 8px; background: var(--d-note); border: 1px solid var(--d-wood-light); border-radius: 3px 14px 3px 3px; box-shadow: 0 2px 0 var(--d-line); overflow: hidden; }
+#dock [data-pane="people"] .people-invite::after { content: ""; position: absolute; right: 0; top: 0; width: 16px; height: 16px; background: linear-gradient(225deg, var(--d-paper) 50%, var(--d-paper-2) 50%); border-left: 1px solid var(--d-wood-light); border-bottom: 1px solid var(--d-wood-light); border-bottom-left-radius: 4px; }
+#dock [data-pane="people"] .people-note { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; padding-right: 14px; }
+#dock [data-pane="people"] .people-host { font: 700 15px/1.3 var(--d-serif); overflow-wrap: anywhere; min-width: 0; unicode-bidi: plaintext; }
+#dock [data-pane="people"] .people-left { flex-basis: 100%; font-size: 12px; color: #a35f17; }
+#dock [data-pane="people"] .people-invite.fresh { border-color: var(--d-ember); }
+#dock [data-pane="people"] .people-row { display: flex; gap: 8px; margin-top: 6px; }
+#dock [data-pane="people"] .people-row .people-btn { flex: 1 1 0; }
 
 /* 门牌：一排小木牌，木色底、纸色字 */
-[data-pane="people"] .people-door { position: relative; display: flex; align-items: center; gap: 8px; padding: 6px 8px 6px 12px; background: var(--d-wood); border: 2px solid var(--d-wood-dark); border-radius: 6px; box-shadow: 0 2px 0 rgba(60, 40, 20, 0.3); color: var(--d-paper); }
-[data-pane="people"] .people-door::before, [data-pane="people"] .people-door::after { content: ""; position: absolute; top: 5px; width: 5px; height: 5px; border-radius: 50%; background: var(--d-wood-dark); opacity: 0.8; }
-[data-pane="people"] .people-door::before { left: 3px; } [data-pane="people"] .people-door::after { left: 3px; top: auto; bottom: 5px; }
-[data-pane="people"] .people-plate { flex: 1; min-width: 0; display: flex; flex-direction: column; }
-[data-pane="people"] .people-addr { font: 700 16px/1.3 var(--d-serif); overflow-wrap: anywhere; }
-[data-pane="people"] .people-own { font-size: 12px; color: var(--d-paper-2); overflow-wrap: anywhere; unicode-bidi: plaintext; }
-[data-pane="people"] .people-door .people-btn { flex: none; min-width: 84px; font-size: 13px; }
-[data-pane="people"] .people-door[data-can="0"] { background: #7d6b5a; border-color: #5d4f42; }
-[data-pane="people"] .people-door[data-can="0"] .people-btn { background: #cdbfa6; color: #5a4a3a; border-color: #8c7a64; opacity: 1; padding-left: 26px; position: relative; }
+#dock [data-pane="people"] .people-door { position: relative; display: flex; align-items: center; gap: 8px; padding: 6px 8px 6px 12px; background: var(--d-wood); border: 2px solid var(--d-wood-dark); border-radius: 6px; box-shadow: 0 2px 0 rgba(60, 40, 20, 0.3); color: var(--d-paper); }
+#dock [data-pane="people"] .people-door::before, #dock [data-pane="people"] .people-door::after { content: ""; position: absolute; top: 5px; width: 5px; height: 5px; border-radius: 50%; background: var(--d-wood-dark); opacity: 0.8; }
+#dock [data-pane="people"] .people-door::before { left: 3px; } #dock [data-pane="people"] .people-door::after { left: 3px; top: auto; bottom: 5px; }
+#dock [data-pane="people"] .people-plate { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+#dock [data-pane="people"] .people-addr { font: 700 16px/1.3 var(--d-serif); overflow-wrap: anywhere; }
+#dock [data-pane="people"] .people-own { font-size: 12px; color: var(--d-paper-2); overflow-wrap: anywhere; unicode-bidi: plaintext; }
+#dock [data-pane="people"] .people-door .people-btn { flex: none; min-width: 84px; font-size: 13px; }
+#dock [data-pane="people"] .people-door[data-can="0"] { background: #7d6b5a; border-color: #5d4f42; }
+#dock [data-pane="people"] .people-door[data-can="0"] .people-btn { background: #cdbfa6; color: #5a4a3a; border-color: #8c7a64; opacity: 1; padding-left: 26px; position: relative; }
 /* 小锁：纯 CSS 画 */
-[data-pane="people"] .people-door[data-can="0"] .people-btn::before { content: ""; position: absolute; left: 9px; top: 50%; margin-top: -2px; width: 9px; height: 7px; background: #5a4a3a; border-radius: 1px; }
-[data-pane="people"] .people-door[data-can="0"] .people-btn::after { content: ""; position: absolute; left: 11px; top: 50%; margin-top: -8px; width: 5px; height: 6px; border: 2px solid #5a4a3a; border-bottom: 0; border-radius: 4px 4px 0 0; box-sizing: content-box; width: 3px; height: 4px; }
-[data-pane="people"] .people-door[data-mine="1"] { background: #6a8a62; border-color: #4d7449; }
+#dock [data-pane="people"] .people-door[data-can="0"] .people-btn::before { content: ""; position: absolute; left: 9px; top: 50%; margin-top: -2px; width: 9px; height: 7px; background: #5a4a3a; border-radius: 1px; }
+#dock [data-pane="people"] .people-door[data-can="0"] .people-btn::after { content: ""; position: absolute; left: 11px; top: 50%; margin-top: -8px; width: 5px; height: 6px; border: 2px solid #5a4a3a; border-bottom: 0; border-radius: 4px 4px 0 0; box-sizing: content-box; width: 3px; height: 4px; }
+#dock [data-pane="people"] .people-door[data-mine="1"] { background: #6a8a62; border-color: #4d7449; }
 
 @media (prefers-reduced-motion: reduce) { #peopleCard { animation: none; } }
