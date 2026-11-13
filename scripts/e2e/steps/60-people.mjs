@@ -74,6 +74,8 @@ export default async function run(h) {
     await until(async () => (await actionButtons(A.page)).some((b) => b.id.startsWith('f:people:meet:')), 20_000, 'A 的 #actions 出现「认识一下」');
     const ps = (await actionButtons(A.page)).filter((b) => b.id.startsWith('f:people:'));
     check(ps.length === 1 && ps[0].id === `f:people:meet:${B.id}` && ps[0].sub === bName && ps[0].label === '认识一下', `A 的 f:people 按钮应只有「认识一下（${bName}）」：${JSON.stringify(ps)}`);
+    // 给 B 定三个爱好（顺序固定），否则爱好为空时「顺序」与「有无」都测不出来
+    check((await apiAct(B, { type: 'update_profile', interests: ['books', 'tea', 'plants'] })).status === 200, '给 B 设三个爱好');
     interestsB = (await serverMe(B)).me.interests.map((x) => x.name ?? x);
     note(`A=${aName} B=${bName}，B 的爱好（服务器）：${interestsB.join('、') || '（空）'}`);
   });

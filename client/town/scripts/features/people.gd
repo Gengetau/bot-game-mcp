@@ -76,7 +76,6 @@ func _reset_all() -> void:
 	_want_id = ""
 	_want_until = 0.0
 	_res.clear()
-	_hobby.clear()
 	_doors = null
 	_home = null
 	_recv = []
