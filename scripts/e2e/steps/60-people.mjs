@@ -397,7 +397,7 @@ export default async function run(h) {
     check(!dom.img && !dom.u && !dom.paneImg && !dom.paneU && dom.xss === undefined, `不应产生元素或执行脚本：${JSON.stringify(dom)}`);
     // 门牌上的名字
     await openPeopleTab(B.page);
-    const ownerText = () => B.page.evaluate((p) => document.querySelector(`${p} li[data-home="home:${A.id}"] [data-role="owner"]`)?.textContent ?? '', PANE);
+    const ownerText = () => B.page.evaluate(([p, id]) => document.querySelector(`${p} li[data-home="home:${id}"] [data-role="owner"]`)?.textContent ?? '', [PANE, A.id]);
     try {
       await until(async () => (await ownerText()).includes('<u>'), 20_000, '门牌上以字面量显示 A 的名字');
     } catch (e) {
