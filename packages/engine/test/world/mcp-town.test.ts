@@ -516,7 +516,7 @@ describe('MCP 小镇：world_act', () => {
     expect(table.far).toBe(true);
     const far = await wactFails(client, { type: 'start_interaction', objectId: 'tea_house:table1' }, { view: v });
     expect(far.reason).toBe('too_far');
-    expect(far.text).toContain('tea_house:table1'); // data.navigateTo
+    expect(far.text).toContain('tea_house:table1'); // 错误体里的 navigateTo
     await wact(client, { type: 'navigate', to: 'tea_house:table1' });
     await walkMcp(env, client);
     const near = await call(client, 'get_my_view');

@@ -153,14 +153,17 @@ export function nearbyHistory(
   return { messages, next: rows.length > lim ? w.encodeCursor('n', nearbyScope(residentId), top - (page.length - 1)) : null };
 }
 
-/** 视图里「刚才听到的话」：最近 30 分钟内我在受众里、而且是在我现在所在区域里说的消息（走到别处视图里就不再摆着，历史里仍然有）。 */
+/**
+ * 视图里「刚才听到的话」：最近 30 分钟内我在受众里的消息。只按受众表（发送那一刻按距离定下）和时间窗，不按我现在的区域标签过滤。
+ * 唯一的例外是私宅里说的话：它只在同一间屋里的现场视图出现（被请出门后历史里仍有，现场视图里没有）。
+ */
 export function recentHeard(w: WorldService, residentId: string, space: string, now: number): { messageId: number; from: ReturnType<typeof card>; text: string; at: number }[] {
   const cut = now - 30 * 60_000;
   // message_id 随时间递增：给受众表的主键扫描加下界（30 分钟窗口内最早的消息），查询量与历史长度无关
   const rows = w.db.all(
     `SELECT m.message_id, m.sender_id, m.body, m.sent_at FROM chat_audience a JOIN chat_messages m ON m.message_id = a.message_id
      WHERE a.resident_id = ? AND a.message_id >= (SELECT COALESCE(MIN(message_id), 9223372036854775807) FROM chat_messages WHERE sent_at > ?)
-       AND m.space_id = ? AND m.sent_at > ? ORDER BY a.message_id DESC LIMIT 20`,
+       AND (m.space_id NOT LIKE 'home:%' OR m.space_id = ?) AND m.sent_at > ? ORDER BY a.message_id DESC LIMIT 20`,
     residentId,
     cut,
     space,

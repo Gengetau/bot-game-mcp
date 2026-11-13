@@ -5,11 +5,17 @@
 import { describe, expect, it } from 'vitest';
 import { WorldError } from '../../src/world/errors.js';
 import { BOOKS } from '../../src/world/content.js';
+import { homeId } from '../../src/world/content.js';
 import { SINK, accountOf, availableQty, ledger, mint, shopsAt, wallet } from '../../src/world/property.js';
 import { Actor, makeTown, tempDb, type Town } from './helpers.js';
 import { checkInvariants } from './invariants.js';
 
 const HOUR = 3600_000;
+/** 广场东边界（x = 44）两侧：相距 1.3 米，一个在广场，一个在通往花园的路上 */
+const EDGE_PLAZA = { x: 43.5, z: 26.5 };
+const EDGE_ROAD = { x: 44.8, z: 26.5 };
+/** 广场里离出生点很远的一角 */
+const FAR_PLAZA = { x: 21, z: 19 };
 
 /** 全镇各种物品的总数量（含书屋藏书）。 */
 function itemTotals(t: Town): Record<string, number> {
@@ -35,12 +41,6 @@ function twoAtPlaza(seed = 'prop-1') {
   const a = t.join('阿灯');
   const b = t.join('小岚', 'agent');
   return { t, a, b };
-}
-
-/** 迈步出发，一直走到离开 zone 这片区域的那一刻为止（每步不超过导航租约）。 */
-function walkOutOf(t: Town, who: Actor, zone: string): void {
-  for (let i = 0; i < 60 && who.row().location_id === zone; i++) t.advance(500);
-  expect(who.row().location_id).not.toBe(zone);
 }
 
 const err = (e: WorldError) => `${e.code}/${e.reason ?? ''}`;
@@ -481,26 +481,26 @@ describe('财物：报价（送礼与交换）', () => {
     checkInvariants(t);
   });
 
-  it('收件方走开 → 报价自动撤销并退回', () => {
+  it('收件方走远：报价不撤销（接受被拒 too_far）；进了自己家（换了场景实例）才撤销并退回', () => {
     const { t, a, b } = twoAtPlaza();
     const o1 = a.act('offer', { kind: 'gift', to: b.residentId, give: { coins: 5 } });
-    b.act('move', { to: 'tea_house' });
-    // 刚迈步、还在广场这片区域里：报价还在
-    t.advance(300);
-    expect(b.row().location_id).toBe('plaza');
+    b.go('tea_house');
+    // 走出广场、远在茶馆：区域标签早已不同，报价仍开着
+    expect(b.row().location_id).toBe('tea_house');
     expect(t.w.db.get('SELECT status FROM offers WHERE offer_id = ?', o1.offer.id)!.status).toBe('open');
-    // 走出广场的那一刻撤销
-    walkOutOf(t, b, 'plaza');
+    expect(b.fail('accept_offer', { offerId: o1.offer.id }).reason).toBe('too_far');
+    // 回到私宅：换了场景实例
+    b.go(homeId(b.residentId));
+    expect(b.pos().instance).toBe(b.residentId);
     expect(t.w.db.get('SELECT status, close_reason FROM offers WHERE offer_id = ?', o1.offer.id)).toMatchObject({ status: 'cancelled' });
     expect(a.view().inventory.coins.reserved).toBe(0);
     checkInvariants(t);
   });
 
-  it('发起方走开：报价撤销，收件方看不到，预留退回', () => {
+  it('发起方进了自己家：报价撤销，收件方看不到，预留退回', () => {
     const { t, a, b } = twoAtPlaza();
     const o = a.act('offer', { kind: 'gift', to: b.residentId, give: { coins: 5, items: [{ type: 'seeds', qty: 1 }] } });
-    a.act('move', { to: 'tea_house' });
-    walkOutOf(t, a, 'plaza');
+    a.go(homeId(a.residentId));
     expect(t.w.db.get('SELECT status FROM offers WHERE offer_id = ?', o.offer.id)!.status).toBe('cancelled');
     expect(b.view().offers).toEqual([]);
     expect(b.fail('accept_offer', { offerId: o.offer.id }).reason).toBe('offer_closed');
@@ -530,19 +530,18 @@ describe('财物：报价（送礼与交换）', () => {
     checkInvariants(t);
   });
 
-  it('跨区域那一刻撤销没完成的交换：在路上（灯笼路）的一方，已经和广场上的另一方不在一处', () => {
+  it('跨过区域边界不撤销：一方站到广场外的路上（区域标签变了），离得近就仍能成交', () => {
     const { t, a, b } = twoAtPlaza();
+    a.go(EDGE_PLAZA);
+    b.go({ x: 43, z: 26.5 }); // 同在广场里，挨着
     const o = a.act('offer', { kind: 'trade', to: b.residentId, give: { coins: 4 }, want: { items: [{ type: 'seeds', qty: 1 }] } });
     expect(a.view().inventory.coins.reserved).toBe(4);
-    b.act('navigate', { to: 'tea_house' });
-    walkOutOf(t, b, 'plaza');
-    expect(b.row().location_id).toBe('road');
-    expect(t.w.db.get('SELECT status, close_reason FROM offers WHERE offer_id = ?', o.offer.id)).toMatchObject({ status: 'cancelled' });
-    expect(a.view().inventory.coins.reserved).toBe(0);
-    expect(b.view().offers).toEqual([]);
-    expect(b.fail('accept_offer', { offerId: o.offer.id }).reason).toBe('offer_closed');
-    expect(a.coins()).toBe(20);
-    expect(b.coins()).toBe(20);
+    b.go(EDGE_ROAD); // 隔着广场东边界，相距 1.3 米
+    expect([a.row().location_id, b.row().location_id]).toEqual(['plaza', 'road']);
+    expect(t.w.db.get('SELECT status FROM offers WHERE offer_id = ?', o.offer.id)!.status).toBe('open');
+    b.act('accept_offer', { offerId: o.offer.id });
+    expect(t.w.db.get('SELECT status FROM offers WHERE offer_id = ?', o.offer.id)!.status).toBe('accepted');
+    expect([a.coins(), b.coins()]).toEqual([16, 24]);
     checkInvariants(t);
   });
 
@@ -574,32 +573,37 @@ describe('财物：报价（送礼与交换）', () => {
     checkInvariants(t);
   });
 
-  it('不能对不在场的人发起：不同区域（含灯笼路上）、离线、自己、不存在', () => {
+  it('不能对够不着的人发起：太远 too_far（带 navigateTo）；离线、自己、不存在、在别人家里 not_here', () => {
     const { t, a, b } = twoAtPlaza();
     const give = { coins: 1 };
     expect(a.fail('offer', { kind: 'gift', to: a.residentId, give }).reason).toBe('not_here');
     expect(a.fail('offer', { kind: 'gift', to: 'r_nobody', give }).reason).toBe('not_here');
-    b.act('move', { to: 'tea_house' });
-    t.advance(300);
-    expect(a.act('offer', { kind: 'gift', to: b.residentId, give }).status).toBe('accepted'); // 刚迈步、还在广场：照样在场
-    walkOutOf(t, b, 'plaza');
-    expect(a.fail('offer', { kind: 'gift', to: b.residentId, give }).reason).toBe('not_here'); // 灯笼路上：已不在一处
-    b.walk();
-    expect(a.fail('offer', { kind: 'gift', to: b.residentId, give }).reason).toBe('not_here'); // 另一区域
+    b.go('tea_house');
+    const far = a.fail('offer', { kind: 'gift', to: b.residentId, give });
+    expect(far.reason).toBe('too_far');
+    expect(far.data).toEqual({ navigateTo: b.residentId });
     a.go('tea_house');
+    expect(a.act('offer', { kind: 'gift', to: b.residentId, give }).status).toBe('accepted'); // 走到茶馆，同一间屋里相距不远
+    b.go(homeId(b.residentId));
+    expect(a.fail('offer', { kind: 'gift', to: b.residentId, give }).reason).toBe('not_here'); // 在自己家里
+    a.go('plaza');
     b.leave();
     expect(a.fail('offer', { kind: 'gift', to: b.residentId, give }).reason).toBe('not_here'); // 离线
-    expect(t.w.db.scalar("SELECT COUNT(*) FROM offers WHERE status = 'open'")).toBe(0);
     checkInvariants(t);
   });
 
-  it('接受时对方已不在一处 → 拒绝（不会远程成交）', () => {
+  it('接受时对方走远了 → 拒绝 too_far，报价仍开着、预留不动；走近后可以成交', () => {
     const { t, a, b } = twoAtPlaza();
     const o = a.act('offer', { kind: 'gift', to: b.residentId, give: { coins: 1 } });
-    // 绕过钩子地把 b 挪走，模拟钩子失效时的兜底检查
-    t.w.db.run('UPDATE residents SET location_id = ? WHERE resident_id = ?', 'tea_house', b.residentId);
-    expect(b.fail('accept_offer', { offerId: o.offer.id }).reason).toBe('not_here');
-    t.w.db.run('UPDATE residents SET location_id = ? WHERE resident_id = ?', 'plaza', b.residentId);
+    a.go(FAR_PLAZA);
+    const e = b.fail('accept_offer', { offerId: o.offer.id });
+    expect([e.reason, e.data]).toEqual(['too_far', { navigateTo: a.residentId }]);
+    expect(t.w.db.get('SELECT status FROM offers WHERE offer_id = ?', o.offer.id)!.status).toBe('open');
+    expect(a.view().inventory.coins.reserved).toBe(1);
+    b.go(a.residentId); // 走到 ta 身边
+    b.act('accept_offer', { offerId: o.offer.id });
+    expect([a.coins(), b.coins()]).toEqual([19, 21]);
+    checkInvariants(t);
   });
 
   it('同一 requestId 重放不重复转移（replayed: true）；换内容 → request_conflict', () => {

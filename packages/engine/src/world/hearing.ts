@@ -36,6 +36,16 @@ export function canHear(w: WorldService, speaker: Spot, listener: Spot): boolean
 }
 
 /**
+ * 一个居民此刻「有效在场」时的权威位置：在场（w.interactive：在场租约有效、不在小游戏里）且有位置，否则 null。
+ * 听（nearbyAudience）和够得着（reach.ts）共用这一个定义；位置按折线和时间现算。
+ */
+export function interactivePos(w: WorldService, r: ResidentRow, now: number): Pos | null {
+  if (!w.interactive(r)) return null;
+  const actor = actorOf(w, r.resident_id);
+  return actor ? posOf(actor, now) : null;
+}
+
+/**
  * 此刻说这句话的受众：包含说话的人自己。按权威位置现算，调用方在发送事务里使用。
  * 说话的人必须是有效在场的（命令管线已经检查过）；听者要在场、不在小游戏里。
  */
@@ -43,9 +53,7 @@ export function nearbyAudience(w: WorldService, speaker: ResidentRow, now: numbe
   const me = ensureActor(w, speaker, now);
   const here = posOf(me, now);
   const rows = w.db.all(
-    `SELECT a.resident_id FROM world_actors a JOIN residents r ON r.resident_id = a.resident_id
-     WHERE a.world_id = ? AND a.scene_id = ? AND a.instance_id = ? AND r.present_since IS NOT NULL AND r.activity_id IS NULL
-     ORDER BY a.resident_id`,
+    `SELECT resident_id FROM world_actors WHERE world_id = ? AND scene_id = ? AND instance_id = ? ORDER BY resident_id`,
     w.worldId,
     here.scene,
     here.instance,
@@ -57,11 +65,10 @@ export function nearbyAudience(w: WorldService, speaker: ResidentRow, now: numbe
       out.push(speaker);
       continue;
     }
-    const actor = actorOf(w, id);
-    if (!actor) continue;
-    if (!canHear(w, here, posOf(actor, now))) continue;
     const r = w.resident(id);
-    if (r) out.push(r);
+    if (!r) continue;
+    const there = interactivePos(w, r, now);
+    if (there && canHear(w, here, there)) out.push(r);
   }
   return out;
 }
