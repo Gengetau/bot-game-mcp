@@ -1697,10 +1697,10 @@ describe('小游戏：按桌入局 × 键盘方向输入 / 聊天 / 场景快照
   const press = (a: Actor, x: number, z: number, seq: number) => directionInput(a.t.w, a.auth, { seq, epoch: a.row().control_epoch, x, z, source: 1 });
   const NORTH_OF_TABLE1 = { x: 27.5, z: 42.75 };
 
-  it('方向键走路的人也一样：还在桌边 → 凑桌通过并站住（方向路线停掉）；走出够得着的距离 → too_far，带 navigateTo', () => {
+  it('方向键走路的人也一样：还在桌边 → 凑桌通过并站住（方向路线停掉）；走出够得着的距离 → too_far，带 navigateTo；开局停住仍在桌边的、剔除走远的', () => {
     const t = makeTown();
-    const [a, b] = residents(t, 2) as [Actor, Actor];
-    gather(t, [a, b], 'arcade', null);
+    const [a, b, c] = residents(t, 3) as [Actor, Actor, Actor];
+    gather(t, [a, b, c], 'arcade', null);
     a.go(NORTH_OF_TABLE1);
     press(a, 1, 0, 1); // 沿桌子北边向东迈步
     t.advance(200);
@@ -1719,15 +1719,29 @@ describe('小游戏：按桌入局 × 键盘方向输入 / 聊天 / 场景快照
     expect(far.reason).toBe('too_far');
     expect(far.data).toMatchObject({ navigateTo: TABLE1 });
     expect(t.w.db.scalar('SELECT COUNT(*) FROM activity_participants WHERE activity_id = ?', id)).toBe(1);
-    // 方向键走在路上的人，开局时（在桌边）也会被站住；走远了的被剔除
+    // c 加入后用方向键朝北走出够得着的距离：开局时被剔除（没有站住也不在局里）
+    c.go(NORTH_OF_TABLE1);
+    c.act('join_game', { activityId: id });
+    press(c, 0, -1, 1);
+    t.advance(450);
+    expect(c.pos().moving).toBe(true);
+    expect(nearTable(c, TABLE1)).toBe(false);
     t.advance(600);
-    b.go(TABLE1);
+    // 方向键走在路上、仍在桌边的成员：开局时被站住（moving 由 true 变 false，方向路线清掉）
+    b.go(NORTH_OF_TABLE1);
     b.act('join_game', { activityId: id });
-    press(b, 0, 1, 2); // 朝桌子方向，贴着桌子走不动或走很短
-    t.advance(100);
-    a.act('start_game', { activityId: id });
+    press(b, 1, 0, 2); // 沿桌子北边向东走，仍在 2 米内
+    t.advance(200);
+    expect(b.pos().moving).toBe(true);
+    expect(actorOf(t.w, b.residentId)!.nav!.target.kind).toBe('dir');
+    expect(nearTable(b, TABLE1)).toBe(true);
+    const started = a.act('start_game', { activityId: id });
+    expect(started.dropped).toEqual([c.name]);
+    expect(b.pos().moving).toBe(false);
     expect(actorOf(t.w, b.residentId)!.nav).toBeNull();
     expect(b.row().activity_id).toBe(id);
+    expect(c.row().activity_id).toBeNull();
+    expect(t.w.db.all('SELECT resident_id FROM activity_participants WHERE activity_id = ? ORDER BY resident_id', id).map((r) => String(r.resident_id))).toEqual([a.residentId, b.residentId].sort());
   });
 
   it('对局中不能发附近聊天和公屏；被剔除的人没在局里照常能发；进出局都通知同一场景里的人，快照里的 busy 跟着变', () => {

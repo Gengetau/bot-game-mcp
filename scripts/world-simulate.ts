@@ -674,6 +674,10 @@ class Sim {
   private sample(): void {
     const n = this.w.db.scalar("SELECT COUNT(*) FROM activities WHERE status = 'running'");
     if (n > this.concurrentGamesMax) this.concurrentGamesMax = n;
+    const tables = this.w.db.scalar("SELECT COUNT(DISTINCT table_id) FROM activities WHERE status IN ('forming','ready','running','settling') AND table_id IS NOT NULL");
+    if (tables >= 2) this.bump('tables_both_running_samples');
+    const playing = this.w.db.scalar("SELECT COUNT(DISTINCT table_id) FROM activities WHERE status IN ('running','settling') AND table_id IS NOT NULL");
+    if (playing >= 2) this.bump('tables_both_playing_samples');
     const p = this.w.presentCount();
     if (p > this.presentMax) this.presentMax = p;
   }
@@ -1198,7 +1202,7 @@ class Sim {
     intents.push(['letter', 1.3]);
     intents.push(['invite', residentsHere.length > 0 ? 1.2 : 0]);
     intents.push(['interact', here && here.objects.length > 0 ? 7 : 0]);
-    intents.push(['game', 2 + ag.playful * 8 + (here && here.activities.length > 0 ? 6 : 0)]);
+    intents.push(['game', 8 + ag.playful * 12 + (here && here.activities.length > 0 ? 6 : 0) + (here && here.tables.length > 0 ? 8 : 0)]);
     intents.push(['rest', energy < 45 ? 5 : 0.3]);
     intents.push(['event', openEvent || eventSoon ? 6 : 0]);
     intents.push(['goal', 0.15]);
@@ -1597,6 +1601,22 @@ class Sim {
     return { ok: p.scene === town.id && dist <= (it.reach ?? this.w.map.interactDistance) + 0.011, dist };
   }
 
+  private failStart(msg: string, detail: unknown): void {
+    this.rejectChecks.run++;
+    this.rejectChecks.failed++;
+    if (this.rejectChecks.samples.length < 10) this.rejectChecks.samples.push(msg);
+    this.inv.fail('table_start_members', msg, detail, this.clock.t);
+  }
+
+  /** 开局成功后：局里的人正好是开局那一刻独立重算「在桌边」的那些，被剔除的人数也对得上，被剔除的人不在局里。 */
+  private checkStartMembers(activityId: string, tableId: string, expectKeep: string[], expectDrop: number, reportedDrop: number): void {
+    this.rejectChecks.run++;
+    const inGame = this.w.db.all('SELECT resident_id FROM activity_participants WHERE activity_id = ?', activityId).map((r) => String(r.resident_id)).sort();
+    if (JSON.stringify(inGame) !== JSON.stringify(expectKeep) || expectDrop !== reportedDrop) {
+      this.failStart(`${tableId} 开局后的成员 ${inGame.length} 个、报告剔除 ${reportedDrop} 个，独立重算应留 ${expectKeep.length} 个、剔 ${expectDrop} 个`, { activityId, inGame, expectKeep, expectDrop, reportedDrop });
+    }
+  }
+
   private checkTableMember(tag: string, residentId: string, name: string, tableId: string): void {
     this.rejectChecks.run++;
     const at = this.atTableIndependent(residentId, tableId);
@@ -1636,14 +1656,23 @@ class Sim {
       if (mine.status === 'forming' && mine.host.id === me) {
         const created = mine.lobbyExpiresAt - this.w.params.activityLobbyTtlMs;
         const full = mine.players.length >= mine.max;
-        if (mine.players.length >= mine.min && (full || now - created > rnd.range(40, 150) * 1000 || rnd.chance(0.2))) {
+        // 人刚够数时多等一等（给凑桌成员走开留出机会，也让开局时的剔除分支走得到）
+        const waitMore = !full && mine.players.length === mine.min && mine.max > mine.min && now - created < 60_000 && rnd.chance(0.7);
+        if (mine.players.length >= mine.min && !waitMore && (full || now - created > rnd.range(40, 150) * 1000 || rnd.chance(0.2))) {
           // 发起人自己走开了就先回桌边（引擎会 too_far）
           if (tbl && !tbl.near) return this.moveTo(ag, conn, tbl.id);
+          // 开局前独立重算：谁此刻不在桌边（不调引擎的判断），开局后留在局里的人必须正好是在桌边的那些
+          const expectKeep = mine.players.filter((p) => p.id === me || this.atTableIndependent(p.id, mine.tableId!).ok).map((p) => p.id).sort();
+          const expectDrop = mine.players.length - expectKeep.length;
           const out = this.exec(ag, conn, 'start_game', { activityId: mine.id });
           if (out.ok) {
             this.bump('table_start');
             const dropped = (out.out as { dropped?: string[] }).dropped;
             if (dropped?.length) this.bump('table_start_dropped');
+            this.checkStartMembers(mine.id, mine.tableId!, expectKeep, expectDrop, dropped?.length ?? 0);
+          } else if (!out.ok && out.reason === 'not_enough') {
+            this.bump('table_start_not_enough');
+            if (expectKeep.length >= mine.min) this.failStart(`开局报人数不够，但独立重算在桌边的有 ${expectKeep.length} 个（至少 ${mine.min}）`, { activity: mine.id });
           }
           return rnd.range(3, 8) * 1000;
         }
@@ -1652,6 +1681,11 @@ class Sim {
       if (mine.status === 'forming' && rnd.chance(0.04)) {
         this.exec(ag, conn, 'leave_game_lobby');
         return 5000;
+      }
+      // 凑桌的成员有时走开（留在游戏馆里，离桌很远），等发起人开局时应被剔除
+      if (mine.status === 'forming' && mine.host.id !== me && tbl?.near && mine.players.length > mine.min && rnd.chance(0.7)) {
+        this.bump('table_member_walkoff');
+        return this.moveTo(ag, conn, 'arcade');
       }
       return rnd.range(8, 20) * 1000;
     }
@@ -1672,6 +1706,16 @@ class Sim {
       const out = this.exec(ag, conn, 'join_game', { activityId: pick.id, ...(rnd.chance(0.5) ? { objectId: pick.tableId } : {}) });
       if (out.ok) this.checkTableMember('join_game', ag.p.residentId, ag.p.name, pick.tableId!);
       return rnd.range(5, 15) * 1000;
+    }
+    // 偶尔直接对被占着的桌凑桌：必须被 table_busy 拒绝（桌占用的判断在距离之前，站得再远也一样）
+    const busy = here.tables.filter((t) => t.activityId);
+    if (busy.length > 0 && rnd.chance(0.35)) {
+      const t = rnd.pick(busy);
+      const g0 = here.games[0]!;
+      const probe = this.exec(ag, conn, 'propose_game', { game: g0.type, objectId: t.id });
+      this.expectReject(ag, '占用中的桌再凑桌', probe, ['precondition_failed'], { table: t.id });
+      if (!probe.ok && probe.reason !== 'table_busy') this.inv.fail('reject_expected', `占用中的桌再凑桌：期望 table_busy，实际 ${probe.reason}`, { table: t.id }, now);
+      return rnd.range(2, 6) * 1000;
     }
     // 自己凑一桌：优先玩得最少的那种（三种都要打到），挑一张空桌（先看脚边的）
     const free = here.tables.filter((t) => !t.activityId);
@@ -2259,8 +2303,19 @@ if (warnLogs.length) {
 }
 console.log(`\n可复现摘要（同种子同参数应一致）：${digest}`);
 
-const failed = sim.inv.totalViolations > 0 || sim.internalCount > 0 || sim.rejectChecks.failed > 0 || scenarios.some((s) => !s.ok);
-console.log(`\n结论：${failed ? '未通过（见上面的违例 / 异常）' : '通过：未发现不变量违例、内部异常或拒绝检查失败'}`);
+// 覆盖断言：按桌入局的几条关键分支必须真的走到过，否则检查等于空转（只在够长的跑法里要求）
+const coverageMissing: string[] = [];
+if (DAYS >= 1 && N >= 8) {
+  if ((sim.counters.get('table_start_dropped') ?? 0) < 1) coverageMissing.push('开局时剔除走开的成员（table_start_dropped）从未发生');
+  if ((sim.negCount.get('占用中的桌再凑桌') ?? 0) < 1) coverageMissing.push('对被占的桌 propose_game 期望 table_busy 从未探测');
+  if ((sim.counters.get('tables_both_running_samples') ?? 0) < 1) coverageMissing.push('两张桌同时有局从未出现');
+}
+if (coverageMissing.length) {
+  console.log('\n覆盖不足：');
+  for (const c of coverageMissing) console.log(`  × ${c}`);
+}
+const failed = sim.inv.totalViolations > 0 || sim.internalCount > 0 || sim.rejectChecks.failed > 0 || scenarios.some((s) => !s.ok) || coverageMissing.length > 0;
+console.log(`\n结论：${failed ? '未通过（见上面的违例 / 异常 / 覆盖不足）' : '通过：未发现不变量违例、内部异常或拒绝检查失败'}`);
 
 if (args.json) {
   writeFileSync(

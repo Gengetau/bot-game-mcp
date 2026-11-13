@@ -38,8 +38,12 @@ const townSrc = (): SceneSource => TOWN_MAP_SOURCE.scenes.find((s) => s.id === '
 /** 把 p1.0 倒回 p0.1 的样子：桌子是 2x2 的纯障碍，没有新锚点。 */
 function oldMapSource(): MapSource {
   const town = townSrc();
-  const tables = town.interactables.filter((i) => i.kind === 'game_table');
-  const props: ObstacleSource[] = tables.map((t) => ({ id: t.id.replace(':', '.'), kind: 'prop', h: 0.8, ...t.footprint! }));
+  // p0.1 里两张桌子的障碍矩形，照原版源码写死（取自 town-p0.1 的 town-map.ts），不从新地图推导，
+  // 这样桌子的中心或占地被挪动时，这里的对照会变红。
+  const props: ObstacleSource[] = [
+    { id: 'arcade.table1', kind: 'prop', h: 0.8, x: 26.5, z: 43.5, w: 2, d: 2 },
+    { id: 'arcade.table2', kind: 'prop', h: 0.8, x: 35.5, z: 43.5, w: 2, d: 2 },
+  ];
   const scene: SceneSource = {
     ...town,
     obstacles: [...town.obstacles, ...props],
@@ -146,10 +150,10 @@ describe('地图 town-p1.0：锚点与游戏桌', () => {
   });
 });
 
-describe('换地图版本：位置校正（游戏桌原来是纯障碍）', () => {
+describe('换地图版本：位置校正（通用机制；本次可走范围一格不变，真实旧库里没有人会因游戏桌被挪动）', () => {
   const townOf = (t: Town) => t.w.map.scenes.get('town')!;
 
-  it('旧版本记录里站在游戏桌正中间的人，在新地图上不合法：挪到游戏馆的落脚点；站在桌边使用位的人不动', () => {
+  it('通用校正机制：旧版本记录里位置不合法的人（这里用桌子正中心代替，旧地图上同样不合法）挪到所在区域的落脚点；站在桌边使用位的人不动', () => {
     const file = tempDb();
     cleanups.push(file.cleanup);
     const clock = new FakeClock();
@@ -173,6 +177,29 @@ describe('换地图版本：位置校正（游戏桌原来是纯障碍）', () =
     a.enter();
     a.go('arcade:table2');
     expect(a.view().here!.tables.find((x) => x.id === 'arcade:table2')!.near).toBe(true);
+  });
+
+  it('旧地图的可走格里取一批点放进旧版本记录：重启后位置一个都不变', () => {
+    const file = tempDb();
+    cleanups.push(file.cleanup);
+    const clock = new FakeClock();
+    const t = makeTown({ dbPath: file.path, clock });
+    const oldTown = compileMap(oldMapSource()).scenes.get('town')!;
+    // 在旧地图所有可走格上等距取样（每隔若干格取一个），每个点放一位居民
+    const pts: { x: number; z: number }[] = [];
+    let k = 0;
+    for (let r = 0; r < oldTown.rows; r++)
+      for (let c = 0; c < oldTown.cols; c++) {
+        const x = oldTown.originX + (c + 0.5) * oldTown.cell;
+        const z = oldTown.originZ + (r + 0.5) * oldTown.cell;
+        if (isWalkable(oldTown, x, z) && k++ % 97 === 0) pts.push({ x, z });
+      }
+    expect(pts.length).toBeGreaterThan(10);
+    const people = pts.slice(0, 12).map((_, i) => t.join(`样${i}`));
+    const raw = t.w.db.db;
+    people.forEach((p, i) => raw.prepare("UPDATE world_actors SET map_version = 'town-p0.1', x = ?, z = ? WHERE actor_id = ?").run(pts[i]!.x, pts[i]!.z, p.residentId));
+    t.restart();
+    people.forEach((p, i) => expect(actorOf(t.w, p.residentId), `第 ${i} 个点`).toMatchObject({ x: pts[i]!.x, z: pts[i]!.z, map_version: 'town-p1.0' }));
   });
 
   it('旧位置站在新增的锚点上（比如长椅坐位）：本来就合法，换版本不动', () => {

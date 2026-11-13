@@ -83,8 +83,15 @@ describe('审计 8：townGameAct 把 game_id 带进动作', () => {
     };
     for (const x of [a, b]) {
       await w(x.client, { type: 'navigate', to: 'arcade:table1' });
-      env.t.clock.advance(8_000); // 到桌边（路程约 6 秒，在导航租约内）
-      await call(x.client, 'heartbeat');
+      // 走到导航结束（像运行器那样用 heartbeat 续租），不写死路程时长
+      for (let guard = 0; guard < 200; guard++) {
+        const mv = await call(x.client, 'get_my_view');
+        const walking = mv.location.walking;
+        if (!walking) break;
+        env.t.clock.advance(Math.max(1, Math.min(walking.arrive_at - env.t.w.now(), 3_000)));
+        env.t.w.tick();
+        await call(x.client, 'heartbeat', { navigation_id: walking.navigation_id, revision: walking.revision });
+      }
     }
     const p = await w(a.client, { type: 'propose_game', game: 'number_bomb', objectId: 'arcade:table1' });
     await w(b.client, { type: 'join_game', activityId: p.activity.id });
