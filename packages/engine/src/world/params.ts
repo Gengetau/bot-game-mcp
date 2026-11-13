@@ -39,6 +39,8 @@ export const townParamsSchema = z.object({
   npcSpeedFactor: z.number().min(0.1).max(1).default(0.6),
   /** NPC 找不到路时多久以后再试 */
   npcRetryMs: ms(30_000, 1000),
+  /** 共同活动时长的缩放（开服配置，只给测试缩短用：默认 1，只能缩短）。结束时刻、定时任务和文字里的时长都乘它；没有任何运行时入口能改 */
+  interactionTimeScale: z.number().min(0.01).max(1).default(1),
   /** 信件从寄出到进信箱 */
   letterDeliveryDelayMs: ms(60_000),
   /** 住宅邀请有效期 */

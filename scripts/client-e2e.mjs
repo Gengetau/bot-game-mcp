@@ -112,6 +112,14 @@ const browsers = [];
 const TMP = mkdtempSync(join(tmpdir(), 'town-client-e2e-'));
 const SHOT_TMP = join(TMP, 'shots'); // 截图先写这里，全部通过后才搬进 client/demo/
 const AI_KEY = `bgk_e2e_${rnd()}${rnd()}${rnd()}`;
+/**
+ * 引擎的小镇参数（开服配置）。浏览器端到端不能真等十分钟，所以把几个「等」缩短；步骤文件通过 h.townParams 读它，按参数算等待，不写死秒数。
+ *  - interactionTimeScale 0.075：600 秒的共同活动约 45 秒、300 秒的约 23 秒。再短，软件渲染下（一帧可能 0.3 到 1 秒）来不及断言「进行中」的界面；再长，拖慢整遍。
+ *  - letterDeliveryDelayMs 4000：信 4 秒进信箱（默认 60 秒）。
+ *  - activityLobbyTtlMs 25000：小游戏 / 共同活动开了桌没人来，25 秒后自动散（默认 10 分钟）。旧步骤不凑桌；凑人的步骤要在 25 秒内完成「开桌 + 加入」。
+ * 旧的 1 到 15 步里只有步骤 6 开了一次读书（马上点「停下」），不依赖时长；其余步骤不涉及信件和报名。
+ */
+const TOWN_PARAMS = Object.freeze({ interactionTimeScale: 0.075, letterDeliveryDelayMs: 4000, activityLobbyTtlMs: 25_000 });
 let engine = null;
 const engineTail = [];
 let BASE = '';
@@ -126,7 +134,7 @@ async function startEngine() {
     stateFile: null,
     seed: 'client-e2e',
     auth: { mode: 'keys', adminKeys: [], agents: [{ key: AI_KEY, id: '9001', name: '灯灯' }] },
-    town: { enabled: true, dbFile: join(TMP, 'town.db'), devLogin: true, clientDir: CLIENT_DIR },
+    town: { enabled: true, dbFile: join(TMP, 'town.db'), devLogin: true, clientDir: CLIENT_DIR, params: { ...TOWN_PARAMS } },
   };
   const cfgFile = join(TMP, 'engine.json');
   writeFileSync(cfgFile, JSON.stringify(cfg));
@@ -704,6 +712,7 @@ const h = {
   get NO_SHOTS() {
     return NO_SHOTS;
   },
+  townParams: TOWN_PARAMS,
   pair, release,
 };
 

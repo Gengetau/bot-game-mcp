@@ -77,21 +77,36 @@ body[data-kb="1"] #actions, body[data-kb="1"] #homeBtn, body[data-kb="1"] #destB
 body[data-dock="drawer"] #dockGrip { display: block; }
 
 /* 页签像挂在木框上的小木牌：未选中木色底纸色字，选中纸面底墨色字并与纸面连成一体 */
-#dockTabs { display: flex; align-items: flex-end; gap: 4px; flex: none; height: 36px; padding: 0 44px 0 6px; background: var(--d-wood); position: relative; }
-body[data-dock="drawer"] #dockTabs { height: 40px; padding-top: 6px; }
-.dock-tab {
-  position: relative; height: 30px; padding: 0 14px; border-radius: 8px 8px 0 0; font: 14px/30px var(--d-serif); color: var(--d-paper);
-  background: var(--d-wood-dark); white-space: nowrap;
+#dockTabs {
+  display: flex; align-items: flex-end; gap: 2px; flex: none; height: 36px; padding: 0 44px 0 6px; background: var(--d-wood); position: relative;
+  /* 放不下五六个页签时横向滚动（隐藏滚动条）；右边的 44px 内边距让最后一个页签能滚到关闭钮左边 */
+  overflow-x: auto; overflow-y: hidden; scrollbar-width: none; -ms-overflow-style: none; overscroll-behavior-x: contain;
 }
-.dock-tab::before { content: ""; position: absolute; left: 0; right: 0; top: -8px; bottom: 0; } /* 垂直点按区扩到 44px */
-.dock-tab.sel { background: var(--d-paper); color: var(--d-ink); font-weight: 600; box-shadow: inset 0 -3px 0 var(--d-ember); }
-#dockTabs[data-count="1"] .dock-tab { pointer-events: none; }
+#dockTabs::-webkit-scrollbar { display: none; }
+body[data-dock="drawer"] #dockTabs { height: 44px; padding-top: 6px; }
+/* 前缀 #dock：#dock button 的重置（背景、字体、颜色、内边距）特异性更高，不加前缀这些样式一直没生效 */
+#dock .dock-tab {
+  position: relative; flex: none; height: 30px; padding: 0 9px; border-radius: 8px 8px 0 0; font: 14px/30px var(--d-serif); color: var(--d-paper);
+  background: var(--d-wood-dark); white-space: nowrap;
+  z-index: 3; /* 抽屉里把手（#dockGrip，z-index 2）整条盖在页签条上，不抬高页签就点不到：页签压过把手，条上没有页签的空处仍是把手 */
+}
+.dock-tab::before { content: ""; position: absolute; left: 0; right: 0; top: -6px; bottom: 0; } /* 垂直点按区：侧栏占满 36px 的条高，抽屉 44px（条被裁切，不能再往外扩） */
+body[data-dock="drawer"] .dock-tab::before { top: -14px; }
+/* #dock button:hover（1,2,1）会把背景清成 none：悬停（含触屏点按后残留的 :hover）时选中页签露出木色底，墨色字落在木色上读不出来。这里按同样的特异性显式写回 */
+#dock .dock-tab:hover:not(:disabled) { background: var(--d-wood-dark); }
+#dock .dock-tab.sel:hover:not(:disabled) { background: var(--d-paper); }
+#dock .dock-tab.sel { background: var(--d-paper); color: var(--d-ink); font-weight: 600; box-shadow: inset 0 -3px 0 var(--d-ember); }
+/* 只有一个页签：不可点的标题（外观和 S0 之前一样：无底、继承字体和颜色） */
+#dock #dockTabs[data-count="1"] .dock-tab { pointer-events: none; background: none; box-shadow: none; color: inherit; font: inherit; font-weight: inherit; padding: 0; border-radius: 0; }
 .tab-dot { position: absolute; top: 3px; right: 3px; width: 8px; height: 8px; border-radius: 50%; background: var(--d-ember); }
 .tab-dot[hidden] { display: none; }
 
-#dockClose {
-  position: absolute; z-index: 3; top: 0; right: 0; width: 44px; height: 40px;
+#dock #dockClose {
+  position: absolute; z-index: 4; top: 0; right: 0; width: 44px; height: 40px; /* 盖在滚动的页签上面时不透出下面的字：木色底只画到页签条的高度 */
+  background: linear-gradient(var(--d-wood), var(--d-wood)) 0 0 / 100% 36px no-repeat;
 }
+body[data-dock="drawer"] #dock #dockClose { height: 44px; background-size: 100% 44px; }
+body[data-dock="drawer"] #dockClose::before, body[data-dock="drawer"] #dockClose::after { top: 21px; }
 #dockClose::before, #dockClose::after { content: ""; position: absolute; left: 14px; top: 19px; width: 16px; height: 2px; border-radius: 1px; background: var(--d-paper); }
 #dockClose::before { transform: rotate(45deg); }
 #dockClose::after { transform: rotate(-45deg); }

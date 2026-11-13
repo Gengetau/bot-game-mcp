@@ -234,7 +234,11 @@ func _on_ui(ev: String, arg: String) -> void:
 		"keys":
 			_on_keys(arg)
 		"interact":
-			_do_interact()
+			# arg 是来源：键盘 E 不带参数（"key"）；将来手机的「互动」按钮发 emit('interact', 'button')，走同一个入口
+			_do_interact(arg if arg != "" else "key")
+		"debug_pick_stub":
+			if bridge.debug:
+				features.set_pick_stub(arg)
 		"esc":
 			_do_esc()
 		"claim":
@@ -1222,7 +1226,7 @@ func _dir_hint(msg: String) -> void:
 
 
 ## E：和最近的可互动物件或人互动。复用点击的入口：够得着的物件直接开始动作，远的先走过去，人就走到身边。
-func _do_interact() -> void:
+func _do_interact(src: String = "key") -> void:
 	if phase != Phase.PLAYING or not _can_control():
 		return
 	var sa: TActor = actors.get(self_id)
@@ -1259,6 +1263,9 @@ func _do_interact() -> void:
 			best_id = id
 	if best_kind == "":
 		_toast("附近没有可以互动的东西。", "info")
+		return
+	# 先问功能模块：和点击一样，有功能接管就由它处理（居民卡、入座、一起喝茶），不再走下面的旧逻辑
+	if features.on_pick(best_kind, best_id, src):
 		return
 	if best_kind == "actor":
 		selected_obj = ""
@@ -1386,7 +1393,7 @@ func _on_tap(p: Vector2) -> void:
 				best_t = t2
 				best_kind = "obj"
 				best_id = str(ob["id"])
-	if best_kind != "" and features.on_pick(best_kind, best_id):
+	if best_kind != "" and features.on_pick(best_kind, best_id, "tap"):
 		return
 	if best_kind == "actor":
 		selected_obj = ""

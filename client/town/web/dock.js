@@ -184,6 +184,9 @@
       });
       render();
       measure();
+      requestAnimationFrame(function () {
+        if (activeMod()) revealTab(activeMod().tab);
+      });
       callMod(activeMod(), 'onShow');
     }
     if (opts.focus) focusActive();
@@ -221,6 +224,15 @@
       }
     }
   }
+  /* 页签条放不下时横向滚动；选中的页签自动滚进可见范围（右边让开 44px 的关闭钮） */
+  function revealTab(t) {
+    var box = $('dockTabs');
+    if (!box || !t || !box.clientWidth) return;
+    var left = t.offsetLeft - 6;
+    var right = t.offsetLeft + t.offsetWidth + 2 - (box.clientWidth - 44);
+    if (left < box.scrollLeft) box.scrollLeft = Math.max(0, left);
+    else if (right > box.scrollLeft) box.scrollLeft = right;
+  }
   function setActive(id) {
     if (!mods[id] || id === activeId) return;
     var prev = activeMod();
@@ -236,6 +248,7 @@
     m.pane.hidden = false;
     m.tab.setAttribute('aria-selected', 'true');
     m.tab.classList.add('sel');
+    revealTab(m.tab);
     if (isOpen) callMod(m, 'onShow');
   }
   btn.addEventListener('click', function () {
@@ -673,6 +686,25 @@
     setKeyboard: function (px) {
       testKb = px === null || px === undefined ? null : Number(px);
       queueKb();
+    },
+    /* 选中一个页签（和点击页签走同一个 setActive）：端到端核对「选中的页签自动滚进可见」 */
+    select: function (id) {
+      setActive(id);
+    },
+    /* 卸掉一个模块（测试临时注册的假页签用）：去掉窗格、页签和登记；当前页签被卸掉就回到排在最前的 */
+    unregister: function (id) {
+      var m = mods[id];
+      if (!m) return false;
+      if (m.pane && m.pane.parentNode) m.pane.parentNode.removeChild(m.pane);
+      delete mods[id];
+      delete queue[id];
+      var i = order.indexOf(id);
+      if (i >= 0) order.splice(i, 1);
+      buildTabs();
+      if (activeId === id) activeId = order[0] || '';
+      if (order.length) showOnly(activeId);
+      renderUnread();
+      return true;
     },
     forceSend: function (text) {
       var m = activeMod();
