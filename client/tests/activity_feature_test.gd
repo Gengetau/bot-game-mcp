@@ -7,6 +7,7 @@ extends SceneTree
 const Activity := preload("res://scripts/features/activity.gd")
 
 const TEA := "tea_house:table1"
+const SHELF := "tea_house:shelf"  # 不是茶桌的共同物件（没有「坐在座位上」的说法，只看够不够得着）
 const SELF := "r_me"
 const ANCHORS := [Vector2(7, 3.75), Vector2(7, 6.25), Vector2(8.25, 5), Vector2(5.75, 5)]
 
@@ -74,6 +75,8 @@ class FakeCtx:
 		pass
 
 	func object_info(oid: String) -> Dictionary:
+		if oid == SHELF:
+			return {"id": SHELF, "name": "藏书架", "kind": "bookshelf", "anchors": [Vector2(2, 1.2), Vector2(3, 1.2)], "pos": Vector3(2.5, 0, 0.5)}
 		if oid != TEA:
 			return {}
 		return {"id": TEA, "name": "靠窗的茶桌", "kind": "tea_table", "anchors": ANCHORS, "pos": Vector3(7, 0, 5)}
@@ -164,6 +167,9 @@ func _run() -> void:
 	t_scene_switch()
 	await t_hold_key_stall()
 	t_no_refresh_when_not_playing()
+	t_pick_stays()
+	t_pick_stays_flow()
+	t_hub_exempt()
 	print("%d 项检查，%d 项失败" % [_checks, _fails])
 	quit(1 if _fails > 0 else 0)
 
@@ -366,3 +372,140 @@ func t_no_refresh_when_not_playing() -> void:
 	f.on_hello({}, false, true)
 	f.on_resync()
 	check(c.refreshes == 2, "在场时: hello / resync 仍各读一次 /me（%d 次）" % c.refreshes)
+
+
+## C2b（二）：main 在问走开拦截之前先问 pick_stays。只有「选中的就是我这一桌、而且我已经在它跟前」和「按 E 而附近什么都没有」才是 true
+func t_pick_stays() -> void:
+	var s: Array = _make()
+	var f = s[0]
+	var c: FakeCtx = s[1]
+	var me: TActor = s[2]
+	# 不在活动里：一律 false（拦截本来就不管，别多嘴）
+	me.disp = ANCHORS[1]
+	f.on_me(_view(null, null))
+	check(not f.pick_stays("obj", TEA), "pick_stays: 不在活动里，点桌子为假")
+	check(not f.pick_stays("none", ""), "pick_stays: 不在活动里，空选也为假")
+	# 在活动里、坐在自己这一桌的座位上
+	var op: Dictionary = _it("i1", "open", SELF, [SELF])
+	f.on_me(_view(op, op))
+	var gate0: Dictionary = (f._gate as Dictionary).duplicate()
+	check(f.pick_stays("obj", TEA), "pick_stays: 坐在自己这一桌，选中它为真")
+	check(f.pick_stays("none", ""), "pick_stays: 在活动里按 E 而附近什么都没有为真")
+	check(not f.pick_stays("", ""), "pick_stays: 点地面（kind 为空）为假")
+	check(not f.pick_stays("actor", "r_b"), "pick_stays: 选中别人为假")
+	check(not f.pick_stays("obj", "tea_house:table2"), "pick_stays: 选中别的物件为假")
+	check(not f.pick_stays("obj", SHELF), "pick_stays: 选中不是我这一桌的共同物件为假（哪怕够得着）")
+	check(not f.pick_stays("obj", ""), "pick_stays: 空编号为假")
+	check(f._gate == gate0, "pick_stays: 只是问一问，不动走开拦截的任何状态：%s" % str(f._gate))
+	check(int(f.debug()["warned"]) == 0 and int(f.debug()["passed"]) == 0, "pick_stays: 不计提示、不计放行")
+	# 在活动里，但没坐在座位上（站在桌边，离最近的座位 0.85 米）：点它会走去座位，要照旧过拦截
+	me.disp = Vector2(7, 4.6)
+	check(not f.pick_stays("obj", TEA), "pick_stays: 没坐在座位上为假（点它会走去座位）")
+	# 刚好在座位判定半径之内 / 之外
+	me.disp = ANCHORS[1] + Vector2(0.45, 0)
+	check(f.pick_stays("obj", TEA), "pick_stays: 离座位 0.45 米算坐着")
+	me.disp = ANCHORS[1] + Vector2(0.55, 0)
+	check(not f.pick_stays("obj", TEA), "pick_stays: 离座位 0.55 米不算")
+	# 还没有自己的角色（快照没到）
+	me.disp = ANCHORS[1]
+	c.acts = {}
+	check(not f.pick_stays("obj", TEA), "pick_stays: 没有自己的角色为假")
+	c.acts = {SELF: me}
+	# 活动结束（结算）之后
+	f.on_event({"type": "interaction_done", "data": {"interactionId": "i1", "name": "一起喝茶", "text": "一起喝茶完成了"}})
+	check(f._mine.is_empty(), "pick_stays: 结算后活动清空")
+	check(not f.pick_stays("obj", TEA) and not f.pick_stays("none", ""), "pick_stays: 活动结束后为假")
+	# 被取消之后
+	var op2: Dictionary = _it("i2", "open", "r_ini", ["r_ini", SELF])
+	f.on_me(_view(op2, op2))
+	check(f.pick_stays("obj", TEA), "pick_stays: 新的活动里又为真")
+	f.on_event({"type": "interaction", "data": {"interaction": _it("i2", "cancelled", "r_ini", []), "reason": "发起人走开了"}})
+	check(not f.pick_stays("obj", TEA), "pick_stays: 活动被取消后为假")
+	# 离开小镇（on_leave）之后
+	var op3: Dictionary = _it("i3", "running", "r_ini", ["r_ini", SELF])
+	f.on_me(_view(op3, op3))
+	check(f.pick_stays("obj", TEA), "pick_stays: 进行中的活动里为真")
+	f.on_leave()
+	check(not f.pick_stays("obj", TEA) and not f.pick_stays("none", ""), "pick_stays: 离开小镇后为假")
+	# 换人（共用设备）：上一位的活动不留
+	f.on_me(_view(op3, op3))
+	check(f.pick_stays("obj", TEA), "pick_stays: 重新进来、活动还在时为真")
+	var other: Dictionary = _view(null, null)
+	other["me"] = {"id": "r_other"}
+	f.on_me(other)
+	check(not f.pick_stays("obj", TEA), "pick_stays: 换人之后为假")
+	# 不是茶桌的共同物件：只看够不够得着
+	var s2: Array = _make()
+	var f2 = s2[0]
+	var c2: FakeCtx = s2[1]
+	var rd: Dictionary = _it("i5", "running", SELF, [SELF, "r_b"])
+	rd["objectId"] = SHELF
+	var v2: Dictionary = _view(rd, null)
+	(v2["here"]["objects"] as Array).append({"id": SHELF, "type": "bookshelf", "label": "藏书架", "near": true, "action": {"def": "read", "name": "一起读书", "cost": "", "min": 2, "max": 4}, "active": rd})
+	f2.on_me(v2)
+	c2.near = true
+	check(f2.pick_stays("obj", SHELF), "pick_stays: 够得着自己那个书架为真")
+	check(not f2.pick_stays("obj", TEA), "pick_stays: 活动在书架，选中茶桌为假")
+	c2.near = false
+	check(not f2.pick_stays("obj", SHELF), "pick_stays: 够不着（或够得着的缓存已作废）为假：main 的老路会发导航")
+
+
+## C2b（二）：照 main 的新顺序走一遍。坐在自己这一桌按 E / 点桌子：不问拦截，on_pick 吞掉并说一句话，计数不变、不留放行窗口；
+## 随后点地面才是「第一次」，照旧被拦；先前真的确认过要走（放行窗口开着）时，在自己桌上按 E 不重复计数
+func t_pick_stays_flow() -> void:
+	var s: Array = _make()
+	var f = s[0]
+	var c: FakeCtx = s[1]
+	var me: TActor = s[2]
+	me.disp = ANCHORS[1]
+	var op: Dictionary = _it("i1", "open", SELF, [SELF])
+	f.on_me(_view(op, op))
+	for i in range(3):
+		check(f.pick_stays("obj", TEA), "流程: 第 %d 下选中自己的桌，main 不问拦截" % (i + 1))
+		check(f.on_pick("obj", TEA), "流程: 第 %d 下被吞掉" % (i + 1))
+	check(c.walks.is_empty(), "流程: 没有发走路")
+	check(_has_toast(c, "按钮"), "流程: 说了一句约人、加入、开始请点按钮")
+	check(int(f.debug()["warned"]) == 0 and int(f.debug()["passed"]) == 0, "流程: 提示、放行计数都没动：%s" % str(f._gate))
+	check(int(f._gate["confirmed_until"]) == 0 and int(f._gate["warn_at"]) == 0, "流程: 没有留下提示记录和放行窗口")
+	check(f.blocks_input() != "", "流程: 随后点地面是第一次，被拦")
+	check(int(f.debug()["warned"]) == 1, "流程: 这才计第一次提示")
+	check(not _has_toast(c, "再试一次"), "流程: 功能模块自己不弹走开提示（那是 main 的事）")
+
+
+class StubFeature:
+	extends TFeature
+	var stay: bool = false
+	var why: String = ""
+	var asked: int = 0
+	var seen: Array = []
+
+	func pick_stays(kind: String, pick_id: String) -> bool:
+		seen.append([kind, pick_id])
+		return stay
+
+	func blocks_input() -> String:
+		asked += 1
+		return why
+
+
+## C2b（二）：hub.blocks_input(kind, id)。说「这一下不会让我离开」的功能不被问（它的拦截有副作用：计数、开窗口），别的功能照问；不带选中物就是全问
+func t_hub_exempt() -> void:
+	var hub := TFeatureHub.new()
+	var a := StubFeature.new()
+	var b := StubFeature.new()
+	hub._features = [a, b]
+	a.stay = true
+	a.why = "走开提示"
+	check(hub.blocks_input("obj", "t1") == "", "hub: 说「不会离开」的功能不拦")
+	check(a.asked == 0, "hub: 也不问它（问一次就会计数）：%d" % a.asked)
+	check(b.asked == 1, "hub: 别的功能照问")
+	check(a.seen == [["obj", "t1"]], "hub: 选中物原样转给功能：%s" % str(a.seen))
+	check(hub.blocks_input() == "走开提示", "hub: 不带选中物（点地面、方向键）照旧全问")
+	check(a.asked == 1 and a.seen.size() == 1, "hub: 不带选中物时不问 pick_stays")
+	b.why = "对局中不能走动"
+	check(hub.blocks_input("obj", "t1") == "对局中不能走动", "hub: 一个功能说不会离开，免不掉另一个功能的封锁")
+	check(hub.blocks_input("none", "") == "对局中不能走动", "hub: 空选同理")
+	a.stay = false
+	b.why = ""
+	check(hub.blocks_input("actor", "r_b") == "走开提示", "hub: 没人说不会离开，照旧被拦")
+	check(hub.blocks_input("obj", "t1") == "走开提示", "hub: 同上")

@@ -159,8 +159,12 @@ func set_pick_stub(pid: String) -> void:
 	_pick_stub = pid
 
 
-func blocks_input() -> String:
+## kind 非空：这一下已经知道选中的是什么（"obj" / "actor"，按 E 而附近什么都没有是 "none"）。
+## 哪个功能说「这一下不会让我离开」（pick_stays），就不问它的拦截；别的功能照问。kind 为空（点地面、方向键）：都问。
+func blocks_input(kind: String = "", pick_id: String = "") -> String:
 	for f in _features:
+		if kind != "" and (f as TFeature).pick_stays(kind, pick_id):
+			continue
 		var why: String = (f as TFeature).blocks_input()
 		if why != "":
 			return why

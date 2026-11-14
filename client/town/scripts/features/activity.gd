@@ -542,6 +542,32 @@ func _do_walk(oid: String, p: Vector2, label: String) -> void:
 # ───────────────────────── 走开前提示一次 ─────────────────────────
 
 
+## main 在问走开拦截之前先问这个：这一下选中的东西不会让我离开手上的活动，就不该弹「再试一次就走」。
+##  - 按 E 而附近什么都没有（kind "none"）：什么都不会发生；
+##  - 选中的就是我这一桌活动的物件，而且我已经在它跟前。茶桌：坐在它的某个座位上（条件和 on_pick 的 seated 分支逐条相同，
+##    所以随后 on_pick 一定吞掉这一下）；别的物件：够得着（on_pick 不接，main 的老路在够得着时不发导航）。
+## 其余一律 false（点地面、别的物件、别人、还没坐下的自己那一桌、够不着的自己那个物件）：照旧过拦截。
+func pick_stays(kind: String, pick_id: String) -> bool:
+	if _mine.is_empty():
+		return false  # 没有活动：拦截本来就不管
+	if kind == "none":
+		return true
+	if kind != "obj" or pick_id == "" or str(_mine.get("objectId", "")) != pick_id:
+		return false
+	var info: Dictionary = ctx.object_info(pick_id)
+	if info.is_empty():
+		return false
+	if str(info.get("kind", "")) != "tea_table":
+		return ctx.near_ok(pick_id)
+	var anchors = info.get("anchors")
+	if not _objs.has(pick_id) or not (anchors is Array) or (anchors as Array).size() < 2:
+		return false
+	var sa = ctx.actors().get(ctx.self_id())
+	if sa == null:
+		return false
+	return bool(Logic.pick_seat(anchors, (sa as TActor).disp, [])["seated"])
+
+
 ## 每帧可能被问：没有活动时第一行就返回，零开销。窗口和取值理由见 activity_logic.gd 与 client/docs/C2.md。
 func blocks_input() -> String:
 	if _mine.is_empty() or ctx.in_game() or not ctx.control_mine():

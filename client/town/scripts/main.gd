@@ -987,10 +987,12 @@ func _act_once(action: Dictionary, opts: Dictionary = {}) -> Dictionary:
 	return out
 
 
-func _can_control() -> bool:
+## kind / pick_id：这一下已经知道选中的是什么时带上（点击、E 键）。功能模块说「这一下不会让我离开」的，不过它的拦截（见 hub.blocks_input）。
+## 不带（点地面、方向键、按钮）就是照旧全问。
+func _can_control(kind: String = "", pick_id: String = "") -> bool:
 	if phase != Phase.PLAYING:
 		return false
-	var why: String = features.blocks_input()
+	var why: String = features.blocks_input(kind, pick_id)
 	if why != "":
 		_toast(why, "warn")
 		return false
@@ -1252,25 +1254,14 @@ func _dir_hint(msg: String) -> void:
 
 
 ## E：和最近的可互动物件或人互动。复用点击的入口：够得着的物件直接开始动作，远的先走过去，人就走到身边。
-func _do_interact(src: String = "key") -> void:
-	if phase != Phase.PLAYING or not _can_control():
-		return
-	var sa: TActor = actors.get(self_id)
-	if sa == null:
-		return
-	var guard: int = 0
-	while me_busy and guard < 150:
-		await get_tree().process_frame  # 有一次读取在路上：等它读完，别拿旧的"够不够得着"去判断
-		guard += 1
-	if phase != Phase.PLAYING:
-		return
-	if not near_valid:
-		await _refresh_me()  # 刚停下时"够不够得着"还是旧的：读一次再决定
-		if phase != Phase.PLAYING:
-			return
-	var me := Vector2(sa.disp.x, sa.disp.y)
-	var best_kind: String = ""
+## E 键会选中什么：INTERACT_RANGE 之内离我最近的物件或别的居民。只看本地的位置，不读网络。
+## 返回 {"kind", "id"}；什么都没有（或还没有自己的角色）时 kind 是 "none"
+func _nearest_pick(sa: TActor) -> Dictionary:
+	var best_kind: String = "none"
 	var best_id: String = ""
+	if sa == null:
+		return {"kind": best_kind, "id": best_id}
+	var me := Vector2(sa.disp.x, sa.disp.y)
 	var best_d: float = INTERACT_RANGE
 	for ob in world.scene_objects(cur_scene):
 		var d: float = me.distance_to(Vector2((ob["pos"] as Vector3).x, (ob["pos"] as Vector3).z))
@@ -1287,7 +1278,40 @@ func _do_interact(src: String = "key") -> void:
 			best_d = d2
 			best_kind = "actor"
 			best_id = id
-	if best_kind == "":
+	return {"kind": best_kind, "id": best_id}
+
+
+func _do_interact(src: String = "key") -> void:
+	if phase != Phase.PLAYING:
+		return
+	# 先看这一下会选中什么，再问功能模块拦不拦：在自己这一桌按 E、或者附近什么都没有，人不会走开，不该弹「再试一次就走」。
+	# 这一步在下面的等待之前就做：会被拦的（局中、走开提示）当场提示，不白等一次读取
+	var p0: Dictionary = _nearest_pick(actors.get(self_id))
+	if not _can_control(str(p0["kind"]), str(p0["id"])):
+		return
+	if actors.get(self_id) == null:
+		return
+	var guard: int = 0
+	while me_busy and guard < 150:
+		await get_tree().process_frame  # 有一次读取在路上：等它读完，别拿旧的"够不够得着"去判断
+		guard += 1
+	if phase != Phase.PLAYING:
+		return
+	if not near_valid:
+		await _refresh_me()  # 刚停下时"够不够得着"还是旧的：读一次再决定
+		if phase != Phase.PLAYING:
+			return
+	# 等的这几帧里人和物可能动了，活动可能开始或结束，控制权可能被接走：按最后选中的再问一次。
+	# 上面问过并放行的，这里在放行窗口内直接过，不重复计数；上面因为「不会让我离开」没问的，现在选中的换了，就在这里第一次被问
+	var sa: TActor = actors.get(self_id)
+	if sa == null:
+		return
+	var p1: Dictionary = _nearest_pick(sa)
+	var best_kind: String = str(p1["kind"])
+	var best_id: String = str(p1["id"])
+	if not _can_control(best_kind, best_id):
+		return
+	if best_kind == "none":
 		_toast("附近没有可以互动的东西。", "info")
 		return
 	# 先问功能模块：和点击一样，有功能接管就由它处理（居民卡、入座、一起喝茶），不再走下面的旧逻辑
@@ -1392,7 +1416,7 @@ func _tap_finish(p: Vector2) -> void:
 
 
 func _on_tap(p: Vector2) -> void:
-	if not _can_control():
+	if phase != Phase.PLAYING:
 		return
 	var o: Vector3 = rig.cam.project_ray_origin(p)
 	var n: Vector3 = rig.cam.project_ray_normal(p)
@@ -1419,6 +1443,9 @@ func _on_tap(p: Vector2) -> void:
 				best_t = t2
 				best_kind = "obj"
 				best_id = str(ob["id"])
+	# 先算出点中了什么，再问拦不拦：点自己这一桌不算走开（功能模块的 pick_stays），点地面（best_kind 为空）和其余的照旧全问
+	if not _can_control(best_kind, best_id):
+		return
 	if best_kind != "" and features.on_pick(best_kind, best_id, "tap"):
 		return
 	if best_kind == "actor":
