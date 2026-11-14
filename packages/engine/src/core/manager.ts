@@ -509,10 +509,13 @@ export class GameManager {
     const existing = rec.lobby.find((e) => e.id === actor.id);
     if (existing && existing.kind === 'human') throw badRequest('该 QQ 号已作为真人玩家报名。');
     const playerCount = rec.lobby.filter((e) => e.pref !== 'referee' && e.id !== actor.id).length;
-    const cap = this.lobbyLimits(rec).max;
+    const candidate: LobbyEntry = { ...existing, id: actor.id, name: this.nameOf(actor), kind: 'agent', pref,
+      selfPost: opts.selfPost ?? existing?.selfPost ?? true, joinedAt: existing?.joinedAt ?? this.now() };
+    const nextLobby = [...rec.lobby.filter((e) => e.id !== actor.id), candidate];
+    const cap = this.lobbyLimits({ ...rec, lobby: nextLobby }).max;
     // 「玩家或裁判」的报名以前不占名额（可能被抽去当裁判）；人数定死的游戏已经给裁判多留了位置，也要算上
-    const counts = pref === 'player' || (pref === 'either' && Boolean(def.playerRange?.(rec.options as never)));
-    if (!existing && counts && playerCount >= cap) {
+    const counts = pref === 'player' || (pref === 'either' && Boolean(def.playerRange?.(rec.options as never, nextLobby.filter((e) => e.pref !== 'referee'))));
+    if ((!existing || existing.pref === 'referee') && counts && playerCount >= cap) {
       throw invalidState(`人数已满（${this.limitsText(rec)}）。`, '可以 join_as="referee" 报名当裁判。');
     }
     if (existing) {
@@ -534,7 +537,7 @@ export class GameManager {
   /** 上场人数范围（不含裁判）：游戏按选项定的（如剧本人数），否则 minPlayers~maxPlayers */
   private seatRange(rec: GameRecord): { min: number; max: number } {
     const def = this.def(rec);
-    const r = def.playerRange?.(rec.options as never);
+    const r = def.playerRange?.(rec.options as never, rec.lobby.filter((e) => e.pref !== 'referee'));
     return r ? { min: Math.max(def.minPlayers, r.min), max: Math.min(def.maxPlayers, r.max) } : { min: def.minPlayers, max: def.maxPlayers };
   }
 
@@ -543,7 +546,7 @@ export class GameManager {
    */
   private lobbyLimits(rec: GameRecord): { min: number; max: number; slack: number } {
     const r = this.seatRange(rec);
-    if (!this.def(rec).playerRange?.(rec.options as never)) return { ...r, slack: 0 };
+    if (!this.def(rec).playerRange?.(rec.options as never, rec.lobby.filter((e) => e.pref !== 'referee'))) return { ...r, slack: 0 };
     const pureReferee = rec.lobby.some((e) => e.kind === 'agent' && e.pref === 'referee' && this.canReferee(e.id));
     const slack = rec.autoReferee || pureReferee ? 0 : 1;
     return { min: r.min + slack, max: r.max + slack, slack };
@@ -622,10 +625,11 @@ export class GameManager {
       existing.name = name;
       return { summary: this.summary(rec), message: `${name} 已在名单中。`, group_message: null };
     }
-    if (rec.lobby.filter((e) => e.pref !== 'referee').length >= this.lobbyLimits(rec).max) {
+    const candidate: LobbyEntry = { id: userId, name, kind: 'human', pref: 'player', selfPost: false, joinedAt: this.now() };
+    if (rec.lobby.filter((e) => e.pref !== 'referee').length >= this.lobbyLimits({ ...rec, lobby: [...rec.lobby, candidate] }).max) {
       throw invalidState(`人数已满（${this.limitsText(rec)}）。`);
     }
-    rec.lobby.push({ id: userId, name, kind: 'human', pref: 'player', selfPost: false, joinedAt: this.now() });
+    rec.lobby.push(candidate);
     this.touch(rec);
     return {
       summary: this.summary(rec),
@@ -695,8 +699,9 @@ export class GameManager {
 
     // —— 1. 抽签选裁判（程序决定）——
     // 名单外的账号（比如名单收紧之前报的名）不进任何裁判候选
-    const must = new Set((def.mustPlay?.(rec.options as never, rec.lobby) ?? []).filter(Boolean));
-    const mustPlay = (e: LobbyEntry) => must.has(e.id) || must.has(e.name);
+    // 只报名裁判的人不能占 DM 席位，也不能因 host 选项被强拉上场。
+    const must = new Set((def.mustPlay?.(rec.options as never, rec.lobby.filter((e) => e.pref !== 'referee')) ?? []).filter(Boolean));
+    const mustPlay = (e: LobbyEntry) => e.pref !== 'referee' && (must.has(e.id) || must.has(e.name));
     const agents = rec.lobby.filter((e) => e.kind === 'agent' && this.canReferee(e.id) && !mustPlay(e));
     let referee: LobbyEntry | null = null;
     let standby: LobbyEntry[] = [];
@@ -738,7 +743,7 @@ export class GameManager {
     let entries = rec.lobby.filter((e) => e !== referee && (e.pref !== 'referee' || mustPlay(e)));
     // 人数按选项定死的游戏（剧本杀）：报名多了按报名先后入座（必须上场的人优先），多出的人这局不上场
     let benched: LobbyEntry[] = [];
-    if (def.playerRange?.(rec.options as never) && entries.length > range.max) {
+    if (def.playerRange?.(rec.options as never, rec.lobby.filter((e) => e.pref !== 'referee')) && entries.length > range.max) {
       const k = Math.min(range.max, def.seatsFor?.(rec.options as never, entries) ?? range.max);
       const order = [...entries].sort((a, b) => Number(mustPlay(b)) - Number(mustPlay(a)) || a.joinedAt - b.joinedAt);
       const keep = new Set(order.slice(0, k));

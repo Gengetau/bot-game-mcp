@@ -106,16 +106,16 @@ describe('jubensha: start checks', () => {
     const a = setup(1, undefined, { scripts: lib() });
     expect(() =>
       startGame(a.manager, 'jubensha', { players: [1, 2, 3, 4, 5].map((n) => bot(n)), autoReferee: true, options: { host: '777' } }),
-    ).toThrow(/另加 DM/);
+    ).toThrow(/人数已满/); // 没报名的 DM 不会提前放宽报名上限。
     const b = setup(1, undefined, { scripts: lib() });
     expect(() =>
       startGame(b.manager, 'jubensha', { players: [1, 2, 3, 4].map((n) => bot(n)), autoReferee: true, options: { cast: { '101': 'ghost' } } }),
     ).toThrow(/角色 ghost/);
   });
 
-  it('the DM named by host is never drawn as referee, even when signed up as a referee candidate', () => {
+  it('the DM named by host is never drawn as referee when signed up as either', () => {
     const a = setup(1, undefined, { scripts: lib() });
-    const { summary } = a.manager.createGame(bot(5), { type: 'jubensha', groupId: '9000', options: { host: '105' }, joinAs: 'referee', selfPost: false });
+    const { summary } = a.manager.createGame(bot(5), { type: 'jubensha', groupId: '9000', options: { host: '105' }, joinAs: 'either', selfPost: false });
     for (const n of [1, 2, 3, 4]) a.manager.joinGame(bot(n), summary.game_id, { as: 'player', selfPost: false });
     a.manager.joinGame(REF, summary.game_id, { as: 'referee' });
     a.manager.startGame(bot(5), summary.game_id);
