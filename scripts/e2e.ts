@@ -640,6 +640,8 @@ class Humans {
   /** 接管后故意用「@原裁判」发一次指令，记录引擎怎么处理 */
   probedOldRef = false;
   oldRefProbe: { id: string; name: string } | null = null;
+  /** 狼人杀：真人在「临终」环节里提交开枪或不开枪的次数（用来证明这条路径真的被走到） */
+  finalActs = 0;
 
   constructor(
     private readonly env: Env,
@@ -898,6 +900,7 @@ class Humans {
       else if (canPoison && roll >= 45 && roll < 70 && others.length > 0) await this.tryTargets(h, title, channel, others, (t) => this.cmd(h, 'poison', t, sources, title), this.cmd(h, 'skipWitch', undefined, sources, title));
       else await this.relay(h, this.cmd(h, 'skipWitch', undefined, sources, title), channel, title);
     } else if (key === 'final') {
+      this.finalActs++;
       if (chance(this.rng, 0.8) && others.length > 0) await this.tryTargets(h, title, channel, others, (t) => this.cmd(h, 'shoot', t, sources, title), this.cmd(h, 'noShoot', undefined, sources, title));
       else await this.relay(h, this.cmd(h, 'noShoot', undefined, sources, title), channel, title);
     } else if (key === 'vote' || key === 'pk_vote') {
@@ -1318,6 +1321,11 @@ async function scenarioWerewolf(env: Env, rng: Rng): Promise<Scenario> {
     sc.note(`重启期间发生过消息丢失并经 since_seq 恢复：${loop.gaps[0]}`);
   } else sc.note('重启期间没有丢消息（裁判在途请求没有造成游标前移）');
   commonChecks(sc, loop);
+  // 临终环节有没有被端到端走到：群里出现过开场公告、真人在里面提交过。默认板子的猎人如果没死或被毒，整局都走不到，那时只记一条说明，不假装测过。
+  const finalAnnounced = qq.group.some((l) => /临终环节/.test(l.text));
+  if (!finalAnnounced) sc.note('S2 这一局没有出现「临终」环节（猎人、狼王都没被刀或放逐？），真人私聊开枪这条路径没有被端到端覆盖');
+  else if (humans.finalActs === 0) sc.note('S2 出现了「临终」环节，但出局的猎人、狼王都是 AI，真人没有在里面提交，真人私聊开枪这条路径没有被端到端覆盖');
+  else sc.note(`S2 走到了「临终」环节：真人在里面提交了 ${humans.finalActs} 次`);
   const v = await finishInfo(sc, refConn, gameId);
   sc.check('两名真人都收到了身份私聊', humans.list.every((h) => h.role !== null), humans.list.map((h) => `${h.nick}:${h.role}`).join(','));
   // 恶意昵称：群消息里不能出现可解析的 CQ 码，且不会 @ 到 qq=all

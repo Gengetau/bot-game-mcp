@@ -1245,7 +1245,7 @@ export class WerewolfGame extends BaseGame<WerewolfState, WerewolfOptions> {
     else if (input.action === 'skip') ph.data.skipped = true;
     else throw invalidAction('临终环节可执行：shoot（开枪）、skip（不开枪）。');
     this.markDone(seat);
-    if (meta.channel === 'group') {
+    if (meta.channel === 'group' && !meta.fromWeb) {
       this.tell(seat, '⚠️ 你刚才在群里发了开枪指令。我已经按你的选择记录，但这条消息群里的人都看得到；下次请私聊裁判。', { kind: 'info', category: 'feedback' });
     }
     return input.action === 'shoot'
