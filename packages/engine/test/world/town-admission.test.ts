@@ -168,6 +168,13 @@ describe('小镇准入名单：拒绝', () => {
     expect(pub).toBeDefined();
   });
 
+  it('enter_world 带了不存在的 world_id：名单外的身份仍得到同样的 FORBIDDEN，不会先被告知「没有这个世界」', async () => {
+    const env = makeEnv({ allowedAgents: ['5001'] });
+    const plain = await expectDenied(await env.connect(MO), 'enter_world', { name: '小墨' });
+    const wrongWorld = await expectDenied(await env.connect(MO), 'enter_world', { name: '小墨', world_id: 'no-such-world' });
+    expect(wrongWorld).toBe(plain);
+  });
+
   it('没有世界上下文的 get_my_view / speak / act 不碰小镇：走原来的桌游路径，不是名单的拒绝', async () => {
     const env = makeEnv({ allowedAgents: ['5001'] });
     const c = await env.connect(MO);
