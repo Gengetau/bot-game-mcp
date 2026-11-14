@@ -375,8 +375,9 @@ export default async function run(h) {
     await until(() => actionsOf(A, 'navigate').length > nav0, 20_000, '撤掉假接管后旧行为恢复（发出 navigate）');
     await idle(A);
     } finally {
-      // 任何一条 check 抛出时也要撤掉假接管，免得它留在 A 页面上把后面步骤里对 B 的 E 键 / 点选都变成「被接管」
-      await clearStub(A);
+      // 任何一条 check 抛出时也要撤掉假接管，免得它留在 A 页面上把后面步骤里对 B 的 E 键 / 点选都变成「被接管」。
+      // 反向验证口：E2E_KEEP_PICK_STUB=1 时故意不撤，25.5 应当红（见文件末尾）
+      if (process.env.E2E_KEEP_PICK_STUB !== '1') await clearStub(A);
     }
   });
 
@@ -426,5 +427,6 @@ export default async function run(h) {
  *  - 把 on_pick 放到 `_can_control()` 之前或 `if best_kind == "":` 之前：结果不变，靠代码评审，不靠这个文件。
  * C4 并入后（居民卡会接管 3 米内的人）：25.2、25.3 和 25.4 的正面对照改在「一律不接管」（pickStub('-')）下核对旧行为；
  * 25.5 直接读 `__town.features._stub`，并核对撤干净后按 E 的接管与否和真功能一致（有居民卡功能就是被接管）。
- * __REVERSE_C4__
+ * 实测过（11-14）：E2E_KEEP_PICK_STUB=1（25.4 的 finally 故意不撤假接管）跑这个文件：25.5 红，「25.4 之后不应还有假接管状态：「-」」；
+ * 25、25.1 到 25.4 照常通过。「撤干净后按 E 的接管与否和真功能一致」这一半在那一遍里没有走到（前一条 check 先红了），只是推演。
  */
