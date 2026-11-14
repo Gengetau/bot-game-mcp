@@ -629,7 +629,8 @@ func actions(out: Array) -> void:
 		for k in _acts:
 			if str((_acts[k] as Dictionary).get("tableId", "")) == tid:
 				act = _acts[k]
-		if act.is_empty() and str(t.get("activityId", "")) == "":
+		var t_act = t.get("activityId")  # JSON 的 null 在 GDScript 里 str() 出来是 "<null>"，不能直接和空串比
+		if act.is_empty() and (t_act == null or str(t_act) == ""):
 			out.append({"id": "f:game:propose:" + tid, "label": "开一局：数字炸弹", "sub": str(t.get("name", "")), "mode": "do"})
 		elif not act.is_empty() and str(act.get("status", "")) == "forming" and (act.get("players", []) as Array).size() < int(act.get("max", 2)):
 			out.append({"id": "f:game:join:" + str(act.get("id", "")), "label": "加入", "sub": "%s · %d/%d" % [str(act.get("name", "")), (act.get("players", []) as Array).size(), int(act.get("max", 2))], "mode": "do"})
