@@ -18,6 +18,7 @@ import { card, publicSpot } from './project.js';
 import type { ActionHandler, Auth, WorldService } from './service.js';
 import { manifestOf } from './spatial/compile.js';
 import { distance, nearestWalkable, zoneAt } from './spatial/grid.js';
+import { pickSpawn, spawnCandidates } from './spatial/spawn.js';
 import { arrivalAt, positionAt, zoneCrossings } from './spatial/motion.js';
 import { findPath, pathLength } from './spatial/path.js';
 import { sweepDirection } from './spatial/sweep.js';
@@ -144,11 +145,33 @@ function spotFor(w: WorldService, label: string): { scene: string; instance: str
   return { scene: scene.id, instance: '', x: anchor.x, z: anchor.z, heading: anchor.facing ?? 0, label: zoneAt(scene, anchor.x, anchor.z).id };
 }
 
+/** 新放人时，已有的人离落脚点至少这么远才算「没人」（米）。 */
+const SPAWN_CLEARANCE = 0.8;
+
+/**
+ * 公共场景里的新落脚点：以区域标签对应的锚点为中心，按固定顺序取第一个此刻没有别的角色（居民或 NPC，按现算位置）的候选点。
+ * 候选点的生成在 spatial/spawn.ts（纯函数）；这里只查「此刻有没有人」。不用随机数。私宅门口不错开（只有房主一个实例）。
+ * selfId：换图重新安置时，自己的旧行不算占位。
+ */
+export function spreadSpot<T extends { scene: string; instance: string; x: number; z: number }>(w: WorldService, spot: T, now: number, selfId?: string): T {
+  const scene = w.map.scenes.get(spot.scene);
+  if (!scene || scene.instanced) return spot;
+  const occupied: Vec2[] = [];
+  for (const row of w.db.all('SELECT * FROM world_actors WHERE world_id = ? AND scene_id = ? AND instance_id = ?', w.worldId, spot.scene, spot.instance)) {
+    if (String(row.actor_id) === selfId) continue;
+    const a = hydrate(row);
+    // 还没按新地图校正的旧行：不拿新地图去结算旧折线，按存下的位置算
+    occupied.push(a.map_version === w.map.mapVersion ? posOf(a, now) : { x: a.x, z: a.z });
+  }
+  const p = pickSpawn(spawnCandidates(scene, spot), occupied, SPAWN_CLEARANCE);
+  return { ...spot, x: p.x, z: p.z };
+}
+
 /** 保证这位居民有空间角色行（新居民、从旧版迁移过来的居民）。没有就按区域标签落到对应的落脚点。 */
 export function ensureActor(w: WorldService, r: ResidentRow, at: number): ActorRow {
   const existing = actorOf(w, r.resident_id);
   if (existing) return existing;
-  const spot = spotFor(w, r.location_id);
+  const spot = spreadSpot(w, spotFor(w, r.location_id), at);
   w.db.run(
     `INSERT INTO world_actors(actor_id, world_id, kind, resident_id, scene_id, instance_id, x, z, heading, anchor_at, map_version)
      VALUES (?,?,'resident',?,?,?,?,?,?,?,?)`,
@@ -1290,7 +1313,7 @@ function revalidatePositions(w: WorldService, now: number): void {
     a.nav_revision += 1;
     a.map_version = w.map.mapVersion;
     if (!spot && r) {
-      const safe = spotFor(w, r.location_id);
+      const safe = spreadSpot(w, spotFor(w, r.location_id), now, a.actor_id);
       a.scene_id = safe.scene;
       a.instance_id = safe.instance;
       a.x = safe.x;
