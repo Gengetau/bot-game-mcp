@@ -21,7 +21,7 @@ let msgSeq = 100000;
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-async function bootEngine(withTown: boolean, dir: string): Promise<{ rt: Runtime; http: HttpHandle }> {
+async function bootEngine(withTown: boolean, dir: string, townExtra: Record<string, unknown> = {}): Promise<{ rt: Runtime; http: HttpHandle }> {
   const config = configSchema.parse({
     host: '127.0.0.1',
     port: 0,
@@ -29,7 +29,7 @@ async function bootEngine(withTown: boolean, dir: string): Promise<{ rt: Runtime
     seed: 'referee-town',
     refereeIds: [REF_ID],
     auth: { mode: 'keys', adminKeys: [], agents: [{ key: REF_KEY, id: REF_ID, name: '妮娅' }] },
-    ...(withTown ? { town: { enabled: true, dbFile: join(dir, 'town.db'), publicUrl: TOWN_URL } } : {}),
+    ...(withTown ? { town: { enabled: true, dbFile: join(dir, 'town.db'), publicUrl: TOWN_URL, ...townExtra } } : {}),
   });
   const rt = createRuntime(config, () => undefined);
   if (rt.world) await rt.world.start();
@@ -95,6 +95,44 @@ describe('isTownCommand', () => {
     expect(isTownCommand('来个镇子', ['来个镇子'])).toBe(true);
     expect(isTownCommand('小镇', ['来个镇子'])).toBe(false);
     expect(DEFAULT_TOWN_KEYWORDS).toContain('栖灯镇');
+  });
+});
+
+describe('栖灯镇：登录票据只有管理员能签（town.adminOnlyTickets）', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'referee-town-admin-'));
+  let eng: { rt: Runtime; http: HttpHandle };
+  beforeAll(async () => {
+    eng = await bootEngine(true, dir, { adminOnlyTickets: true });
+  }, 20_000);
+  afterAll(async () => {
+    await eng.http.close();
+    eng.rt.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('引擎拒绝签发：群里回一句通顺的说明，不私聊、不崩；冷却里再问只提示一次「没能签发」，不刷屏', async () => {
+    const r = await launch(eng.http, { town: {} });
+    try {
+      r.group(ALICE, '爱丽丝', '小镇');
+      const tip = await r.qq.waitForCall((c) => c.action === 'send_group_msg');
+      expect(callText(tip)).toContain('真人登录链接暂时只有管理员能签发');
+      expect(callText(tip)).not.toContain('⚠️ undefined');
+      expect(r.privates()).toHaveLength(0);
+      // 冷却里连问三次：只多一句「没能签发」，不是刷屏，也不再打引擎
+      r.group(ALICE, '爱丽丝', '小镇');
+      r.group(ALICE, '爱丽丝', '小镇');
+      r.group(ALICE, '爱丽丝', '小镇');
+      const notice = await r.qq.waitForCall((c) => c.action === 'send_group_msg' && callText(c).includes('没能给你签发'));
+      expect(callText(notice)).not.toContain('刚给你发过登录链接');
+      await sleep(700);
+      expect(r.groupSends()).toHaveLength(2);
+      expect(r.privates()).toHaveLength(0);
+      // 裁判还活着：别的命令照常
+      r.group(BOB, '鲍勃', '小镇');
+      await r.qq.waitForCall((c) => c.action === 'send_group_msg' && callText(c).includes('只有管理员能签发') && callText(c).includes(BOB));
+    } finally {
+      await r.stop();
+    }
   });
 });
 

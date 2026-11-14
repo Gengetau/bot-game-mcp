@@ -45,6 +45,6 @@ export {
   type PublicView as TownPublicView,
 } from './world/index.js';
 export { mountTown } from './world/http.js';
-export { TOWN_GUIDE, type TownDeps } from './mcp/town.js';
+export { TOWN_GUIDE, TOWN_NOT_ADMITTED, TOWN_NOT_ADMITTED_HINT, TOWN_TICKETS_ADMIN_ONLY, townPolicy, type TownDeps } from './mcp/town.js';
 /** 小镇模块的完整导出（脚本、测试和嵌入方用；上面那些是常用的别名） */
 export * as town from './world/index.js';

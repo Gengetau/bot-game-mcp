@@ -8,7 +8,7 @@ import type { WorldService } from '../../src/world/service.js';
 import { businessDate, localClock, localParts, localToUtc, nextDate } from '../../src/world/time.js';
 import { chatHistory } from '../../src/world/views.js';
 import { FakeClock } from '../helpers.js';
-import { makeTown, type Actor, type Town } from './helpers.js';
+import { KEEPER, makeTown, type Actor, type Town } from './helpers.js';
 
 const MIN = 60_000;
 const HOUR = 60 * MIN;
@@ -24,7 +24,7 @@ function scenario() {
   const a = t.join('阿灯');
   const b = t.join('小岚', 'agent');
   const c = t.join('小桔');
-  a.go('tea_house');
+  a.go(KEEPER);
   b.go('tea_house');
   a.act('buy', { shop: 'tea_counter', sku: 'tea_leaves', qty: 1 });
   const table = a.view().here!.objects.find((o) => o.type === 'tea_table')!;

@@ -17,9 +17,9 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parseArgs } from 'node:util';
-import { SeededRng, WorldError, createRegistry, createWorld, enterWorld, agentPrincipal, townHeartbeat, town, type WorldService } from '../packages/engine/src/index.js';
+import { SeededRng, WorldError, createRegistry, createWorld, enterWorld, agentPrincipal, exchangeTicket, issueTicket, sessionPrincipal, townHeartbeat, town, type WorldService } from '../packages/engine/src/index.js';
 import { actorOf, posOf, npcActorOf, positionOfNpc, positionOfResident, renewNavigation, whereabouts } from '../packages/engine/src/world/space.js';
-import { NPCS } from '../packages/engine/src/world/content.js';
+import { NPCS, npcLineMatches } from '../packages/engine/src/world/content.js';
 import { isWalkable, zoneAt } from '../packages/engine/src/world/spatial/grid.js';
 import { arrivalAt, positionAt } from '../packages/engine/src/world/spatial/motion.js';
 
@@ -78,6 +78,8 @@ interface Who {
   principalId: string;
   clientId: string;
   residentId: string;
+  /** 不写就是 AI（MCP 身份）；NPC 故障场景里有一位真人听众 */
+  clientKind?: 'web' | 'mcp';
 }
 const who: Who[] = [];
 
@@ -127,6 +129,18 @@ interface Planned {
 
 const PLACES = ['plaza', 'tea_house', 'bookshop', 'kitchen', 'garden', 'arcade', 'residential', 'home'];
 const SHOPS = town.townContent.SHOPS;
+const KEEPER_ID = 'npc:teahouse_keeper';
+const STROLLER_ID = 'npc:plaza_stroller';
+/** 已执行的 ask_npc 和经掌柜成交的 buy 的条数（每条恰好让该 NPC 的「回答计数」加一，也只会说至多一句话） */
+let npcActs = 0;
+/** 居民此刻是否站在某个 NPC 的 personReach 内（独立于实现，用位置现算；离线或在对局里不算） */
+function nearNpc(x: Who, npcId: string): boolean {
+  const r = w.mustResident(x.residentId);
+  if (r.present_since === null || r.activity_id) return false;
+  const p = positionOfResident(w, x.residentId, clock.t);
+  const n = positionOfNpc(w, npcId, clock.t);
+  return !!p && !!n && p.scene === n.scene && p.instance === n.instance && Math.hypot(p.x - n.x, p.z - n.z) <= w.params.personReach - 0.05;
+}
 let reqSeq = 0;
 const newRequestId = (round: number) => `rec-${SEED}-${round}-${++reqSeq}`;
 
@@ -137,10 +151,37 @@ function planAction(round: number): Planned {
   const actor = forced ? who.find((x) => x.residentId === forced.to_id)! : pick(who);
   const r = w.mustResident(actor.residentId);
   const requestId = newRequestId(round);
-  const kind = forced ? pick(['accept', 'accept', 'accept', 'decline']) : pick(['speak', 'speak', 'town', 'move', 'move', 'move', 'buy', 'buy', 'offer', 'offer', 'accept', 'accept', 'decline', 'cancel', 'letter', 'use', 'profile', 'invite']);
+  let kind = forced ? pick(['accept', 'accept', 'accept', 'decline']) : pick(['speak', 'speak', 'town', 'move', 'move', 'move', 'buy', 'buy', 'offer', 'offer', 'accept', 'accept', 'decline', 'cancel', 'letter', 'use', 'profile', 'invite', 'npcgo', 'npcask', 'npcask', 'npcbuy', 'npcbuy']);
   const here = r.location_id;
   const others = who.filter((o) => o !== actor);
+  // NPC：问话和经掌柜买茶要挑一个此刻真的站在 NPC 身边的居民（这样成功的次数才够多）；没有就先让某人走过去
+  if (kind === 'npcask' || kind === 'npcbuy') {
+    const npcId = kind === 'npcbuy' ? KEEPER_ID : pick([KEEPER_ID, STROLLER_ID]);
+    const near = who.filter((x) => nearNpc(x, npcId));
+    if (near.length === 0) kind = 'npcgo';
+    else {
+      const a = pick(near);
+      if (kind === 'npcbuy') {
+        const good = SHOPS.find((sh) => sh.id === 'tea_counter')!.goods[0]!;
+        const qty = 1 + rng.int(2);
+        return {
+          actor: a,
+          requestId,
+          action: { type: 'buy', shop: 'tea_counter', sku: good.sku, qty },
+          onExecuted: () => {
+            bump(good.type, qty);
+            expectedSink += good.price * qty;
+            buyRequests.push({ requestId, residentId: a.residentId, cost: good.price * qty, round });
+            npcActs++;
+          },
+        };
+      }
+      return { actor: a, requestId, action: { type: 'ask_npc', npcId, ...(chance(0.8) ? { topic: pick(['hello', 'tea', 'town', 'bench', 'books', 'nope']) } : {}) }, onExecuted: () => npcActs++ };
+    }
+  }
   switch (kind) {
+    case 'npcgo':
+      return { actor, requestId, action: { type: 'navigate', approach: pick([KEEPER_ID, STROLLER_ID]) } };
     case 'speak':
       return { actor, requestId, action: { type: 'speak', text: `第 ${round} 轮的一句话` } };
     case 'town':
@@ -150,6 +191,7 @@ function planAction(round: number): Planned {
     case 'buy': {
       const shops = SHOPS.filter((s) => s.place === here);
       const shop = shops.length ? pick(shops) : pick(SHOPS);
+      // 有掌柜的店要走到掌柜身边：这里多半被规则拒绝（too_far），成功时照常计入模型
       const good = pick(shop.goods.filter((g) => !g.onlyDuringEvent));
       const qty = 1 + rng.int(2);
       return {
@@ -160,6 +202,7 @@ function planAction(round: number): Planned {
           bump(good.type, qty);
           expectedSink += good.price * qty;
           buyRequests.push({ requestId, residentId: actor.residentId, cost: good.price * qty, round });
+          if (shop.keeper) npcActs++;
         },
       };
     }
@@ -313,6 +356,10 @@ function checkInvariants(round: number): void {
   check(round, delivered === mailEvents, () => `送达的信 ${delivered} 封，「有新信」事件 ${mailEvents} 条`);
   check(round, db.scalar('SELECT COUNT(*) FROM letters WHERE delivered_at IS NOT NULL AND delivered_at <> deliver_at') === 0, '有信件的送达时间不是应送达时间');
   check(round, db.scalar('SELECT COUNT(*) FROM letters WHERE delivered_at IS NULL AND deliver_at <= ?', clock.t) === 0, '有已经到时间却没送达的信');
+  // NPC 的回答计数：每条已执行（有回执）的 ask_npc / 经掌柜成交的 buy 恰好让对应 NPC 的计数加一；说出口的话不会比回答多（间隔内不说）
+  const said = Number(db.scalar("SELECT COALESCE(SUM(high_water), 0) FROM stream_heads WHERE stream_key LIKE 'npcsay:%'"));
+  check(round, said === npcActs, () => `NPC 回答计数 ${said}，已执行的 ask_npc / 经掌柜的购买 ${npcActs}`);
+  check(round, db.scalar("SELECT COUNT(*) FROM chat_messages WHERE sender_id LIKE 'npc:%'") <= npcActs, 'NPC 说的话比被问的次数还多');
   // 空间
   checkSpace(round);
 
@@ -381,7 +428,26 @@ function checkSpace(round: number, label = '', ww: WorldService = w, ppl: Who[] 
     const jobs = db.scalar("SELECT COUNT(*) FROM scheduled_jobs WHERE kind = 'npc_step' AND status = 'pending' AND dedupe_key = ?", `npc_step:${def.id}`);
     check(round, jobs === (def.schedule ? 1 : 0), () => `${tag}${def.name} 的待办 npc_step 应为 ${def.schedule ? 1 : 0}，实际 ${jobs}`);
   }
-  check(round, db.scalar("SELECT COUNT(*) FROM recipient_events WHERE projection LIKE '%npc:%'") + db.scalar("SELECT COUNT(*) FROM public_events WHERE projection LIKE '%npc:%'") + db.scalar("SELECT COUNT(*) FROM world_events WHERE payload LIKE '%npc:%'") === 0, `${tag}有事件或事实提到了 NPC`);
+  // 提到 NPC 编号的事件只允许两种：居民的 you_arrived / nav_stopped 里的 target，和 chat 事件的 from（NPC 在附近聊天里开口）；公开流和事实里一概不许
+  const npcMentions = db.all("SELECT type, projection FROM recipient_events WHERE projection LIKE '%npc:%'").filter((e) => {
+    const v = JSON.parse(String(e.projection)) as Record<string, any>;
+    if ((e.type === 'you_arrived' || e.type === 'nav_stopped') && v.target?.kind === 'npc') return JSON.stringify({ ...v, target: null }).includes('npc:');
+    if (e.type === 'chat' && v.from?.kind === 'npc' && v.scope === 'nearby' && NPCS.some((n) => n.id === v.from.id && n.name === v.from.name)) return JSON.stringify({ ...v, from: null }).includes('npc:');
+    return true;
+  });
+  check(round, npcMentions.length === 0, () => `${tag}有 ${npcMentions.length} 条居民事件以不允许的形状提到了 NPC：${JSON.stringify(npcMentions.slice(0, 2))}`);
+  check(round, db.scalar("SELECT COUNT(*) FROM recipient_events WHERE resident_id LIKE 'npc:%'") + db.scalar("SELECT COUNT(*) FROM public_events WHERE projection LIKE '%npc:%'") + db.scalar("SELECT COUNT(*) FROM world_events WHERE payload LIKE '%npc:%'") === 0, `${tag}有公开事件或事实提到了 NPC，或 NPC 当了事件的接收者`);
+  // NPC 的话：说话人是定义的 NPC、受众都是居民、不进 NPC 当听众、每句都出自模板；每位真人听众恰好一条 chat 事件，AI 听众一条也没有（NPC 的话不叫醒 AI）
+  const npcMsgs = db.all("SELECT message_id, sender_id, body FROM chat_messages WHERE sender_id LIKE 'npc:%'");
+  check(round, db.scalar("SELECT COUNT(*) FROM chat_audience WHERE resident_id LIKE 'npc:%'") === 0, `${tag}NPC 进了听众`);
+  const residentNames = db.all('SELECT name FROM residents').map((x) => String(x.name));
+  check(round, npcMsgs.every((m) => NPCS.some((n) => n.id === m.sender_id) && npcLineMatches(String(m.sender_id), String(m.body), residentNames)), () => `${tag}有 NPC 的话对不上台词模板`);
+  const npcAudienceOf = (human: boolean) =>
+    Number(db.scalar(`SELECT COUNT(*) FROM chat_audience a JOIN chat_messages m ON m.message_id = a.message_id JOIN residents r ON r.resident_id = a.resident_id WHERE m.sender_id LIKE 'npc:%' AND r.kind ${human ? '=' : '<>'} 'human'`));
+  const npcEventsTo = (human: boolean) =>
+    Number(db.scalar(`SELECT COUNT(*) FROM recipient_events e JOIN residents r ON r.resident_id = e.resident_id WHERE e.type = 'chat' AND e.projection LIKE '%"kind":"npc"%' AND r.kind ${human ? '=' : '<>'} 'human'`));
+  check(round, npcAudienceOf(true) === npcEventsTo(true), () => `${tag}NPC 的话的真人受众行 ${npcAudienceOf(true)} 条，对应的 chat 事件 ${npcEventsTo(true)} 条`);
+  check(round, npcEventsTo(false) === 0, () => `${tag}有 ${npcEventsTo(false)} 条 NPC 台词的 chat 事件发给了 AI 居民（AI 受众行 ${npcAudienceOf(false)} 条，应该一条事件也没有）`);
   const pendingNav = new Set(db.all("SELECT dedupe_key FROM scheduled_jobs WHERE kind = 'nav_step' AND status = 'pending'").map((j) => String(j.dedupe_key)));
   for (const x of ppl) {
     const a = actorOf(ww, x.residentId);
@@ -786,6 +852,109 @@ function navFaultScenarios(): { name: string; checks: number }[] {
     });
   }
 
+  // B3. 附近聊天的叫醒额度与补叫：说一句话、nearby_wake 任务在提交前 / 提交后崩溃；被杀重启
+  const wakeSetup = (c: ScenarioCtx) => {
+    const [a, b] = c.who as [Who, Who];
+    let seq = 0;
+    const say = (text: string, requestId?: string) => {
+      const r = c.w.mustResident(a.residentId);
+      try {
+        return c.w.command({ principalId: a.principalId, clientId: a.clientId }, { requestId: requestId ?? `wake-${c.n}-${++seq}`, actionWindow: c.w.issueActionWindow(a.residentId), expected: { contextVersion: r.context_version, controlEpoch: r.control_epoch, activityId: r.activity_id }, action: { type: 'say_nearby', text } }) as Record<string, any>;
+      } finally {
+        // 场景只看乙一位听者：同场的其他听者也会被压下、也会排补叫，它们和故障注入点抢同一个 tick，这里撤掉
+        for (const x of c.who) if (x !== a && x !== b) c.w.cancelJob(`nearby_wake:${x.residentId}`);
+      }
+    };
+    const chatTo = (x: Who) => Number(c.w.db.scalar("SELECT COUNT(*) FROM recipient_events WHERE resident_id = ? AND type = 'chat'", x.residentId));
+    const tokens = (name: string) => {
+      const row = c.w.db.get('SELECT tokens FROM rate_buckets WHERE resident_id = ? AND bucket = ?', b.residentId, name);
+      return row ? Number(row.tokens) : null;
+    };
+    const jobs = () => c.w.db.all("SELECT job_id, due_at, attempts FROM scheduled_jobs WHERE kind = 'nearby_wake' AND status = 'pending'");
+    // 五句当场（说话自己的限速每分钟 6 条、突发 3 条，所以分两批）
+    for (let i = 1; i <= 3; i++) say(`第${i}句`);
+    c.advanceTo(clock.t + 30 * SEC);
+    for (let i = 4; i <= 5; i++) say(`第${i}句`);
+    check(1000 + c.n, chatTo(b) === 5 && jobs().length === 0, () => `前五句应当场叫醒乙：事件 ${chatTo(b)}，补叫 ${jobs().length}`);
+    return { a, b, say, chatTo, tokens, jobs };
+  };
+  for (const point of ['before_commit', 'after_commit'] as const) {
+    run(`说一句话 ${point} 失败（叫醒额度与补叫）`, (c) => {
+      const { say, chatTo, tokens, jobs, b } = wakeSetup(c);
+      const msgs = () => Number(c.w.db.scalar('SELECT COUNT(*) FROM chat_messages'));
+      const total0 = tokens('nearby_wake')!;
+      const m0 = msgs();
+      let fired = false;
+      c.w.db.failpoint = (pt) => {
+        if (!fired && pt === point) {
+          fired = true;
+          throw new Error(`注入的崩溃：${pt}`);
+        }
+      };
+      try {
+        say('第6句', 'wake-sixth-0001');
+      } catch {
+        /* 注入的失败 */
+      }
+      c.w.db.failpoint = null;
+      check(1000 + c.n, fired, '说话的注入点没有触发');
+      if (point === 'before_commit') {
+        check(1000 + c.n, msgs() === m0 && chatTo(b) === 5 && jobs().length === 0 && tokens('nearby_wake') === total0, () => `提交前失败应整体回滚：消息 ${msgs() - m0}、事件 ${chatTo(b)}、补叫 ${jobs().length}、总桶 ${total0}→${tokens('nearby_wake')}`);
+      } else {
+        check(1000 + c.n, msgs() === m0 + 1 && chatTo(b) === 5 && jobs().length === 1, () => `提交后失败：这句应已生效且被压下：消息 ${msgs() - m0}、事件 ${chatTo(b)}、补叫 ${jobs().length}`);
+      }
+      // 用原来的请求号重试：提交前失败是全新执行，提交后失败是回放；两种之后都恰好一条消息、一条待办补叫、总桶没有多扣
+      const retry = say('第6句', 'wake-sixth-0001');
+      check(1000 + c.n, point === 'after_commit' ? retry.replayed === true : !retry.replayed, () => `重试的回放标记不对：${JSON.stringify(retry)}`);
+      check(1000 + c.n, msgs() === m0 + 1 && chatTo(b) === 5 && jobs().length === 1 && tokens('nearby_wake') === total0, () => `重试后：消息 ${msgs() - m0}、事件 ${chatTo(b)}、补叫 ${jobs().length}、总桶 ${total0}→${tokens('nearby_wake')}`);
+      c.snap('说话重试后');
+    });
+  }
+  for (const point of ['before_commit', 'after_commit'] as const) {
+    run(`nearby_wake ${point} 失败`, (c) => {
+      const { say, chatTo, jobs, b } = wakeSetup(c);
+      say('第6句');
+      check(1000 + c.n, jobs().length === 1, '第六句应被压下并排上补叫');
+      const due = Number(jobs()[0]!.due_at);
+      c.advanceTo(due - 500);
+      check(1000 + c.n, chatTo(b) === 5, '到期之前不该有补叫事件');
+      clock.t = due + 50;
+      let fired = false;
+      c.w.db.failpoint = (pt) => {
+        if (!fired && pt === point) {
+          fired = true;
+          throw new Error(`注入的崩溃：${pt}`);
+        }
+      };
+      c.w.tick();
+      c.w.db.failpoint = null;
+      check(1000 + c.n, fired, 'nearby_wake 的注入点没有触发');
+      if (point === 'before_commit') check(1000 + c.n, chatTo(b) === 5 && jobs().length === 1 && Number(jobs()[0]!.attempts) === 1, () => `提交前失败后事件 ${chatTo(b)}、补叫 ${jobs().length}（应保留待重试）`);
+      else check(1000 + c.n, chatTo(b) === 6 && jobs().length === 0, () => `提交后失败：补叫应已发出一次：事件 ${chatTo(b)}、待办 ${jobs().length}`);
+      c.w.tick(); // 重试
+      c.advanceTo(clock.t + 10 * MIN);
+      check(1000 + c.n, chatTo(b) === 6 && jobs().length === 0, () => `重试后应恰好多一条补叫事件：事件 ${chatTo(b)}、待办 ${jobs().length}`);
+      c.snap('补叫重试后');
+    });
+  }
+  run('补叫待办时进程被杀重启', (c) => {
+    const { say, chatTo, tokens, jobs, b } = wakeSetup(c);
+    say('第6句');
+    const due = Number(jobs()[0]!.due_at);
+    const t0 = tokens('nearby_wake')!;
+    c.reopen(true, 20 * SEC);
+    const j2 = c.w.db.all("SELECT due_at FROM scheduled_jobs WHERE kind = 'nearby_wake' AND status = 'pending'");
+    const t1 = c.w.db.get('SELECT tokens FROM rate_buckets WHERE resident_id = ? AND bucket = ?', b.residentId, 'nearby_wake');
+    check(1000 + c.n, j2.length === 1 && Number(j2[0]!.due_at) === due, () => `被杀重启后补叫待办应还在、到期时刻不变：${JSON.stringify(j2)}`);
+    check(1000 + c.n, t1 !== undefined && Math.abs(Number(t1.tokens) - t0) < 1e-9, () => `被杀重启后额度不该回满：${t0}→${t1?.tokens}`);
+    c.advanceTo(due + 100);
+    const evs = Number(c.w.db.scalar("SELECT COUNT(*) FROM recipient_events WHERE resident_id = ? AND type = 'chat'", b.residentId));
+    check(1000 + c.n, evs === 6, () => `补叫到期后应恰好多一条：事件 ${evs}（重启前 ${chatTo(b)}）`);
+    c.advanceTo(clock.t + 10 * MIN);
+    check(1000 + c.n, Number(c.w.db.scalar("SELECT COUNT(*) FROM recipient_events WHERE resident_id = ? AND type = 'chat'", b.residentId)) === 6, '补叫不该发第二次');
+    c.snap('重启补叫后');
+  });
+
   // C. 跨区域那一刻崩溃
   for (const point of ['after_commit', 'before_commit'] as const) {
     run(`跨区域时崩溃（${point}）`, (c) => {
@@ -916,7 +1085,180 @@ function navFaultScenarios(): { name: string; checks: number }[] {
   return done;
 }
 
+// ───────────────────────── NPC 故障场景 ─────────────────────────
+
+/**
+ * ask_npc 和经掌柜的 buy 各在「提交前」「提交后」崩溃一次（还有闲逛者被搭话时延长停留的那一次）：
+ *   before_commit：重启后命令完全没发生（钱、货、库存、回答计数、NPC 的话、听众的 chat 事件、待办都原样）；同一请求号重试是全新执行，只发生一次
+ *   after_commit：重启后已经发生过一次；同一请求号重试是重放，不多扣钱、不多发货、不多一句话、不少一条待办
+ * 每个场景有三位居民，都站在 NPC 身边：甲（AI）发命令；乙（真人）当听众，NPC 的话恰好给它一条 chat 事件；
+ * 丙（AI）也在受众里，但一条事件也没有（NPC 的话不叫醒 AI；甲自己也没有，回答在回执里）。
+ */
+function npcFaultScenarios(): { name: string; checks: number }[] {
+  const done: { name: string; checks: number }[] = [];
+  let no = 0;
+  for (const action of ['ask_npc', 'buy', 'ask_stroller'] as const) {
+    for (const point of ['before_commit', 'after_commit'] as const) {
+      no++;
+      const name = `${action} ${point} 崩溃`;
+      const before = stats.checks;
+      const rd = 2000 + no;
+      const path = join(dir, `npc-scn-${no}.db`);
+      let opens3 = 0;
+      const open = (): WorldService => {
+        // 闲逛者场景：停留固定一段时间，方便把时间推到「快要出发」再被搭话
+        const ww = createWorld({ dbPath: path, registry: createRegistry({}), now: () => clock.t, rng: new SeededRng(`npcids:${SEED}:${no}:${++opens3}`), seed: `npc:${SEED}:${no}`, log: () => undefined, devLogin: true, params: { npcStayMinMs: 120_000, npcStayMaxMs: 120_000 } });
+        ww.startSync();
+        return ww;
+      };
+      let ww = open();
+      const people: Who[] = [];
+      for (let i = 0; i < 3; i++) {
+        const nm = ['甲', '乙', '丙'][i]!;
+        const clientKind = i === 1 ? ('web' as const) : ('mcp' as const);
+        const clientId = `${clientKind}:npc-${no}-${i}`;
+        // 乙是真人：走「票据 → 会话」；甲、丙是 AI
+        const principalId =
+          clientKind === 'web'
+            ? sessionPrincipal(ww, exchangeTicket(ww, issueTicket(ww, { provider: 'qq', subject: `6${no}0${i}`, name: nm }).ticket).token)!.principal_id
+            : agentPrincipal(ww, { id: `6${no}0${i}`, name: nm }).principal_id;
+        const out = enterWorld(ww, { principalId, clientId }, { clientKind, profile: { name: nm } });
+        people.push({ name: nm, principalId, clientId, residentId: out.enter.residentId, clientKind });
+      }
+      const [a, b, c] = people as [Who, Who, Who];
+      const auth = (x: Who) => ({ principalId: x.principalId, clientId: x.clientId });
+      let hb = clock.t;
+      const advanceTo = (t: number) => {
+        while (clock.t < t) {
+          clock.t = Math.min(t, clock.t + ww.params.navRenewEveryMs);
+          for (const x of people) {
+            const nav = whereabouts(ww, ww.mustResident(x.residentId), clock.t).navigation;
+            if (!nav) continue;
+            try {
+              renewNavigation(ww, auth(x), { navigationId: nav.navigationId, revision: nav.revision });
+            } catch (e) {
+              if (!(e instanceof WorldError)) throw e;
+            }
+          }
+          if (clock.t - hb >= 15 * SEC) {
+            hb = clock.t;
+            for (const x of people) {
+              try {
+                townHeartbeat(ww, auth(x), ww.mustResident(x.residentId).presence_epoch);
+              } catch {
+                enterWorld(ww, auth(x), { clientKind: x.clientKind ?? 'mcp' });
+              }
+            }
+          }
+          ww.tick();
+        }
+      };
+      const cmd = (x: Who, act: { type: string; [k: string]: unknown }, requestId: string) => {
+        const r = ww.mustResident(x.residentId);
+        return ww.command(auth(x), { requestId, actionWindow: ww.issueActionWindow(x.residentId), expected: { contextVersion: r.context_version, controlEpoch: r.control_epoch, activityId: r.activity_id }, action: act }) as Record<string, any>;
+      };
+      const target = action === 'ask_stroller' ? STROLLER_ID : KEEPER_ID;
+      // 三个人都走到 NPC 身边（闲逛者此刻在岗位上，停留 120 秒后才出发）
+      people.forEach((x, i) => cmd(x, { type: 'navigate', approach: target }, `npcscn-${no}-go-${i}`));
+      advanceTo(clock.t + 40 * SEC);
+      const reach = (x: Who) => {
+        const p = positionOfResident(ww, x.residentId, clock.t);
+        const n = positionOfNpc(ww, target, clock.t);
+        return !!p && !!n && Math.hypot(p.x - n.x, p.z - n.z) <= ww.params.personReach;
+      };
+      check(rd, reach(a) && reach(b) && reach(c), `${name}：甲乙丙没走到 ${target} 身边`);
+      check(rd, ww.mustResident(a.residentId).kind === 'agent' && ww.mustResident(b.residentId).kind === 'human' && ww.mustResident(c.residentId).kind === 'agent', `${name}：三位居民的身份不是 AI / 真人 / AI`);
+      if (action === 'ask_stroller') {
+        // 推到闲逛者快要出发（还剩 3 秒）：搭话应把这次停留延到 现在 + 8 秒
+        const job0 = ww.db.get("SELECT due_at FROM scheduled_jobs WHERE dedupe_key = ? AND status = 'pending'", `npc_step:${STROLLER_ID}`)!;
+        advanceTo(Number(job0.due_at) - 3 * SEC);
+      }
+      const snap = () => ({
+        coins: Number(ww.db.scalar("SELECT balance FROM accounts WHERE resident_id = ?", a.residentId)),
+        tea: Number(ww.db.scalar("SELECT COALESCE(SUM(quantity), 0) FROM items WHERE owner_id = ? AND type = 'tea_leaves'", a.residentId)),
+        stock: ww.db.get("SELECT stock FROM shop_stock WHERE shop_id = 'tea_counter' AND sku = 'tea_leaves'")?.stock ?? null,
+        said: Number(ww.db.scalar("SELECT COALESCE(SUM(high_water), 0) FROM stream_heads WHERE stream_key LIKE 'npcsay:%'")),
+        msgs: Number(ww.db.scalar("SELECT COUNT(*) FROM chat_messages WHERE sender_id LIKE 'npc:%'")),
+        // NPC 的话给每个人的 chat 事件数（只有真人乙该有）和每个人的受众行数（三个人都该有）
+        heard: people.map((x) => Number(ww.db.scalar("SELECT COUNT(*) FROM recipient_events WHERE resident_id = ? AND type = 'chat' AND projection LIKE '%\"kind\":\"npc\"%'", x.residentId))),
+        aud: people.map((x) => Number(ww.db.scalar("SELECT COUNT(*) FROM chat_audience a JOIN chat_messages m ON m.message_id = a.message_id WHERE a.resident_id = ? AND m.sender_id LIKE 'npc:%'", x.residentId))),
+        job: JSON.stringify(ww.db.all("SELECT dedupe_key, due_at, payload FROM scheduled_jobs WHERE kind = 'npc_step' AND status = 'pending' ORDER BY dedupe_key")),
+        pending: Number(ww.db.scalar("SELECT COUNT(*) FROM scheduled_jobs WHERE kind = 'npc_step' AND status = 'pending'")),
+      });
+      const s0 = snap();
+      const act = action === 'buy' ? { type: 'buy', shop: 'tea_counter', sku: 'tea_leaves', qty: 1 } : { type: 'ask_npc', npcId: target, topic: 'hello' };
+      const requestId = `npcscn-${no}-req`;
+      let fired = false;
+      ww.db.failpoint = (pt) => {
+        if (!fired && pt === point) {
+          fired = true;
+          throw new Error(`注入的崩溃：${pt}`);
+        }
+      };
+      let threw = false;
+      try {
+        cmd(a, act, requestId);
+      } catch {
+        threw = true;
+      }
+      ww.db.failpoint = null;
+      check(rd, fired && threw, `${name}：注入点没有触发`);
+      // 进程被杀，重启
+      ww.db.db.close();
+      clock.t += 500; // 很短的停机：不让闲逛者的停留到期
+      ww = open();
+      for (const x of people) enterWorld(ww, auth(x), { clientKind: x.clientKind ?? 'mcp' });
+      hb = clock.t;
+      const s1 = snap();
+      // 恰好说了一句：三个人的受众行各多一条；chat 事件只有真人乙多一条，AI 甲、丙始终是零
+      const spokeOnce = (s: ReturnType<typeof snap>) =>
+        s.said === s0.said + 1 &&
+        s.msgs === s0.msgs + 1 &&
+        s.aud.every((n, i) => n === s0.aud[i]! + 1) &&
+        s.heard[1] === s0.heard[1]! + 1 &&
+        s.heard[0] === 0 &&
+        s.heard[2] === 0;
+      if (point === 'before_commit') {
+        check(rd, JSON.stringify(s1) === JSON.stringify(s0), () => `${name}：提交前崩溃后状态变了：${JSON.stringify(s0)} → ${JSON.stringify(s1)}`);
+        check(rd, !ww.db.get('SELECT 1 AS x FROM request_receipts WHERE resident_id = ? AND request_id = ?', a.residentId, requestId), `${name}：提交前崩溃后留着回执`);
+      } else {
+        const bought = action === 'buy' ? 1 : 0;
+        check(rd, s1.coins === s0.coins - 2 * bought && s1.tea === s0.tea + bought && s1.stock === (action === 'buy' ? 29 : s0.stock), () => `${name}：提交后崩溃的账货不对：${JSON.stringify(s0)} → ${JSON.stringify(s1)}`);
+        check(rd, spokeOnce(s1), () => `${name}：提交后崩溃的回答 / 话 / 受众 / 事件不对：${JSON.stringify(s0)} → ${JSON.stringify(s1)}`);
+        check(rd, s1.pending === s0.pending, `${name}：提交后崩溃后 npc_step 待办数变了`);
+      }
+      // 用原请求号重试：把心跳补上（重启后大家在场），时间不动
+      let replayed: boolean | null = null;
+      try {
+        replayed = cmd(a, act, requestId).replayed === true;
+      } catch (e) {
+        if (!(e instanceof WorldError)) throw e;
+        check(rd, false, `${name}：重试被拒绝：${e.code} ${e.message}`);
+      }
+      check(rd, point === 'after_commit' ? replayed === true : replayed === false, () => `${name}：重试${replayed ? '是重放' : '是全新执行'}，与预期相反`);
+      const s2 = snap();
+      const bought2 = action === 'buy' ? 1 : 0;
+      // 不管哪种崩溃，重试之后都恰好发生了一次：多扣钱、多发货、多一句话、少一条待办都会在这里抓到
+      check(rd, s2.coins === s0.coins - 2 * bought2 && s2.tea === s0.tea + bought2 && (action !== 'buy' || s2.stock === 29), () => `${name}：重试后账货不是恰好一次：${JSON.stringify(s0)} → ${JSON.stringify(s2)}`);
+      check(rd, spokeOnce(s2), () => `${name}：重试后回答 / 话 / 受众 / 事件不是恰好一次：${JSON.stringify(s0)} → ${JSON.stringify(s2)}`);
+      check(rd, s2.pending === s0.pending, `${name}：重试后 npc_step 待办数变了`);
+      if (action === 'ask_stroller') {
+        const j = ww.db.get("SELECT due_at, payload FROM scheduled_jobs WHERE dedupe_key = ? AND status = 'pending'", `npc_step:${STROLLER_ID}`)!;
+        const p = JSON.parse(String(j.payload)) as { phase?: string; extendedMs?: number };
+        // 快要出发时被搭话：停留被延到 搭话时刻 + npcTalkHoldMs，只延长这一次
+        const askedAt = clock.t;
+        check(rd, p.phase === 'stay' && Number(j.due_at) >= askedAt + ww.params.npcTalkHoldMs - 1000 && Number(j.due_at) <= askedAt + ww.params.npcTalkHoldMs + 6 * SEC && (p.extendedMs ?? 0) > 0 && (p.extendedMs ?? 0) <= ww.params.npcTalkHoldMaxMs, () => `${name}：搭话后停留没有按规则延长：${JSON.stringify(p)} due=${j.due_at} now=${askedAt}`);
+      }
+      checkSpace(rd, name, ww, people);
+      ww.close();
+      done.push({ name, checks: stats.checks - before });
+    }
+  }
+  return done;
+}
+
 const navScenarioResults = navFaultScenarios();
+const npcScenarioResults = npcFaultScenarios();
 
 const secs = ((performance.now() - started) / 1000).toFixed(1);
 console.log('');
@@ -930,6 +1272,7 @@ console.log(`重放（replayed）：${stats.replays} 次`);
 console.log(`不变量检查：${stats.checks} 次`);
 console.log(`导航：随机轮里 navigate ${executedByType.get('navigate') ?? 0} 次，走路期间续租 ${navStats.renewed} 次（见到在走的人次 ${navStats.walkersSeen}）`);
 console.log(`导航故障场景：${navScenarioResults.map((r) => `${r.name} ${r.checks} 项`).join('；')}`);
+console.log(`NPC 故障场景：${npcScenarioResults.map((r) => `${r.name} ${r.checks} 项`).join('；')}；随机轮里 ask_npc ${executedByType.get('ask_npc') ?? 0} 次，经掌柜的购买与问话合计 ${npcActs} 次`);
 console.log(`耗时：${secs} 秒`);
 if (violations.length) {
   console.log(`\n发现 ${violations.length} 处违例：`);

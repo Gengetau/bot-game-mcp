@@ -36,6 +36,8 @@ export const TOWN_ACTION_TYPES = [
   'ask_hobby',
   'update_profile',
   'buy',
+  /** 和 NPC 说话：问话题、看掌柜的货品（先走到它身边） */
+  'ask_npc',
   'use_item',
   'display_item',
   'place_furniture',
@@ -126,7 +128,10 @@ export interface TownView {
     /** 游戏桌：far:true 表示够不着（先 navigate 到桌子 id）；activity 是占着它的那一局 */
     tables?: { id: string; name: string; far?: true; activity?: string }[];
     games: { type: string; name: string; players: string }[];
-    recent_chat: { from: string; text: string }[];
+    /** npc:true 是 NPC 的固定台词（程序生成，不是别的居民写的） */
+    recent_chat: { from: string; npc?: true; text: string }[];
+    /** 镇上的 NPC：far:true 表示够不着（先 navigate {approach: id} 走到它身边）；shop 是它照看的店 */
+    npcs?: { id: string; name: string; role: string; place: string; far?: true; topics: string[]; shop?: string }[];
     [k: string]: unknown;
   } | null;
   coins: number;
@@ -663,6 +668,10 @@ export class TownClient {
       ...(opts.direction ? { direction: opts.direction } : {}),
       ...(opts.limit !== undefined ? { limit: opts.limit } : {}),
     });
+  }
+  /** 和 NPC 说话：要先走到它身边（navigate {approach: npcId}）。topic 缺省或未知按默认话题回答。 */
+  askNpc(npcId: string, topic?: string, o?: ActOptions) {
+    return this.act({ type: 'ask_npc', npcId, ...(topic ? { topic } : {}) }, o);
   }
   buy(shop: string, sku: string, qty = 1, o?: ActOptions) {
     return this.act({ type: 'buy', shop, sku, qty }, o);

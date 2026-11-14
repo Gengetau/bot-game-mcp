@@ -48,7 +48,7 @@ npm run client:export && npm run client:e2e                    # 三维客户端
 - 地图（`spatial/town-map.ts`）发布后不原地改：动了可走范围、落脚点或物件位置就换 `mapVersion`。`spatial/` 下的模块是纯函数：不读数据库、不取时间、不用随机数。
 - 给居民的私有事件用 `w.emitTo()`，公开事件用 `w.emitPublic()`；固定模板的通知不要拼进别人的私密信息。
 - 小游戏是原来的游戏定义，由 `GameRunner`（`src/core/runner.ts`）推进；嵌入的记录在世界数据库的 `game_records` 里，公共 `GameManager` 不持有。只有 `embeddable: true` 且通过接入检查的游戏能在镇上开。
-- NPC 是 `world_actors` 里 `kind='npc'`、`resident_id` 为空的行（定义在 `content.ts` 的 `NPCS`，日程在 `npc.ts`）：位置只由 `space.ts` 写，走动、停留、换姿态不发任何事件、不叫醒任何 AI、不记事实，只进场景快照的 `npcs`（不混进 `actors`）；没有导航控制租约，居民路径（`actorOf`、续租、方向输入、停步）碰不到它；不占在场名额，不是聊天听众，不沾账本。
+- NPC 是 `world_actors` 里 `kind='npc'`、`resident_id` 为空的行（定义在 `content.ts` 的 `NPCS`，日程在 `npc.ts`）：位置只由 `space.ts` 写，走动、停留、换姿态不发任何事件、不叫醒任何 AI、不记事实，只进场景快照的 `npcs`（不混进 `actors`）；没有导航控制租约，居民路径（`actorOf`、续租、方向输入、停步）碰不到它；不占在场名额，不是聊天听众，不沾账本；它可以作为附近聊天的说话人（`ask_npc` 的固定台词，受众在发送事务里按它的位置定下），但不是听众、不被叫醒、不持有财物；它说的话只给真人听众发 `chat` 事件，不给 AI 发（AI 从视图的 `here.recent_chat` 和回执里看到），不碰叫醒额度和补叫。
 - 时间用 `w.now()`，随机用 `w.rng` / `w.gameRng`，不要用 `Date.now()` 和 `Math.random()`。
 - 新的动作类型：在对应模块的 `install*` 里注册 handler，补 `docs/TOWN.md` 的动作表、`mcp/town.ts` 的指南、`agent-kit/prompts/resident-zh.md`，并加测试（`test/world/`，辅助在 `test/world/helpers.ts`）。
 - 部署、密钥和服务器配置不在开发范围内。

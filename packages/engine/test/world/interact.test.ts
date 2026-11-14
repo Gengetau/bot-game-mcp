@@ -8,7 +8,7 @@ import { publicEventsToday, weatherAt } from '../../src/world/interact.js';
 import { effectivePresentMs } from '../../src/world/life.js';
 import { localParts, localToUtc } from '../../src/world/time.js';
 import { FakeClock } from '../helpers.js';
-import { Actor, makeTown, tempDb, type Town, type TownOpts } from './helpers.js';
+import { Actor, KEEPER, makeTown, tempDb, type Town, type TownOpts } from './helpers.js';
 import { checkInvariants } from './invariants.js';
 
 const MIN = 60_000;
@@ -828,7 +828,9 @@ describe('共同活动：读书、做汤、照料花箱、在家休息', () => {
     const b = t.join('小岚', 'agent');
     gather('tea_house', a, b);
     setNeeds(t, a, { social: 0 });
+    a.go(KEEPER);
     a.act('buy', { shop: 'tea_counter', sku: 'tea_leaves', qty: 4 });
+    a.go(TABLE1);
     const deltas: number[] = [];
     for (let i = 0; i < 4; i++) {
       const before = needs(a).social;

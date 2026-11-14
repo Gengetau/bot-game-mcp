@@ -104,6 +104,8 @@ export const JOB_PRIORITY: Record<string, number> = {
   daily_rollover: 9,
   prune: 9,
   town_chat_purge: 9,
+  // 附近聊天的补叫：和信件送达同级
+  nearby_wake: 4,
 };
 
 const sha256 = (s: string) => createHash('sha256').update(s).digest('hex');

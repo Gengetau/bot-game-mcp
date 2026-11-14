@@ -20,8 +20,9 @@ export {};
 /** @typedef {{ id: string, name: string, goods: { sku: string, name: string, price: number, stock: number, note?: string }[] }} Shop */
 /** @typedef {{ id: string, game: string, name: string, venue: string, status: string, host: Card, players: Card[], min: number, max: number, lobbyExpiresAt: number, gameId: string | null, tableId: string | null }} Lobby */
 /** @typedef {{ type: string, name: string, min: number, max: number, summary: string }} GameOffer */
-/** @typedef {{ messageId: number, from: Card, text: string, at: number }} HereChat */
-/** @typedef {{ space: string, name: string, kind: 'public' | 'residential' | 'home', blurb: string, residents: Neighbor[], objects: PlaceObject[], shops: Shop[], activities: Lobby[], games: GameOffer[], tables: { id: string, name: string, activityId: string | null, near: boolean }[], exits: { id: string, name: string, seconds?: number }[], doors?: { home: string, owner: Card, lane: string, no: number, canEnter: boolean }[], home?: { owner: Card, mine: boolean, decor: string[] }, library?: { bookId: string, title: string, available: number }[], chat: HereChat[] }} Here */
+/** @typedef {{ messageId: number, from: Card | { id: string, name: string, kind: 'npc' }, text: string, at: number }} HereChat */
+/** @typedef {{ id: string, name: string, role: 'service' | 'ambient', place: string, near: boolean, topics: { id: string, label: string }[], shop?: string }} HereNpc */
+/** @typedef {{ space: string, name: string, kind: 'public' | 'residential' | 'home', blurb: string, residents: Neighbor[], objects: PlaceObject[], shops: Shop[], activities: Lobby[], games: GameOffer[], tables: { id: string, name: string, activityId: string | null, near: boolean }[], exits: { id: string, name: string, seconds?: number }[], doors?: { home: string, owner: Card, lane: string, no: number, canEnter: boolean }[], home?: { owner: Card, mine: boolean, decor: string[] }, library?: { bookId: string, title: string, available: number }[], chat: HereChat[], npcs: HereNpc[] }} Here */
 
 /** @typedef {{ itemId: string, type: string, name: string, qty: number, available: number, shelved: number, category: string, stackable: boolean, use: string, borrowedFrom?: string, dueAt?: number }} InvItem */
 /** @typedef {{ coins: { balance: number, reserved: number, available: number }, items: InvItem[], lent: { itemId: string, name: string, to: string, dueAt: number }[] }} Inventory */
@@ -46,6 +47,6 @@ export {};
 /** @typedef {{ id: string, name: string, familiarity: number, closeness: number, level: string, memories: Memory[] }} Relation */
 /** @typedef {{ scope: string, date: string, lines: string[], final: boolean }} Report */
 /** @typedef {{ messageId: number, space: string, spaceName: string, from: Card, text: string, at: number }} HistoryMsg */
-/** @typedef {{ messageId: number, space: string, spaceName: string, from: Card, text: string, at: number, sys?: boolean }} ChatLine */
+/** @typedef {{ messageId: number, space: string, spaceName: string, from: Card | { id: string, name: string, kind: 'npc' }, text: string, at: number, sys?: boolean }} ChatLine */
 
 /** @typedef {{ ok: boolean, error?: string, reason?: string, message?: string, retryAfterMs?: number, status?: string, replayed?: boolean, text?: string, [k: string]: unknown }} ActResult */

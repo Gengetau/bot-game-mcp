@@ -6,13 +6,14 @@
  * - 发起赠送、交换、出借时先预留发起方的东西；对方接受时在同一事务里完成双向转移。任何一步不满足，整笔不发生。
  * - 报价内容不可修改（要改就撤销重发），所以「接受的是哪一份」没有歧义。
  */
-import { BOOKS, RESIDENTIAL_PLACE, SHOPS, STARTER_KIT, bookDef, homeId, itemDef, objectTypeName, type ItemDef, type ShopDef } from './content.js';
+import { BOOKS, RESIDENTIAL_PLACE, SHOPS, STARTER_KIT, bookDef, homeId, itemDef, npcDef, objectTypeName, type ItemDef, type ShopDef } from './content.js';
 import { type Row, parseJson } from './db.js';
 import { badRequest, notAvailable, precondition } from './errors.js';
 import { applyNeeds, takeToken } from './life.js';
 import { card } from './project.js';
 import { actorOf } from './space.js';
-import { personReach, requirePersonReach } from './reach.js';
+import { keeperSoldLine, onDuty } from './npc-talk.js';
+import { npcReach, personReach, requirePersonReach } from './reach.js';
 import type { WorldService } from './service.js';
 import type { ResidentRow } from './types.js';
 
@@ -385,7 +386,16 @@ export function installProperty(w: WorldService): void {
   w.handlers.set('buy', ({ r, action, now }) => {
     const shop = SHOPS.find((s) => s.id === action.shop);
     if (!shop) throw badRequest('没有这家店。');
-    if (w.spaceOf(r) !== shop.place) throw precondition(`要到${shop.name}所在的地方才能买。`, 'not_here');
+    const keeper = shop.keeper ? npcDef(shop.keeper) : undefined;
+    if (shop.keeper) {
+      // 有掌柜的店：买东西要走到掌柜身边（够得着掌柜，现算位置），不再只看人在不在这片区域。NPC 不持有账户和物品，钱货仍走下面的老路径
+      if (!keeper || !onDuty(w, keeper, now)) throw precondition(`${shop.name}现在没人照看，晚些再来。`, 'closed');
+      const reach = npcReach(w, r, keeper.id, now);
+      if (!reach.ok) {
+        if (reach.why === 'too_far') throw precondition(`离${keeper.name}太远了，先走到${keeper.name}身边。`, 'too_far', { navigateTo: keeper.id });
+        throw precondition(`要到${shop.name}所在的地方才能买。`, 'not_here');
+      }
+    } else if (w.spaceOf(r) !== shop.place) throw precondition(`要到${shop.name}所在的地方才能买。`, 'not_here');
     const good = shop.goods.find((g) => g.sku === action.sku);
     if (!good) throw badRequest('这家店不卖这个。');
     if (good.onlyDuringEvent && !eventOpen(w, good.onlyDuringEvent)) throw precondition('这件只在活动期间出售。', 'not_on_sale');
@@ -413,6 +423,8 @@ export function installProperty(w: WorldService): void {
     const book = good.bookId ? bookDef(good.bookId) : undefined;
     grantItem(w, r.resident_id, good.type, qty, 'shop', book ? { bookId: book.id, title: book.title } : undefined);
     const name = book?.title ?? itemDef(good.type)?.name ?? good.type;
+    // 掌柜说一句固定的成交台词（受最小间隔限制；说不说都不影响成交，和成交在同一个事务里）
+    if (keeper) keeperSoldLine(w, keeper, now);
     return { status: 'completed', bought: { name, qty, cost }, coins: wallet(w, r.resident_id).balance, text: `买了 ${qty} 件${name}，花了 ${cost} 枚硬币。` };
   });
 
