@@ -95,6 +95,9 @@ var claiming: bool = false  # 自己正在点「接管」：这期间的 control
 var poll_busy: bool = false
 var map_retry_at: float = 0.0
 var revoke_checking: bool = false
+## 会话代号：进入小镇成功、进入「已离开」、重新登录时各加一（_new_session）。
+## 发请求时记下代号；回应回来时代号变了，说明它是上一段会话发出的：不改状态，它说「没登录」也不算数。
+var sess_gen: int = 0
 
 # 交互
 var pending: int = 0
@@ -316,6 +319,8 @@ func _set_phase(p: int, msg: String = "", link: String = "") -> void:
 
 
 func _toast(msg: String, kind: String = "info") -> void:
+	if msg == "":
+		return  # 没话说就不弹（上一段会话的请求回来时，给调用方的失败不带提示，见 _stale_result）
 	bridge.hud_toast(msg, kind)
 	if kind == "err":
 		audio.fail()
@@ -463,6 +468,7 @@ func _after_ready() -> void:
 	world.show_scene(cur_scene)
 	if loc.has("x"):
 		rig.snap(Vector3(float(loc["x"]), 0.0, float(loc["z"])))
+	_new_session()
 	_set_phase(Phase.PLAYING)
 	_toast("欢迎来到栖灯镇。点地面走过去，点物件走近它。", "ok")
 	want_net = true
@@ -507,16 +513,23 @@ func _apply_me(view: Dictionary) -> void:
 
 
 func _refresh_me() -> bool:
+	if phase != Phase.PLAYING:
+		return false  # 不在场（登录流程里、已经离开）：没有可读的。读了只会把上一位的状态装回来，或者拿到 401 把页面带回登录流程
 	if me_busy:
 		me_again = true  # 正在读的这一份可能已经旧了：读完再读一次
 		return false
 	me_busy = true
 	me_again = false
+	var gen: int = sess_gen
 	var r: Dictionary = await bridge.http("GET", API + "/me?clientId=" + client_id.uri_encode())
+	if gen != sess_gen:
+		return false  # 上一段会话发出的读取（期间离开了、重新登录了）：不应用，401 也不算数。me_busy 已由 _new_session 复位，这里不碰
 	me_busy = false
 	if me_again:
 		me_again = false
 		arrival_refresh_at = clock.ticks_ms() + 30.0
+	if phase != Phase.PLAYING:
+		return false
 	if int(r["status"]) == 200 and r["data"] is Dictionary:
 		_apply_me(r["data"])
 		return true
@@ -525,7 +538,20 @@ func _refresh_me() -> bool:
 	return false
 
 
+## 换一段会话。之前发出的请求回来时代号对不上，一律不算数；它们不会再碰这几个「正在进行」的标记，所以在这里替它们复位，
+## 免得新会话被上一段会话还在路上的请求卡住（pending、nav_inflight 这类计数不在此列：旧请求回来时自己会减回去）
+func _new_session() -> void:
+	sess_gen += 1
+	revoke_checking = false
+	ticket_pending = false
+	me_busy = false
+	me_again = false
+	poll_busy = false
+	claiming = false
+
+
 func _relogin() -> void:
+	_new_session()
 	features.on_leave()  # 它不设 phase，随后 _flow_body 把 PLAYING 直接设成 BUSY：共用设备换人登录时不能留着上一个人听到的话
 	want_net = false
 	ws_ready = false
@@ -563,9 +589,10 @@ func _reload_map_after_mismatch() -> void:
 		return
 	map_retry_at = now_t + 5000.0
 	_toast("地图更新了，正在重新加载…", "warn")
+	var gen: int = sess_gen
 	var ok: bool = await _load_map(false)
-	if not ok:
-		return
+	if not ok or gen != sess_gen:
+		return  # 加载期间离开了或重新登录了：不清角色、不再要快照（重新进入的流程自己会加载地图）
 	_clear_actors()
 	# 对不上的快照被丢掉了，新地图要一份新快照；时间门槛归零，免得被旧时间戳挡掉
 	last_scene_time = 0.0
@@ -582,8 +609,15 @@ func _start_ws_attempt() -> void:
 	if ticket_pending or net.state != "idle":
 		return
 	ticket_pending = true
+	var gen: int = sess_gen
 	var r: Dictionary = await bridge.http("POST", API + "/ws-ticket", {"clientId": client_id})
+	if gen != sess_gen:
+		# 要票的这段时间里已经离开了小镇或重新登录了：这张票不用，它的 401 也不算数。
+		# 用了的话，一条 WebSocket 会在「已离开」的状态下连上并收到 hello，各功能跟着读 /me、收事件（20.95 的根因）
+		return
 	ticket_pending = false
+	if not want_net:
+		return
 	if int(r["status"]) == 200 and r["data"] is Dictionary and bool(r["data"].get("ok", false)):
 		ws_ticket = str(r["data"].get("ticket", ""))
 		var err: int = net.connect_to(bridge.ws_origin() + "/town/ws")
@@ -604,6 +638,11 @@ func _schedule_reconnect() -> void:
 
 
 func _on_ws_open() -> void:
+	if not want_net:
+		# 已经离开或正在重新登录：这条连接不该存在，不发 hello，直接关掉（防御：正常情况下离开时 close_now 已经把它掐了）
+		ws_ticket = ""
+		net.close_now()
+		return
 	last_rx_ms = clock.ticks_ms()
 	probe_until_ms = 0.0
 	net.send({"t": "hello", "v": 1, "ticket": ws_ticket} if ev_cursor == "" else {"t": "hello", "v": 1, "ticket": ws_ticket, "cursor": ev_cursor})
@@ -644,7 +683,10 @@ func _on_revoked() -> void:
 	ws_ready = false
 	net.close_now()
 	_dirty = true
+	var gen: int = sess_gen
 	var sess: Dictionary = await bridge.http("GET", API + "/session")
+	if gen != sess_gen:
+		return  # 查的是上一段会话（期间已经重新登录或重新进入）：这份结果不算数，revoke_checking 已由 _new_session 复位
 	revoke_checking = false
 	if phase != Phase.PLAYING or not want_net:
 		return
@@ -667,6 +709,7 @@ func _on_revoked() -> void:
 
 ## 居民已经不在场：停在面板上等用户点按钮，不自动重新进入。
 func _enter_left_state() -> void:
+	_new_session()
 	want_net = false
 	ws_ready = false
 	net.close_now()
@@ -884,7 +927,10 @@ func _poll_scene(force: bool = false) -> void:
 	if poll_busy and not force:
 		return
 	poll_busy = true
+	var gen: int = sess_gen
 	var r: Dictionary = await bridge.http("GET", API + "/scene")
+	if gen != sess_gen:
+		return  # 上一段会话要的快照：不画，401 也不算数
 	poll_busy = false
 	if int(r["status"]) == 200 and r["data"] is Dictionary:
 		_on_scene(r["data"])
@@ -906,7 +952,11 @@ func _act(action: Dictionary) -> Dictionary:
 	_dirty = true
 	var out: Dictionary = {"ok": false, "message": "没有完成。"}
 	var rid: String = _new_req_id()
+	var gen: int = sess_gen
 	for attempt in range(3):
+		if gen != sess_gen:
+			out = _stale_result(rid)  # 重试前的等待（读 /me、限流）期间换了会话
+			break
 		var body := {
 			"clientId": client_id,
 			"requestId": rid,
@@ -915,6 +965,9 @@ func _act(action: Dictionary) -> Dictionary:
 			"action": action,
 		}
 		var res: Dictionary = await bridge.http("POST", API + "/actions", body)
+		if gen != sess_gen:
+			out = _stale_result(rid)
+			break
 		var d = res["data"]
 		if int(res["status"]) == 200 and d is Dictionary and bool(d.get("ok", false)):
 			ctx_version = int(d.get("contextVersion", ctx_version))
@@ -956,7 +1009,10 @@ func _act_once(action: Dictionary, opts: Dictionary = {}) -> Dictionary:
 		rid = _new_req_id()
 	var may_retry: bool = bool(opts.get("retry_stale", true))
 	var out: Dictionary = {}
+	var gen: int = sess_gen
 	while true:
+		if gen != sess_gen:
+			return _stale_result(rid)  # 重发前读 /me 的期间换了会话
 		var body := {
 			"clientId": client_id,
 			"requestId": rid,
@@ -965,6 +1021,8 @@ func _act_once(action: Dictionary, opts: Dictionary = {}) -> Dictionary:
 			"action": action,
 		}
 		var res: Dictionary = await bridge.http("POST", API + "/actions", body)
+		if gen != sess_gen:
+			return _stale_result(rid)
 		var d = res["data"]
 		if int(res["status"]) == 200 and d is Dictionary and bool(d.get("ok", false)):
 			ctx_version = int(d.get("contextVersion", ctx_version))
@@ -985,6 +1043,12 @@ func _act_once(action: Dictionary, opts: Dictionary = {}) -> Dictionary:
 			_relogin()
 		break
 	return out
+
+
+## 请求在路上时已经离开了小镇或重新登录了：这个回答属于上一段会话。不动任何状态（上下文版本、控制权），
+## 它说「没登录」也不去触发重新登录；给调用方一个不带提示的失败（message 为空，_toast 不弹）。
+func _stale_result(rid: String = "") -> Dictionary:
+	return {"ok": false, "data": null, "error": "stale_session", "reason": "", "message": "", "retry_after_ms": 0, "net_fail": false, "rid": rid}
 
 
 ## kind / pick_id：这一下已经知道选中的是什么时带上（点击、E 键）。功能模块说「这一下不会让我离开」的，不过它的拦截（见 hub.blocks_input）。
@@ -1086,7 +1150,10 @@ func _do_claim() -> void:
 	if claiming:
 		return
 	claiming = true
+	var gen: int = sess_gen
 	var r: Dictionary = await bridge.http("POST", API + "/claim", {"clientId": client_id})
+	if gen != sess_gen:
+		return  # 上一段会话的接管：控制权是那一段的，不装进来。claiming 已由 _new_session 复位
 	if int(r["status"]) == 200 and r["data"] is Dictionary and bool(r["data"].get("ok", true)):
 		var ctl = r["data"].get("control")
 		if ctl is Dictionary:
@@ -1095,6 +1162,8 @@ func _do_claim() -> void:
 		else:
 			control_mine = true
 		await _refresh_me()
+		if gen != sess_gen:
+			return
 		audio.confirm()
 		_toast("已接管，可以操作了。", "ok")
 	else:
@@ -1512,7 +1581,8 @@ func _process(dt: float) -> void:
 
 	# 连接维护
 	if want_net:
-		if net.state == "idle" and not ticket_pending and now_t >= reconnect_at:
+		# 正在查「是不是在别处离开了」（revoke_checking）时不发起新的连接：查完要么重连（_schedule_reconnect），要么不再连
+		if net.state == "idle" and not ticket_pending and not revoke_checking and now_t >= reconnect_at:
 			_start_ws_attempt()
 		if not ws_ready and now_t >= next_poll:
 			next_poll = now_t + 1500.0
@@ -1635,7 +1705,10 @@ func _adapt_resolution(vs: Vector2, dt: float = 0.0) -> void:
 
 
 func _heartbeat() -> void:
+	var gen: int = sess_gen
 	var r: Dictionary = await bridge.http("POST", API + "/heartbeat", {"clientId": client_id, "presenceEpoch": presence_epoch})
+	if gen != sess_gen:
+		return  # 上一段会话的心跳：控制权、在场都是那一段的，401 也不算数
 	if int(r["status"]) == 200 and r["data"] is Dictionary:
 		var d: Dictionary = r["data"]
 		heartbeat_ms = int(d.get("nextHeartbeatMs", heartbeat_ms))
@@ -1657,9 +1730,11 @@ func _heartbeat() -> void:
 		# 但主动离开小镇（在别处点了离开）时，心跳也会得到同样的 presence_lost，而「已被撤销」的通知经 WebSocket 稍后才到：
 		# 抢在它前面重新进入就违背了「离开后不自动重进」。所以先等一会儿，期间收到撤销（revoke_checking / 离开状态）就放弃。
 		await get_tree().create_timer(2.0).timeout
-		if revoke_checking or not want_net or phase != Phase.PLAYING:
+		if gen != sess_gen or revoke_checking or not want_net or phase != Phase.PLAYING:
 			return
 		var er: Dictionary = await bridge.http("POST", API + "/enter", {"clientId": client_id})
+		if gen != sess_gen or phase != Phase.PLAYING:
+			return  # 等回应的这段时间里离开了或重新登录了：这份视图不装进来
 		if int(er["status"]) == 200 and er["data"] is Dictionary:
 			presence_epoch = int(er["data"].get("presenceEpoch", presence_epoch))
 			_apply_me(er["data"].get("view", {}))
@@ -1669,7 +1744,10 @@ func _send_renew() -> void:
 	if net.is_open() and ws_ready:
 		net.send({"t": "renew", "navigationId": renew_id, "revision": renew_rev})
 		return
+	var gen: int = sess_gen
 	var r: Dictionary = await bridge.http("POST", API + "/nav/renew", {"clientId": client_id, "navigationId": renew_id, "revision": renew_rev})
+	if gen != sess_gen:
+		return  # 上一段会话的续租
 	if int(r["status"]) == 200 and r["data"] is Dictionary:
 		_on_renewed(r["data"])
 	elif r["data"] is Dictionary and str(r["data"].get("error", "")) == "control_lost":
