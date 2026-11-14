@@ -23,7 +23,16 @@ export default async function run(h) {
   const gg = async (p) => (await godotGame(p)) ?? {};
   const objOf = async (p, oid) => (await snap(p.page)).objects.find((o) => o.id === oid) ?? null;
   const btn = async (p, prefix) => (await gameButtons(p.page)).find((b) => b.id.startsWith(prefix)) ?? null;
-  const waitBtn = (p, prefix, ms = 25_000) => until(() => btn(p, prefix), ms, `${p.label} 出现按钮 ${prefix}`, 200);
+  const waitBtn = async (p, prefix, ms = 25_000) => {
+    try {
+      return await until(() => btn(p, prefix), ms, `${p.label} 出现按钮 ${prefix}`, 200);
+    } catch (e) {
+      // 失败时把现场写进错误信息：Godot 一侧的 game 状态、服务器的 here.tables、按钮清单
+      const dbg = { game: await gg(p).catch(() => null), tables: (await serverMe(p).catch(() => ({}))).here?.tables, buttons: await gameButtons(p.page).catch(() => null), nearValid: (await snap(p.page).catch(() => ({}))).nearValid };
+      e.message += ` 现场：${JSON.stringify(dbg)}`;
+      throw e;
+    }
+  };
   const click = (p, id) => p.page.click(`#actions [data-action="${id}"]`);
   const toastHas = (p, frag, ms = 20_000) => until(async () => (await toastTexts(p.page)).find((t) => t.includes(frag)) ?? null, ms, `${p.label} 出现提示「${frag}」`, 200);
   const nameOf = async (viewer, id) => (await snap(viewer.page)).actors.find((x) => x.id === id)?.name ?? '';
