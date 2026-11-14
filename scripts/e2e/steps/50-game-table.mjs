@@ -57,6 +57,27 @@ export default async function run(h) {
     await p.page.click('[data-dest="arcade"]');
     await until(async () => { const s = await sceneOf(p); return !s.nav && s.x > 20 && s.z > 38 && s.z < 48 ? s : null; }, 120_000, `${p.label} 到了游戏馆`, 700);
   };
+  /** 手机（触屏）接了实体键盘：数字键拼出数字、Enter 提交。轮到自己时输入框应已自动聚焦；返回猜的数，回合变了没猜成返回 null。 */
+  const takeTurnKeys = async (p) => {
+    const d0 = await gameMod(p.page);
+    if (!d0.yourTurn || d0.busy) return null;
+    const num = midOf(d0.range);
+    const n0 = (await godotGame(p))?.sent?.guess ?? 0;
+    // 自动聚焦本身在 50.05 里用假局面核对过；这里这一轮可能早就开始、中间被前面「点面板」之类的操作点掉了焦点（点非交互区域会让输入框失焦），所以只是兜底聚焦
+    if (!d0.focused) await p.page.focus('#gamePanel [data-role="input"]');
+    try {
+      await p.page.click('#gamePanel [data-key="clear"]', { timeout: 5000 });
+      for (const ch of String(num)) await p.page.keyboard.press(`Digit${ch}`);
+      check((await gameMod(p.page)).input === String(num), `${p.label} 实体键盘应拼出 ${num}：${(await gameMod(p.page)).input}`);
+      await p.page.keyboard.press('Enter');
+    } catch (e) {
+      const d1 = await gameMod(p.page);
+      if (!d1.yourTurn || d1.mode !== 'game') return null;
+      throw e;
+    }
+    await until(async () => (((await godotGame(p))?.sent?.guess ?? 0) > n0) || (await gameMod(p.page)).mode === 'result', 15_000, `${p.label} 的猜数发出去了（实体键盘）`, 150);
+    return num;
+  };
   const lobbyId = async (p) => (await gg(p)).lobby || '';
   /** 桌只保留 activityLobbyTtlMs（端到端里 25 秒）：软件渲染慢、桌被散掉时重新开一桌（A 开、B 加入），保证后面的步骤站在「A、B 都在桌里」的起点。 */
   const ensureTable = async (withB) => {
@@ -346,26 +367,57 @@ export default async function run(h) {
 
   // ───────────────────────── 50.4 人没到齐、桌边的人才入局 ─────────────────────────
   await step(50.4, '开始：B 走开后 A 点「开始」被拒 not_enough（名册不变）；C 走来加入后再开始成功，B 因为不在桌边被丢出（提示「开局的时候你不在桌边」），A 和 C 入局，面板出现、body 上有 data-game', async () => {
-    await ensureTable(true);
-    const aid = await lobbyId(A);
-    // B 走开
-    const rb = await apiAct(B, { type: 'navigate', to: T2 });
-    check(rb.status === 200, `B 走向桌二：${rb.status}`);
-    await waitIdle(B);
-    check((await seatDist(B, T1)) > 3, `B 应已离桌一很远：${await seatDist(B, T1)}`);
-    await until(async () => (await btn(A, 'f:game:start:'))?.sub?.includes('在桌边 1') ?? false, 20_000, 'A 的「开始」写着在桌边 1', 200);
-    allowFailure(A.w, 'POST', /\/town\/api\/actions$/, { min: 1, max: 1, why: '50.4：只有一个人在桌边时 start_game 必定 not_enough（422）' });
-    const s0 = count(A, 'start_game');
-    await click(A, (await btn(A, 'f:game:start:')).id);
-    await until(() => { const r = actionsOf(A, 'start_game').at(-1); return actionsOf(A, 'start_game').length > s0 && r && 'reason' in r ? r : null; }, 15_000, 'start_game 回应读完', 100).then((r) => check(r.reason === 'not_enough', `应是 not_enough：${JSON.stringify(r)}`));
-    check((await lobbyId(A)) === aid && !(await gg(A)).inGame, '名册不变、没有开局');
-    // C 加入后开始
-    const jr = await C.act({ type: 'join_game', activityId: aid });
-    check(jr.status === 200, `C 加入：${jr.status} ${JSON.stringify(jr.body)}`);
-    // B 在桌里但不在桌边：开始时被丢出（B 是 2 人以上里不在桌边的）
-    await until(async () => (await btn(A, 'f:game:start:'))?.sub?.includes('在桌边 2') ?? false, 20_000, 'A 的「开始」写着在桌边 2', 200);
+    // 桌从开桌起固定计时（activityLobbyTtlMs，端到端里 25 秒，加入不续期），而这一步要走路、等事件、点两次开始，软件渲染下可能超过剩余的时间：
+    // 每一轮先保证桌里有 A、B 且离散桌还有足够久（不够就散掉重开），关键点击之前再看一眼剩余；中途散掉就整轮重来（最多 3 轮）。
+    const leftMs = async () => {
+      const a = ((await serverMe(A)).here?.activities ?? []).find((x) => x.status === 'forming');
+      return a ? a.lobbyExpiresAt - Date.now() : -1;
+    };
+    const freshTable = async (need) => {
+      if ((await lobbyId(A)) && (await lobbyId(B)) && (await leftMs()) >= need && (await seatDist(B, T1)) <= 2.0) return;
+      note('桌的剩余保留时间不够（或已散掉），重开一桌');
+      await apiAct(A, { type: 'leave_game_lobby' }); // 发起人离开：整桌取消（API 代发，不声明）
+      await C.act({ type: 'leave_game_lobby' }); // C 若在桌里也随之离开（不在桌里得 not_in_lobby，不用管）
+      await until(async () => !(await lobbyId(A)) && !(await lobbyId(B)), 20_000, 'A、B 都不在桌里了', 200);
+      if ((await seatDist(B, T1)) > 2.0) {
+        check((await apiAct(B, { type: 'navigate', to: T1 })).status === 200, 'B 走回桌一');
+        await waitIdle(B);
+      }
+      for (const p of [A, B]) await until(async () => (await snap(p.page)).nearValid === true && (await btn(p, `f:game:propose:${T1}`)), 25_000, `${p.label} 回到桌边、有开一局按钮`, 200);
+      await click(A, `f:game:propose:${T1}`);
+      await until(async () => (await lobbyId(A)) !== '', 20_000, 'A 重新开了桌');
+      await click(B, (await waitBtn(B, 'f:game:join:')).id);
+      await until(async () => (await lobbyId(B)) !== '', 20_000, 'B 重新加入');
+    };
+    allowFailure(A.w, 'POST', /\/town\/api\/actions$/, { min: 1, max: 3, why: '50.4：只有一个人在桌边时 start_game 必定 not_enough（422）；桌中途散掉要整轮重来时最多再多两次' });
+    let started = false;
+    for (let attempt = 0; attempt < 3 && !started; attempt++) {
+      await freshTable(attempt === 0 ? 18_000 : 20_000);
+      const aid = await lobbyId(A);
+      // B 走开
+      const rb = await apiAct(B, { type: 'navigate', to: T2 });
+      check(rb.status === 200, `B 走向桌二：${rb.status}`);
+      await waitIdle(B);
+      check((await seatDist(B, T1)) > 3, `B 应已离桌一很远：${await seatDist(B, T1)}`);
+      await until(async () => (await btn(A, 'f:game:start:'))?.sub?.includes('在桌边 1') ?? false, 20_000, 'A 的「开始」写着在桌边 1', 200);
+      if ((await leftMs()) < 3000) { note('走开之后桌快散了，整轮重来'); continue; }
+      const s0 = count(A, 'start_game');
+      await click(A, (await btn(A, 'f:game:start:')).id);
+      await until(() => { const r = actionsOf(A, 'start_game').at(-1); return actionsOf(A, 'start_game').length > s0 && r && 'reason' in r ? r : null; }, 15_000, 'start_game 回应读完', 100).then((r) => check(r.reason === 'not_enough' || r.reason === 'not_open', `应是 not_enough（桌恰好散掉才会是 not_open）：${JSON.stringify(r)}`));
+      if (actionsOf(A, 'start_game').at(-1).reason === 'not_open') { note('点开始的当口桌散了，整轮重来'); continue; }
+      check((await lobbyId(A)) === aid && !(await gg(A)).inGame, '名册不变、没有开局');
+      // C 加入后开始
+      const jr = await C.act({ type: 'join_game', activityId: aid });
+      if (jr.status !== 200 && (await lobbyId(A)) === '') { note('C 加入的当口桌散了，整轮重来'); continue; }
+      check(jr.status === 200, `C 加入：${jr.status} ${JSON.stringify(jr.body)}`);
+      // B 在桌里但不在桌边：开始时被丢出（B 是 2 人以上里不在桌边的）
+      await until(async () => (await btn(A, 'f:game:start:'))?.sub?.includes('在桌边 2') ?? false, 20_000, 'A 的「开始」写着在桌边 2', 200);
+      if ((await leftMs()) < 3000) { note('C 加入之后桌快散了，整轮重来'); continue; }
+      await click(A, (await btn(A, 'f:game:start:')).id);
+      started = true;
+    }
+    check(started, '三轮都没能在桌的保留时间内开出局');
     const nameB = await nameOf(A, B.id);
-    await click(A, (await btn(A, 'f:game:start:')).id);
     await until(async () => (await gg(A)).inGame, 30_000, 'A 入局');
     await until(async () => (await gameMod(A.page)).mode === 'game' && (await gameMod(A.page)).bodyFlag === '1', 30_000, 'A 的面板出现、body[data-game]=1');
     await until(async () => (await gg(B)).droppedToasts >= 1, 20_000, 'B 收到被丢出的提示');
@@ -387,6 +439,9 @@ export default async function run(h) {
     await toastHas(A, '对局中');
     await frames(A.page, 5);
     check(count(A, 'navigate') === nav0, `局中点地不应发 navigate：${nav0} -> ${count(A, 'navigate')}`);
+    // 注意：main._tick_dir 在「在共同活动 / 小游戏里」时先于 blocks_input 就返回（ctx_activity 非空），所以这一条验证的是「局中不发方向帧」这个结果，
+    // 靠的是 ctx_activity 而不是 game.gd 的 blocks_input；blocks_input 的反向验证只对上面「点地」那条有效。按键之前先让输入框失焦，免得按键被输入框接走而没测到。
+    await A.page.evaluate(() => document.activeElement?.blur?.());
     const f0 = A.gate.dirFrames.length;
     await A.page.keyboard.down('KeyD');
     await sleep(800);
@@ -428,7 +483,8 @@ export default async function run(h) {
         const m = await C.me();
         if (m?.game?.your_turn) {
           const rg = m.game.public.range;
-          await C.act({ type: 'game_act', gameId: m.game.game_id, phaseId: m.game.phase_id, input: { action: 'guess', number: midOf(rg) } });
+          // 猜范围的最小值而不是中点：炸弹在范围里均匀随机，每一手踩中的概率都是 1/范围，但中点会让范围迅速收窄、之后几手越来越容易踩中，这一步要连打好几手
+          await C.act({ type: 'game_act', gameId: m.game.game_id, phaseId: m.game.phase_id, input: { action: 'guess', number: rg.from } });
         }
         const d = await gameMod(A.page);
         if (d.yourTurn) return d;
@@ -462,7 +518,7 @@ export default async function run(h) {
     check((await gg(A)).lastAck.code === 'phase_stale', `应是 phase_stale：${JSON.stringify((await gg(A)).lastAck)}`);
     await until(async () => (await gg(A)).pulls >= 1, 10_000, '刷新了 /game', 200);
     // 非自己回合：让 C 先猜一次，轮到 C 时 A 强发 -> 422 game_not_your_turn
-    await takeTurn(A, midOf((await gameMod(A.page)).range));
+    await takeTurn(A, (await gameMod(A.page)).range.from); // 范围最小值：不容易踩中炸弹
     await until(async () => !(await gameMod(A.page)).yourTurn, 15_000, '猜完后不再轮到 A', 150);
     allowFailure(A.w, 'POST', /\/town\/api\/actions$/, { min: 1, max: 1, why: '50.5：不是自己的回合强发猜数必定 game_not_your_turn（422）' });
     const n3 = await ackN(A);
@@ -495,105 +551,125 @@ export default async function run(h) {
     for (const p of [A, B]) await until(async () => (await snap(p.page)).nearValid === true && (await btn(p, `f:game:propose:${T2}`)), 25_000, `${p.label} 在桌二边有开一局按钮`, 200);
     // C 走到桌二边（不入局），局中说一句附近的话：局中的 A 听不到；局后 C 再说一句，A 听到它就是屏障
     await C.walk(T2);
-    await click(A, `f:game:propose:${T2}`);
-    await until(async () => (await lobbyId(A)) !== '', 20_000, 'A 开了桌二');
-    await click(B, (await waitBtn(B, 'f:game:join:')).id);
-    await until(async () => (await btn(A, 'f:game:start:'))?.sub?.includes('在桌边 2') ?? false, 20_000, '两人都在桌边', 200);
-    await click(A, (await btn(A, 'f:game:start:')).id);
-    for (const p of [A, B]) await until(async () => (await gameMod(p.page)).mode === 'game' && (await gameMod(p.page)).bodyFlag === '1', 30_000, `${p.label} 面板出现`);
-    await shot(B.page, '51-mobile-game');
-    const aid51 = (await gg(A)).activityId;
-    check(!!aid51, '局中应有活动号');
-    // 手机版式
-    const mb = await gameMod(B.page);
-    check(mb.rect.top >= 480, `手机上面板上沿应在 480 以下（不盖满屏）：${mb.rect.top}`);
-    const dockBtn = await rectOf(B.page, '#dockBtn');
-    if (dockBtn && dockBtn.width > 0) check(!(mb.rect.left < dockBtn.right && dockBtn.left < mb.rect.right && mb.rect.top < dockBtn.bottom && dockBtn.top < mb.rect.bottom), `面板不盖「面板」按钮：${JSON.stringify({ r: mb.rect, d: dockBtn })}`);
-    const keys = await B.page.evaluate(() => [...document.querySelectorAll('#gamePanel [data-key]')].map((e) => { const r = e.getBoundingClientRect(); return { w: r.width, h: r.height }; }));
-    check(keys.length === 12 && keys.every((k) => k.w >= 44 && k.h >= 44), `数字键应有 12 个、都不小于 44 像素：${JSON.stringify(keys.slice(0, 3))}`);
-    check(await B.page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1), '手机没有横向溢出');
-    check((await gameMod(B.page)).coarse === true && (await gameMod(B.page)).inputReadonly === true, '手机输入框只读（屏幕数字键）');
-    await shot(A.page, '50-desktop-game');
-    const heardMark = `局中的话${h.rnd()}`;
-    const cs = await C.act({ type: 'say_nearby', text: heardMark });
-    check(cs.status === 200, `C（不在局里）说话：${cs.status} ${JSON.stringify(cs.body)}`);
-    // 中途刷新 A：由 /me.game 恢复面板
-    A.w.closing = true;
-    await A.page.goto(`${BASE}/town/3d/?debug=1`);
-    await A.page.waitForSelector('#enterBtn:not([hidden])', { timeout: 120_000 });
-    A.w.closing = false;
-    await A.page.click('#enterBtn');
-    await A.page.waitForFunction(() => window.__town && window.__town.actors.length > 0 && document.body.dataset.phase === 'playing', null, { timeout: 60_000 });
-    await until(async () => (await gameMod(A.page)).mode === 'game' && (await gameMod(A.page)).bodyFlag === '1', 30_000, 'A 刷新后面板恢复、body[data-game]=1');
-    await until(async () => (await gg(A)).blocks === BLOCK, 10_000, 'A 刷新后局中封锁恢复', 200);
-    check((await gameMod(A.page)).players.length === 2, 'A 刷新后面板上有 2 个玩家');
-    await until(async () => JSON.stringify((await gameMod(A.page)).range) === JSON.stringify((await gameMod(B.page)).range), 20_000, 'A 刷新后范围与 B 一致', 300);
-    // 手机补充版式：360 宽、横屏矮屏（面板在视口里、输入区可见、没有横向溢出），看完恢复 390x844
-    const fits = (r, vw, vh) => !!r && r.left >= -1 && r.right <= vw + 1 && r.top >= -1 && r.bottom <= vh + 1;
-    for (const [vw, vh, what] of [[360, 740, '360 宽'], [844, 390, '横屏矮屏']]) {
-      await B.page.setViewportSize({ width: vw, height: vh });
-      await frames(B.page, 4);
-      const mm = await gameMod(B.page);
-      check(fits(mm.rect, vw, vh), `${what}：面板应整个在视口里：${JSON.stringify(mm.rect)}`);
-      check(await B.page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1), `${what}：没有横向溢出`);
-      const ib = await rectOf(B.page, '#gamePanel [data-role="input"]');
-      check(fits(ib, vw, vh), `${what}：输入框应在视口里：${JSON.stringify(ib)}`);
-      // 12 个键逐个看：都在视口里、都不小于 44 像素（只看中间一个键的话，最后一排被挤出视口也发现不了）
-      const pks = await B.page.evaluate(() => [...document.querySelectorAll('#gamePanel [data-key]')].map((e) => { const r = e.getBoundingClientRect(); return { key: e.dataset.key, left: r.left, top: r.top, right: r.right, bottom: r.bottom, width: r.width, height: r.height }; }));
-      const badKeys = pks.filter((k) => !fits(k, vw, vh) || k.width < 44 || k.height < 44);
-      check(pks.length === 12 && badKeys.length === 0, `${what}：12 个数字键都应在视口里且不小于 44 像素：共 ${pks.length} 个，不合格的 ${JSON.stringify(badKeys.slice(0, 3))}`);
-    }
-    await B.page.setViewportSize({ width: 390, height: 844 });
-    await frames(B.page, 4);
-    // 点面板不发导航
-    const nb = count(B, 'navigate');
-    await B.page.click('#gamePanel [data-role="range"]').catch(() => {});
-    await frames(B.page, 3);
-    check(count(B, 'navigate') === nb, '点面板不发导航');
-    // 最后一手之后：「game」事件触发的 /game 读取可能和局结束撞上，得到 409 context_stale（正常的竞态，次数不定）
-    for (const p of [A, B]) allowFailure(p.w, 'GET', /\/town\/api\/game(\?.*)?$/, { min: 0, max: 3, why: '51：局结束与在途的 /game 读取撞上' });
-    // 打到结束
-    const t0 = Date.now();
-    const turns = { A: 0, B: 0 };
-    const stateOf = async (p) => { const d = await gameMod(p.page); return JSON.stringify({ r: d.range, h: d.history.map((x) => [x.seat, x.guess, x.res]) }); };
-    let dbl = false;
-    let cut = false;
-    for (;;) {
-      if (Date.now() - t0 > 240_000) throw new Error('一局 4 分钟还没打完');
-      const [ra, rb] = await Promise.all([gameMod(A.page), gameMod(B.page)]);
-      if (ra.mode === 'result' && rb.mode === 'result') break;
-      for (const [p, d, k] of [[A, ra, 'A'], [B, rb, 'B']]) {
-        if (d.mode === 'game' && d.yourTurn && !d.busy) {
-          if (k === 'A' && !dbl) {
-            // 双击提交（连按两下 Enter）只发一次 game_act
-            dbl = true;
-            const g0 = count(A, 'game_act');
-            const n0 = (await godotGame(A))?.sent?.guess ?? 0;
-            const num = midOf(d.range);
-            await A.page.fill('#gamePanel [data-role="input"]', String(num), { timeout: 5000 });
-            await Promise.all([A.page.press('#gamePanel [data-role="input"]', 'Enter'), A.page.press('#gamePanel [data-role="input"]', 'Enter')]);
-            await until(async () => ((await godotGame(A))?.sent?.guess ?? 0) > n0, 15_000, 'A 双击后发出了猜数', 150);
-            await frames(A.page, 6);
-            check(count(A, 'game_act') === g0 + 1 && ((await godotGame(A))?.sent?.guess ?? 0) === n0 + 1, `连按两下 Enter 只发一次 game_act：${g0} -> ${count(A, 'game_act')}`);
-            turns.A++;
-            // 两端范围与历史一致（等视图追上）
-            await until(async () => (await stateOf(A)) === (await stateOf(B)), 20_000, 'A、B 面板的范围与猜数历史一致', 300);
-          } else if (k === 'B' && !cut && turns.A + turns.B >= 1 && !(await gameMod(A.page)).yourTurn) {
-            // 对手（A）回合里 B 断线：A 猜完之后 B 重连，应追上
-            cut = true;
-            B.gate.block = true;
-            for (const ws of B.gate.sockets) ws.close();
-            B.gate.sockets.length = 0;
-            await until(async () => (await snap(B.page)).conn !== 'ok', 15_000, 'B 显示断线');
-            await until(async () => (await gameMod(A.page)).yourTurn || (await gameMod(A.page)).mode === 'result', 60_000, '轮到 A', 300);
-            if ((await gameMod(A.page)).mode === 'game') await takeTurn(A);
-            B.gate.block = false;
-            await until(async () => (await snap(B.page)).conn === 'ok', 40_000, 'B 重连成功');
-            await until(async () => (await stateOf(A)) === (await stateOf(B)) || (await gameMod(A.page)).mode === 'result', 40_000, 'B 重连后追上 A 的范围与猜数历史', 300);
-          } else if ((await takeTurn(p)) !== null) turns[k]++;
+    // 最后一手之后：「game」事件触发的 /game 读取可能和局结束撞上，得到 409 context_stale（正常的竞态，次数不定）；最多重打 3 局
+    for (const p of [A, B]) allowFailure(p.w, 'GET', /\/town\/api\/game(\?.*)?$/, { min: 0, max: 9, why: '51：局结束与在途的 /game 读取撞上' });
+    let aid51, heardMark, turns;
+    for (let attempt = 0; ; attempt++) {
+      if (attempt > 0) await waitBtn(A, `f:game:propose:${T2}`);
+      await click(A, `f:game:propose:${T2}`);
+      await until(async () => (await lobbyId(A)) !== '', 20_000, 'A 开了桌二');
+      await click(B, (await waitBtn(B, 'f:game:join:')).id);
+      await until(async () => (await btn(A, 'f:game:start:'))?.sub?.includes('在桌边 2') ?? false, 20_000, '两人都在桌边', 200);
+      await click(A, (await btn(A, 'f:game:start:')).id);
+      for (const p of [A, B]) await until(async () => (await gameMod(p.page)).mode === 'game' && (await gameMod(p.page)).bodyFlag === '1', 30_000, `${p.label} 面板出现`);
+      if (attempt === 0) await shot(B.page, '51-mobile-game');
+      aid51 = (await gg(A)).activityId;
+      check(!!aid51, '局中应有活动号');
+      if (attempt === 0) {
+        // 手机版式
+        const mb = await gameMod(B.page);
+        check(mb.rect.top >= 480, `手机上面板上沿应在 480 以下（不盖满屏）：${mb.rect.top}`);
+        const dockBtn = await rectOf(B.page, '#dockBtn');
+        if (dockBtn && dockBtn.width > 0) check(!(mb.rect.left < dockBtn.right && dockBtn.left < mb.rect.right && mb.rect.top < dockBtn.bottom && dockBtn.top < mb.rect.bottom), `面板不盖「面板」按钮：${JSON.stringify({ r: mb.rect, d: dockBtn })}`);
+        const keys = await B.page.evaluate(() => [...document.querySelectorAll('#gamePanel [data-key]')].map((e) => { const r = e.getBoundingClientRect(); return { w: r.width, h: r.height }; }));
+        check(keys.length === 12 && keys.every((k) => k.w >= 44 && k.h >= 44), `数字键应有 12 个、都不小于 44 像素：${JSON.stringify(keys.slice(0, 3))}`);
+        check(await B.page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1), '手机没有横向溢出');
+        check((await gameMod(B.page)).coarse === true && (await gameMod(B.page)).inputReadonly === true, '手机输入框只读（屏幕数字键）');
+        await shot(A.page, '50-desktop-game');
+        heardMark = `局中的话${h.rnd()}`;
+        const cs = await C.act({ type: 'say_nearby', text: heardMark });
+        check(cs.status === 200, `C（不在局里）说话：${cs.status} ${JSON.stringify(cs.body)}`);
+        // 中途刷新 A：由 /me.game 恢复面板
+        A.w.closing = true;
+        await A.page.goto(`${BASE}/town/3d/?debug=1`);
+        await A.page.waitForSelector('#enterBtn:not([hidden])', { timeout: 120_000 });
+        A.w.closing = false;
+        await A.page.click('#enterBtn');
+        await A.page.waitForFunction(() => window.__town && window.__town.actors.length > 0 && document.body.dataset.phase === 'playing', null, { timeout: 60_000 });
+        await until(async () => (await gameMod(A.page)).mode === 'game' && (await gameMod(A.page)).bodyFlag === '1', 30_000, 'A 刷新后面板恢复、body[data-game]=1');
+        await until(async () => (await gg(A)).blocks === BLOCK, 10_000, 'A 刷新后局中封锁恢复', 200);
+        check((await gameMod(A.page)).players.length === 2, 'A 刷新后面板上有 2 个玩家');
+        await until(async () => JSON.stringify((await gameMod(A.page)).range) === JSON.stringify((await gameMod(B.page)).range), 20_000, 'A 刷新后范围与 B 一致', 300);
+        // 手机补充版式：360 宽、横屏矮屏（面板在视口里、输入区可见、没有横向溢出），看完恢复 390x844
+        const fits = (r, vw, vh) => !!r && r.left >= -1 && r.right <= vw + 1 && r.top >= -1 && r.bottom <= vh + 1;
+        for (const [vw, vh, what] of [[360, 740, '360 宽'], [844, 390, '横屏矮屏']]) {
+          await B.page.setViewportSize({ width: vw, height: vh });
+          await frames(B.page, 4);
+          const mm = await gameMod(B.page);
+          check(fits(mm.rect, vw, vh), `${what}：面板应整个在视口里：${JSON.stringify(mm.rect)}`);
+          check(await B.page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1), `${what}：没有横向溢出`);
+          const ib = await rectOf(B.page, '#gamePanel [data-role="input"]');
+          check(fits(ib, vw, vh), `${what}：输入框应在视口里：${JSON.stringify(ib)}`);
+          // 12 个键逐个看：都在视口里、都不小于 44 像素（只看中间一个键的话，最后一排被挤出视口也发现不了）
+          const pks = await B.page.evaluate(() => [...document.querySelectorAll('#gamePanel [data-key]')].map((e) => { const r = e.getBoundingClientRect(); return { key: e.dataset.key, left: r.left, top: r.top, right: r.right, bottom: r.bottom, width: r.width, height: r.height }; }));
+          const badKeys = pks.filter((k) => !fits(k, vw, vh) || k.width < 44 || k.height < 44);
+          check(pks.length === 12 && badKeys.length === 0, `${what}：12 个数字键都应在视口里且不小于 44 像素：共 ${pks.length} 个，不合格的 ${JSON.stringify(badKeys.slice(0, 3))}`);
         }
+        await B.page.setViewportSize({ width: 390, height: 844 });
+        await frames(B.page, 4);
+        // 点面板不发导航
+        const nb = count(B, 'navigate');
+        await B.page.click('#gamePanel [data-role="range"]').catch(() => {});
+        await frames(B.page, 3);
+        check(count(B, 'navigate') === nb, '点面板不发导航');
+        // 最后一手之后：「game」事件触发的 /game 读取可能和局结束撞上，得到 409 context_stale（正常的竞态，次数不定）
       }
-      await sleep(250);
+      // 打到结束
+      const t0 = Date.now();
+      turns = { A: 0, B: 0 };
+      const stateOf = async (p) => { const d = await gameMod(p.page); return JSON.stringify({ r: d.range, h: d.history.map((x) => [x.seat, x.guess, x.res]) }); };
+      let dbl = false;
+      let cut = false;
+      let kbB = false;
+      for (;;) {
+        if (Date.now() - t0 > 240_000) throw new Error('一局 4 分钟还没打完');
+        const [ra, rb] = await Promise.all([gameMod(A.page), gameMod(B.page)]);
+        if (ra.mode === 'result' && rb.mode === 'result') break;
+        for (const [p, d, k] of [[A, ra, 'A'], [B, rb, 'B']]) {
+          if (d.mode === 'game' && d.yourTurn && !d.busy) {
+            if (k === 'A' && !dbl) {
+              // 双击提交（连按两下 Enter）只发一次 game_act
+              dbl = true;
+              const g0 = count(A, 'game_act');
+              const n0 = (await godotGame(A))?.sent?.guess ?? 0;
+              const num = midOf(d.range);
+              await A.page.fill('#gamePanel [data-role="input"]', String(num), { timeout: 5000 });
+              await Promise.all([A.page.press('#gamePanel [data-role="input"]', 'Enter'), A.page.press('#gamePanel [data-role="input"]', 'Enter')]);
+              await until(async () => ((await godotGame(A))?.sent?.guess ?? 0) > n0, 15_000, 'A 双击后发出了猜数', 150);
+              await frames(A.page, 6);
+              check(count(A, 'game_act') === g0 + 1 && ((await godotGame(A))?.sent?.guess ?? 0) === n0 + 1, `连按两下 Enter 只发一次 game_act：${g0} -> ${count(A, 'game_act')}`);
+              turns.A++;
+              // 两端范围与历史一致（等视图追上）
+              await until(async () => (await stateOf(A)) === (await stateOf(B)), 20_000, 'A、B 面板的范围与猜数历史一致', 300);
+            } else if (k === 'B' && !cut && turns.A + turns.B >= 1 && !(await gameMod(A.page)).yourTurn) {
+              // 对手（A）回合里 B 断线：A 猜完之后 B 重连，应追上
+              cut = true;
+              B.gate.block = true;
+              for (const ws of B.gate.sockets) ws.close();
+              B.gate.sockets.length = 0;
+              await until(async () => (await snap(B.page)).conn !== 'ok', 15_000, 'B 显示断线');
+              await until(async () => (await gameMod(A.page)).yourTurn || (await gameMod(A.page)).mode === 'result', 60_000, '轮到 A', 300);
+              if ((await gameMod(A.page)).mode === 'game') await takeTurn(A);
+              B.gate.block = false;
+              await until(async () => (await snap(B.page)).conn === 'ok', 40_000, 'B 重连成功');
+              await until(async () => (await stateOf(A)) === (await stateOf(B)) || (await gameMod(A.page)).mode === 'result', 40_000, 'B 重连后追上 A 的范围与猜数历史', 300);
+            } else if (k === 'B' && !kbB) {
+              // 触屏设备接了实体键盘：用实体键盘的数字键和 Enter 猜一手（输入框只读、已自动聚焦）；这一手没猜成（回合变了）就留到下一轮
+              kbB = true;
+              if ((await takeTurnKeys(B)) !== null) turns.B++;
+              else kbB = false;
+            } else if ((await takeTurn(p)) !== null) turns[k]++;
+          }
+        }
+        await sleep(250);
+      }
+      // 双击提交、断线追上这两段只在条件凑巧时才会走到（一局太短、或没轮到那一边）：没走到就不算数，重打一局（最多 3 局）
+      if (dbl && cut && kbB) break;
+      check(attempt < 2, `三局都太短，双击提交（${dbl}）、断线追上（${cut}）、手机实体键盘（${kbB}）没有都执行到`);
+      note(`这一局太短，双击提交 ${dbl}、断线追上 ${cut}、手机实体键盘 ${kbB} 没都执行到，重打一局`);
+      await A.page.click('#gamePanel [data-role="dismiss"]');
+      await B.page.keyboard.press('Escape');
+      for (const p of [A, B]) await until(async () => !(await gameMod(p.page)).shown && (await gameMod(p.page)).bodyFlag === null, 10_000, `${p.label} 结果卡收起`);
     }
     note(`A 猜 ${turns.A} 次，B 猜 ${turns.B} 次`);
     const [ra, rb] = [await gameMod(A.page), await gameMod(B.page)];
