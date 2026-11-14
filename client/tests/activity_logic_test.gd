@@ -27,6 +27,10 @@ func _init() -> void:
 	t_seat_all_taken()
 	t_texts()
 	t_diff()
+	t_revoke()
+	t_cancel_text()
+	t_ended()
+	t_state_reached()
 	print("%d 项检查，%d 项失败" % [_checks, _fails])
 	quit(1 if _fails > 0 else 0)
 
@@ -149,3 +153,49 @@ func t_diff() -> void:
 	check(d2["joined"].is_empty() and d2["left"].is_empty(), "名单: 我自己走开不提示")
 	var d3: Dictionary = L.diff_people({}, [{"id": "a", "name": "甲"}, "坏数据", {"id": "b", "name": "乙"}], "a")
 	check(d3["joined"] == ["乙"], "名单: 坏数据跳过")
+
+
+func t_revoke() -> void:
+	var st: Dictionary = L.new_gate()
+	L.gate(st, 1000, TXT)
+	check(L.gate(st, 1400, TXT) == "", "撤销: 先放行")
+	check(int(st["passed"]) == 1 and int(st["passed_at"]) == 1400, "撤销: 记下放行时刻")
+	check(L.gate_revoke(st, 2000), "撤销: 放行之后不久可以撤销")
+	check(int(st["passed"]) == 0 and int(st["confirmed_until"]) == 0, "撤销: 放行次数退回、窗口作废")
+	check(L.gate(st, 2100, TXT) == TXT, "撤销: 撤销之后又是第一次提示")
+	check(not L.gate_revoke(st, 2200), "撤销: 没有放行过就不撤销")
+	# 过了 REVOKE_MS 的放行是玩家真的确认过要走，不撤销
+	var st2: Dictionary = L.new_gate()
+	L.gate(st2, 1000, TXT)
+	L.gate(st2, 1400, TXT)
+	check(not L.gate_revoke(st2, 1400 + L.REVOKE_MS + 1), "撤销: 太久以前的放行不撤销")
+	check(int(st2["passed"]) == 1, "撤销: 不撤销时次数不动")
+	L.gate_clear(st2)
+	check(int(st2["passed_at"]) == 0, "撤销: gate_clear 一并清掉放行时刻")
+
+
+func t_cancel_text() -> void:
+	check(L.cancel_text(false, "发起人走开了") == "这一桌散了：发起人走开了", "取消: 别人造成的原样说")
+	check(L.cancel_text(true, "发起人走开了") == "", "取消: 发起人自己走开不对自己说")
+	check(L.cancel_text(true, "等了太久没凑齐人") == "这一桌散了：等了太久没凑齐人", "取消: 等太久对发起人也说")
+	check(L.cancel_text(false, "大家都离开了") == "", "取消: 最后一个走开的非发起人不对自己说")
+	check(L.cancel_text(false, "") == "这一桌散了。", "取消: 没有原因")
+	check(L.cancel_text(true, "") == "", "取消: 发起人没有原因也不说")
+
+
+func t_ended() -> void:
+	var e: Array = []
+	L.remember_ended(e, "")
+	check(e.is_empty(), "已结束: 空编号不记")
+	L.remember_ended(e, "a")
+	L.remember_ended(e, "a")
+	check(e == ["a"], "已结束: 不重复")
+	for i in range(20):
+		L.remember_ended(e, "x%d" % i)
+	check(e.size() == L.ENDED_KEEP and e.has("x19") and not e.has("a"), "已结束: 只留最近几个（%d）" % e.size())
+
+
+func t_state_reached() -> void:
+	check(not L.state_reached("invite", "") and L.state_reached("invite", "open"), "追上: 约人之后要有活动")
+	check(not L.state_reached("join", "") and L.state_reached("join", "running"), "追上: 加入之后要有活动")
+	check(not L.state_reached("begin", "open") and L.state_reached("begin", "running"), "追上: 开始之后要是进行中")

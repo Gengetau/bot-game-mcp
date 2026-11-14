@@ -7,9 +7,10 @@ const Logic := preload("res://scripts/features/activity_logic.gd")
 
 const SELECT_NEAR := 15.0  # 和 main 的名牌同一口径：离物件超过这么远不画桌牌
 const TAG_LIFT := 1.0  # 桌牌比物件锚点高多少米（物件名牌在锚点本身，头顶名牌在 2.05 米）
-const LOBBY_REASON_KEY := "太久"  # 服务器取消原因里「等了太久没凑齐人」的关键字：只用来判断要不要对发起人自己提示，文字原样展示
 const WALK_STALE_MS := 10000
 const RECENT_MS := 1500  # 刚发出（或刚发完）去某张桌的导航后这么久内，再点同一张桌不重复发
+const SETTLE_MS := 2500  # 动作成功后最多等这么久让 /me 追上（按钮在这之前保持灰着，不闪回成可点的）
+const SEATED_HINT := "你已经在这一桌了：约人、加入、开始请点按钮。"
 
 var _gen: int = 0  # 离开 / 换人时加一，在途结果回来后丢弃
 var _me_id: String = ""
@@ -24,6 +25,9 @@ var _busy: bool = false
 var _walk_busy: bool = false
 var _walk_oid: String = ""
 var _walk_at: int = 0
+var _walk_nav: int = 0  # 发出这条走路时的导航代号：之后点了地面、改了道，代号就变，再点同一张桌不能被防重入吞掉
+var _objs_scene: String = ""  # _objs / _tags 是哪个场景的：换了场景，旧场景的桌牌与物件不能留着
+var _ended: Array = []  # 已经结束（完成或取消）的活动编号：更旧的 /me 迟到时不让它复活
 var _warn: String = ""  # 走开提示文字：_mine 变动时算好，blocks_input 每帧只读它（方向键按着不放时每帧都问，不能每帧拼字符串）
 var _begin_mark: String = ""  # 我刚点了「开始」的活动编号：它的开始事件不再弹「开始了」
 var _events: int = 0
@@ -62,6 +66,9 @@ func on_leave() -> void:
 	_walk_busy = false
 	_walk_oid = ""
 	_walk_at = 0
+	_walk_nav = 0
+	_objs_scene = ""
+	_ended = []
 	_begin_mark = ""
 	_gate = Logic.new_gate()  # 换人 / 离开：计数也归零
 	_events = 0
@@ -80,6 +87,18 @@ func on_resync() -> void:
 	ctx.refresh_me()
 
 
+## 换了场景：旧场景的物件、桌牌马上清掉（新场景的 /me 要过一个往返才到，这段空窗里不能把旧坐标按新场景的镜头投影出一块桌牌）
+func on_scene(msg: Dictionary) -> void:
+	var sid: String = str(msg.get("scene", ""))
+	if sid == "" or _objs_scene == "" or sid == _objs_scene:
+		return
+	_objs = {}
+	_order = []
+	_tags = []
+	_objs_scene = ""
+	_push_feed()
+
+
 # ───────────────────────── 权威状态 ─────────────────────────
 
 
@@ -92,6 +111,8 @@ func on_me(view: Dictionary) -> void:
 		_me_id = mid
 	var old_id: String = str(_mine.get("id", ""))
 	_mine = _parse_mine(view.get("interaction"))
+	if _ended.has(str(_mine.get("id", ""))):
+		_mine = {}  # 结算 / 取消之前读到的更旧的一份：不让已经结束的活动复活，也不擦掉「刚才」小卡
 	_refresh_warn()
 	var new_id: String = str(_mine.get("id", ""))
 	if new_id != old_id:
@@ -118,6 +139,9 @@ func _reset_person() -> void:
 	_busy = false
 	_walk_busy = false
 	_walk_oid = ""
+	_walk_nav = 0
+	_objs_scene = ""
+	_ended = []
 	_begin_mark = ""
 	_gate = Logic.new_gate()
 	_last_act = {}
@@ -161,6 +185,7 @@ func _parse_objects(here) -> void:
 	_objs = {}
 	_order = []
 	_tags = []
+	_objs_scene = ctx.cur_scene()
 	if not (here is Dictionary):
 		return
 	var arr = here.get("objects")
@@ -275,6 +300,7 @@ func on_event(ev: Dictionary) -> void:
 	var t: String = str(ev.get("type", ""))
 	if t == "interaction_done":
 		_last_done = {"id": str(data.get("interactionId", "")), "text": str(data.get("text", ""))}
+		Logic.remember_ended(_ended, str(data.get("interactionId", "")))
 		_last = {"name": str(data.get("name", "")), "text": str(data.get("text", ""))}
 		# 活动已经结算：走开拦截立刻放开，不等 /me
 		_mine = {}
@@ -292,9 +318,11 @@ func on_event(ev: Dictionary) -> void:
 	if status == "cancelled":
 		var ini = it.get("initiator")
 		var mine_ini: bool = ini is Dictionary and str(ini.get("id", "")) == _me_id
-		# 发起人自己走开引起的取消不再对他自己说一遍；等太久散场、别人造成的取消都要说
-		if not mine_ini or reason.find(LOBBY_REASON_KEY) >= 0:
-			ctx.toast("这一桌散了：" + reason if reason != "" else "这一桌散了。", "warn")
+		# 自己造成的取消不再对自己说一遍（发起人自己走开；最后一个走开的人让参与者减到零）；等太久散场、别人造成的取消都要说
+		var said: String = Logic.cancel_text(mine_ini, reason)
+		if said != "":
+			ctx.toast(said, "warn")
+		Logic.remember_ended(_ended, str(_mine.get("id", "")))
 		_mine = {}
 		_warn = ""
 		_people = {}
@@ -329,6 +357,7 @@ func actions(out: Array) -> void:
 	var sa = ctx.actors().get(ctx.self_id())
 	if sa == null or (sa as TActor).moving:
 		return
+	var start: int = out.size()
 	var ini_id: String = ""
 	if not _mine.is_empty() and _mine.get("initiator") is Dictionary:
 		ini_id = str((_mine["initiator"] as Dictionary).get("id", ""))
@@ -368,6 +397,12 @@ func actions(out: Array) -> void:
 					out.append({"id": "f:activity:full:" + aid, "label": "已满", "sub": label, "mode": "busy"})
 		elif status == "running" and not in_it:
 			out.append({"id": "f:activity:running:" + oid, "label": "已开始", "sub": label, "mode": "busy"})
+	# 我刚点了约人 / 加入 / 开始，/me 还没追上：可点的按钮换成灰的（版面不跳），免得空窗里同一个按钮闪回、再点一次得到 busy / already_busy
+	if _busy:
+		for i in range(start, out.size()):
+			var e = out[i]
+			if e is Dictionary and str(e.get("mode", "")) == "do" and str(e.get("id", "")).begins_with("f:activity:"):
+				out[i] = {"id": "f:activity:pending:" + str(e["id"]).substr("f:activity:".length()), "label": str(e.get("label", "")), "sub": "稍等…", "mode": "busy"}
 
 
 func _remove_entry(out: Array, entry_id: String) -> void:
@@ -405,8 +440,8 @@ func _do_action(verb: String, arg: String) -> void:
 	var r: Dictionary = await ctx.act(action)
 	if g != _gen:
 		return  # 离开 / 换人之后回来的结果丢弃（_busy 已由 on_leave 清掉）
-	_busy = false
 	if me != _me_id or not ctx.playing():
+		_busy = false
 		return
 	_last_act = {"verb": verb, "ok": bool(r.get("ok", false)), "reason": str(r.get("reason", "")), "message": str(r.get("message", ""))}
 	if bool(r.get("ok", false)):
@@ -418,7 +453,16 @@ func _do_action(verb: String, arg: String) -> void:
 		elif verb == "join":
 			ctx.toast("加入了%s。" % nm, "ok")
 		await ctx.refresh_me_wait()
+		# _busy 保持到 /me 追上（正有一次在读时 refresh_me_wait 立刻返回 false，读完才有新状态）：按钮在此之前一直是灰的
+		var t0: int = Time.get_ticks_msec()
+		while g == _gen and not Logic.state_reached(verb, str(_mine.get("status", ""))) and Time.get_ticks_msec() - t0 < SETTLE_MS:
+			await ctx.next_frame()
+		if g != _gen:
+			return
+		_busy = false
+		ctx.mark_dirty()
 		return
+	_busy = false
 	_begin_mark = ""
 	if str(r.get("error", "")) != "control_lost":
 		ctx.toast(str(r.get("message", "没有完成。")), "err")
@@ -456,16 +500,23 @@ func on_pick(kind: String, pick_id: String) -> bool:
 		if str(aid) != self_id:
 			others.append((acts[aid] as TActor).disp)
 	var r: Dictionary = Logic.pick_seat(anchors, me, others)
-	if bool(r["seated"]):
-		return true  # 已经坐在这张桌的某个座位上：吞掉，不发导航，也不让 main 把它记成选中物件
-	# 防重入：同一张桌的路已经在发、刚发完（服务器的移动快照还没到）或在走（连按两下 E、双击）
 	var now: int = Time.get_ticks_msec()
-	if _walk_oid == pick_id and (_walk_busy or now - _walk_at < RECENT_MS or ((sa as TActor).moving and now - _walk_at < WALK_STALE_MS)):
+	if bool(r["seated"]):
+		# 已经坐在这张桌的某个座位上：吞掉，不发导航，也不让 main 把它记成选中物件。
+		# main 在调 on_pick 之前先问过走开拦截，而拦截看不出这次点击不是要走开：这一下若是被放行的第二次，撤销它，
+		# 免得留下 6 秒的放行窗口、随后手滑点一下地面就无提示地走开并取消整桌；再说一句话，E 键在这里不能无声无息
+		Logic.gate_revoke(_gate, now)
+		ctx.toast(SEATED_HINT, "info")
+		return true
+	# 防重入：同一张桌的路已经在发、刚发完（服务器的移动快照还没到）或在走（连按两下 E、双击）。
+	# 中间点过地面改了道（导航代号变了）就不算：这一下是要重新走过去
+	if _walk_oid == pick_id and _walk_nav == ctx.nav_gen() and (_walk_busy or now - _walk_at < RECENT_MS or ((sa as TActor).moving and now - _walk_at < WALK_STALE_MS)):
 		return true
 	_picks += 1
 	_walk_oid = pick_id
 	_walk_at = now
 	_do_walk(pick_id, r["point"] as Vector2, str(info.get("name", "")))
+	_walk_nav = ctx.nav_gen()  # _do_walk 在第一个 await 之前已经同步地让 main 把代号加了一，这里记下的就是这条走路自己的代号
 	return true
 
 

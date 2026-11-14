@@ -11,10 +11,16 @@ const WINDOW_MS := 6000
 ## 一个座位上站着别人的距离（米）、算「我已经坐在这个座位上」的距离（米）
 const OCCUPIED_R := 0.6
 const SEATED_R := 0.5
+## 刚放行之后这么久内，「其实这次点击不是要走开」可以撤销放行（点自己所在的桌子、按 E：main 先问拦截、后调 on_pick，拦截看不出这次点击的目的）。
+## 取 3 秒：E 键路径在调 on_pick 之前可能先等 /me 刷新（最多约 2.5 秒）
+const REVOKE_MS := 3000
+const LOBBY_REASON_KEY := "太久"  # 服务器取消原因里「等了太久没凑齐人」的关键字：只用来决定要不要提示，文字原样展示
+const ALL_LEFT_REASON_KEY := "大家都离开了"  # 参与者减到零而取消：能收到这条的人必定是最后走开的那一个（或更早走开的），是自己造成的
+const ENDED_KEEP := 8
 
 
 static func new_gate() -> Dictionary:
-	return {"warn_at": 0, "last_call": 0, "confirmed_until": 0, "warned": 0, "passed": 0}
+	return {"warn_at": 0, "last_call": 0, "confirmed_until": 0, "warned": 0, "passed": 0, "passed_at": 0}
 
 
 ## 清掉确认状态（活动结束、换了一桌、离开、换人时调用）；计数不清，端到端要读
@@ -22,6 +28,7 @@ static func gate_clear(st: Dictionary) -> void:
 	st["warn_at"] = 0
 	st["last_call"] = 0
 	st["confirmed_until"] = 0
+	st["passed_at"] = 0
 
 
 ## 每次被问「现在许不许走」时调用，返回空串放行、非空串是提示文字。st 是 new_gate() 的字典，now 是毫秒。
@@ -32,12 +39,52 @@ static func gate(st: Dictionary, now: int, text: String) -> String:
 	if warn_at > 0 and now - int(st["last_call"]) > REPEAT_GAP_MS and now - warn_at < WINDOW_MS:
 		st["confirmed_until"] = now + WINDOW_MS
 		st["passed"] = int(st["passed"]) + 1
+		st["passed_at"] = now
 		return ""
 	if warn_at <= 0 or now - warn_at >= WINDOW_MS:
 		st["warn_at"] = now
 		st["warned"] = int(st["warned"]) + 1
 	st["last_call"] = now
 	return text
+
+
+## 撤销刚刚的放行：点击其实没有要走开（吞掉它的 on_pick 调用）。只撤销 REVOKE_MS 之内的那一次放行（更早的窗口是玩家真的确认过要走），
+## 撤销后放行次数退回、确认窗口作废，下一次走开重新从第一次提示开始。返回是否撤销了。
+static func gate_revoke(st: Dictionary, now: int) -> bool:
+	var at: int = int(st["passed_at"])
+	if at <= 0 or now - at > REVOKE_MS:
+		return false
+	st["passed"] = maxi(0, int(st["passed"]) - 1)
+	gate_clear(st)
+	return true
+
+
+## 取消事件要不要对我说、说什么（空串 = 不说）。服务器的取消事件里没有「谁造成」，只能按原因判断：
+## 等了太久没凑齐人（谁都没走）：都说；发起人自己走开引起的取消：不对他自己再说一遍；
+## 「大家都离开了」：参与者减到零，收到的人是最后走开的那一个，是自己造成的，不说；其余（发起人走开了等）别人造成的，原样说。
+static func cancel_text(is_initiator: bool, reason: String) -> String:
+	var said: String = "这一桌散了：" + reason if reason != "" else "这一桌散了。"
+	if reason.find(LOBBY_REASON_KEY) >= 0:
+		return said
+	if is_initiator or reason.find(ALL_LEFT_REASON_KEY) >= 0:
+		return ""
+	return said
+
+
+## 记下已经结束（完成或取消）的活动编号：更旧的 /me 迟到时不能让它复活。只留最近几个
+static func remember_ended(ended: Array, id: String) -> void:
+	if id == "" or ended.has(id):
+		return
+	ended.append(id)
+	while ended.size() > ENDED_KEEP:
+		ended.remove_at(0)
+
+
+## 动作成功之后 /me 要追上的状态：约人、加入之后我有了活动；开始之后活动是进行中
+static func state_reached(verb: String, mine_status: String) -> bool:
+	if verb == "begin":
+		return mine_status == "running"
+	return mine_status != ""
 
 
 ## 走开提示：等人且我是发起人 / 等人且我是参与者 / 进行中

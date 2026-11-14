@@ -1,4 +1,4 @@
-/* 共同活动：页签「一起」的纸卡与木牌，加上街景上的桌牌（.tag.c）。颜色变量在 dock.css 的 :root。
+/* 共同活动：页签「一起」的纸卡与木牌；文字色都按纸色底算过对比度不低于 4.5:1（暖棕 #7d4710、木色深 --d-wood-dark，不用 --d-ink-soft 与 #a35f17），加上街景上的桌牌（.tag.c）。颜色变量在 dock.css 的 :root。
  * 选择器都挂在 [data-pane="activity"] 之下（桌牌是 hud.js 渲染在 #tags 里的 .tag.c）；不用 backdrop-filter。最小字号 12px。 */
 [data-pane="activity"] { position: absolute; }
 [data-pane="activity"] .act-scroll {
@@ -10,7 +10,7 @@
 [data-pane="activity"] [hidden] { display: none; }
 [data-pane="activity"] .act-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; margin: 0 0 6px; }
 [data-pane="activity"] .act-title { font: 700 16px/1.3 var(--d-serif); color: var(--d-ink); overflow-wrap: anywhere; unicode-bidi: plaintext; }
-[data-pane="activity"] .act-where { font-size: 12px; color: var(--d-ink-soft); overflow-wrap: anywhere; unicode-bidi: plaintext; }
+[data-pane="activity"] .act-where { font-size: 12px; color: var(--d-wood-dark); overflow-wrap: anywhere; unicode-bidi: plaintext; }
 [data-pane="activity"] .act-where:not(:empty)::before { content: "· "; }
 [data-pane="activity"] .act-status {
   display: inline-block; padding: 1px 9px; border-radius: 6px; font: 600 12px/20px var(--d-serif); color: var(--d-ink); border: 1px solid var(--d-wood-light);
@@ -24,17 +24,17 @@
 }
 [data-pane="activity"] .act-person.me { background: var(--d-leaf-bg); border-color: var(--d-leaf); }
 [data-pane="activity"] .act-nm { font-size: 14px; font-weight: 700; color: var(--d-slate-ink); overflow-wrap: anywhere; unicode-bidi: plaintext; min-width: 0; }
-[data-pane="activity"] .act-person.me .act-nm { color: #4d7449; }
+[data-pane="activity"] .act-person.me .act-nm { color: #3a5c37; }
 [data-pane="activity"] .act-ai, [data-pane="activity"] .act-ini, [data-pane="activity"] .act-you { font-size: 12px; line-height: 16px; padding: 0 5px; border-radius: 4px; }
-[data-pane="activity"] .act-ai { background: var(--d-slate); color: #fff; font-weight: 700; }
+[data-pane="activity"] .act-ai { background: var(--d-slate-ink); color: #fff; font-weight: 700; }
 [data-pane="activity"] .act-ini { background: var(--d-wood); color: var(--d-paper); }
 [data-pane="activity"] .act-you { background: var(--d-leaf); color: #1f3a1d; }
-[data-pane="activity"] .act-remain { margin: 0 0 6px; font-size: 14px; font-weight: 600; color: #a35f17; font-variant-numeric: tabular-nums; }
+[data-pane="activity"] .act-remain { margin: 0 0 6px; font-size: 14px; font-weight: 600; color: #7d4710; font-variant-numeric: tabular-nums; }
 [data-pane="activity"] .act-remain:empty { display: none; }
 [data-pane="activity"] .act-bar { height: 8px; margin: 0 0 8px; border-radius: 4px; background: var(--d-wood-dark); border: 1px solid var(--d-wood-dark); overflow: hidden; }
 [data-pane="activity"] .act-fill { display: block; height: 100%; width: 0; background: var(--d-ember); }
-[data-pane="activity"] .act-cost { margin: 0; font-size: 12px; line-height: 1.45; color: var(--d-ink-soft); overflow-wrap: anywhere; unicode-bidi: plaintext; }
-[data-pane="activity"] .act-h { margin: 0 0 6px; font: 700 12px/1.3 var(--d-serif); color: var(--d-ink-soft); letter-spacing: 1px; }
+[data-pane="activity"] .act-cost { margin: 0; font-size: 12px; line-height: 1.45; color: var(--d-wood-dark); overflow-wrap: anywhere; unicode-bidi: plaintext; }
+[data-pane="activity"] .act-h { margin: 0 0 6px; font: 700 12px/1.3 var(--d-serif); color: var(--d-wood-dark); letter-spacing: 1px; }
 [data-pane="activity"] .act-tables { margin: 0 0 12px; }
 [data-pane="activity"] .act-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
 [data-pane="activity"] .act-table {
@@ -43,14 +43,14 @@
 [data-pane="activity"] .act-table[data-status="open"] { background: var(--d-note); border-left-color: var(--d-ember); }
 [data-pane="activity"] .act-table[data-status="running"] { background: var(--d-leaf-bg); border-left-color: var(--d-leaf); }
 [data-pane="activity"] .act-tn { font-size: 14px; font-weight: 700; color: var(--d-ink); overflow-wrap: anywhere; unicode-bidi: plaintext; }
-[data-pane="activity"] .act-ts { font-size: 12px; color: var(--d-ink-soft); font-variant-numeric: tabular-nums; }
+[data-pane="activity"] .act-ts { font-size: 12px; color: var(--d-wood-dark); font-variant-numeric: tabular-nums; }
 [data-pane="activity"] .act-tp { flex-basis: 100%; font-size: 12px; color: var(--d-slate-ink); overflow-wrap: anywhere; unicode-bidi: plaintext; }
 [data-pane="activity"] .act-tp:empty, [data-pane="activity"] .act-th:empty { display: none; }
-[data-pane="activity"] .act-th { flex-basis: 100%; font-size: 12px; color: #a35f17; }
+[data-pane="activity"] .act-th { flex-basis: 100%; font-size: 12px; color: #7d4710; }
 [data-pane="activity"] .act-last { background: var(--d-note); border-style: dashed; border-color: var(--d-wood-light); box-shadow: none; }
 [data-pane="activity"] .act-lastname { margin: 0 0 2px; font: 700 14px/1.3 var(--d-serif); color: var(--d-ink); overflow-wrap: anywhere; unicode-bidi: plaintext; }
 [data-pane="activity"] .act-lasttext { margin: 0; font-size: 14px; line-height: 1.5; color: var(--d-ink); overflow-wrap: anywhere; unicode-bidi: plaintext; }
-[data-pane="activity"] .act-empty { margin: 16px 4px; font-size: 14px; line-height: 1.6; color: var(--d-ink-soft); text-align: center; }
+[data-pane="activity"] .act-empty { margin: 16px 4px; font-size: 14px; line-height: 1.6; color: var(--d-wood-dark); text-align: center; }
 
 /* 桌牌：桌子上方的一块小木牌（纸色底、木色边、深棕字）。hud.css 的 .tag 默认是深色药丸；位置由 hud.js 的行内 transform 管，这里只改外观。
  * 层级靠位置错开（桌牌放在物件锚点上方 1 米，头顶名牌在 2.05 米），不靠 z-index（setTags 的行内样式压得过样式表）。 */

@@ -167,6 +167,16 @@ func invalidate_near() -> void:
 ## 刷新 /me 并等它读完；正有一次在读时返回 false（读完会再读一次，on_me 照常到）
 func refresh_me_wait() -> bool:
 	return await m._refresh_me()
+
+
+## 导航代号：main 每次发起新的走路（点地、点人、点物件、方向键起步、停下）都加一。比较前后两次就知道「中间有没有改过道」
+func nav_gen() -> int:
+	return m.nav_generation
+
+
+## 等下一帧（动作之后等 /me 回来时用，不阻塞）
+func next_frame() -> void:
+	await m.get_tree().process_frame
 # ─────────────────────────────────────────────────────────────────────────
 
 
