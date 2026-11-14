@@ -20,6 +20,10 @@ import { positionOfResident, renewNavigation, whereabouts } from '../../src/worl
 import { meView, type MeView } from '../../src/world/views.js';
 import { FakeClock } from '../helpers.js';
 
+/** NPC 编号（N1a 种下的两名 NPC）。买茶叶要先走到掌柜身边：a.go(KEEPER)。 */
+export const KEEPER = 'npc:teahouse_keeper';
+export const STROLLER = 'npc:plaza_stroller';
+
 export interface TownOpts {
   seed?: string;
   params?: Record<string, unknown>;

@@ -7,7 +7,7 @@ import { WorldError } from '../../src/world/errors.js';
 import { BOOKS } from '../../src/world/content.js';
 import { homeId } from '../../src/world/content.js';
 import { SINK, accountOf, availableQty, ledger, mint, shopsAt, wallet } from '../../src/world/property.js';
-import { Actor, makeTown, tempDb, type Town } from './helpers.js';
+import { Actor, KEEPER, makeTown, tempDb, type Town } from './helpers.js';
 import { checkInvariants } from './invariants.js';
 
 const HOUR = 3600_000;
@@ -154,7 +154,7 @@ describe('财物：账本与物品', () => {
   it('一连串买卖之后：居民硬币总量 = 发行 − 回收；物品总量只因购买增加、因使用减少', () => {
     const { t, a, b } = twoAtPlaza();
     const base = itemTotals(t);
-    a.go('tea_house');
+    a.go(KEEPER);
     a.act('buy', { shop: 'tea_counter', sku: 'tea_leaves', qty: 3 });
     a.go('plaza');
     a.act('buy', { shop: 'stall', sku: 'cookie', qty: 2 });
@@ -175,19 +175,22 @@ describe('财物：账本与物品', () => {
 describe('财物：商店', () => {
   it('只能在商店所在的地点买', () => {
     const { t, a } = twoAtPlaza();
-    expect(err(a.fail('buy', { shop: 'tea_counter', sku: 'tea_leaves' }))).toBe('precondition_failed/not_here');
+    // 在广场：同一个公共场景但离掌柜很远 -> too_far（要走到掌柜身边）；没有掌柜的店（广场小摊）照旧
+    expect(err(a.fail('buy', { shop: 'tea_counter', sku: 'tea_leaves' }))).toBe('precondition_failed/too_far');
     expect(a.coins()).toBe(20);
-    a.go('tea_house');
+    a.go(KEEPER);
     a.act('buy', { shop: 'tea_counter', sku: 'tea_leaves' });
-    // 刚迈步、还在茶馆这片区域里：照样买得了（按区域判定，不按有没有在走）
+    // 刚迈步、还在掌柜身边（3 米内）：照样买得了（按现算的距离判定，不按有没有在走）
     a.act('navigate', { to: 'plaza' });
     t.advance(300);
     expect(a.row().location_id).toBe('tea_house');
     expect(a.act('buy', { shop: 'tea_counter', sku: 'tea_leaves' }).status).toBe('completed');
-    // 走出茶馆这片区域（灯笼路上）就买不了了
+    // 走出茶馆这片区域（灯笼路上）就买不了了：离掌柜太远，带 navigateTo
     for (let i = 0; i < 40 && a.row().location_id === 'tea_house'; i++) t.advance(500);
     expect(a.row().location_id).toBe('road');
-    expect(a.fail('buy', { shop: 'tea_counter', sku: 'tea_leaves' }).reason).toBe('not_here');
+    const far = a.fail('buy', { shop: 'tea_counter', sku: 'tea_leaves' });
+    expect(far.reason).toBe('too_far');
+    expect((far.data as { navigateTo?: string }).navigateTo).toBe(KEEPER);
     checkInvariants(t);
   });
 
@@ -201,7 +204,7 @@ describe('财物：商店', () => {
 
   it('数量必须是 1~10 的整数', () => {
     const { t, a } = twoAtPlaza();
-    a.go('tea_house');
+    a.go(KEEPER);
     for (const qty of [0, -1, 11, 1.5, 'x']) expect(a.fail('buy', { shop: 'tea_counter', sku: 'tea_leaves', qty }).code, `qty=${String(qty)}`).toBe('bad_request');
     expect(a.coins()).toBe(20);
     // 上限 10 件可以买
@@ -236,7 +239,7 @@ describe('财物：商店', () => {
     expect(b.fail('buy', { shop: 'book_counter', sku: 'book:rain_lane' }).reason).toBe('sold_out'); // 别人也买不到
     expect(shopsAt(t.w, 'bookshop', t.clock.t)[0]!.goods.find((g) => g.sku === 'book:rain_lane')!.stock).toBe(0);
     // 库存不够量时的提示：茶叶剩 N 件
-    a.go('tea_house');
+    a.go(KEEPER);
     b.go('tea_house');
     a.act('buy', { shop: 'tea_counter', sku: 'tea_leaves', qty: 3 });
     const before = shopsAt(t.w, 'tea_house', t.clock.t)[0]!.goods[0]!.stock;

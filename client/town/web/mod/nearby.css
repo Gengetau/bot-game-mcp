@@ -1,0 +1,2 @@
+/* 附近聊天的样式：范围小牌是木色（全镇公屏 C1b 用灰蓝）。其余沿用 00-chatkit.css。 */
+[data-pane="nearby"] .plaque { background: var(--d-wood); }

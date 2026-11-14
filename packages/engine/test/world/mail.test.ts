@@ -48,11 +48,13 @@ function town3() {
 const nav = (a: Actor) => actorOf(a.t.w, a.residentId)?.nav ?? null;
 const eventsOf = (a: Actor, cursor: string, type: string) => a.events(cursor).events.filter((e) => e.type === type).map((e) => e.data as Record<string, any>);
 
-/** 从广场走到会馆门口要多少毫秒（让一个临时居民试走一次再停下）：用来把「到门口的那一刻」对准邀请到期。 */
-function msToDoor(t: Town): number {
-  const probe = t.join('探路');
-  const out = probe.act('navigate', { to: 'home' }); // 自己家：第一段正好是走到会馆门口那扇门
-  probe.act('stop_navigation');
+/**
+ * 从这位居民现在站的地方走到会馆门口要多少毫秒（让他自己试走一次再原地停下，时间不前进所以位置不变）：
+ * 用来把「到门口的那一刻」对准邀请到期。出生点错开之后每个人的起点不同，所以必须量他本人，不能让别人代量。
+ */
+function msToDoor(t: Town, who: Actor): number {
+  const out = who.act('navigate', { to: 'home' }); // 自己家：第一段正好是走到会馆门口那扇门
+  who.act('stop_navigation');
   return out.navigation.arriveAt - t.clock.t;
 }
 
@@ -139,7 +141,7 @@ describe('栖灯镇住宅：没有邀请进不了别人的家', () => {
   it('走到门口的那一刻才过期（恰好同一时刻）：停在会馆门口，只收到固定说明', () => {
     const { t, a, b } = town3();
     const grantId = invitePersonally(a, b);
-    const ms = msToDoor(t);
+    const ms = msToDoor(t, b);
     const expiresAt = Number(grantRow(t, grantId).expires_at);
     stay(t, expiresAt - ms - t.clock.t, [a, b]);
     const cursor = b.view().cursor;
@@ -157,7 +159,7 @@ describe('栖灯镇住宅：没有邀请进不了别人的家', () => {
   it('到门口前 1 毫秒还有效：进了屋，随后在到期那一刻被送到会馆门口', () => {
     const { t, a, b } = town3();
     const grantId = invitePersonally(a, b);
-    const ms = msToDoor(t);
+    const ms = msToDoor(t, b);
     const expiresAt = Number(grantRow(t, grantId).expires_at);
     stay(t, expiresAt - ms - 1 - t.clock.t, [a, b]);
     const out = b.act('move', { to: homeOf(a) });

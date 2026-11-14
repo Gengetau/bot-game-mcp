@@ -996,6 +996,7 @@ describe('重启与迁移', () => {
     const c = t.join('阿树');
     const now = t.clock.t;
     // 把库改回旧版的样子：没有空间角色，位置只有地点编号，路上的人带着 move_json
+    t.w.db.db.exec('DELETE FROM npc_state');
     t.w.db.db.exec('DELETE FROM world_actors');
     const set = (x: Actor, location: string, move: Record<string, unknown> | null) =>
       t.w.db.db.prepare('UPDATE residents SET location_id = ?, move_json = ? WHERE resident_id = ?').run(location, move ? JSON.stringify(move) : null, x.residentId);

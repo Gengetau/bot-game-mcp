@@ -11,8 +11,12 @@ extends Node
 const SFX_DIR := "res://assets/audio/sfx/"
 const AMB_DIR := "res://assets/audio/ambience/"
 const MUSIC_PATH := "/town/3d/music/"
-## 取一首音乐的请求超时（秒）。
-const FETCH_TIMEOUT_S := 30.0
+## 取一首音乐：连续这么多秒（按帧累计，每帧最多计 1 秒）一个字节也没有新到，才算卡住、放弃这一次。
+## 不用「整个请求的总时长」：网页版 HTTPRequest 在主循环里按帧读，页面卡顿（进场景时的预热、机器忙）时总时长会被拖长，
+## 但数据其实一直在到；总时长超时会把一首正在慢慢到的曲子在 30 秒时掐掉、再空等 20 秒重试（夜晚曲比白天曲大 28%，更容易越线）。
+const FETCH_STALL_S := 30.0
+## 每次读 body 的块大小：默认 64 KB，一帧只读一块，整首要十几帧；放大后一帧就把已到的部分都读走
+const FETCH_CHUNK_BYTES := 1048576
 const SFX_NAMES := ["confirm", "step", "tap", "fail", "start", "mail", "panel_open", "panel_close", "coin", "door"]
 const AMB_NAMES := ["day", "night", "indoor", "fountain"]
 const MUSIC_NAMES := ["day", "night"]
@@ -56,6 +60,7 @@ var _music_players := {}
 var _music_gain := {"day": 0.0, "night": 0.0}
 var _music_loaded := {"day": false, "night": false}
 var _music_tried := 0
+var _music_fetch := {}  # 曲名 -> 取文件的状态（调试口只读：正在取、第几次、上次结果码、HTTP 码、字节数、已用毫秒、重试等待）
 
 var _night: bool = false
 var _hour: float = -1.0
@@ -273,7 +278,7 @@ func _load_track(n: String) -> void:
 	for attempt in range(3):
 		if bool(_music_loaded[n]):
 			return
-		var data: PackedByteArray = await _fetch(bridge.origin + MUSIC_PATH + n + ".ogg")
+		var data: PackedByteArray = await _fetch(bridge.origin + MUSIC_PATH + n + ".ogg", n, attempt + 1)
 		_music_tried = maxi(_music_tried, attempt + 1)
 		if data.size() >= 1000:
 			var s := AudioStreamOggVorbis.load_from_buffer(data)
@@ -281,20 +286,68 @@ func _load_track(n: String) -> void:
 				s.loop = true
 				(_music_players[n] as AudioStreamPlayer).stream = s
 				_music_loaded[n] = true
+				(_music_fetch[n] as Dictionary)["decoded"] = true
 				return
+			(_music_fetch[n] as Dictionary)["decoded"] = false
+		(_music_fetch[n] as Dictionary)["retryWait"] = true
 		await get_tree().create_timer(20.0).timeout
+		(_music_fetch[n] as Dictionary)["retryWait"] = false
 
 
-func _fetch(url: String) -> PackedByteArray:
+func _fetch(url: String, track: String = "", attempt: int = 0) -> PackedByteArray:
+	var info := {"fetching": true, "attempt": attempt, "startMs": Time.get_ticks_msec(), "result": -1, "http": -1, "bytes": -1, "elapsedMs": 0, "retryWait": false, "decoded": false, "reqErr": 0}
+	if track != "":
+		# 同一首的前几次结果留在 history 里（调试口只读）：只看最后一次，看不出前面是超时还是别的
+		var prev: Dictionary = _music_fetch.get(track, {})
+		var hist: Array = (prev.get("history", []) as Array).duplicate()
+		if prev.has("result"):
+			hist.append({"attempt": prev.get("attempt"), "result": prev.get("result"), "http": prev.get("http"), "bytes": prev.get("bytes"), "elapsedMs": prev.get("elapsedMs")})
+		info["history"] = hist
+		_music_fetch[track] = info
 	var req := HTTPRequest.new()
 	req.accept_gzip = false
-	req.timeout = FETCH_TIMEOUT_S  # 连上了但不返回的请求不能一直拖住后面的曲子和重试
+	req.download_chunk_size = FETCH_CHUNK_BYTES
 	add_child(req)
-	if req.request(url) != OK:
+	var box := {"done": false, "res": []}
+	req.request_completed.connect(func(r: int, c: int, h: PackedStringArray, b: PackedByteArray) -> void:
+		box["res"] = [r, c, h, b]
+		box["done"] = true)
+	var rerr: int = req.request(url)
+	if rerr != OK:
+		info["reqErr"] = rerr
+		info["fetching"] = false
 		req.queue_free()
 		return PackedByteArray()
-	var res: Array = await req.request_completed
+	# 等完成；连续 FETCH_STALL_S 秒没有新字节（连上了但不返回、半通的网络）才放弃，这样卡住的请求拖不住后面的曲子和重试
+	var last_bytes := -1
+	var stall := 0.0
+	var last_ms := Time.get_ticks_msec()
+	while not bool(box["done"]):
+		await get_tree().process_frame
+		var now := Time.get_ticks_msec()
+		var dt := minf(float(now - last_ms) / 1000.0, 1.0)
+		last_ms = now
+		var got: int = req.get_downloaded_bytes()
+		if got != last_bytes:
+			last_bytes = got
+			stall = 0.0
+		else:
+			stall += dt
+		info["bytes"] = got
+		if stall >= FETCH_STALL_S:
+			req.cancel_request()
+			req.queue_free()
+			info["fetching"] = false
+			info["result"] = -2  # 本地判定的停滞（不是 HTTPRequest 的结果码）
+			info["elapsedMs"] = Time.get_ticks_msec() - int(info["startMs"])
+			return PackedByteArray()
+	var res: Array = box["res"]
 	req.queue_free()
+	info["fetching"] = false
+	info["result"] = int(res[0])
+	info["http"] = int(res[1])
+	info["bytes"] = (res[3] as PackedByteArray).size()
+	info["elapsedMs"] = Time.get_ticks_msec() - int(info["startMs"])
 	if int(res[0]) != HTTPRequest.RESULT_SUCCESS or int(res[1]) != 200:
 		return PackedByteArray()
 	return res[3]
@@ -423,6 +476,16 @@ func on_event(ev: Dictionary) -> void:
 # ───────────────────────── 调试 ─────────────────────────
 
 
+func _music_fetch_debug() -> Dictionary:
+	var out := {}
+	for n in _music_fetch:
+		var d: Dictionary = (_music_fetch[n] as Dictionary).duplicate()
+		if bool(d["fetching"]):
+			d["elapsedMs"] = Time.get_ticks_msec() - int(d["startMs"])
+		out[n] = d
+	return out
+
+
 func debug_info() -> Dictionary:
 	var pl := {}
 	for n in MUSIC_NAMES:
@@ -439,4 +502,4 @@ func debug_info() -> Dictionary:
 			"amb": AudioServer.get_bus_volume_db(int(_bus["Ambience"])),
 			"sfx": AudioServer.get_bus_volume_db(int(_bus["SFX"])),
 		}
-	return {"inited": inited, "enabled": enabled, "hidden": hidden, "bgMute": bg_mute, "vol": vol, "night": _night, "hour": _hour, "indoor": _indoor, "scene": _scene, "busDb": bus_db, "layers": pl, "sfxLoaded": _sfx_streams.keys(), "plays": _plays, "firstPlay": _first_play, "musicTried": _music_tried, "fountains": _fountains.keys(), "fountainDist": snappedf(_listener.distance_to(_fountains[_scene]), 0.1) if _fountains.has(_scene) else -1.0}
+	return {"inited": inited, "enabled": enabled, "hidden": hidden, "bgMute": bg_mute, "vol": vol, "night": _night, "hour": _hour, "indoor": _indoor, "scene": _scene, "busDb": bus_db, "layers": pl, "sfxLoaded": _sfx_streams.keys(), "plays": _plays, "firstPlay": _first_play, "musicTried": _music_tried, "musicFetch": _music_fetch_debug(), "ticksMs": Time.get_ticks_msec(), "fountains": _fountains.keys(), "fountainDist": snappedf(_listener.distance_to(_fountains[_scene]), 0.1) if _fountains.has(_scene) else -1.0}

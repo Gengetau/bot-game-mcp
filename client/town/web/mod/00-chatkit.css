@@ -1,0 +1,82 @@
+/* TownChatKit 的样式（附近聊天、全镇公屏共用）：消息便签、时间行、输入栏。颜色变量在 dock.css。
+ * 玩家文字 overflow-wrap:anywhere + unicode-bidi:plaintext；只用 transform / opacity 做动画。 */
+.chat-pane { position: absolute; }
+.chat-pane .scope { flex: none; display: flex; align-items: center; gap: 8px; padding: 8px 10px 4px; background: var(--d-paper); position: relative; z-index: 1; box-shadow: 0 1px 0 var(--d-line); }
+.chat-pane .plaque {
+  display: inline-block; padding: 1px 9px; border-radius: 6px; background: var(--d-wood); color: var(--d-paper); font: 600 12px/20px var(--d-serif);
+  box-shadow: 0 2px 0 var(--d-wood-dark);
+}
+.chat-pane .place { font-size: 12px; color: var(--d-ink-soft); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chat-pane .place:not(:empty)::before { content: "· "; }
+
+.chat-pane .note {
+  position: relative; flex: none; margin: 6px 12px 2px; padding: 6px 10px; border-radius: 4px; background: var(--d-note); color: var(--d-ink);
+  border: 1px dashed var(--d-wood-light); font-size: 13px; line-height: 1.4;
+}
+.chat-pane .note::before { content: ""; position: absolute; left: -6px; top: -6px; width: 22px; height: 9px; background: var(--d-ember); opacity: 0.75; transform: rotate(-24deg); border-radius: 1px; }
+
+.chat-pane .list {
+  flex: 1; min-height: 0; margin: 0; padding: 4px 10px 8px; list-style: none; overflow-y: auto; overflow-x: hidden;
+  display: flex; flex-direction: column; touch-action: pan-y; overscroll-behavior: contain; -webkit-overflow-scrolling: touch;
+  user-select: text; -webkit-user-select: text;
+}
+.chat-pane .msg { max-width: 86%; margin-top: 6px; align-self: flex-start; animation: chatIn 0.14s ease-out; }
+.chat-pane .msg.mine { align-self: flex-end; }
+.chat-pane .msg.cont { margin-top: 2px; }
+.chat-pane .msg.cont .who { display: none; }
+.chat-pane .who { display: flex; align-items: center; gap: 4px; padding: 0 4px; }
+.chat-pane .nm { font-size: 12px; font-weight: 700; color: var(--d-slate-ink); overflow-wrap: anywhere; unicode-bidi: plaintext; }
+.chat-pane .msg.mine .nm { color: #4d7449; }
+.chat-pane .msg.mine .who { justify-content: flex-end; }
+.chat-pane .ai { font-size: 10px; font-weight: 700; line-height: 14px; padding: 0 4px; border-radius: 4px; background: var(--d-slate); color: #fff; }
+.chat-pane .ai[hidden] { display: none; }
+.chat-pane .bub {
+  padding: 6px 10px; border-radius: 10px; background: var(--d-paper-2); border-left: 3px solid var(--d-slate); font-size: 14px; line-height: 1.5; color: var(--d-ink);
+  overflow-wrap: anywhere; unicode-bidi: plaintext; white-space: pre-wrap; user-select: text; -webkit-user-select: text;
+}
+.chat-pane .msg.mine .bub { background: var(--d-leaf-bg); border-left: 0; border-right: 3px solid var(--d-leaf); }
+.chat-pane .time, .chat-pane .sep { align-self: center; margin-top: 8px; font-size: 11px; line-height: 16px; color: var(--d-ink-soft); }
+.chat-pane .sep { padding: 0 10px; border-top: 1px dashed var(--d-line); border-bottom: 1px dashed var(--d-line); font-family: var(--d-serif); }
+.chat-pane .sys {
+  align-self: center; margin-top: 8px; padding: 3px 10px; border-radius: 4px; background: var(--d-note); border: 1px dashed var(--d-wood-light);
+  font-size: 12px; color: var(--d-ink); overflow-wrap: anywhere;
+}
+@keyframes chatIn { from { opacity: 0; transform: translateY(4px); } }
+
+.chat-pane .jump {
+  position: absolute; left: 50%; bottom: 64px; transform: translateX(-50%); z-index: 2; padding: 3px 12px; min-height: 28px; border-radius: 14px;
+  background: var(--d-wood); color: var(--d-paper); font-size: 12px; font-weight: 600; box-shadow: 0 2px 0 var(--d-wood-dark);
+}
+.chat-pane .jump[hidden] { display: none; }
+
+.chat-pane .hint { flex: none; margin: 0; padding: 0 12px 4px; font-size: 12px; line-height: 1.4; color: var(--d-ink-soft); }
+.chat-pane .hint:empty { display: none; }
+.chat-pane .hint.err { color: var(--d-err); }
+.chat-pane .hint.cool { color: #a35f17; }
+
+.chat-pane .compose {
+  flex: none; display: flex; align-items: center; gap: 6px; padding: 8px; min-height: 56px; background: var(--d-paper-2); border-top: 2px solid var(--d-line);
+}
+.chat-pane .compose input {
+  flex: 1; min-width: 0; height: 40px; padding: 0 10px; border: 2px solid var(--d-wood-light); border-radius: 10px; background: #fffaf0; color: var(--d-ink);
+  font-family: inherit; font-size: 16px; line-height: 1.2; user-select: text; -webkit-user-select: text; -webkit-appearance: none; appearance: none;
+}
+.chat-pane .compose input::placeholder { color: var(--d-ink-soft); opacity: 0.9; }
+.chat-pane .compose input:focus { outline: 2px solid var(--d-ember); outline-offset: 1px; }
+.chat-pane .compose input:disabled { background: var(--d-paper); opacity: 0.75; }
+.chat-pane .count { flex: none; font-size: 12px; color: var(--d-ink-soft); font-variant-numeric: tabular-nums; }
+.chat-pane .count:empty { display: none; }
+.chat-pane .count.over { color: var(--d-err); font-weight: 700; }
+#dock .chat-pane .send {
+  flex: none; min-width: 52px; height: 40px; padding: 0 12px; border-radius: 10px; background: var(--d-ember); color: #3b2108; font-weight: 700; font-size: 15px;
+  box-shadow: 0 3px 0 #a8641c;
+}
+#dock .chat-pane .send:hover:not(:disabled) { background: #eea760; }
+#dock .chat-pane .send:active:not(:disabled) { transform: translateY(1px); box-shadow: 0 2px 0 #a8641c; }
+#dock .chat-pane .send:disabled { opacity: 0.45; box-shadow: none; cursor: default; }
+#dock .chat-pane .send:focus-visible, #dock .chat-pane .jump:focus-visible { outline: 2px solid var(--d-wood-dark); outline-offset: 2px; }
+
+/* 软键盘出现的紧凑模式：只留最近几条和输入栏 */
+body[data-kb="1"] .chat-pane .scope, body[data-kb="1"] .chat-pane .note { display: none; }
+
+@media (prefers-reduced-motion: reduce) { .chat-pane .msg { animation: none; } }

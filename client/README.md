@@ -42,11 +42,11 @@ npm run dev -w bot-game-mcp -- serve
 
 ```bash
 npm run client:export   # 先导出
-npm run client:e2e      # 完整一遍约 12 分钟（其中步骤 15「声音」约 7 分钟），不进 CI；需要完整导出（含 .br）。开发中用 --only=<步骤号> 跑子集
+npm run client:e2e      # 完整一遍约 31 分钟（11-14 实测：旧步骤 1 到 14 约 5 分钟、步骤 15「声音」约 6 分钟、15.1「钟点固定在夜晚/白天的刷新后音乐」约 5 分钟、附近聊天的 20 号步骤文件约 5 分钟、全镇公屏与气泡的 30 号步骤文件约 9 分钟），不进 CI；需要完整导出（含 .br）。开发中用 --only=<步骤号> 跑子集
 ```
 
 脚本 `scripts/client-e2e.mjs` 自己起引擎（子进程、开发登录、keys 认证里放一个测试 AI 密钥、临时库、随机端口），
-开桌面 1440x900 和手机 390x844（触摸）两个 Chromium 上下文加一个由 agent-kit 的 `ResidentRunner` 驱动的 AI 居民（决策函数写死、不调用模型），走完 14 步并检查控制台、CSP、失败请求和所有未声明的 4xx/5xx，
+开桌面 1440x900 和手机 390x844（触摸）两个 Chromium 上下文加一个由 agent-kit 的 `ResidentRunner` 驱动的 AI 居民（决策函数写死、不调用模型），走完 15 步（外加 `scripts/e2e/steps/` 里的新步骤文件）并检查控制台、CSP、失败请求和所有未声明的 4xx/5xx，
 全部通过才把截图和结果换进 `client/demo/`（失败的运行写 `results.failed.json`，已 gitignore，不动已提交的验收记录），验收记录见 `client/demo/README.md`。需要 Playwright 和 Chromium
 （`require('playwright')` 能解析即可）。导出目录不存在时脚本提示先导出并以退出码 2 退出。
 
@@ -60,11 +60,28 @@ client/town/
              audio.gd（音乐、环境声、音效） main.gd（启动流程、协议、输入、续租、重连）
   web/       shell.html（导出外壳，无内联脚本） boot.js（启动引擎、fetch 通道、AudioContext 拦截）
              hud.js / hud.css（DOM 界面：面板、姓名牌、按钮、提示条、声音开关、音量面板）
+             dock.js / dock.css（面板底座：右侧栏 / 底部抽屉、页签、未读角标、软键盘、Enter 全局快捷键）
+             mod/*.js / *.css / *.html（面板里的功能模块；导出时由 assemble.mjs 合成 town-modules.js / .css 并把模板注入 index.html）
+  scripts/features/  功能模块的 GDScript 部分：feature.gd（基类）ctx.gd（给功能的门面）hub.gd（钩子分发）manifest.gd（功能清单）
+                     其余每个功能一个文件（nearby.gd 已实现，其余是桩，由 C1b 到 C7 各自填）
   stream/    music/{day,night}.ogg：不进 pck，导出时拷到 build/web/music/
   assets/    素材（素材同事的范围，只读）；*.import 入库，.godot/ 不入库
-client/tools/export.sh
+client/tools/export.sh, assemble.mjs, lint-web.mjs, compress.mjs, web-only.sh   导出与网页层工具
+client/docs/   各段的实现说明与待办（C1a.md 先写；C1b 到 C7 各写各的 <段>.md）
 client/art_source/, client/ASSETS.md   素材来源与台账（audio/ 是音频再生成脚本）
 ```
+
+## 面板与功能模块（C1a 起）
+
+聊天、信箱等界面都挂在同一个「面板」里（桌面是右侧栏，手机是底部抽屉；`dock.js`），每个功能是两半：GDScript 一半（`scripts/features/<id>.gd`，继承 `TFeature`）管协议和状态，网页一半（`web/mod/<id>.{js,css,html}`）管界面。两边只通过 JSON 字符串说话：Godot 用 `feed(kind, data)` 推给网页，网页用 `host.emit(name, json)` 回给 Godot 的 `on_ui(name, arg)`。
+`main.gd`、`hud.js`、`shell.html`、`export.sh`、`client-e2e.mjs` 在 C1a 之后不再为新功能改动：新功能只加自己的文件，并在 `scripts/features/manifest.gd` 里已经预留了名字。
+
+- 接口、钩子清单、桥接口：`client/docs/C1a.md`。功能能用的东西都在 `ctx.gd`（门面），不要直接伸手进 `main.gd`。
+- 钩子里的运行时错误只会中止那一个钩子（GDScript 没有 try/catch，引擎打印错误后继续），不会拖垮 `main.gd` 和别的功能；C1a 用故意出错的临时功能验证过。
+- 网页模块不许用 `innerHTML`、`localStorage`、内联脚本等（`client/tools/lint-web.mjs` 在导出时检查），`mod/*.js` 里不写汉字字面量（文字放进 `mod/*.html` 的模板里，用 `host.t(key)` 读）。
+- **Enter 是全局快捷键，由 `dock.js` 独占**：不在输入框里、没有修饰键、焦点不在按钮 / 链接上时，Enter 打开面板并聚焦当前页签的 `[data-focus]` 输入框。别的功能不要再占用 Enter。
+- 只改网页文件时，用 `bash client/tools/web-only.sh` 重新合并并更新 `build/web/`，不用完整导出（约 2 分钟）。改了 GDScript 才需要完整导出。
+- 端到端的新步骤放在 `scripts/e2e/steps/`（号段分配和写法见那里的 README.md），公共小工具在 `scripts/e2e/lib/`。
 
 ## 协议要点（实现位置都在 main.gd）
 
@@ -97,7 +114,7 @@ client/art_source/, client/ASSETS.md   素材来源与台账（audio/ 是音频�
 - **总线**：Godot 里建三条总线 `Music` / `Ambience` / `SFX`，都送到 `Master`。音量变化、总静音、后台静音一律经过平滑（时间常数约 0.12 秒），不会突响。
 - **音乐放在 pck 之外**：`client/town/stream/music/{day,night}.ogg`（目录里有 `.gdignore`，Godot 不导入，不进 pck）。`client/tools/export.sh` 把 `client/town/stream/` 下的子目录原样拷到产物里
   （`build/web/music/`），引擎照常托管（`/town/3d/music/day.ogg`，`Cache-Control: no-cache` + ETag）。客户端在用户点「进入小镇」之后才用 `HTTPRequest` 取（先取当前时段的那一首），
-  取到后 `AudioStreamOggVorbis.load_from_buffer`，所以不占首屏的下载量，也不拖慢「进入」按钮出现；每个请求 30 秒超时，两首各自独立取、各自重试（一首卡住不拖另一首）；取不到会隔 20 秒重试，共 3 轮，之后就没有音乐，环境声和音效不受影响。
+  取到后 `AudioStreamOggVorbis.load_from_buffer`，所以不占首屏的下载量，也不拖慢「进入」按钮出现；不按「整个请求多少秒」计时（网页版 HTTPRequest 在主循环里按帧读，进场景时页面一卡十几秒，数据还没来得及读就会被判超时），而是连续 30 秒（按帧累计，每帧最多计 1 秒）一个字节也没有新到才放弃这一次；每次读 body 的块放大到 1 MB，一帧读走已到的部分；两首各自独立取、各自重试（一首卡住不拖另一首）；取不到会隔 20 秒重试，共 3 轮，之后就没有音乐，环境声和音效不受影响。
   环境声和音效很小（0.58 MB），留在 pck 里。音乐放在 pck 之外，所以 pck 里只多了这 0.58 MB；`index.pck` 现在约 1.79 MB（br 约 1.63 MB，其中还有街景与居民的模型、贴图），见下面「包体与耗时」。
 - **昼夜**：取自服务器世界时间，不看设备时区。`clock.server_now()`（对时后的服务器毫秒）经 `boot.js` 的 `TownHost.worldHour(时区, 毫秒)` 换成世界时区的钟点
   （时区来自 `GET /config` 的 `world.timezone`），18:00 到次日 06:00 放夜晚曲 + 虫鸣，其余放白天曲 + 鸟风。每 2 秒重算一次，换时段时两首音乐 6 秒交叉淡入淡出，环境声 3 秒；
@@ -113,7 +130,7 @@ client/art_source/, client/ASSETS.md   素材来源与台账（audio/ 是音频�
   没勾时后台继续放（但后台标签页没有渲染循环，淡入淡出和昼夜切换会停在原地，回前台继续）。
 - **提示音**：服务器事件（`mail`、`chat`、`invite`、`offer`、`asked_hobby` 响收信音；`interaction_done` 和带「硬币」的 `notice` 响硬币声）按事件编号去重，
   比服务器时间旧 15 秒以上的不补播，所以断线重连补发的事件不会连响。点地确认、够不着 / 失败（所有红色提示条）、互动开始、开关地点菜单和音量面板各有各的声音。
-- **缺资源**：任何一个音频文件缺失 / 加载失败，只是少一层声音：音乐取不到就没有音乐，`load()` 不到的音效 / 环境声在播放时直接跳过，页面和游戏流程不受影响（端到端步骤 15 用 404 掉整个 `music/` 验证）。
+- **缺资源**：任何一个音频文件缺失 / 加载失败，只是少一层声音：音乐取不到就没有音乐，`load()` 不到的音效 / 环境声在播放时直接跳过，页面和游戏流程不受影响（端到端步骤 15 用 404 掉整个 `music/` 验证）。刷新后音乐在页面被压慢（CPU 压慢 8 倍，模拟机器忙）时也要第一次取就成功，由端到端步骤 15.1 验证。
 - **调试**：`window.__town.snd` 有音频状态（总线分贝、各层增益 / 是否在放 / 播放位置、世界钟点、各音效播放次数），`window.__town.audioPrefs` 是网页层的偏好。
 - **没做**：没有在真机上听过；不按天气换环境声（服务器没有天气）；打开小游戏时没有降低背景音乐；没有「房间混响」类处理；音乐没有按建筑区分。
 

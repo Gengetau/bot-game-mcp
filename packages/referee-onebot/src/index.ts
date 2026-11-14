@@ -567,7 +567,7 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
   const townNeedMember = town.requireGroupMember ?? true;
   const outboxCfg = townOn && town.outbox && town.outbox.enabled !== false ? town.outbox : null;
   /** 每个人最近一次领取登录链接的时间（限频）和是否已经提示过「刚发过」 */
-  const townAsked = new Map<string, { at: number; noticed: boolean }>();
+  const townAsked = new Map<string, { at: number; noticed: boolean; refused?: boolean }>();
   const isTownText = (plain: string) => townOn && isTownCommand(plain, townKeywords, prefix);
 
   let stopped = false;
@@ -1268,7 +1268,8 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
     if (last && now - last.at < townCooldownMs) {
       if (!last.noticed) {
         last.noticed = true;
-        await reply(`刚给你发过登录链接了，${Math.max(1, Math.ceil((townCooldownMs - (now - last.at)) / 1000))} 秒后再来要。`);
+        const secs = Math.max(1, Math.ceil((townCooldownMs - (now - last.at)) / 1000));
+        await reply(last.refused ? `刚才没能给你签发登录链接，${secs} 秒后再来问。` : `刚给你发过登录链接了，${secs} 秒后再来要。`);
       }
       return;
     }
@@ -1303,6 +1304,9 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
         if (townWhenOff === 'reply') await reply('小镇没开。');
       } else if (e instanceof ToolError) {
         log(`[town] 签发登录链接被引擎拒绝（${e.code ?? '?'}）：${e.message}`);
+        // 被拒（比如限定测试期间只有管理员能签）：保留冷却，别让群友反复问刷屏；冷却里的提示也改成「没能签发」
+        const asked = townAsked.get(uid);
+        if (asked) asked.refused = true;
         await reply(`⚠️ ${e.message.replace(/^town_issue_ticket：/, '')}`);
       } else {
         townAsked.delete(uid);

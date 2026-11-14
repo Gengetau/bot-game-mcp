@@ -6,6 +6,9 @@ extends RefCounted
 ## - 界面 -> Godot：window.TownHost.emit 调到这里的回调。
 ## 回调对象必须一直被引用，否则会被回收，之后 JS 调用就没有反应。
 
+## 页面脚本（dock.js）与客户端的接口版本：不一致就报「页面文件和客户端版本不一致」，免得缓存错位后半新半旧地运行。
+const HUD_PROTOCOL := 2
+
 signal ui_event(ev_name: String, arg: String)
 signal visibility_changed(is_visible: bool)
 
@@ -111,3 +114,15 @@ func hud_toast(msg: String, kind: String = "info") -> void:
 func hud_debug(s: String) -> void:
 	if web:
 		hud.debugSet(s)
+
+
+## 往某个面板功能的网页模块推数据。只传字符串：对象一律先 JSON.stringify，网页一侧再 JSON.parse。
+## 注意同步重入：网页模块的 onFeed 里不得同步 emit（要延后），否则会在这次调用栈里重入 hub.on_ui。
+func hud_feed(feature: String, kind: String, json: String) -> void:
+	if web:
+		hud.feed(feature, kind, json)
+
+
+## 网页一侧的接口版本（dock.js 挂上 2；没加载 dock.js 时 hud.js 的空实现回 0）。非网页环境回 0。
+func hud_protocol() -> int:
+	return int(hud.protocol()) if web else 0

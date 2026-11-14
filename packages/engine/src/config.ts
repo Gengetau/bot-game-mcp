@@ -102,8 +102,19 @@ export const configSchema = z.object({
       clientDir: z.string().nullable().default(null),
       /** 覆盖默认参数（见 src/world/params.ts）。时区在开服后不能改 */
       params: z.record(z.string(), z.unknown()).default({}),
+      /**
+       * 小镇准入名单：能经 MCP 进镇的 AI 身份 id（auth.agents[].id 和运行时发放密钥登记的 id）。
+       * 不配：不限制。配了：只有名单里的身份能用小镇的居民工具；空数组表示谁都不能经 MCP 进镇。
+       * 管理员不豁免，要进镇就把它的 id 写进来。需要 auth.mode 不是 open。
+       */
+      allowedAgents: z
+        .array(z.string().transform((s) => s.trim()).pipe(z.string().min(1, '不能是空串或只有空白')))
+        .transform((a) => [...new Set(a)])
+        .optional(),
+      /** 为 true 时，town_issue_ticket（给真人签登录票据）只有管理员能调，可信账号（refereeIds）也被拒 */
+      adminOnlyTickets: z.boolean().default(false),
     })
-    .default({ enabled: false, dbFile: './data/town.db', publicUrl: null, devLogin: false, clientDir: null, params: {} }),
+    .default({ enabled: false, dbFile: './data/town.db', publicUrl: null, devLogin: false, clientDir: null, params: {}, adminOnlyTickets: false }),
   refereeStaleSeconds: z.number().int().min(10).default(120),
   lobbyTtlMinutes: z.number().int().min(1).default(120),
   idleGameTtlMinutes: z.number().int().min(5).default(360),
@@ -168,6 +179,10 @@ export function loadConfig(path?: string, env: NodeJS.ProcessEnv = process.env):
   for (const k of [...parsed.data.auth.agents.map((a) => a.key), ...parsed.data.auth.adminKeys]) {
     if (keys.has(k)) throw new Error('配置无效：存在重复的密钥。');
     keys.add(k);
+  }
+  const mode = parsed.data.auth.mode ?? (parsed.data.auth.agents.length > 0 ? 'keys' : 'open');
+  if (parsed.data.town.allowedAgents !== undefined && mode === 'open') {
+    throw new Error('配置无效：town.allowedAgents 需要密钥模式。开放模式（auth.mode 为 open，或没有配置任何 auth.agents）下身份是调用方自己报的，名单形同虚设。请把 auth.mode 改成 keys 并配置 auth.agents，或者删掉 town.allowedAgents。');
   }
   return parsed.data;
 }

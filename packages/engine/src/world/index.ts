@@ -9,6 +9,8 @@ import { enter, installIdentity, type EnterResult, type ProfileInput } from './i
 import { installInteract } from './interact.js';
 import { installLife } from './life.js';
 import { installMail } from './mail.js';
+import { installNpc } from './npc.js';
+import { installNpcTalk } from './npc-talk.js';
 import { installProperty } from './property.js';
 import { installReports } from './reports.js';
 import { WorldService, type Auth, type WorldOptions } from './service.js';
@@ -22,6 +24,8 @@ export function createWorld(opts: WorldOptions): WorldService {
   installLife(w);
   installChat(w);
   installSpace(w);
+  installNpc(w);
+  installNpcTalk(w);
   installProperty(w);
   installMail(w);
   installInteract(w);
@@ -69,7 +73,7 @@ export {
 } from './identity.js';
 export { townChatPage, townChatSince, townChatHead, townChatDigest, nearbyHistory, filterEventsForAgent, type TownChatMessage, type TownChatPage } from './chat.js';
 export { canHear, nearbyAudience, roomOf } from './hearing.js';
-export { agentView, chatHistory, directory, meView, publicView, type MeView, type PublicView } from './views.js';
+export { AGENT_RECENT_CHAT, agentView, chatHistory, directory, meView, publicView, type MeView, type PublicView } from './views.js';
 export { publicGameView, gameViewFor } from './games.js';
 export { listLetters } from './mail.js';
 export { relationsOf, relationMemories } from './social.js';
@@ -77,5 +81,5 @@ export { REQUEST_ID_RE } from './service.js';
 export { outboxAck, outboxPending, recap, report } from './reports.js';
 export { TownDb, verifyBackup } from './db.js';
 export * as townContent from './content.js';
-export { controlDisconnected, mapManifest, renewNavigation, sceneKeyOfResident, sceneView, whereabouts, type ActorView, type NavBrief, type SceneView, type Whereabouts } from './space.js';
+export { controlDisconnected, mapManifest, renewNavigation, sceneKeyOfResident, sceneView, whereabouts, type ActorView, type NavBrief, type NpcView, type SceneView, type Whereabouts } from './space.js';
 export type { MapManifest, MapSource } from './spatial/types.js';

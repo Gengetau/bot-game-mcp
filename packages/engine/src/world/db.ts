@@ -42,7 +42,7 @@ export function loadSqlite(): SqliteModule {
 export type Row = Record<string, any>;
 export type Param = SQLInputValue;
 
-export const SCHEMA_VERSION = 5;
+export const SCHEMA_VERSION = 6;
 
 const MIGRATIONS: readonly string[] = [
   // ───── v1 ─────
@@ -623,6 +623,18 @@ const MIGRATIONS: readonly string[] = [
   ALTER TABLE activities ADD COLUMN table_id TEXT;
   CREATE UNIQUE INDEX IF NOT EXISTS activities_table_open ON activities(table_id)
     WHERE table_id IS NOT NULL AND status IN ('forming','ready','running','settling');
+  `,
+  // ───── v6 ─────
+  // NPC（栖灯镇的程序角色）：位置仍在 world_actors（kind='npc'，resident_id 为空），这里只放它的姿态和日程停靠点。
+  // 不放坐标、不放账本、不放对话。一名 NPC 一行；NPC 的行由程序在启动时按内容定义补建。
+  `
+  CREATE TABLE npc_state (
+    actor_id TEXT PRIMARY KEY REFERENCES world_actors(actor_id),
+    -- stand / sit / read
+    pose TEXT NOT NULL DEFAULT 'stand',
+    -- 此刻停靠的（或正在前往的）锚点编号
+    stop_anchor TEXT NOT NULL
+  ) STRICT, WITHOUT ROWID;
   `,
 ];
 

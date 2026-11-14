@@ -465,7 +465,7 @@ export function mountTown(app: Express, w: WorldService, log: (msg: string) => v
       devLogin: w.devLogin,
       traits: TRAITS,
       interests: INTERESTS.map((i) => ({ id: i.id, name: i.name })),
-      limits: { traits: w.params.traitCount, interests: w.params.interestCount, chatMaxChars: w.params.chatMaxChars, letterMaxChars: w.params.letterMaxChars },
+      limits: { traits: w.params.traitCount, interests: w.params.interestCount, chatMaxChars: w.params.chatMaxChars, letterMaxChars: w.params.letterMaxChars, personReach: w.params.personReach },
       heartbeatMs: w.params.heartbeatIntervalMs,
     })),
   );

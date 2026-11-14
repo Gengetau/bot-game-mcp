@@ -1,0 +1,32 @@
+<template id="tpl-dock-nearby" data-mod="nearby" data-tab-label="附近" data-order="10" data-layout="tab">
+  <section class="dock-pane chat-pane" data-pane="nearby">
+    <div class="scope" data-role="scope"><span class="plaque" data-role="scopeText"></span><span class="place" data-role="place"></span></div>
+    <p class="note" data-role="alone" hidden>看起来附近没人，说的话可能没人听到。</p>
+    <ol class="list" data-role="list" role="log" aria-live="polite" aria-label="附近的话"></ol>
+    <button class="jump" type="button" data-role="jump" hidden>有新消息</button>
+    <p class="hint" data-role="hint" role="status"></p>
+    <form class="compose" data-role="compose" autocomplete="off">
+      <input data-focus data-role="input" type="text" enterkeyhint="send" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" aria-label="说话">
+      <span class="count" data-role="count"></span>
+      <button class="send" type="submit" data-role="send">说</button>
+    </form>
+    <div hidden data-bank>
+      <span data-t="scope">附近 · 约 {n} 米</span>
+      <span data-t="ph.ok">对附近的人说点什么…</span>
+      <span data-t="ph.readonly">另一处握着你的居民，这里只能看</span>
+      <span data-t="ph.game">对局中不能说话</span>
+      <span data-t="ph.offline">连不上小镇，恢复后再说</span>
+      <span data-t="sys.nobody">附近没有人听到这句话</span>
+      <span data-t="err.rate_limited">歇 {n} 秒再说</span>
+      <span data-t="err.text_too_long">太长了，最多 {n} 字</span>
+      <span data-t="err.readonly">另一处握着你的居民，这里只能看</span>
+      <span data-t="err.control_lost">另一处握着你的居民，这里只能看</span>
+      <span data-t="err.in_activity">对局中不能说话</span>
+      <span data-t="err.not_present">你现在不在小镇里</span>
+      <span data-t="err.net">网络不通，稍后再试，话还在</span>
+    </div>
+  </section>
+</template>
+<template id="tpl-nearby-msg">
+  <li class="msg"><div class="who"><span class="nm" data-role="name"></span><b class="ai" data-role="ai" hidden>AI</b></div><div class="bub" data-role="text"></div></li>
+</template>

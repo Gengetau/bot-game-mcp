@@ -30,7 +30,7 @@ export interface ResidentState {
 
 /** 导航的目标（给本人和运行器看的说明；路径另算）。 */
 export interface NavTarget {
-  kind: 'place' | 'home' | 'object' | 'resident' | 'point' | 'dir';
+  kind: 'place' | 'home' | 'object' | 'resident' | 'npc' | 'point' | 'dir';
   /** 地点编号、物件编号、居民编号；地图点没有 */
   id?: string;
   name: string;
@@ -61,7 +61,7 @@ export interface NavState {
   after: NavStep[];
 }
 
-/** world_actors 的一行：一个有位置的角色（居民，以后还有 NPC）。 */
+/** world_actors 的一行：一个有位置的角色（居民或 NPC；NPC 的 resident_id 为空）。 */
 export interface ActorRow {
   actor_id: string;
   world_id: string;
