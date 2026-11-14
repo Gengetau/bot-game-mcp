@@ -9,7 +9,8 @@ body[data-game="1"] #actions, body[data-game="1"] #stopBtn, body[data-game="1"] 
 /* ───── 面板本体 ───── */
 #gamePanel {
   --game-bottom: 90px;
-  position: absolute; box-sizing: border-box; z-index: 1; left: calc(12px + var(--safe-left)); bottom: max(var(--game-bottom), calc(var(--kb, 0px) + 8px));
+  /* .dock-pane（dock.css）是 inset: 0 的满屏 flex 列：这里改成贴底的自适应高度纸板 */
+  position: absolute; display: block; top: auto; right: auto; height: auto; box-sizing: border-box; z-index: 1; left: calc(12px + var(--safe-left)); bottom: max(var(--game-bottom), calc(var(--kb, 0px) + 8px));
   width: min(360px, 44vw); max-height: calc(100vh - 120px - var(--game-bottom)); overflow-y: auto; overflow-x: hidden;
   padding: 10px 12px 10px; color: var(--d-ink); background-color: var(--d-paper); border: 4px solid var(--d-wood); border-radius: 12px;
   box-shadow: 0 0 0 1px var(--d-wood-dark), 0 4px 0 rgba(60, 40, 20, 0.28); font-size: 14px; line-height: 1.4;
