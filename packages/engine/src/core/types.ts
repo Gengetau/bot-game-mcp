@@ -275,6 +275,8 @@ export interface ActionMeta {
   /** agent 自己提交；relay 为裁判转发的真人指令。 */
   via: 'agent' | 'relay';
   channel?: 'group' | 'private';
+  /** 来自座位网页的提交：文字没有发到群里（网页「发言」框也以 group 频道进来，但只被当作指令消费）。 */
+  fromWeb?: boolean;
 }
 
 /** 人类指令解析结果。 */

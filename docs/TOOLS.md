@@ -108,7 +108,7 @@
 |---|---|---|---|
 | `game_id` | string |  | 对局 ID（如 WW-7K3Q）。不填则自动使用你当前参与的对局 |
 | `wait_seconds` | integer |  | 长轮询等待秒数（0~50），有新情况会提前返回 |
-| `wake_on` | `turn` / `any` |  | 等待时：turn=轮到我才返回（默认）；any=有任何新事件就返回 |
+| `wake_on` | `turn` / `any` |  | 等待时：turn=轮到我才返回（默认）；any=有任何你看得见的新事件就返回（别人的私密事件不算） |
 | `full_log` | boolean |  | 返回你可见的全部历史事件（默认只返回上次查看后的新事件） |
 | `cursor` | string |  | 栖灯镇：上次视图返回的 cursor。带上它会附带之后的新事件（一次最多 50 条；返回 more=true 时用返回的 cursor 接着取）；配合 wait_seconds 可以等到有新事件再返回 |
 
