@@ -177,6 +177,12 @@ func nav_gen() -> int:
 ## 等下一帧（动作之后等 /me 回来时用，不阻塞）
 func next_frame() -> void:
 	await m.get_tree().process_frame
+
+
+## 方向键现在按着时，是「这一次按下」的编号（main 的 key_edge，网页层每次新按下加一，松开再按才变）；没按着是 -1。
+## 走开拦截靠它认「新的一次按下」，不靠两次被问的时间间隔（按着不放时一帧卡顿就会被当成第二次尝试）。每帧可调，只读两个变量
+func key_press_edge() -> int:
+	return m.key_edge if m._key_vec() != Vector2.ZERO else -1
 # ─────────────────────────────────────────────────────────────────────────
 
 

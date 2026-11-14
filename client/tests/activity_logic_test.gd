@@ -19,6 +19,8 @@ func _init() -> void:
 	t_gate_two_tries()
 	t_gate_double_click()
 	t_gate_hold_key()
+	t_gate_hold_key_gap()
+	t_gate_click_gap()
 	t_gate_window_expiry()
 	t_gate_clear()
 	t_gate_confirmed_window()
@@ -67,6 +69,39 @@ func t_gate_hold_key() -> void:
 	t += 400
 	check(L.gate(st, t, TXT) == "", "按着: 松开再按放行")
 	check(int(st["warned"]) == 1, "按着: 按着不放只算一次提示")
+
+
+## 按住方向键：每帧问一次，同一次按下的编号（key_edge）不变。哪怕中间有一帧卡了 400 或 800 毫秒，也不是新的一次操作，不能放行；
+## 松开再按（编号变了、隔了一会儿）才放行。第二次尝试由「新的一次按下」这个边沿认定，不靠时间间隔推断。
+func t_gate_hold_key_gap() -> void:
+	var st: Dictionary = L.new_gate()
+	check(L.gate(st, 1000, TXT, 5) == TXT, "按住卡顿: 第一帧被拦")
+	check(L.gate(st, 1016, TXT, 5) == TXT, "按住卡顿: 下一帧仍被拦")
+	check(L.gate(st, 1416, TXT, 5) == TXT, "按住卡顿: 中间卡了 400 毫秒的一帧，同一次按下仍被拦")
+	check(L.gate(st, 2216, TXT, 5) == TXT, "按住卡顿: 再卡 800 毫秒，同一次按下仍被拦")
+	check(int(st["passed"]) == 0, "按住卡顿: 一次都没放行")
+	check(int(st["warned"]) == 1, "按住卡顿: 按着不放只算一次提示")
+	# 松开再按（新的按下编号，隔了 400 毫秒）：放行
+	check(L.gate(st, 2616, TXT, 6) == "", "按住卡顿: 松开再按（新的一次按下）放行")
+	check(int(st["passed"]) == 1, "按住卡顿: 计一次放行")
+	# 松开后立刻连按两下（间隔小于 300 毫秒）：新的按下，但仍是同一次手势，不放行
+	var st2: Dictionary = L.new_gate()
+	check(L.gate(st2, 1000, TXT, 5) == TXT, "连按: 第一下被拦")
+	check(L.gate(st2, 1150, TXT, 6) == TXT, "连按: 150 毫秒后的新按下仍被拦（同一次手势）")
+	check(int(st2["passed"]) == 0, "连按: 没放行")
+
+
+## 点击：每一下点击只问一次（被拦时），所以每次被问就是一次新的点击；两下间隔小于 300 毫秒算同一次手势，不放行。
+func t_gate_click_gap() -> void:
+	var st: Dictionary = L.new_gate()
+	check(L.gate(st, 1000, TXT) == TXT, "点击: 第一下被拦")
+	check(L.gate(st, 1250, TXT) == TXT, "点击: 250 毫秒后的第二下不放行")
+	check(int(st["passed"]) == 0, "点击: 没放行")
+	check(L.gate(st, 1600, TXT) == "", "点击: 间隔大于 300 毫秒的下一次放行")
+	# 按住方向键被拦之后，隔一会儿用鼠标点地：是新的一次操作
+	var st3: Dictionary = L.new_gate()
+	check(L.gate(st3, 1000, TXT, 5) == TXT, "混用: 先按住方向键被拦")
+	check(L.gate(st3, 1500, TXT) == "", "混用: 松开隔 500 毫秒后点击放行")
 
 
 func t_gate_window_expiry() -> void:

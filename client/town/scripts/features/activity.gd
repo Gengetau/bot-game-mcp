@@ -541,7 +541,7 @@ func blocks_input() -> String:
 	var now: int = Time.get_ticks_msec()
 	if now < int(_gate["confirmed_until"]):
 		return ""
-	return Logic.gate(_gate, now, _warn)
+	return Logic.gate(_gate, now, _warn, ctx.key_press_edge())
 
 
 # ───────────────────────── 桌牌 ─────────────────────────

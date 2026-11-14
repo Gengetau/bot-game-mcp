@@ -2,9 +2,12 @@ extends RefCounted
 ## 共同活动的纯逻辑：不读场景、不取时间（时间由调用方传进来）、不用随机数，所以能在无头 Godot 里单测（client/tests/activity_logic_test.gd）。
 ## 四件事：走开拦截的状态机（gate）、选座（pick_seat）、桌牌与提示文字（tag_text / dur_text / warn_text）、参与者名单差异（diff_people）。
 
-## 走开拦截：第二次尝试必须隔开一个新的操作（大于 300 毫秒），且在第一次提示之后 6 秒内；放行后 6 秒内都不再拦。
-## 300 毫秒：双击 / 触摸点两下（间隔常在 100 到 250 毫秒）算同一次手势，不能一下子就走开；方向键按着不放时每帧都在问，
-## 间隔永远小于 300 毫秒，所以按着不放不会自己放行，松开再按才算第二次。
+## 走开拦截：第二次尝试必须是「新的一次操作」，且在第一次提示之后 6 秒内；放行后 6 秒内都不再拦。
+## 新的一次操作怎么认：
+##  - 方向键：靠「新的一次按下」这个边沿（main 的 key_edge，每次新按下加一，由调用方传进来）。按着不放时每帧都在问、编号不变，
+##    哪怕中间有一帧卡了几百毫秒也不算新的一次；松开再按编号变了才算。不靠时间间隔推断（以前靠「间隔大于 300 毫秒」，一帧卡顿就被当成第二次而放行）。
+##  - 点击：被拦的每一下点击只问一次，每次被问就是一次点击。
+## 300 毫秒：不管哪种，双击 / 触摸点两下（间隔常在 100 到 250 毫秒）算同一次手势，距上一次被问不到 300 毫秒的不放行（这条只作用于「新的一次操作」之间，不再用来区分按住和重按）。
 ## 6 秒：给玩家「看到提示、想一想、再点一次」的时间，也是放行之后连续走几步不再被拦的窗口；过期就重新提示，免得很久以前的一次提示让以后的误触直接放行。
 const REPEAT_GAP_MS := 300
 const WINDOW_MS := 6000
@@ -20,29 +23,34 @@ const ENDED_KEEP := 8
 
 
 static func new_gate() -> Dictionary:
-	return {"warn_at": 0, "last_call": 0, "confirmed_until": 0, "warned": 0, "passed": 0, "passed_at": 0}
+	return {"warn_at": 0, "warn_edge": -1, "last_call": 0, "confirmed_until": 0, "warned": 0, "passed": 0, "passed_at": 0}
 
 
 ## 清掉确认状态（活动结束、换了一桌、离开、换人时调用）；计数不清，端到端要读
 static func gate_clear(st: Dictionary) -> void:
 	st["warn_at"] = 0
+	st["warn_edge"] = -1
 	st["last_call"] = 0
 	st["confirmed_until"] = 0
 	st["passed_at"] = 0
 
 
 ## 每次被问「现在许不许走」时调用，返回空串放行、非空串是提示文字。st 是 new_gate() 的字典，now 是毫秒。
-static func gate(st: Dictionary, now: int, text: String) -> String:
+## key_edge：方向键按着时是这一次按下的编号，没按着（点击等）是 -1。
+static func gate(st: Dictionary, now: int, text: String, key_edge: int = -1) -> String:
 	if now < int(st["confirmed_until"]):
 		return ""
 	var warn_at: int = int(st["warn_at"])
-	if warn_at > 0 and now - int(st["last_call"]) > REPEAT_GAP_MS and now - warn_at < WINDOW_MS:
+	# 同一次按住（编号没变）永远不是第二次尝试，不管帧间隔多长
+	var same_hold: bool = key_edge >= 0 and key_edge == int(st["warn_edge"])
+	if warn_at > 0 and not same_hold and now - int(st["last_call"]) > REPEAT_GAP_MS and now - warn_at < WINDOW_MS:
 		st["confirmed_until"] = now + WINDOW_MS
 		st["passed"] = int(st["passed"]) + 1
 		st["passed_at"] = now
 		return ""
 	if warn_at <= 0 or now - warn_at >= WINDOW_MS:
 		st["warn_at"] = now
+		st["warn_edge"] = key_edge
 		st["warned"] = int(st["warned"]) + 1
 	st["last_call"] = now
 	return text

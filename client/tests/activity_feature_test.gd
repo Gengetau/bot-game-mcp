@@ -23,6 +23,7 @@ class FakeCtx:
 	var walks: Array = []
 	var gen: int = 0
 	var near: bool = true
+	var key_edge: int = -1  # 方向键按着时这一次按下的编号，-1 = 没按着
 	var control: bool = true
 	var tree: SceneTree
 	var act_calls: Array = []
@@ -83,6 +84,9 @@ class FakeCtx:
 	func walk_to(to: Dictionary, _label: String, _mark = null) -> void:
 		gen += 1  # main._do_navigate 一开始就同步加一
 		walks.append(to)
+
+	func key_press_edge() -> int:
+		return key_edge
 
 	func nav_gen() -> int:
 		return gen
@@ -156,6 +160,7 @@ func _run() -> void:
 	await t_pick_own_table()
 	t_late_me()
 	t_scene_switch()
+	await t_hold_key_stall()
 	print("%d 项检查，%d 项失败" % [_checks, _fails])
 	quit(1 if _fails > 0 else 0)
 
@@ -325,3 +330,21 @@ func t_scene_switch() -> void:
 	f2.on_me(_view(null, act_open))
 	f2.on_scene({"scene": "tea_house", "actors": []})
 	check(f2.debug()["tags"].size() == 1, "换场景: 同一场景的快照不清桌牌")
+
+
+## 走开拦截（统筹发现的 40.7）：按住方向键、中间卡了一帧（超过 300 毫秒）不能被当成第二次尝试放行；松开再按（新的按下编号）才放行
+func t_hold_key_stall() -> void:
+	var s: Array = _make()
+	var f = s[0]
+	var c: FakeCtx = s[1]
+	var op: Dictionary = _it("i1", "running", "r_ini", ["r_ini", SELF])
+	f.on_me(_view(op, op))
+	c.key_edge = 7
+	check(f.blocks_input() != "", "按住卡顿: 第一帧被拦")
+	await create_timer(0.45).timeout  # 一帧卡了 450 毫秒
+	check(f.blocks_input() != "", "按住卡顿: 卡顿之后同一次按下仍被拦，不能放行")
+	check(int(f.debug()["passed"]) == 0, "按住卡顿: 一次都没放行")
+	await create_timer(0.45).timeout
+	c.key_edge = 8  # 松开再按
+	check(f.blocks_input() == "", "按住卡顿: 松开再按放行")
+	check(int(f.debug()["passed"]) == 1, "按住卡顿: 放行计一次")
