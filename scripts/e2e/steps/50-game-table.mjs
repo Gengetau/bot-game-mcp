@@ -109,10 +109,20 @@ export default async function run(h) {
 
   // ───────────────────────── 50.1 点桌子走到不同的落脚点 ─────────────────────────
   await step(50.1, '点桌子：A 用鼠标点桌一、B 用手指点桌一，各走到自己的落脚点（都在桌心 2 米内），两人落脚点相距 1 米以上；走到后桌牌「数字炸弹」出现、出现开一局按钮', async () => {
+    // 50 步里 A 用 E 键走到了某一张桌边（两张同样远，选哪张不论）。
+    // 若正好是桌一：A 已站在落脚点上，点桌子应被 on_pick 吞掉、什么都不发（带屏障：等同一时刻 B 的点击发出导航之后再核）；
+    // 若是桌二：A 点桌一应发出导航走过来。
     const ncA = count(A, 'navigate');
+    const seated = (await seatDist(A, T1)) <= 2.0;
+    const w0A = (await gg(A)).walks;
     await clickObject(A, T1);
-    await until(async () => count(A, 'navigate') > ncA, 15_000, 'A 的点击发出导航');
-    await waitIdle(A);
+    if (seated) {
+      await frames(A.page, 8); // 屏障：旧逻辑会在点击的同一帧发 navigate
+      check(count(A, 'navigate') === ncA && (await gg(A)).walks === w0A, `A 已站在桌一边，点桌一不应再走：navigate ${ncA} -> ${count(A, 'navigate')}`);
+    } else {
+      await until(async () => count(A, 'navigate') > ncA, 15_000, 'A 的点击发出导航');
+      await waitIdle(A);
+    }
     const sa = await sceneOf(A);
     check((await seatDist(A, T1)) <= 2.0, `A 离桌一桌心应不超过 2 米：${await seatDist(A, T1)}`);
     await clickObject(B, T1);
