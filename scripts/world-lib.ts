@@ -31,7 +31,7 @@ import {
 } from '../packages/engine/src/index.js';
 import { BOOKS, NPCS, PLACES, SHOPS, npcLineMatches } from '../packages/engine/src/world/content.js';
 import { controlDisconnected, renewNavigation, sceneView, whereabouts } from '../packages/engine/src/world/index.js';
-import { actorOf, posOf, positionOfResident } from '../packages/engine/src/world/space.js';
+import { actorOf, npcActorOf, posOf, positionOfResident } from '../packages/engine/src/world/space.js';
 import { distance, isWalkable, zoneAt } from '../packages/engine/src/world/spatial/grid.js';
 import { arrivalAt, positionAt } from '../packages/engine/src/world/spatial/motion.js';
 import type { NavState } from '../packages/engine/src/world/types.js';
@@ -491,13 +491,14 @@ export class Invariants {
     if (!npcId) return;
     this.pass('npc_in_reach');
     const a = actorOf(w, actorId);
-    const n = w.db.get("SELECT * FROM world_actors WHERE actor_id = ? AND kind = 'npc'", npcId);
+    // 必须用带解析的角色行（npcActorOf）：直接读原始行拿不到 nav，会把正在走路的 NPC 当成站在出发点，现算位置就错了
+    const n = npcActorOf(w, npcId);
     if (!a || !n || a.scene_id !== n.scene_id || a.instance_id !== n.instance_id) {
       this.fail('npc_in_reach', `${type} 成功了，但居民和 ${npcId} 不在同一个场景实例里`, { type, actorId, npcId }, now);
       return;
     }
     const pa = posOf(a, now);
-    const pn = posOf(n as never, now);
+    const pn = posOf(n, now);
     const d = Math.hypot(pa.x - pn.x, pa.z - pn.z);
     if (d > w.params.personReach + 0.02) this.fail('npc_in_reach', `${type} 成功了，但离 ${npcId} ${d.toFixed(2)} 米，超过 personReach ${w.params.personReach}`, { type, actorId, npcId, d }, now);
   }
