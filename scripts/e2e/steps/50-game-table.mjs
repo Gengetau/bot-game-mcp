@@ -1,8 +1,9 @@
 // C3：走到游戏桌入座，玩一局数字炸弹。A 桌面 1440x900（键盘），B 手机 390x844 触摸（屏幕数字键），C 是只走 API 的居民（凑人数、当对手）。
 // 步骤号都是数字（50.15 就是「50.1 之后的一步」），文件内的子步骤按顺序互相依赖，只能整个文件一起跑。
 // 末尾有一段「怎么让它失败」，每条新断言都按那里写的做过反向验证（或明说只是推理）。
-import { frames, rectOf, godotFeature } from '../lib/ui.mjs';
-import { apiSay } from '../lib/chat.mjs';
+import { frames, rectOf, godotFeature, closeDock, modState } from '../lib/ui.mjs';
+import { apiSay, apiHistory } from '../lib/chat.mjs';
+import { openTown, townRows, townCompose, apiTownSay, apiTownSayWait } from '../lib/town.mjs';
 import { gameMod, godotGame, gameButtons, toastTexts, tableTags, clickObject, serverMe, apiAct, publicGame, midOf, apiResident, sleep as nap } from '../lib/game.mjs';
 
 export const meta = { id: 'game-table', n: 50, title: '走到游戏桌入座，玩一局数字炸弹' };
@@ -291,6 +292,20 @@ export default async function run(h) {
     }
     const s1 = await sceneOf(A);
     check(dist(s0, s1) < 0.3, `局中 A 没有动：${dist(s0, s1).toFixed(2)}`);
+    // 全镇公屏：局中只看不发（C1b 把这条留给本段）。服务端 chat.ts：正在一局里 -> 422 precondition in_activity；页面一侧 town.gd 的 reason 是 game
+    await openTown(A.page);
+    const ts = await until(async () => { const t = await modState(A.page, 'town'); return t?.st && t.st.reason === 'game' ? t : null; }, 15_000, '全镇页签的状态变成「对局中不能发」', 200);
+    check(ts.st.canSend === false, `局中全镇页签 canSend 应为 false：${JSON.stringify(ts.st)}`);
+    const tc = await townCompose(A.page);
+    check(tc.disabled === true && tc.sendDisabled === true, `局中全镇页签的输入框和发送键应禁用：${JSON.stringify(tc)}`);
+    const tr = await apiTownSay(A, '局中公屏不该发得出去');
+    check(tr.status === 422 && tr.body?.reason === 'in_activity', `局中接口发公屏应被拒（422 in_activity）：${tr.status} ${JSON.stringify(tr.body)}`);
+    // 公屏仍可读：B 被丢出了、不在局里，B 说一句，局中的 A 的全镇页签应看到（等到它出现就是屏障，先加后续）
+    const readMark = `场外的话${h.rnd()}`;
+    const rb = await apiTownSayWait(B, readMark);
+    check(rb.status === 200, `B（不在局里）发公屏：${rb.status} ${JSON.stringify(rb.body)}`);
+    await until(async () => (await townRows(A.page)).some((r) => r.text === readMark), 25_000, '局中的 A 在全镇页签里读到 B 的话', 300);
+    await closeDock(A.page);
   });
 
   // ───────────────────────── 50.5 局中输入规则 ─────────────────────────
@@ -368,6 +383,8 @@ export default async function run(h) {
       await waitIdle(p);
     }
     for (const p of [A, B]) await until(async () => (await snap(p.page)).nearValid === true && (await btn(p, `f:game:propose:${T2}`)), 25_000, `${p.label} 在桌二边有开一局按钮`, 200);
+    // C 走到桌二边（不入局），局中说一句附近的话：局中的 A 听不到；局后 C 再说一句，A 听到它就是屏障
+    await C.walk(T2);
     await click(A, `f:game:propose:${T2}`);
     await until(async () => (await lobbyId(A)) !== '', 20_000, 'A 开了桌二');
     await click(B, (await waitBtn(B, 'f:game:join:')).id);
@@ -387,6 +404,35 @@ export default async function run(h) {
     check(await B.page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1), '手机没有横向溢出');
     check((await gameMod(B.page)).coarse === true && (await gameMod(B.page)).inputReadonly === true, '手机输入框只读（屏幕数字键）');
     await shot(A.page, '50-desktop-game');
+    const heardMark = `局中的话${h.rnd()}`;
+    const cs = await C.act({ type: 'say_nearby', text: heardMark });
+    check(cs.status === 200, `C（不在局里）说话：${cs.status} ${JSON.stringify(cs.body)}`);
+    // 中途刷新 A：由 /me.game 恢复面板
+    A.w.closing = true;
+    await A.page.goto(`${BASE}/town/3d/?debug=1`);
+    await A.page.waitForSelector('#enterBtn:not([hidden])', { timeout: 120_000 });
+    A.w.closing = false;
+    await A.page.click('#enterBtn');
+    await A.page.waitForFunction(() => window.__town && window.__town.actors.length > 0 && document.body.dataset.phase === 'playing', null, { timeout: 60_000 });
+    await until(async () => (await gameMod(A.page)).mode === 'game' && (await gameMod(A.page)).bodyFlag === '1', 30_000, 'A 刷新后面板恢复、body[data-game]=1');
+    await until(async () => (await gg(A)).blocks === BLOCK, 10_000, 'A 刷新后局中封锁恢复', 200);
+    check((await gameMod(A.page)).players.length === 2, 'A 刷新后面板上有 2 个玩家');
+    await until(async () => JSON.stringify((await gameMod(A.page)).range) === JSON.stringify((await gameMod(B.page)).range), 20_000, 'A 刷新后范围与 B 一致', 300);
+    // 手机补充版式：360 宽、横屏矮屏（面板在视口里、输入区可见、没有横向溢出），看完恢复 390x844
+    const fits = (r, vw, vh) => !!r && r.left >= -1 && r.right <= vw + 1 && r.top >= -1 && r.bottom <= vh + 1;
+    for (const [vw, vh, what] of [[360, 740, '360 宽'], [844, 390, '横屏矮屏']]) {
+      await B.page.setViewportSize({ width: vw, height: vh });
+      await frames(B.page, 4);
+      const mm = await gameMod(B.page);
+      check(fits(mm.rect, vw, vh), `${what}：面板应整个在视口里：${JSON.stringify(mm.rect)}`);
+      check(await B.page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1), `${what}：没有横向溢出`);
+      const ib = await rectOf(B.page, '#gamePanel [data-role="input"]');
+      check(fits(ib, vw, vh), `${what}：输入框应在视口里：${JSON.stringify(ib)}`);
+      const pk = await rectOf(B.page, '#gamePanel [data-key="5"]');
+      check(fits(pk, vw, vh) && pk.width >= 44 && pk.height >= 44, `${what}：数字键应在视口里且不小于 44 像素：${JSON.stringify(pk)}`);
+    }
+    await B.page.setViewportSize({ width: 390, height: 844 });
+    await frames(B.page, 4);
     // 点面板不发导航
     const nb = count(B, 'navigate');
     await B.page.click('#gamePanel [data-role="range"]').catch(() => {});
@@ -397,13 +443,42 @@ export default async function run(h) {
     // 打到结束
     const t0 = Date.now();
     const turns = { A: 0, B: 0 };
+    const stateOf = async (p) => { const d = await gameMod(p.page); return JSON.stringify({ r: d.range, h: d.history.map((x) => [x.seat, x.guess, x.res]) }); };
+    let dbl = false;
+    let cut = false;
     for (;;) {
       if (Date.now() - t0 > 240_000) throw new Error('一局 4 分钟还没打完');
       const [ra, rb] = await Promise.all([gameMod(A.page), gameMod(B.page)]);
       if (ra.mode === 'result' && rb.mode === 'result') break;
       for (const [p, d, k] of [[A, ra, 'A'], [B, rb, 'B']]) {
         if (d.mode === 'game' && d.yourTurn && !d.busy) {
-          if ((await takeTurn(p)) !== null) turns[k]++;
+          if (k === 'A' && !dbl) {
+            // 双击提交（连按两下 Enter）只发一次 game_act
+            dbl = true;
+            const g0 = count(A, 'game_act');
+            const n0 = (await godotGame(A))?.sent?.guess ?? 0;
+            const num = midOf(d.range);
+            await A.page.fill('#gamePanel [data-role="input"]', String(num), { timeout: 5000 });
+            await Promise.all([A.page.press('#gamePanel [data-role="input"]', 'Enter'), A.page.press('#gamePanel [data-role="input"]', 'Enter')]);
+            await until(async () => ((await godotGame(A))?.sent?.guess ?? 0) > n0, 15_000, 'A 双击后发出了猜数', 150);
+            await frames(A.page, 6);
+            check(count(A, 'game_act') === g0 + 1 && ((await godotGame(A))?.sent?.guess ?? 0) === n0 + 1, `连按两下 Enter 只发一次 game_act：${g0} -> ${count(A, 'game_act')}`);
+            turns.A++;
+            // 两端范围与历史一致（等视图追上）
+            await until(async () => (await stateOf(A)) === (await stateOf(B)), 20_000, 'A、B 面板的范围与猜数历史一致', 300);
+          } else if (k === 'B' && !cut && turns.A + turns.B >= 1 && !(await gameMod(A.page)).yourTurn) {
+            // 对手（A）回合里 B 断线：A 猜完之后 B 重连，应追上
+            cut = true;
+            B.gate.block = true;
+            for (const ws of B.gate.sockets) ws.close();
+            B.gate.sockets.length = 0;
+            await until(async () => (await snap(B.page)).conn !== 'ok', 15_000, 'B 显示断线');
+            await until(async () => (await gameMod(A.page)).yourTurn || (await gameMod(A.page)).mode === 'result', 60_000, '轮到 A', 300);
+            if ((await gameMod(A.page)).mode === 'game') await takeTurn(A);
+            B.gate.block = false;
+            await until(async () => (await snap(B.page)).conn === 'ok', 40_000, 'B 重连成功');
+            await until(async () => (await stateOf(A)) === (await stateOf(B)) || (await gameMod(A.page)).mode === 'result', 40_000, 'B 重连后追上 A 的范围与猜数历史', 300);
+          } else if ((await takeTurn(p)) !== null) turns[k]++;
         }
       }
       await sleep(250);
@@ -426,7 +501,7 @@ export default async function run(h) {
     await shot(A.page, '51-desktop-result');
     // 关卡
     await A.page.click('#gamePanel [data-role="dismiss"]');
-    await B.page.click('#gamePanel [data-role="dismiss"]');
+    await B.page.keyboard.press('Escape'); // 结果卡 Esc 也能关
     for (const p of [A, B]) await until(async () => !(await gameMod(p.page)).shown && (await gameMod(p.page)).bodyFlag === null, 10_000, `${p.label} 结果卡收起、body 标记去掉`);
     for (const id of ['destBtn']) check(await A.page.evaluate((i) => getComputedStyle(document.getElementById(i)).display !== 'none', id), `关卡后 #${id} 回来`);
     check((await gg(A)).blocks === '', 'blocks 清空');
@@ -438,10 +513,54 @@ export default async function run(h) {
     await until(async () => A.gate.dirFrames.length > f0, 10_000, '关卡后 WASD 发方向帧');
     const sr = await apiSay(A, '打完了');
     check(sr.status === 200, `关卡后附近聊天可发：${sr.status} ${JSON.stringify(sr.body)}`);
+    // C 在局中说的话 A 听不到：局后 C 再说一句，A 听到它就是屏障，然后查 /history 里没有局中那句
+    const afterMark = `局后的话${h.rnd()}`;
+    check((await C.act({ type: 'say_nearby', text: afterMark })).status === 200, 'C 局后说话');
+    await until(async () => (await apiHistory(A)).some((m) => (m.text ?? m.body ?? '').includes(afterMark)), 25_000, 'A 听到 C 局后的话', 400);
+    const hist = (await apiHistory(A)).map((m) => m.text ?? m.body ?? '');
+    check(!hist.some((t) => t.includes(heardMark)), `A 的附近聊天历史里不应有局中那句「${heardMark}」`);
   });
 
   // ───────────────────────── 52 防注入与隐私 ─────────────────────────
-  await step(52, '防注入与存储：页面里没有 game 相关的 localStorage / sessionStorage 项；面板文字里没有坐标；只用 textContent（结果卡没有 img 元素）', async () => {
+  await step(52, '防注入与存储：恶意名字的 C 进桌、开局，面板与提示条里的名字和服务端一致、没有注入出节点、没有执行脚本；页面没有 game 相关的浏览器存储；面板文字里没有坐标', async () => {
+    allowFailure(A.w, 'GET', /\/town\/api\/game(\?.*)?$/, { min: 0, max: 3, why: '52：A 退出时在途的 /game 读取可能得到 409 context_stale' });
+    const evil = `<img src=x onerror="window.__xss=1">丁${h.rnd()}`;
+    const D = await apiResident(h.browsers[0], BASE, evil);
+    try {
+      const dname = D.name; // 服务端清洗之后的名字
+      note(`恶意名字「${evil}」登录后服务端存的名字是「${dname}」`);
+      await D.walk('arcade');
+      await D.walk(T2);
+      for (const p of [A, B]) await until(async () => (await snap(p.page)).nearValid === true && ((await btn(p, `f:game:propose:${T2}`)) || (await btn(p, 'f:game:join:'))), 25_000, `${p.label} 在桌二边`, 200);
+      await click(A, `f:game:propose:${T2}`);
+      await until(async () => (await lobbyId(A)) !== '', 20_000, 'A 开了桌二');
+      const aid = await lobbyId(A);
+      const jr = await D.act({ type: 'join_game', activityId: aid });
+      check(jr.status === 200, `D 加入：${jr.status} ${JSON.stringify(jr.body)}`);
+      await toastHas(A, `${dname} 加入了这一桌`);
+      await until(async () => (await btn(A, 'f:game:start:'))?.sub?.includes('在桌边 2') ?? false, 20_000, 'A 的「开始」写着在桌边 2', 200);
+      await click(A, (await btn(A, 'f:game:start:')).id);
+      await until(async () => (await gameMod(A.page)).mode === 'game' && (await gameMod(A.page)).players.length >= 2, 30_000, 'A 入局、面板有玩家');
+      const sv = (await serverMe(A)).game;
+      const names = (sv.players ?? []).map((x) => x.name);
+      check(names.includes(dname), `服务端的玩家名里应有清洗后的名字：${JSON.stringify(names)}`);
+      const dom = (await gameMod(A.page)).players.map((x) => x.text);
+      check(dom.some((t) => t.includes(dname)), `面板上的名字应与服务端一致：${JSON.stringify(dom)} / ${dname}`);
+      const bad = await A.page.evaluate(() => ({
+        nodes: document.querySelectorAll('#gamePanel img, #gamePanel script, #gamePanel iframe, #gamePanel svg image, #toasts img, #tags img').length,
+        onerror: document.querySelectorAll('[onerror], [onload]').length,
+        xss: window.__xss ?? null,
+      }));
+      check(bad.nodes === 0 && bad.onerror === 0 && bad.xss === null, `面板、提示条、桌牌里不应有注入的节点或执行过的脚本：${JSON.stringify(bad)}`);
+    } finally {
+      // 收尾：A 退出（界面确认框），D 退出
+      if ((await gg(A)).inGame) {
+        await A.page.click('#gamePanel [data-role="leave"]');
+        await A.page.click('#gamePanel [data-role="leaveYes"]');
+        await until(async () => !(await gg(A)).inGame, 20_000, 'A 离开了局');
+      }
+      await D.close().catch(() => {});
+    }
     for (const p of [A, B]) {
       const keys = await p.page.evaluate(() => { try { return [...Object.keys(localStorage), ...Object.keys(sessionStorage)]; } catch { return []; } });
       check(!keys.some((k) => /game|bomb|seat|guess/i.test(k)), `${p.label} 不应在浏览器存储里留 game 数据：${JSON.stringify(keys)}`);
