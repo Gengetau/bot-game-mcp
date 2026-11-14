@@ -49,6 +49,14 @@ func event_types() -> PackedStringArray:
 
 func on_enter() -> void:
 	if ctx.ws_ready():
+		_refresh_if_playing()
+
+
+## 只在「在场」时读 /me。离开小镇（或被请出、换人、会话失效）之后，main 可能还有一条刚建立的 WebSocket 或排着的重连在路上，
+## 它的 hello / resync 仍会送到这里；这时再读 /me 是打在已经不在场（甚至已经清掉登录）的会话上，得到 401，main 会当成「登录失效」
+## 把页面带回登录页，「进入小镇」按钮忽隐忽现（20.95 的超时）。所以不在场就什么都不读，在场之后 on_enter 会再读一次
+func _refresh_if_playing() -> void:
+	if ctx.playing():
 		ctx.refresh_me()
 
 
@@ -80,11 +88,11 @@ func on_leave() -> void:
 
 
 func on_hello(_msg: Dictionary, _resumed: bool, _first: bool) -> void:
-	ctx.refresh_me()
+	_refresh_if_playing()
 
 
 func on_resync() -> void:
-	ctx.refresh_me()
+	_refresh_if_playing()
 
 
 ## 换了场景：旧场景的物件、桌牌马上清掉（新场景的 /me 要过一个往返才到，这段空窗里不能把旧坐标按新场景的镜头投影出一块桌牌）

@@ -23,6 +23,8 @@ class FakeCtx:
 	var walks: Array = []
 	var gen: int = 0
 	var near: bool = true
+	var is_playing: bool = true
+	var refreshes: int = 0
 	var key_edge: int = -1  # 方向键按着时这一次按下的编号，-1 = 没按着
 	var control: bool = true
 	var tree: SceneTree
@@ -39,7 +41,7 @@ class FakeCtx:
 		return acts
 
 	func playing() -> bool:
-		return true
+		return is_playing
 
 	func in_game() -> bool:
 		return false
@@ -60,7 +62,7 @@ class FakeCtx:
 		toasts.append({"text": text, "kind": kind})
 
 	func refresh_me() -> void:
-		pass
+		refreshes += 1
 
 	func mark_dirty() -> void:
 		pass
@@ -161,6 +163,7 @@ func _run() -> void:
 	t_late_me()
 	t_scene_switch()
 	await t_hold_key_stall()
+	t_no_refresh_when_not_playing()
 	print("%d 项检查，%d 项失败" % [_checks, _fails])
 	quit(1 if _fails > 0 else 0)
 
@@ -348,3 +351,18 @@ func t_hold_key_stall() -> void:
 	c.key_edge = 8  # 松开再按
 	check(f.blocks_input() == "", "按住卡顿: 松开再按放行")
 	check(int(f.debug()["passed"]) == 1, "按住卡顿: 放行计一次")
+
+
+## 20.95：离开小镇之后，迟到的 WebSocket hello / resync 不能让这里去读 /me（打在已经不在场、甚至清了登录的会话上，得到 401，main 会把页面带回登录页）
+func t_no_refresh_when_not_playing() -> void:
+	var s: Array = _make()
+	var f = s[0]
+	var c: FakeCtx = s[1]
+	c.is_playing = false
+	f.on_hello({}, true, false)
+	f.on_resync()
+	check(c.refreshes == 0, "离开后: hello / resync 不应读 /me（读了 %d 次）" % c.refreshes)
+	c.is_playing = true
+	f.on_hello({}, false, true)
+	f.on_resync()
+	check(c.refreshes == 2, "在场时: hello / resync 仍各读一次 /me（%d 次）" % c.refreshes)
