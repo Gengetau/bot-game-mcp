@@ -262,7 +262,11 @@ describe('附近聊天的叫醒额度', () => {
     b.act('start_game', { activityId: p.activity.id });
     expect(b.row().activity_id).not.toBeNull();
     expect(t.clock.t).toBeLessThan(due);
-    t.advanceTo(due);
+    // 全程给三个人心跳：b 一直在场，唯一让补叫结束的原因只能是「在对局里」
+    advanceTo(t, due + 1000, [a, b, c]);
+    expect(b.row().present_since).not.toBeNull();
+    expect(b.row().activity_id).not.toBeNull();
+    expect(wakeJobs(t, 'done').filter((j) => j.dedupe_key === `nearby_wake:${b.residentId}`)).toHaveLength(1);
     expect(texts(t, b)).toHaveLength(5);
     expect(pending(t)).toHaveLength(0);
   });

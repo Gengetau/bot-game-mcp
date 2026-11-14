@@ -25,6 +25,7 @@ import {
   Invariants,
   MIN,
   Rand,
+  nearbyWakeCheck,
   TOWN_START,
   WorldError,
   dbFootprint,
@@ -53,6 +54,7 @@ import {
   type NavTrack,
   type Outcome,
   type Person,
+  type WakeStats,
   type WorldService,
 } from './world-lib.js';
 import { NPCS, PUBLIC_OBJECTS } from '../packages/engine/src/world/content.js';
@@ -2165,95 +2167,6 @@ function controlDisconnectedFor(w: WorldService, principalId: string, clientId: 
 
 // ───────────────────────── 附近聊天的叫醒额度与补叫（O1/T2） ─────────────────────────
 
-interface WakeStats {
-  /** AI 对 AI 的附近聊天里，没有当场事件的（被压下的）受众行数 */
-  suppressed: number;
-  /** 补叫真的发出：事件发出的时刻晚于那句话说出的时刻 */
-  late: number;
-  /** 当场发出的 */
-  live: number;
-}
-
-/**
- * 两条不变量，独立重算（只读表和参数数字，不调引擎里的任何判断函数）：
- *  - 上限：任何一位 AI 听者，在任意一小时里，因别的 AI 的附近聊天收到的 chat 事件不超过 nearbyWakeBurst + nearbyWakePerHour，
- *    其中来自同一位发言者的不超过 nearbyWakePairBurst + nearbyWakePairPerHour（当场的和补叫的都算）；
- *  - 不丢：AI 对 AI 的一句话如果没有当场事件，三者必居其一：后来有一条附近聊天事件发给了听者（messageId 更大）；
- *    听者名下有待办的补叫任务；听者已经不在场 / 进过对局 / 离开又回来（它回来时自己会读视图），或者那句话已经过了视图的 30 分钟窗口。
- *    私宅里说的话只算上限，不核对「不丢」（走出又走进同一间屋的听者没法只凭表判断）。
- * sinceSentAt：只核对这个时刻之后说的话的「不丢」（周期检查只看最近一段，收尾检查看全部）。
- */
-function nearbyWakeCheck(w: WorldService, inv: Invariants, now: number, sinceSentAt: number): WakeStats {
-  const stats: WakeStats = { suppressed: 0, late: 0, live: 0 };
-  const P = w.params;
-  const passed = (name: string) => {
-    const r = inv.runs.get(name) ?? { checks: 0, fails: 0 };
-    r.checks++;
-    inv.runs.set(name, r);
-  };
-  const kindOf = new Map<string, string>(w.db.all('SELECT resident_id, kind FROM residents').map((r) => [String(r.resident_id), String(r.kind)]));
-  const maxInWindow = (times: number[]): number => {
-    let best = 0;
-    for (let i = 0, j = 0; i < times.length; i++) {
-      while (times[i]! - times[j]! >= HOUR) j++;
-      best = Math.max(best, i - j + 1);
-    }
-    return best;
-  };
-  for (const [L, kind] of kindOf) {
-    if (kind !== 'agent') continue;
-    const evs = w.db
-      .all("SELECT occurred_at AS at, projection FROM recipient_events WHERE resident_id = ? AND type = 'chat' ORDER BY cursor", L)
-      .map((r) => {
-        const p = JSON.parse(String(r.projection)) as { from: { id: string }; messageId: number };
-        return { at: Number(r.at), from: p.from.id, seq: p.messageId };
-      });
-    // 上限
-    const fromAgents = evs.filter((e) => e.from !== L && kindOf.get(e.from) === 'agent').sort((a, b) => a.at - b.at);
-    const total = maxInWindow(fromAgents.map((e) => e.at));
-    if (total > P.nearbyWakeBurst + P.nearbyWakePerHour) inv.fail('nearby_wake_cap', `一小时内收到别的 AI 的附近聊天事件 ${total} 条，超过 ${P.nearbyWakeBurst + P.nearbyWakePerHour}`, { listener: L }, now);
-    else passed('nearby_wake_cap');
-    const bySender = new Map<string, number[]>();
-    for (const e of fromAgents) (bySender.get(e.from) ?? bySender.set(e.from, []).get(e.from)!).push(e.at);
-    for (const [from, times] of bySender) {
-      const n = maxInWindow(times);
-      if (n > P.nearbyWakePairBurst + P.nearbyWakePairPerHour) inv.fail('nearby_wake_cap', `同一位发言者一小时内对同一位听者的事件 ${n} 条，超过 ${P.nearbyWakePairBurst + P.nearbyWakePairPerHour}`, { listener: L, from }, now);
-    }
-    // 不丢
-    const rows = w.db.all('SELECT a.message_id, m.sender_id, m.sent_at, m.space_id FROM chat_audience a JOIN chat_messages m ON m.message_id = a.message_id WHERE a.resident_id = ? ORDER BY a.message_id', L);
-    const delivered = new Map<number, number>(evs.map((e) => [e.seq, e.at]));
-    const maxEvSeq = evs.reduce((m, e) => Math.max(m, e.seq), 0);
-    const me = w.db.get('SELECT present_since, activity_id FROM residents WHERE resident_id = ?', L)!;
-    const hasJob = !!w.db.get("SELECT 1 AS x FROM scheduled_jobs WHERE dedupe_key = ? AND status = 'pending'", `nearby_wake:${L}`);
-    rows.forEach((row, i) => {
-      const seq = i + 1;
-      const S = String(row.sender_id);
-      if (S === L || kindOf.get(S) !== 'agent') return;
-      const sentAt = Number(row.sent_at);
-      const at = delivered.get(seq);
-      if (at !== undefined) {
-        stats.live++;
-        if (at > sentAt) {
-          stats.live--;
-          stats.late++;
-        }
-        return;
-      }
-      stats.suppressed++;
-      if (sentAt < sinceSentAt || String(row.space_id).startsWith('home:')) return;
-      const away =
-        me.present_since === null ||
-        me.activity_id !== null ||
-        Number(me.present_since) > sentAt ||
-        now - sentAt >= 30 * MIN ||
-        !!w.db.get('SELECT 1 AS x FROM activity_participants WHERE resident_id = ? AND joined_at > ?', L, sentAt);
-      if (maxEvSeq > seq || hasJob || away) passed('nearby_wake_lost');
-      else inv.fail('nearby_wake_lost', '被压下的附近聊天既没有后来的事件、也没有待办的补叫，听者也没有离开过', { listener: L, from: S, messageSeq: seq, sentAt }, now);
-    });
-  }
-  return stats;
-}
-
 /**
  * 写死步骤的小场景（自己的小世界，不碰主循环的随机流）：两位专门的 AI 居民站在听得到的距离内，一位连说几句，
  * 压下之后把时间推到补叫到期。保证「被压下」和「补叫发出」各至少发生一次，否则上面两条不变量可能在主循环里空转。
@@ -2440,6 +2353,12 @@ console.log('\n── 拒绝与幂等检查 ──');
 console.log(`故意发错 / 重放等检查 ${sim.rejectChecks.run} 次，未按预期 ${sim.rejectChecks.failed} 次：${[...sim.negCount].map(([k, v]) => `${k} ${v}`).join('；')}`);
 for (const s of sim.rejectChecks.samples) console.log(`  × ${s}`);
 
+// 收尾的聊天核对和覆盖断言要在违例汇总、覆盖不足的打印之前做，否则它们产生的违例和缺口不会列在失败原因里
+const wakeFinal = nearbyWakeCheck(sim.w, sim.inv, sim.clock.t, 0);
+const wakeCoverageMissing: string[] = [];
+if (wakeScenarioStats.suppressed < 1) wakeCoverageMissing.push('附近聊天的叫醒额度：「被压下」从未发生（写死的小场景没有压下任何一句）');
+if (wakeScenarioStats.late < 1) wakeCoverageMissing.push('附近聊天的叫醒额度：「补叫真的发出」从未发生');
+
 console.log('\n── 不变量 ──');
 console.log(`检查 ${sim.inv.checkRounds} 轮（检查本身累计 ${fmtDuration(sim.counters.get('check_ms') ?? 0)}），违例 ${sim.inv.totalViolations} 条`);
 console.log(table([['不变量', '检查次数', '违例'], ...sim.inv.summary().map((s) => [s.name, String(s.checks), String(s.fails)])]));
@@ -2485,7 +2404,7 @@ if (warnLogs.length) {
 console.log(`\n可复现摘要（同种子同参数应一致）：${digest}`);
 
 // 覆盖断言：按桌入局的几条关键分支必须真的走到过，否则检查等于空转（只在够长的跑法里要求）
-const coverageMissing: string[] = [];
+const coverageMissing: string[] = [...wakeCoverageMissing];
 if (DAYS >= 1 && N >= 8) {
   if ((sim.counters.get('table_start_dropped') ?? 0) < 1) coverageMissing.push('开局时剔除走开的成员（table_start_dropped）从未发生');
   if ((sim.negCount.get('占用中的桌再凑桌') ?? 0) < 1) coverageMissing.push('对被占的桌 propose_game 期望 table_busy 从未探测');
@@ -2507,9 +2426,6 @@ if (coverageMissing.length) {
   console.log('\n覆盖不足：');
   for (const c of coverageMissing) console.log(`  × ${c}`);
 }
-if (wakeScenarioStats.suppressed < 1) coverageMissing.push('附近聊天的叫醒额度：「被压下」从未发生（写死的小场景没有压下任何一句）');
-if (wakeScenarioStats.late < 1) coverageMissing.push('附近聊天的叫醒额度：「补叫真的发出」从未发生');
-const wakeFinal = nearbyWakeCheck(sim.w, sim.inv, sim.clock.t, 0);
 console.log(`附近聊天叫醒额度：主循环里 AI 对 AI 当场 ${wakeFinal.live} 句、补叫 ${wakeFinal.late} 句、压下后没有单独事件的 ${wakeFinal.suppressed} 句；写死小场景 当场 ${wakeScenarioStats.live}、压下 ${wakeScenarioStats.suppressed}、补叫 ${wakeScenarioStats.late}`);
 const failed = sim.inv.totalViolations > 0 || sim.internalCount > 0 || sim.rejectChecks.failed > 0 || scenarios.some((s) => !s.ok) || coverageMissing.length > 0;
 console.log(`\n结论：${failed ? '未通过（见上面的违例 / 异常 / 覆盖不足）' : '通过：未发现不变量违例、内部异常或拒绝检查失败'}`);
