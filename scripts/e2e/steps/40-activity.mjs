@@ -5,7 +5,7 @@
 // 时间：端到端起引擎时把共同活动缩短了（client-e2e.mjs 的 TOWN_PARAMS）：十分钟的喝茶约 45 秒、报名最长保留 25 秒。
 // 所以「开桌 + 加入」要在 25 秒内完成，走开前的提示、取消、开始之后的各项检查要在 45 秒内做完：每个子步骤都先做最要紧的断言，
 // 截图放在不赶时间的地方（第二桌凑齐之后、开始之前再截，开始之后只截一张傍晚的）。
-import { dockState, godotFeature, closeDock, rectOf, rectsOverlap } from '../lib/ui.mjs';
+import { dockState, godotFeature, closeDock, rectOf, rectsOverlap, frames } from '../lib/ui.mjs';
 import { T1, T2, SHELF, T1_SEATS, T2_SEATS, SHELF_SEATS, nearestSeat, dist2, meView, objOf, forceAct, actionButtons, hasAction, findAction, tagTexts, toastTexts, act, pane, openActivity, clickObject, settle, goPlace, lowContrast, storageState, watchActions, actionsLog, reappeared } from '../lib/activity.mjs';
 
 export const meta = { id: 'activity', n: 40, title: '共同活动' };
@@ -465,6 +465,17 @@ export default async function run(h) {
     check(A.gate.dirFrames.length === f0, `第一次按 S 被拦下，方向帧不应增加：${f0} -> ${A.gate.dirFrames.length}`);
     check((await meView(A)).interaction?.status === 'running', 'A 仍应在活动里');
     check((await act(A)).warned === w0 + 1, `被拦截的次数应加一（按着不放只算一次）：${w0} -> ${(await act(A)).warned}`);
+    // 按着不放时卡顿：把页面主线程占住 450 毫秒再 900 毫秒（真机上一次卡顿就是这样）。同一次按下不能因为帧间隔变长就被当成第二次尝试而放行；
+    // 屏障：卡顿之后又跑过几帧（每帧都问过走开拦截），再断言方向帧没增加、A 还在活动里、放行次数没变
+    for (const ms of [450, 900]) {
+      await A.page.evaluate((d) => {
+        const t = performance.now();
+        while (performance.now() - t < d);
+      }, ms);
+      await frames(A.page, 5);
+      check(A.gate.dirFrames.length === f0, `按着不放、卡了 ${ms} 毫秒之后方向帧仍不应增加：${f0} -> ${A.gate.dirFrames.length}`);
+      check((await meView(A)).interaction?.status === 'running' && (await act(A)).passed === p0, `按着不放、卡了 ${ms} 毫秒之后 A 仍应在活动里、没有放行（passed ${p0} -> ${(await act(A)).passed}）`);
+    }
     await A.page.keyboard.up('s');
     while (Date.now() - tFirst < 500) await sleep(50);
     await A.page.keyboard.down('s');
