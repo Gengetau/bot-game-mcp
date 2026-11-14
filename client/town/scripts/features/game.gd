@@ -48,7 +48,7 @@ var _next_pull: float = 0.0
 var _zero_done: Array = []  # 已经补读过的 (phase_id, 最后 seq)
 var _ignored: Dictionary = {}  # 我自己退出的 activityId：之后到来的 game_ended 不弹卡
 var _held_end: Dictionary = {}  # activityId -> game_ended 的载荷：退出请求还在路上时被抑制的结局，请求失败了要补弹
-var _ended_aids: Dictionary = {}  # 已经结束 / 退出 / 清掉的 activityId：迟到的旧 /me 里还带着它，也不能把局复活
+var _ended_aids: Dictionary = {}  # 确实知道已经结束的 activityId（收到了 game_ended、退出成功）：迟到的旧 /me 里还带着它，也不能把局复活。由 /me 推断出来的结束不记
 var _quitting: bool = false
 var _quit_rid: String = ""
 var _quit_aid: String = ""
@@ -119,10 +119,10 @@ func _reset_all() -> void:
 	_tag_texts.clear()
 
 
-## 清掉「在局中」的全部状态（结果卡不在这里清）
+## 清掉「在局中」的全部状态（结果卡不在这里清）。
+## 「这一局结束了」不在这里登记：只在确实知道它结束时记（_on_ended、退出成功）。由 /me 推断的结束（_game_vanished）可能是错的
+## （开局那一刻还在路上的旧 /me，慢网时会晚于 START_HOLD_S 才到），记了的话下一份带着 game 的 /me 就再也接不回这一局
 func _clear_game() -> void:
-	if _act_id != "":
-		_ended_aids[_act_id] = true
 	_in_game = false
 	_act_id = ""
 	_game_id = ""
@@ -410,8 +410,8 @@ func _on_ended(d: Dictionary) -> void:
 		ctx.mark_dirty()
 		ctx.refresh_me()
 		return
-	if aid == _result_aid and not _result.is_empty() and str(_result.get("kind", "")) != "unknown":
-		return  # 重复的（只有「推断出来的」结果卡会被真实的事件覆盖：奖励和原因在事件里）
+	if aid == _result_aid and not _result.is_empty() and not bool(_result.get("inferred", false)):
+		return  # 重复的（只有「推断出来的」结果卡会被真实的事件覆盖：奖励和原因在事件里。认 inferred 而不是 kind：公开投影读回来之后 kind 已经不是 unknown 了）
 	_clear_game()
 	_ended_aids[aid] = true
 	_show_result(d, false)
@@ -435,6 +435,7 @@ func _show_result(d: Dictionary, inferred: bool) -> void:
 		"reward": int(d.get("reward", 0)),
 		"players": [],
 		"aid": aid,
+		"inferred": inferred,
 	}
 	_push()
 	_pull_public(aid)
@@ -822,11 +823,13 @@ func _quit() -> void:
 		return
 	_quitting = true
 	var aid: String = _act_id
+	# 留着的请求号只对同一局有效：上一局退出时网络失败留下的请求号不能拿来退这一局
+	# （那次请求若其实到了服务端，同一个请求号只会把上一次的回执原样还回来，这一局并没有退掉）
+	if _quit_rid == "" or _quit_aid != aid:
+		_quit_rid = ctx.new_req_id()
 	_quit_aid = aid
 	var g: int = _gen
 	_ignored[aid] = true
-	if _quit_rid == "":
-		_quit_rid = ctx.new_req_id()
 	var r: Dictionary = await ctx.act_once({"type": "quit_game"}, {"rid": _quit_rid, "retry_stale": false})
 	if g != _gen:
 		return
@@ -834,6 +837,7 @@ func _quit() -> void:
 	if bool(r.get("ok", false)):
 		_quit_rid = ""
 		_held_end.erase(aid)
+		_ended_aids[aid] = true  # 服务端确认退出了：之后迟到的旧 /me 不能把这一局接回来
 		if _act_id == aid:
 			_clear_game()
 		_push()

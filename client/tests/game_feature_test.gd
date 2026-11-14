@@ -4,7 +4,10 @@ extends SceneTree
 ##  - 迟到的旧 /me（还带着已结束的局）不能把局复活、不能抹掉真实的结果卡；推断出来的结果卡要被真实的 game_ended 覆盖（补上奖励）；
 ##  - 主动退出之后迟到的旧 /me 不复活，之后到的 game_ended 仍被抑制；
 ##  - 退出请求网络失败后「我退出了」的记号撤掉，局自然结束时照常弹结果卡；退出请求在路上时局自然结束、退出又失败（context_stale），补弹结果卡；
-##  - 离开一桌之后重新加入同一桌，这一桌之后被取消要照常提示「这一桌散了」。
+##  - 离开一桌之后重新加入同一桌，这一桌之后被取消要照常提示「这一桌散了」；
+##  - 开局那一刻还在路上的旧 /me（没有 game）晚到，推断出「结束了」之后，下一份带着 game 的 /me 要把局接回来（推断的结束不登记）；
+##  - 推断出来的结果卡被公开投影补全（kind 不再是 unknown）之后，真实的 game_ended 仍要覆盖它；
+##  - 退出时网络失败留下的请求号只对同一局有效，下一局退出要换新的请求号。
 ## 用法：npm run client:unit（或 /opt/godot/godot --headless --path client/town --script ../tests/game_feature_test.gd）
 
 const Game := preload("res://scripts/features/game.gd")
@@ -22,6 +25,8 @@ class FakeCtx:
 	var toasts: Array = []
 	var acts: Dictionary = {}
 	var act_calls: Array = []
+	var act_opts: Array = []
+	var public_data = null  # 不是 null 时，GET /public/game/<aid> 返回它
 	var act_result: Dictionary = {"ok": true, "data": {}}
 	var hold_act: bool = false
 	var refreshes: int = 0
@@ -53,11 +58,14 @@ class FakeCtx:
 
 	func act_once(action: Dictionary, _opts: Dictionary = {}) -> Dictionary:
 		act_calls.append(action)
+		act_opts.append(_opts)
 		if hold_act:
 			await act_release
 		return act_result
 
 	func api_get(_path: String) -> Dictionary:
+		if public_data != null and _path.begins_with("/public/game/"):
+			return {"status": 200, "data": public_data}
 		return {"status": 404, "data": null}
 
 	func game_refresh_me_wait() -> bool:
@@ -117,6 +125,9 @@ func _run() -> void:
 	await t_quit_net_fail()
 	await t_quit_collides_with_end()
 	await t_left_act_rejoin()
+	t_stale_me_at_start_heals()
+	t_inferred_resolved_then_real()
+	await t_quit_rid_per_game()
 	print("%d 项检查，%d 项失败" % [_checks, _fails])
 	quit(1 if _fails > 0 else 0)
 
@@ -231,3 +242,64 @@ func t_left_act_rejoin() -> void:
 	check(not f._left_acts.has("a1"), "重新加入同一桌：不再记着我离开过")
 	f.on_event({"type": "activity", "data": {"activity": {"id": "a1", "game": "number_bomb", "tableId": "arcade:table1", "status": "cancelled", "host": "r_other", "players": []}, "reason": "等了太久没凑齐人", "ended": true}})
 	check(_has_toast(c, "这一桌散了：等了太久没凑齐人"), "重新加入之后被取消：要提示「这一桌散了」：%s" % str(c.toasts))
+
+
+## 开局那一刻还在路上的旧 /me（没有 game）晚于 START_HOLD_S 才到：会推断出「结束了」，但这是错的。
+## 下一份 /me 带着 game，必须把这一局接回来（面板回来、结果卡收起、输入重新封锁），不能因为「这一局登记过结束」而永远不认
+func t_stale_me_at_start_heals() -> void:
+	var s: Array = _make()
+	var f = s[0]
+	f.on_me(_me())
+	f.on_event({"type": "game_started", "data": {"activityId": AID, "gameId": "g_" + AID, "name": "数字炸弹", "seat": 1}})
+	check(f._in_game, "game_started 之后在局里")
+	f.on_me(_me())  # 保护时间之内到的旧 /me：不清
+	check(f._in_game and f._inferred_ends == 0, "START_HOLD_S 之内的旧 /me 不清掉对局")
+	f.tick(Game.START_HOLD_S + 0.5, 0.0)
+	f.on_me(_me())  # 慢网：旧 /me 过了保护时间才到 -> 推断成结束（错的）
+	check(not f._in_game and f._inferred_ends == 1 and bool(f._result.get("inferred", false)), "过了保护时间的旧 /me：推断出一张结果卡：%s" % str(f._result))
+	f.on_me(_me(_game_view()))  # 下一份 /me 带着 game：接回来
+	check(f._in_game and f._act_id == AID, "下一份带着 game 的 /me 把这一局接回来")
+	check(f._result.is_empty(), "接回来之后推断的结果卡收起：%s" % str(f._result))
+	check(f.blocks_input() != "", "接回来之后输入重新封锁")
+	check(f._state().get("mode") == "game", "推给网页的是对局面板：%s" % str(f._state().get("mode")))
+	f.on_event(_ended())  # 之后真的结束：照常弹真实的结果卡
+	check(not f._in_game and f._result.get("kind") == "won" and int(f._result.get("reward", 0)) == 2, "之后真的结束：真实的结果卡：%s" % str(f._result))
+
+
+## 推断出来的结果卡，被公开投影补全之后 kind 已经不是 unknown（这里补成了「输」）；真实的 game_ended（赢、奖励 2）到了仍然要覆盖它
+func t_inferred_resolved_then_real() -> void:
+	var s: Array = _make()
+	var f = s[0]
+	var c: FakeCtx = s[1]
+	c.public_data = {"players": [{"seat": 1, "name": "甲"}, {"seat": 2, "name": "乙"}], "result": {"reason": "乙猜中了炸弹", "winnerSeats": [2], "reveal": []}}
+	f.on_me(_me(_game_view()))
+	f.on_me(_me())  # 断线期间错过 game_ended -> 推断，随即读公开投影
+	check(bool(f._result.get("inferred", false)) and f._result.get("kind") == "lost" and int(f._result.get("reward", -1)) == 0, "推断卡被公开投影补全：kind 已不是 unknown、奖励仍是 0：%s" % str(f._result))
+	f.on_event(_ended())
+	check(f._result.get("kind") == "won" and int(f._result.get("reward", 0)) == 2 and not bool(f._result.get("inferred", true)), "真实的 game_ended 仍要覆盖补全过的推断卡：%s" % str(f._result))
+	f.on_event(_ended(AID, false, 0))  # 再来一份（重复的）：真实的卡不再被改
+	check(f._result.get("kind") == "won" and int(f._result.get("reward", 0)) == 2, "真实的结果卡不被重复的 game_ended 改掉：%s" % str(f._result))
+
+
+## 退出请求网络失败留下的请求号：同一局再点一次沿用（不会退两次）；换了一局必须换新的
+## （上一次请求若其实到了服务端，沿用旧请求号只会拿回上一局的回执，这一局并没有退掉）
+func t_quit_rid_per_game() -> void:
+	var s: Array = _make()
+	var f = s[0]
+	var c: FakeCtx = s[1]
+	f.on_me(_me(_game_view()))
+	c.act_result = {"ok": false, "net_fail": true, "rid": "x"}
+	await f.on_ui("leave", "")
+	await f.on_ui("leave", "")
+	check(c.act_opts.size() == 2 and str(c.act_opts[0].get("rid", "")) != "" and str(c.act_opts[0].get("rid", "")) == str(c.act_opts[1].get("rid", "")), "同一局再点一次：沿用同一个请求号：%s" % str(c.act_opts))
+	f.on_event(_ended())  # 这一局自然结束（记号已撤，弹卡）
+	check(not f._in_game and f._result.get("kind") == "won", "上一局结束：%s" % str(f._result))
+	f.on_ui("dismiss", "")
+	f.on_me(_me(_game_view("act_2")))  # 下一局
+	check(f._in_game and f._act_id == "act_2", "进了下一局")
+	c.act_result = {"ok": true, "data": {}}
+	await f.on_ui("leave", "")
+	check(c.act_opts.size() == 3 and str(c.act_opts[2].get("rid", "")) != str(c.act_opts[0].get("rid", "")), "下一局退出：换新的请求号：%s" % str(c.act_opts))
+	check(not f._in_game and f._ignored.has("act_2"), "下一局退出成功")
+	f.on_me(_me(_game_view("act_2")))  # 退出成功之后迟到的旧 /me：不接回来
+	check(not f._in_game, "退出成功之后迟到的旧 /me 不把局接回来")
