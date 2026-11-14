@@ -19,7 +19,7 @@
  * 所有写入都在命令事务里；订阅者提交之后才被唤醒（`bumpTownChat` / `emitTo`）。
  */
 import { sanitizeUserText } from '../core/text.js';
-import { DESTINATIONS } from './content.js';
+import { DESTINATIONS, npcDef } from './content.js';
 import { badRequest, precondition, WorldError } from './errors.js';
 import { nearbyAudience } from './hearing.js';
 import { counter, pairScope, takeToken } from './life.js';
@@ -96,13 +96,19 @@ function chatSeqOf(w: WorldService, residentId: string, high: number, messageId:
   return high - Number(w.db.scalar('SELECT COUNT(*) FROM chat_audience WHERE resident_id = ? AND message_id > ?', residentId, messageId));
 }
 
+/** 发言人的名片：居民是 {id,name,kind:human|agent}，NPC（sender_id 是 NPC 编号，没有 residents 行）是 {id,name,kind:'npc'}。 */
+function speakerCard(w: WorldService, senderId: string): { id: string; name: string; kind: 'human' | 'agent' | 'npc' } {
+  const npc = npcDef(senderId);
+  return npc ? { id: npc.id, name: npc.name, kind: 'npc' } : card(w.mustResident(senderId));
+}
+
 const nearbyScope = (residentId: string): string => `nh:${residentId}`;
 
 export interface NearbyMessage {
   messageId: number;
   space: string;
   spaceName: string;
-  from: ReturnType<typeof card>;
+  from: ReturnType<typeof speakerCard>;
   text: string;
   at: number;
 }
@@ -146,7 +152,7 @@ export function nearbyHistory(
     messageId: top - i,
     space: String(m.space_id),
     spaceName: spaceNameOf(String(m.space_id)),
-    from: card(w.mustResident(String(m.sender_id))),
+    from: speakerCard(w, String(m.sender_id)),
     text: String(m.body),
     at: Number(m.sent_at),
   }));
@@ -157,7 +163,7 @@ export function nearbyHistory(
  * 视图里「刚才听到的话」：最近 30 分钟内我在受众里的消息。只按受众表（发送那一刻按距离定下）和时间窗，不按我现在的区域标签过滤。
  * 唯一的例外是私宅里说的话：它只在同一间屋里的现场视图出现（被请出门后历史里仍有，现场视图里没有）。
  */
-export function recentHeard(w: WorldService, residentId: string, space: string, now: number): { messageId: number; from: ReturnType<typeof card>; text: string; at: number }[] {
+export function recentHeard(w: WorldService, residentId: string, space: string, now: number): { messageId: number; from: ReturnType<typeof speakerCard>; text: string; at: number }[] {
   const cut = now - 30 * 60_000;
   // message_id 随时间递增：给受众表的主键扫描加下界（30 分钟窗口内最早的消息），查询量与历史长度无关
   const rows = w.db.all(
@@ -172,7 +178,7 @@ export function recentHeard(w: WorldService, residentId: string, space: string, 
   const high = chatHigh(w, residentId);
   return rows
     .reverse()
-    .map((m) => ({ messageId: chatSeqOf(w, residentId, high, Number(m.message_id)), from: card(w.mustResident(String(m.sender_id))), text: String(m.body), at: Number(m.sent_at) }));
+    .map((m) => ({ messageId: chatSeqOf(w, residentId, high, Number(m.message_id)), from: speakerCard(w, String(m.sender_id)), text: String(m.body), at: Number(m.sent_at) }));
 }
 
 // ───────────────────────── 全镇公屏 ─────────────────────────

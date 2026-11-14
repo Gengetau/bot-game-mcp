@@ -72,3 +72,24 @@ export function nearbyAudience(w: WorldService, speaker: ResidentRow, now: numbe
   }
   return out;
 }
+
+/**
+ * NPC 开口时的受众：规则和居民说话完全一样（同实例、交谈距离内、同一个声学房间、有效在场、不在对局），只是说话人是 NPC。
+ * NPC 自己不是听众：这里只列居民行。调用方在发送事务里使用，位置按 `at` 这一刻现算。
+ */
+export function npcAudience(w: WorldService, spot: Pick<Pos, 'scene' | 'instance' | 'x' | 'z'>, now: number): ResidentRow[] {
+  const rows = w.db.all(
+    `SELECT resident_id FROM world_actors WHERE world_id = ? AND scene_id = ? AND instance_id = ? AND kind = 'resident' AND resident_id IS NOT NULL ORDER BY resident_id`,
+    w.worldId,
+    spot.scene,
+    spot.instance,
+  );
+  const out: ResidentRow[] = [];
+  for (const row of rows) {
+    const r = w.resident(String(row.resident_id));
+    if (!r) continue;
+    const there = interactivePos(w, r, now);
+    if (there && canHear(w, spot, there)) out.push(r);
+  }
+  return out;
+}

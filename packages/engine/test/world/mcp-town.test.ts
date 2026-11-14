@@ -607,8 +607,8 @@ describe('MCP 小镇：world_act', () => {
     const env = makeEnv();
     const { client: a } = await enter(env, QING, { name: '青青' });
     const { client: b, entered } = await enter(env, MO, { name: '小墨' });
-    // 去茶馆买茶叶
-    await wact(a, { type: 'navigate', to: 'tea_house' });
+    // 去茶馆柜台：买茶叶要走到掌柜身边
+    await wact(a, { type: 'navigate', approach: 'npc:teahouse_keeper' });
     await walkMcp(env, a);
     await call(b, 'heartbeat');
     const before = (await call(a, 'get_my_view')).coins;

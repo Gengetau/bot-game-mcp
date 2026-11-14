@@ -29,9 +29,9 @@ import {
   type WorldOptions,
   type WorldService,
 } from '../packages/engine/src/index.js';
-import { BOOKS, NPCS, PLACES } from '../packages/engine/src/world/content.js';
+import { BOOKS, NPCS, PLACES, SHOPS, npcLineMatches } from '../packages/engine/src/world/content.js';
 import { controlDisconnected, renewNavigation, sceneView, whereabouts } from '../packages/engine/src/world/index.js';
-import { actorOf, posOf, positionOfResident } from '../packages/engine/src/world/space.js';
+import { actorOf, npcActorOf, posOf, positionOfResident } from '../packages/engine/src/world/space.js';
 import { distance, isWalkable, zoneAt } from '../packages/engine/src/world/spatial/grid.js';
 import { arrivalAt, positionAt } from '../packages/engine/src/world/spatial/motion.js';
 import type { NavState } from '../packages/engine/src/world/types.js';
@@ -483,6 +483,26 @@ export class Invariants {
     if (d > w.params.personReach + 0.02) this.fail('face_to_face_in_reach', `${type} 成功了，但双方相距 ${d.toFixed(2)} 米，超过 personReach ${w.params.personReach}`, { type, actorId, otherId, d }, now);
   }
 
+  /** 和 NPC 当面的事（ask_npc、有掌柜的店 buy）成功时，居民和 NPC 的现算位置必须在 personReach 内（同一个公共场景）。 */
+  checkNpcReach(w: WorldService, type: string, actorId: string, fields: Record<string, unknown>, now: number): void {
+    let npcId: string | undefined;
+    if (type === 'ask_npc') npcId = String(fields.npcId ?? '');
+    else if (type === 'buy') npcId = SHOPS.find((s) => s.id === fields.shop)?.keeper;
+    if (!npcId) return;
+    this.pass('npc_in_reach');
+    const a = actorOf(w, actorId);
+    // 必须用带解析的角色行（npcActorOf）：直接读原始行拿不到 nav，会把正在走路的 NPC 当成站在出发点，现算位置就错了
+    const n = npcActorOf(w, npcId);
+    if (!a || !n || a.scene_id !== n.scene_id || a.instance_id !== n.instance_id) {
+      this.fail('npc_in_reach', `${type} 成功了，但居民和 ${npcId} 不在同一个场景实例里`, { type, actorId, npcId }, now);
+      return;
+    }
+    const pa = posOf(a, now);
+    const pn = posOf(n, now);
+    const d = Math.hypot(pa.x - pn.x, pa.z - pn.z);
+    if (d > w.params.personReach + 0.02) this.fail('npc_in_reach', `${type} 成功了，但离 ${npcId} ${d.toFixed(2)} 米，超过 personReach ${w.params.personReach}`, { type, actorId, npcId, d }, now);
+  }
+
   /** 做一轮检查。返回本轮新增的违例条数。 */
   check(w: WorldService, ctx: InvariantContext): number {
     const before = this.totalViolations;
@@ -826,29 +846,52 @@ export class Invariants {
       db.scalar("SELECT COUNT(*) FROM offers WHERE from_id LIKE 'npc:%' OR to_id LIKE 'npc:%'") +
       db.scalar("SELECT COUNT(*) FROM letters WHERE sender_id LIKE 'npc:%' OR recipient_id LIKE 'npc:%'");
     if (ledger > 0) fail('npc_no_ledger', `有 ${ledger} 条账本 / 物品 / 报价 / 信件记录指向 NPC`, null);
+    // NPC 永远不是听众；NPC 说的话，受众都是居民行、消息所在的空间是公共场所（当时的位置重算不了，核对能核对的），
+    // 说话人必须是内容里定义的 NPC，每一句话都能在 content.ts 的台词模板里找到出处（证明没混进玩家文字）
     this.pass('npc_no_audience');
-    const aud = db.scalar("SELECT COUNT(*) FROM chat_audience WHERE resident_id LIKE 'npc:%'") + db.scalar("SELECT COUNT(*) FROM chat_messages WHERE sender_id LIKE 'npc:%'");
-    if (aud > 0) fail('npc_no_audience', `chat_audience / chat_messages 里有 ${aud} 条指向 NPC`, null);
+    const audNpc = db.scalar("SELECT COUNT(*) FROM chat_audience WHERE resident_id LIKE 'npc:%'");
+    if (audNpc > 0) fail('npc_no_audience', `chat_audience 里有 ${audNpc} 行指向 NPC`, null);
+    this.pass('npc_lines_from_templates');
+    const publicPlaces = new Set(PLACES.filter((p) => p.kind === 'public').map((p) => p.id));
+    // 模板里唯一的玩家文字是居民的名字：{name} 只能是世界里某个真实居民的名字
+    const residentNames = db.all('SELECT name FROM residents').map((x) => String(x.name));
+    for (const m of db.all("SELECT message_id, space_id, sender_id, body FROM chat_messages WHERE sender_id LIKE 'npc:%'")) {
+      const id = String(m.sender_id);
+      if (!NPCS.some((n) => n.id === id)) {
+        fail('npc_no_audience', `chat_messages 里有说话人 ${id}，不是定义的 NPC`, { messageId: m.message_id });
+        continue;
+      }
+      const strangers = db.scalar('SELECT COUNT(*) FROM chat_audience a WHERE a.message_id = ? AND NOT EXISTS (SELECT 1 FROM residents r WHERE r.resident_id = a.resident_id)', m.message_id);
+      if (strangers > 0) fail('npc_no_audience', `NPC ${id} 的话（#${String(m.message_id)}）有 ${strangers} 个受众不是居民`, { messageId: m.message_id });
+      if (!publicPlaces.has(String(m.space_id))) fail('npc_no_audience', `NPC ${id} 的话（#${String(m.message_id)}）发在非公共场所 ${String(m.space_id)}`, { messageId: m.message_id });
+      if (!npcLineMatches(id, String(m.body), residentNames)) fail('npc_lines_from_templates', `NPC ${id} 说的话对不上任何台词模板：${String(m.body).slice(0, 60)}`, { messageId: m.message_id });
+    }
     // 走动、停留、换姿态不产生任何事件或事实
     if (!scanEvents) return;
     this.pass('npc_no_events');
-    // 居民走到 NPC 身边时，本人的 you_arrived / nav_stopped 带着「目标是 NPC」（target: {kind:'npc', id, name}），那是居民自己的事件，不算 NPC 的事件。
-    // 只放行这一个字段：去掉它之后，事件里别处再出现 NPC 编号（姿态、位置之类被顺手带进来）照样算违例
-    const stripNpcTarget = (v: unknown): unknown => {
-      if (Array.isArray(v)) return v.map(stripNpcTarget);
-      if (!v || typeof v !== 'object') return v;
+    // 提到 NPC 编号的居民事件只允许三种形状，别的地方出现 NPC 编号都算违例：
+    //  - you_arrived / nav_stopped 的 target（居民走到 NPC 身边：{kind:'npc', id, name}）
+    //  - chat 的 from（NPC 在附近聊天里开口：{id, name, kind:'npc'}，编号和名字必须是定义的那一名 NPC，scope 必须是 nearby）
+    // NPC 永远不是事件的接收者（下面单独数）。去掉允许的字段后，其余部分里再出现 NPC 编号照样违例
+    const strip = (type: string, v: unknown): unknown => {
+      if (!v || typeof v !== 'object' || Array.isArray(v)) return v;
       const out: Record<string, unknown> = {};
       for (const [k, x] of Object.entries(v as Record<string, unknown>)) {
-        if (k === 'target' && x && typeof x === 'object' && (x as { kind?: unknown }).kind === 'npc') continue;
-        out[k] = stripNpcTarget(x);
+        const o = x as { kind?: unknown; id?: unknown; name?: unknown } | null;
+        if ((type === 'you_arrived' || type === 'nav_stopped') && k === 'target' && o && typeof o === 'object' && o.kind === 'npc') continue;
+        if (type === 'chat' && k === 'from' && o && typeof o === 'object' && o.kind === 'npc') {
+          const def = NPCS.find((n) => n.id === o.id);
+          if (def && def.name === o.name && (v as { scope?: unknown }).scope === 'nearby') continue;
+        }
+        out[k] = x;
       }
       return out;
     };
     let mentions = 0;
     for (const row of db.all("SELECT type, projection FROM recipient_events WHERE resident_id NOT LIKE 'npc:%' AND projection LIKE '%npc:%'")) {
-      if (row.type === 'you_arrived' || row.type === 'nav_stopped') {
+      if (row.type === 'you_arrived' || row.type === 'nav_stopped' || row.type === 'chat') {
         try {
-          if (!JSON.stringify(stripNpcTarget(JSON.parse(String(row.projection)))).includes('npc:')) continue;
+          if (!JSON.stringify(strip(String(row.type), JSON.parse(String(row.projection)))).includes('npc:')) continue;
         } catch {
           // 解析不了就按违例算
         }
