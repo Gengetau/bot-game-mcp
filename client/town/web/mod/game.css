@@ -115,13 +115,34 @@ body[data-dock="drawer"][data-dock-open="1"] #gamePanel { bottom: calc(var(--doc
 /* 横屏矮屏：左右两栏，左边是局面，右边是输入。
    右栏要放得下一排 6 个数字键、每个不小于 44 像素（6 x 44 + 5 x 4 = 284），所以右栏最窄 292px，面板也跟着放宽 */
 @media (orientation: landscape) and (max-height: 520px) {
-  #gamePanel { width: min(600px, 86vw); max-height: calc(100vh - 70px); }
+  #gamePanel { width: min(600px, 86vw); max-height: calc(100vh - max(var(--game-bottom), calc(var(--kb, 0px) + 8px)) - 60px); }
   body[data-dock="drawer"] #gamePanel { left: calc(8px + var(--safe-left)); right: auto; width: min(600px, 86vw); max-height: calc(100vh - var(--game-bottom) - 60px); }
   #gamePanel .game-play { display: grid; grid-template-columns: minmax(0, 1fr) minmax(292px, 55%); grid-auto-flow: dense; column-gap: 12px; align-items: start; }
   #gamePanel .game-head, #gamePanel .game-confirm { grid-column: 1 / 3; }
   #gamePanel .game-range, #gamePanel .game-players, #gamePanel .game-hist { grid-column: 1; }
   #gamePanel .game-input { grid-column: 2; grid-row: 3 / 6; margin-top: 6px; }
   #gamePanel .game-hint { grid-column: 2; }
+  /* 玩家多（最多 8 个）：一行放不下就横着滚，不把输入区挤到折叠线下；猜数历史最多露两行 */
+  #gamePanel .game-players { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; }
+  #gamePanel .game-players::-webkit-scrollbar { display: none; }
+  #gamePanel .game-player { flex: none; }
+  #gamePanel .game-hist { max-height: 44px; }
+  /* 右侧栏（#dock，宽 min(300px, 42vw)）打开着：面板只用它左边的地方，单栏排；历史收起（侧栏里本来就能看全镇公屏） */
+  body[data-dock="side"][data-dock-open="1"] #gamePanel { width: min(600px, calc(100vw - min(300px, 42vw) - 28px - var(--safe-left) - var(--safe-right))); }
+  body[data-dock="side"][data-dock-open="1"] #gamePanel .game-play { grid-template-columns: minmax(0, 1fr); }
+  body[data-dock="side"][data-dock-open="1"] #gamePanel .game-head, body[data-dock="side"][data-dock-open="1"] #gamePanel .game-confirm,
+  body[data-dock="side"][data-dock-open="1"] #gamePanel .game-range, body[data-dock="side"][data-dock-open="1"] #gamePanel .game-players,
+  body[data-dock="side"][data-dock-open="1"] #gamePanel .game-hist, body[data-dock="side"][data-dock-open="1"] #gamePanel .game-input,
+  body[data-dock="side"][data-dock-open="1"] #gamePanel .game-hint { grid-column: 1; grid-row: auto; }
+  body[data-dock="side"][data-dock-open="1"] #gamePanel .game-hist { display: none; }
+  /* 地方更紧：纸板的内边距、间距收一收，空着的提示行不占高度（有提示时面板往上长一点） */
+  body[data-dock="side"][data-dock-open="1"] #gamePanel { padding: 6px 10px 6px; }
+  body[data-dock="side"][data-dock-open="1"] #gamePanel .game-bomb { width: 28px; height: 28px; }
+  body[data-dock="side"][data-dock-open="1"] #gamePanel .game-turn { font-size: 16px; }
+  body[data-dock="side"][data-dock-open="1"] #gamePanel .game-range, body[data-dock="side"][data-dock-open="1"] #gamePanel .game-players { margin-top: 3px; }
+  body[data-dock="side"][data-dock-open="1"] #gamePanel .game-input { margin-top: 4px; }
+  body[data-dock="side"][data-dock-open="1"] #gamePanel .game-hint { margin-top: 2px; }
+  body[data-dock="side"][data-dock-open="1"] #gamePanel .game-hint:empty { min-height: 0; margin-top: 0; }
 }
 
 /* ───── 结果卡 ───── */

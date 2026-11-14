@@ -34,10 +34,7 @@
 
       /* 触屏：只读显示框 + 屏幕小键盘（不弹系统键盘）；桌面：文本框（只收数字）。用 readonly + aria-disabled，不用 disabled，否则失焦后 dock 的全局 Enter 会打开聊天面板 */
       inputEl.readOnly = coarse;
-      if (coarse) {
-        inputEl.setAttribute('inputmode', 'none');
-        inputEl.setAttribute('tabindex', '-1');
-      }
+      if (coarse) inputEl.setAttribute('inputmode', 'none');
       root.setAttribute('data-input', coarse ? 'pad' : 'keys');
 
       function setHint(text, kind) {
@@ -49,6 +46,15 @@
 
       function shown() {
         return !root.hidden;
+      }
+
+      /* 焦点现在不在别的输入类元素里（画布、按钮、页面本身都不算占着焦点：点地、点「猜」之后焦点会留在它们上面） */
+      function focusFree() {
+        var ae = document.activeElement;
+        if (!ae || ae === document.body || ae === inputEl) return true;
+        var n = (ae.tagName || '').toLowerCase();
+        if (n === 'input' || n === 'textarea' || n === 'select' || ae.isContentEditable) return false;
+        return true;
       }
 
       function setBody(on) {
@@ -185,7 +191,7 @@
         var turnKey = mine ? S.gameId + ':' + S.phaseId : '';
         if (mine && turnKey !== lastTurnKey) {
           lastTurnKey = turnKey;
-          if (!coarse && shown() && (!document.activeElement || document.activeElement === document.body)) {
+          if (shown() && focusFree()) {
             try {
               inputEl.focus({ preventScroll: true });
             } catch (e) {
@@ -232,7 +238,7 @@
           clearInterval(tick);
           tick = 0;
           if (document.activeElement === inputEl) inputEl.blur();
-          $('confirm').hidden = true;
+          closeConfirm(); /* 确认条开着时局结束 / 中止：连「离开这局」按钮一起恢复，不然下一局没有入口退出 */
           if (!pend) inputEl.value = '';
           setHint('', '');
           lastTurnKey = '';
@@ -346,7 +352,27 @@
         if (!coarse) clampDigits();
       });
       inputEl.addEventListener('keydown', function (e) {
-        if (coarse) return;
+        if (coarse) {
+          /* 触屏设备接了实体键盘：输入框是只读的（不弹系统键盘），数字、退格、回车由这里接手；焦点在它上面，dock 的全局 Enter 就不会去开聊天 */
+          if (e.ctrlKey || e.metaKey || e.altKey || e.isComposing || e.keyCode === 229) return;
+          if (e.key === 'Enter') {
+            e.preventDefault();
+            submit();
+          } else if (/^[0-9]$/.test(e.key)) {
+            e.preventDefault();
+            if (canGuess() && S.yourTurn && inputEl.value.length < 9) {
+              inputEl.value = inputEl.value === '0' ? e.key : inputEl.value + e.key;
+              if (hint.kind === 'err') setHint('', '');
+            }
+          } else if (e.key === 'Backspace') {
+            e.preventDefault();
+            if (canGuess() && S.yourTurn) inputEl.value = inputEl.value.slice(0, -1);
+          } else if (e.key === 'Escape') {
+            e.preventDefault();
+            inputEl.blur();
+          }
+          return;
+        }
         if (e.key === 'Enter') {
           if (e.isComposing || e.keyCode === 229) return;
           e.preventDefault();

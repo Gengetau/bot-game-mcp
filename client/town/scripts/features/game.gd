@@ -47,8 +47,11 @@ var _fetch_again: bool = false
 var _next_pull: float = 0.0
 var _zero_done: Array = []  # 已经补读过的 (phase_id, 最后 seq)
 var _ignored: Dictionary = {}  # 我自己退出的 activityId：之后到来的 game_ended 不弹卡
+var _held_end: Dictionary = {}  # activityId -> game_ended 的载荷：退出请求还在路上时被抑制的结局，请求失败了要补弹
+var _ended_aids: Dictionary = {}  # 已经结束 / 退出 / 清掉的 activityId：迟到的旧 /me 里还带着它，也不能把局复活
 var _quitting: bool = false
 var _quit_rid: String = ""
+var _quit_aid: String = ""
 var _guess_busy: bool = false
 var _guess_rid: String = ""
 var _guess_key: String = ""
@@ -105,7 +108,9 @@ func _reset_all() -> void:
 	_inflight.clear()
 	_rids.clear()
 	_clear_game()
+	_ended_aids.clear()
 	_ignored.clear()
+	_held_end.clear()
 	_quitting = false
 	_quit_rid = ""
 	_result = {}
@@ -116,6 +121,8 @@ func _reset_all() -> void:
 
 ## 清掉「在局中」的全部状态（结果卡不在这里清）
 func _clear_game() -> void:
+	if _act_id != "":
+		_ended_aids[_act_id] = true
 	_in_game = false
 	_act_id = ""
 	_game_id = ""
@@ -185,6 +192,8 @@ func _forget_gone(fresh: Dictionary) -> void:
 
 
 func _enter_game(aid: String, g: Dictionary) -> void:
+	if not _in_game and _ended_aids.has(aid):
+		return  # 这一局已经结束 / 退出了：迟到的旧 /me 不能把它复活，也不能抹掉结果卡
 	if not _in_game or aid != _act_id:
 		_in_game = true
 		_act_id = aid
@@ -392,15 +401,19 @@ func _on_ended(d: Dictionary) -> void:
 	if _ignored.has(aid):
 		_ignored.erase(aid)
 		_ended_ignored += 1
+		if _quitting and aid == _quit_aid:
+			_held_end[aid] = d  # 退出请求还没回来：它若失败，这一局其实是自然结束的，要补弹结果卡
 		if aid == _act_id:
 			_clear_game()
+		_ended_aids[aid] = true
 		_push()
 		ctx.mark_dirty()
 		ctx.refresh_me()
 		return
-	if aid == _result_aid and not _result.is_empty():
-		return  # 重复的
+	if aid == _result_aid and not _result.is_empty() and str(_result.get("kind", "")) != "unknown":
+		return  # 重复的（只有「推断出来的」结果卡会被真实的事件覆盖：奖励和原因在事件里）
 	_clear_game()
+	_ended_aids[aid] = true
 	_show_result(d, false)
 	ctx.mark_dirty()
 	ctx.refresh_me()
@@ -687,6 +700,8 @@ func _lobby_act(verb: String, action: Dictionary, table_id: String) -> void:
 		var a = d.get("activity")
 		if a is Dictionary and a.get("players") is Array:
 			_set_act(str(a.get("id", "")), a)
+		if verb == "join":
+			_left_acts.erase(str(action.get("activityId", "")))  # 重新加入了：这一桌之后散了，要照常提示
 		var dropped = d.get("dropped")
 		if verb == "start" and dropped is Array and not (dropped as Array).is_empty():
 			var names: Array = []
@@ -807,6 +822,7 @@ func _quit() -> void:
 		return
 	_quitting = true
 	var aid: String = _act_id
+	_quit_aid = aid
 	var g: int = _gen
 	_ignored[aid] = true
 	if _quit_rid == "":
@@ -817,6 +833,7 @@ func _quit() -> void:
 	_quitting = false
 	if bool(r.get("ok", false)):
 		_quit_rid = ""
+		_held_end.erase(aid)
 		if _act_id == aid:
 			_clear_game()
 		_push()
@@ -825,13 +842,29 @@ func _quit() -> void:
 		await ctx.game_refresh_me_wait()
 		return
 	if bool(r.get("net_fail", false)):
+		# 请求号留着（再点一次是同一个请求，不会退两次）；「我退出了」的记号撤掉：请求可能根本没到服务端，
+		# 这一局之后自然结束时要照常弹结果卡。再点「离开这局」时 _quit 会重新记上
+		_ignored.erase(aid)
+		_release_held(aid)
 		ctx.toast("网络不通，再点一次「离开这局」。", "warn")
-		return  # 请求号和「我退出了」的记号都留着：再点一次是同一个请求
+		return
 	_quit_rid = ""
 	_ignored.erase(aid)
+	_release_held(aid)
 	ctx.toast(str(r.get("message", "没能离开，稍后再试。")), "warn")
 	if str(r.get("error", "")) == "context_stale":
 		ctx.refresh_me()
+
+
+## 退出没成：退出请求在路上的时候，这一局自然结束了（game_ended 被「我退出了」的记号抑制）。补弹那张结果卡
+func _release_held(aid: String) -> void:
+	if not _held_end.has(aid):
+		return
+	var d: Dictionary = _held_end[aid]
+	_held_end.erase(aid)
+	if not _in_game and _result.is_empty():
+		_show_result(d, false)
+		ctx.mark_dirty()
 
 
 # ───────────────────────── 重连 ─────────────────────────

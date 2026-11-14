@@ -1,7 +1,7 @@
 // C3：走到游戏桌入座，玩一局数字炸弹。A 桌面 1440x900（键盘），B 手机 390x844 触摸（屏幕数字键），C 是只走 API 的居民（凑人数、当对手）。
 // 步骤号都是数字（50.15 就是「50.1 之后的一步」），文件内的子步骤按顺序互相依赖，只能整个文件一起跑。
 // 末尾有一段「怎么让它失败」，每条新断言都按那里写的做过反向验证（或明说只是推理）。
-import { frames, rectOf, godotFeature, closeDock, modState } from '../lib/ui.mjs';
+import { frames, rectOf, godotFeature, closeDock, openDock, dockState, modState } from '../lib/ui.mjs';
 import { apiSay, apiHistory } from '../lib/chat.mjs';
 import { openTown, townRows, townCompose, apiTownSay, apiTownSayWait } from '../lib/town.mjs';
 import { gameMod, godotGame, gameButtons, toastTexts, tableTags, clickObject, serverMe, apiAct, publicGame, midOf, apiResident, sleep as nap } from '../lib/game.mjs';
@@ -133,6 +133,116 @@ export default async function run(h) {
     note(`E 键选了 ${rec.id}，A 站在离桌心 ${(await seatDist(A, rec.id)).toFixed(2)} 米处`);
     await goArcade(B);
     await until(async () => (await snap(B.page)).nearValid === true && (await gg(B)).tables?.length === 2, 20_000, 'B 的够得着状态有效、看到两张桌');
+  });
+
+  // ───────────────────────── 50.05 面板版式与输入（喂假局面，不开局）─────────────────────────
+  await step(50.05, '面板版式与输入（给面板喂一份假局面，不开局）：确认条开着时局结束，下一局的「离开这局」回来；焦点在画布上时轮到自己仍自动聚焦；触屏接实体键盘能输入；横屏矮屏、开着右侧栏、8 个玩家时面板不盖侧栏和顶栏；手机抽屉打开、软键盘出现时输入区都看得见', async () => {
+    const fake = (n, over = {}) => ({
+      mode: 'game', name: '数字炸弹', gameId: 'fake-game', mySeat: 1, loading: false, round: 3, title: '猜数', open: true, secondsLeft: 40, phaseId: 7, yourTurn: true, curSeat: 1,
+      range: { from: 20, to: 80 }, bombMode: 'single', over: false,
+      players: Array.from({ length: n }, (_, i) => ({ seat: i + 1, name: `名字挺长的玩家${i + 1}号`, kind: i % 2 ? 'agent' : 'human', alive: true, turn: i === 0, me: i === 0 })),
+      history: Array.from({ length: 12 }, (_, i) => ({ round: i + 1, seat: (i % n) + 1, name: `名字挺长的玩家${(i % n) + 1}号`, guess: 20 + i, result: '炸弹更大', auto: false })),
+      ...over,
+    });
+    const feed = (p, kind, d) => p.page.evaluate(([k, j]) => window.TownHud.feed('game', k, j), [kind, JSON.stringify(d)]);
+    const reset = async (p) => { await feed(p, 'reset', null); await until(async () => (await gameMod(p.page)).mode === 'none' && (await gameMod(p.page)).bodyFlag === null, 5000, `${p.label} 面板收起`, 50); };
+    /* 横屏矮屏里右侧栏的输入框会盖住 #dockBtn（点不到），所以用接口收起 */
+    const shutDock = async (p) => { await p.page.evaluate(() => window.TownDock.close()); await until(async () => !(await dockState(p.page))?.open, 5000, `${p.label} 面板收起`, 50); };
+    const hit = (r1, r2) => !!r1 && !!r2 && r1.width > 0 && r2.width > 0 && r1.left < r2.right - 0.5 && r2.left < r1.right - 0.5 && r1.top < r2.bottom - 0.5 && r2.top < r1.bottom - 0.5;
+    try {
+      // 一、确认条开着时局被动结束（lifecycle#0）：结果卡之后开下一局，「离开这局」按钮必须在
+      await feed(A, 'state', fake(2, { yourTurn: false }));
+      await until(async () => (await gameMod(A.page)).mode === 'game', 5000, 'A 面板出现', 50);
+      await feed(A, 'confirm', null);
+      await until(async () => (await gameMod(A.page)).confirmOpen, 5000, '确认条出现', 50);
+      check(await A.page.evaluate(() => document.querySelector('#gamePanel [data-role="leave"]').hidden), '确认条开着时「离开这局」按钮收起');
+      await feed(A, 'state', { mode: 'result', kind: 'lost', name: '数字炸弹', reason: '对手退出，这一局中止', reward: 0, players: [] });
+      await until(async () => (await gameMod(A.page)).mode === 'result', 5000, '结果卡出现', 50);
+      await feed(A, 'state', fake(2, { gameId: 'fake-game-2', yourTurn: false }));
+      await until(async () => (await gameMod(A.page)).mode === 'game', 5000, '下一局面板出现', 50);
+      const lv = await A.page.evaluate(() => { const e = document.querySelector('#gamePanel [data-role="leave"]'); const r = e.getBoundingClientRect(); return { hidden: e.hidden, w: r.width, h: r.height, confirm: !document.querySelector('#gamePanel [data-role="confirm"]').hidden }; });
+      check(!lv.hidden && lv.w > 0 && lv.h >= 30 && !lv.confirm, `确认条开着时局结束之后，下一局的「离开这局」按钮应回来、确认条应收起：${JSON.stringify(lv)}`);
+      await reset(A);
+
+      // 二、桌面：焦点停在画布上时轮到自己，输入框仍自动聚焦（focus#2）
+      await A.page.evaluate(() => document.getElementById('canvas').focus());
+      check(await A.page.evaluate(() => document.activeElement?.id === 'canvas'), '先把焦点放在画布上');
+      await feed(A, 'state', fake(2, { yourTurn: true, gameId: 'fake-game-3' }));
+      await until(async () => (await gameMod(A.page)).focused, 5000, '焦点在画布上时轮到自己：输入框应自动聚焦', 50);
+      // 点过按钮（焦点留在按钮上）之后下一轮同样聚焦
+      await feed(A, 'state', fake(2, { yourTurn: false, gameId: 'fake-game-3', phaseId: 8 }));
+      await A.page.evaluate(() => document.querySelector('#gamePanel [data-role="mid"]').focus());
+      await feed(A, 'state', fake(2, { yourTurn: true, gameId: 'fake-game-3', phaseId: 9 }));
+      await until(async () => (await gameMod(A.page)).focused, 5000, '焦点在按钮上时下一轮轮到自己：输入框应自动聚焦', 50);
+      await reset(A);
+
+      // 三、触屏接了实体键盘：数字、退格能输入（输入框只读、不弹系统键盘）；Enter 在 51 里随真实的一局测
+      await feed(B, 'state', fake(2, { yourTurn: true, gameId: 'fake-game-4' }));
+      await until(async () => (await gameMod(B.page)).mode === 'game' && (await gameMod(B.page)).yourTurn, 5000, 'B 面板出现且轮到自己', 50);
+      const mb = await gameMod(B.page);
+      check(mb.coarse === true && mb.inputReadonly === true && mb.focused === true, `触屏：输入框只读且已聚焦（焦点在输入框上，全局 Enter 才不会去开聊天）：${JSON.stringify({ c: mb.coarse, r: mb.inputReadonly, f: mb.focused })}`);
+      await B.page.keyboard.press('Digit4');
+      await B.page.keyboard.press('Digit2');
+      await until(async () => (await gameMod(B.page)).input === '42', 5000, '实体键盘的数字进了输入框', 50);
+      await B.page.keyboard.press('Backspace');
+      await until(async () => (await gameMod(B.page)).input === '4', 5000, '退格删掉一位', 50);
+      check(!(await dockState(B.page))?.open, '触屏局中敲数字不应打开聊天面板');
+      await reset(B);
+
+      // 四、横屏矮屏、右侧栏打开、8 个玩家 + 满格历史：面板不盖侧栏，不盖顶栏，整个在视口里
+      const orig = B.page.viewportSize();
+      for (const [vw, vh] of [[667, 375], [844, 390]]) {
+        await B.page.setViewportSize({ width: vw, height: vh });
+        await frames(B.page, 3);
+        await openDock(B.page);
+        await feed(B, 'state', fake(8, { yourTurn: true, gameId: `fake-game-5-${vw}` }));
+        await until(async () => (await gameMod(B.page)).mode === 'game', 5000, `${vw}x${vh} 面板出现`, 50);
+        await frames(B.page, 3);
+        const lay = await B.page.evaluate(() => document.body.getAttribute('data-dock'));
+        const pr = (await gameMod(B.page)).rect;
+        const dr = await rectOf(B.page, '#dock');
+        const tr = await rectOf(B.page, '#topbar');
+        const what = `横屏矮屏 ${vw}x${vh}（布局 ${lay}）`;
+        check(lay === 'side', `${what}：应是右侧栏布局`);
+        check(!hit(pr, dr), `${what}：面板不应盖住右侧栏：${JSON.stringify({ panel: pr, dock: dr })}`);
+        check(!hit(pr, tr), `${what}：面板不应盖住顶栏：${JSON.stringify({ panel: pr, top: tr })}`);
+        check(pr.left >= -1 && pr.right <= vw + 1 && pr.top >= -1 && pr.bottom <= vh + 1, `${what}：面板整个在视口里：${JSON.stringify(pr)}`);
+        const ib = await rectOf(B.page, '#gamePanel [data-role="input"]');
+        check(ib && ib.top >= pr.top - 1 && ib.bottom <= pr.bottom + 1 && ib.bottom <= vh + 1, `${what}：输入框可见：${JSON.stringify({ ib, pr })}`);
+        const ks = await B.page.evaluate(() => [...document.querySelectorAll('#gamePanel [data-key]')].map((e) => { const r = e.getBoundingClientRect(); return { top: r.top, bottom: r.bottom, width: r.width, height: r.height }; }));
+        const pnl = await B.page.evaluate(() => { const r = document.querySelector('#gamePanel').getBoundingClientRect(); return { top: r.top, bottom: r.bottom }; });
+        const badK = ks.filter((k) => !(k.width >= 44 && k.height >= 44 && k.top >= pnl.top - 1 && k.bottom <= pnl.bottom + 1));
+        check(ks.length === 12 && badK.length === 0, `${what}：12 个数字键都应在面板里（不被挤到折叠线下）且不小于 44 像素：不合格 ${JSON.stringify(badK)}，面板 ${JSON.stringify(pnl)}`);
+        await reset(B);
+        await shutDock(B);
+      }
+
+      // 五、手机竖屏：抽屉打开时面板让到抽屉之上；软键盘出现时输入区在键盘之上
+      await B.page.setViewportSize(orig);
+      await frames(B.page, 3);
+      await openDock(B.page);
+      await feed(B, 'state', fake(4, { yourTurn: true, gameId: 'fake-game-6' }));
+      await until(async () => (await gameMod(B.page)).mode === 'game', 5000, '手机面板出现', 50);
+      await frames(B.page, 3);
+      const pr2 = (await gameMod(B.page)).rect;
+      const dr2 = await rectOf(B.page, '#dock');
+      check(dr2 && dr2.height > 0 && pr2.bottom <= dr2.top + 1, `手机抽屉打开时面板下沿不应低于抽屉上沿：${JSON.stringify({ panel: pr2, dock: dr2 })}`);
+      await shutDock(B);
+      await B.page.evaluate(() => window.TownDock.test.setKeyboard(300));
+      await until(async () => (await B.page.evaluate(() => document.body.getAttribute('data-kb'))) === '1', 5000, '软键盘状态生效', 50);
+      await frames(B.page, 3);
+      const ib2 = await rectOf(B.page, '#gamePanel [data-role="input"]');
+      const vh2 = orig.height;
+      check(ib2 && ib2.bottom <= vh2 - 300 + 1 && ib2.top >= 0, `软键盘（300 像素）出现时输入框应在键盘之上、视口之内：${JSON.stringify({ ib2, vh2 })}`);
+      await B.page.evaluate(() => window.TownDock.test.setKeyboard(null));
+      await until(async () => (await B.page.evaluate(() => document.body.getAttribute('data-kb'))) !== '1', 5000, '软键盘状态撤掉', 50);
+      await reset(B);
+    } finally {
+      for (const p of [A, B]) await feed(p, 'reset', null).catch(() => {});
+      await B.page.evaluate(() => window.TownDock.test.setKeyboard(null)).catch(() => {});
+      await shutDock(B).catch(() => {});
+      if (B.page.viewportSize().width !== 390) await B.page.setViewportSize({ width: 390, height: 844 }).catch(() => {});
+    }
   });
 
   // ───────────────────────── 50.1 点桌子走到不同的落脚点 ─────────────────────────
