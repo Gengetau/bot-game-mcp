@@ -5,7 +5,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { chatHistory, meView } from '../../src/world/views.js';
-import { Actor, makeTown, tempDb, type Town } from './helpers.js';
+import { Actor, KEEPER, makeTown, tempDb, type Town } from './helpers.js';
 
 const HOUR = 3600_000;
 const MIN = 60_000;
@@ -466,5 +466,76 @@ describe('补叫的其它性质', () => {
         if (after.status === 'pending') expect(Number(after.due_at)).toBeGreaterThan(due);
       }
     }
+  });
+});
+
+describe('NPC 的台词与叫醒额度', () => {
+  /** 掌柜身边：一位 AI 发言者、一位 AI 听者、一位真人。闲逛者一直停着，不来添乱。 */
+  function atKeeper(params: Record<string, unknown> = {}) {
+    const t = makeTown({ params: { ...LOOSE, npcStayMinMs: 600_000, npcStayMaxMs: 600_000, ...params } });
+    const a = t.join('AI甲', 'agent');
+    const l = t.join('AI乙', 'agent');
+    const h = t.join('真人丙');
+    for (const p of [a, l, h]) p.go(KEEPER);
+    for (const p of [a, l, h]) p.heartbeat();
+    return { t, a, l, h, all: [a, l, h] };
+  }
+  const fromNpc = (t: Town, x: Actor) => chatEvents(t, x).filter((e) => e.from.kind === 'npc');
+
+  it('17. NPC 开口：真人听众收到事件；AI 旁听者和 AI 提问者都没有事件，话在它们的 here.chat 里，提问者从回执拿到回答；叫醒额度和补叫都没动', () => {
+    const { t, a, l, h } = atKeeper();
+    const out = a.act('ask_npc', { npcId: KEEPER });
+    expect(out).toMatchObject({ status: 'completed', spoken: true });
+    expect(String(out.text).length).toBeGreaterThan(0);
+    // 先证明这句话真的广播了：真人收到了，三个人都在受众里
+    expect(fromNpc(t, h).map((e) => e.text)).toEqual([out.text]);
+    expect(t.w.db.scalar('SELECT COUNT(*) FROM chat_audience a JOIN chat_messages m ON m.message_id = a.message_id WHERE m.sender_id = ?', KEEPER)).toBe(3);
+    // 两位 AI 都没有任何 chat 事件
+    expect(chatEvents(t, a)).toHaveLength(0);
+    expect(chatEvents(t, l)).toHaveLength(0);
+    // 但都看得到这句话；提问者回执里的 messageId 是它自己听到这句的序号
+    expect(hereChat(t, l)).toEqual([out.text]);
+    expect(hereChat(t, a)).toEqual([out.text]);
+    expect(out.messageId).toBe(1);
+    // 叫醒额度没有动，也没有补叫任务
+    expect(t.w.db.all("SELECT bucket FROM rate_buckets WHERE bucket LIKE 'nearby_wake%'")).toEqual([]);
+    expect(wakeJobs(t)).toHaveLength(0);
+  });
+
+  it('18. NPC 的话夹在中间：之前被压下的那句照样补叫，补发的是那位 AI 的话，不是 NPC 的台词', () => {
+    const { t, a, l, h, all } = atKeeper({ nearbyWakePairBurst: 1 });
+    say(a, '第一句');
+    say(a, '第二句'); // 成对桶只有 1 个：这句对 l 被压下
+    expect(texts(t, l)).toEqual(['第一句']);
+    const job = pendingFor(t, l);
+    expect(job).toHaveLength(1);
+    const due = Number(job[0]!.due_at);
+    // 真人问掌柜：掌柜开口，l 也在受众里，但不给它发事件，也不动它的补叫
+    const out = h.act('ask_npc', { npcId: KEEPER });
+    expect(out.spoken).toBe(true);
+    expect(fromNpc(t, h)).toHaveLength(1);
+    expect(hereChat(t, l)).toEqual(['第一句', '第二句', out.text]); // l 的现场里最新的一句是 NPC 的
+    expect(texts(t, l)).toEqual(['第一句']);
+    expect(pendingFor(t, l).map((j) => Number(j.due_at))).toEqual([due]);
+    advanceTo(t, due - 1, all);
+    expect(texts(t, l)).toEqual(['第一句']);
+    advanceTo(t, due, all);
+    const evs = chatEvents(t, l);
+    expect(evs.map((e) => e.text)).toEqual(['第一句', '第二句']);
+    expect(evs[1]!.from).toMatchObject({ id: a.residentId, kind: 'agent' });
+    expect(evs[1]!.messageId).toBe(2);
+    expect(pendingFor(t, l)).toHaveLength(0);
+  });
+
+  it('19. 只有 NPC 说过话：没有东西可补叫（NPC 的台词不安排补叫，也不会被当成被压下的话补发）', () => {
+    const { t, a, l, h, all } = atKeeper({ nearbyWakePairBurst: 1 });
+    say(a, '第一句'); // 用掉 l 对 a 的成对额度
+    expect(texts(t, l)).toEqual(['第一句']);
+    h.act('ask_npc', { npcId: KEEPER });
+    expect(fromNpc(t, h)).toHaveLength(1);
+    expect(wakeJobs(t)).toHaveLength(0);
+    advanceTo(t, t.clock.t + HOUR, all);
+    expect(texts(t, l)).toEqual(['第一句']);
+    expect(wakeJobs(t, 'pending')).toHaveLength(0);
   });
 });

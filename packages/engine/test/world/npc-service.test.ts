@@ -308,20 +308,26 @@ describe('NPC 开口：受众与最小间隔', () => {
     expect(npcChat(near, cn)).toHaveLength(2);
   });
 
-  it('NPC 的话不叫醒任何 AI：站在旁边的 AI 居民收到这句话，但没有唤醒事件、唤醒额度没有变；对照：居民提到它时会有', () => {
+  it('NPC 的话不叫醒任何 AI：站在旁边的 AI 居民不收到 chat 事件（话在它的受众表和 here.chat 里），没有唤醒事件、唤醒额度没有变；旁边的真人照常收到；对照：居民提到它时会有', () => {
     const t = makeTown({ params: STILL });
     const asker = t.join('阿灯');
     const ai = t.join('林小满', 'agent');
     asker.go(KEEPER);
     ai.go(KEEPER);
     const c0 = ai.events().cursor;
-    const bucketRows = () => JSON.stringify(t.w.db.all("SELECT bucket, tokens FROM rate_buckets WHERE resident_id = ? AND bucket LIKE 'town_wake%' ORDER BY bucket", ai.residentId));
+    const ca = asker.events().cursor;
+    const bucketRows = () =>
+      JSON.stringify(t.w.db.all("SELECT bucket, tokens FROM rate_buckets WHERE resident_id = ? AND (bucket LIKE 'town_wake%' OR bucket LIKE 'nearby_wake%') ORDER BY bucket", ai.residentId));
     const buckets0 = bucketRows();
     asker.act('ask_npc', { npcId: KEEPER, topic: 'hello' });
     t.advance(3_000);
     asker.act('ask_npc', { npcId: KEEPER, topic: 'tea' });
-    // 先确认该发生的发生了：AI 听到了 NPC 的话（两句）
-    expect(npcChat(ai, c0)).toHaveLength(2);
+    // 先确认该发生的发生了：两句都广播了（真人提问者各收到一条事件），AI 在两句的受众里，现场视图里看得到
+    expect(npcChat(asker, ca)).toHaveLength(2);
+    expect(t.w.db.scalar('SELECT COUNT(*) FROM chat_audience a JOIN chat_messages m ON m.message_id = a.message_id WHERE a.resident_id = ? AND m.sender_id = ?', ai.residentId, KEEPER)).toBe(2);
+    expect(ai.view().here!.chat.map((c) => c.from.kind)).toEqual(['npc', 'npc']);
+    // AI 一条 chat 事件都没有：私有事件会让挂着的 world_wait 返回，NPC 的话不给 AI 发
+    expect(chatEvents(ai, c0)).toHaveLength(0);
     expect(wakes(ai, c0)).toHaveLength(0);
     expect(bucketRows()).toBe(buckets0);
     expect(t.w.db.scalar("SELECT COUNT(*) FROM recipient_events WHERE type = 'town_chat_mention' AND resident_id = ?", ai.residentId)).toBe(0);
@@ -693,19 +699,31 @@ describe('ask_npc 的请求幂等', () => {
 });
 
 describe('NPC 的话与 world_wait', () => {
-  it('NPC 在旁边说话会让卡在 world_wait 的居民返回（和别人的附近聊天一样）；同时不发 town_chat_mention、不动唤醒额度', async () => {
+  it('NPC 在旁边说话不让卡在 world_wait 的 AI 居民返回（话在它的 here.chat 里）；真人听众的等待照常返回；对照：真人说一句附近聊天，AI 的等待就返回', async () => {
     const t = makeTown({ params: STILL });
     const a = t.join('阿灯');
     const b = t.join('小岚', 'agent');
+    const c = t.join('阿树');
     a.go(KEEPER);
     b.go(KEEPER);
+    c.go(KEEPER);
     const cb = b.view().cursor;
-    // 对照：什么都没发生时等不到事件
-    expect(await t.w.waitResident(b.residentId, cb, undefined, 30)).toBe('timeout');
-    const waiting = t.w.waitResident(b.residentId, cb, undefined, 20_000);
-    a.act('ask_npc', { npcId: KEEPER });
-    expect(await waiting).toBe('event');
-    expect(npcChat(b, cb)).toHaveLength(1);
+    const cc = c.view().cursor;
+    const waitingB = t.w.waitResident(b.residentId, cb, undefined, 300);
+    const waitingC = t.w.waitResident(c.residentId, cc, undefined, 20_000);
+    const out = a.act('ask_npc', { npcId: KEEPER });
+    // 先证明 NPC 真的开口了：真人旁听者的等待返回，并且收到这一句
+    expect(await waitingC).toBe('event');
+    expect(npcChat(c, cc)).toHaveLength(1);
+    // AI 的等待没有被它叫醒，也没有任何 chat 事件；话在现场视图里
+    expect(await waitingB).toBe('timeout');
+    expect(chatEvents(b, cb)).toHaveLength(0);
     expect(wakes(b, cb)).toHaveLength(0);
+    expect(b.view().here!.chat.map((x) => x.text)).toEqual([out.text]);
+    // 对照：同一个位置，真人说一句附近聊天，AI 的等待就返回（上面等不到不是等待本身坏了）
+    const waitingB2 = t.w.waitResident(b.residentId, cb, undefined, 20_000);
+    a.act('say_nearby', { text: '掌柜的茶不错' });
+    expect(await waitingB2).toBe('event');
+    expect(chatEvents(b, cb)).toHaveLength(1);
   });
 });
