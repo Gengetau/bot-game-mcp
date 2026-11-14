@@ -265,6 +265,28 @@ export default async function run(h) {
 
   // ───────────────────────── 40.5 发起人等人时走开（拦截 + 取消） ─────────────────────────
   await step(40.5, '发起人等人时走开：第一次点地被拦下并提示，没有 navigate；隔一会儿再点才走，整桌取消，B 收到「这一桌散了」并站起', async () => {
+    // 不依赖前面几步剩下多少时间：报名窗口一共 LOBBY_MS，40.2 到 40.4 在慢机器上用掉了二十多秒，到这里这一桌多半已经散了（等了太久），
+    // 页面里也就没有可拦的活动。本步骤要的是「发起人等人时走开」，所以开头先保证有一桌「A 发起、B 在座、还剩足够久」：
+    // 够久就直接用；不够就等它自己散（先等服务器真的没有这一桌、两边「这一桌散了」的提示都消失，作为屏障），再重新约一桌（和 40.2、40.4 同一条按钮路）。
+    const NEED_MS = Math.min(18_000, Math.round(LOBBY_MS * 0.7));
+    const m0 = await meView(A);
+    if (!(m0.interaction?.status === 'open' && m0.interaction.participants.length === 2 && left(m0) >= NEED_MS)) {
+      note(`40.5 开始时这一桌${m0.interaction ? `只剩 ${(left(m0) / 1000).toFixed(1)} 秒` : '已经散了'}，等它散掉后重新约一桌（报名窗口 ${LOBBY_MS / 1000} 秒）`);
+      await until(async () => ((await meView(A)).interaction === null ? true : null), LOBBY_MS + 10_000, '这一桌散了（报名到期）', 300);
+      await waitToast(B, /这一桌散了/, '「这一桌散了」（报名到期的那一条，先等它到，再等它消失）');
+      await until(async () => (!(await toastHas(A, /这一桌散了/)) && !(await toastHas(B, /这一桌散了/)) ? true : null), 20_000, '两边「这一桌散了」的旧提示都已消失', 200);
+      await until(async () => (await findAction(A.page, `f:activity:invite:${T1}`)) ?? null, 15_000, 'A 又出现「约人」');
+      await forceAct(A, `f:activity:invite:${T1}`);
+      const jid = await until(async () => (await findAction(B.page, 'f:activity:join:')) ?? null, 15_000, 'B 又出现「加入」');
+      await forceAct(B, jid.id);
+      await until(async () => {
+        const m = await meView(A);
+        return m.interaction?.status === 'open' && m.interaction.participants.length === 2 && left(m) >= NEED_MS ? m : null;
+      }, 15_000, '重新约的这一桌：open、两人、报名还剩足够久');
+      await until(async () => (await findAction(A.page, 'f:activity:begin:')) ?? null, 10_000, 'A 又出现「开始」');
+      await until(async () => (await godotTags(B)).some((x) => x.includes('可开始 2/4')), 10_000, 'B 的桌牌回到「可开始 2/4」');
+      await until(async () => (await sitting(A)).includes(A.id) && (await sitting(B)).includes(B.id), 8000, 'A、B 都坐着');
+    }
     const pos0 = await posOf(A);
     const gx = 11;
     const gz = 8.5;
