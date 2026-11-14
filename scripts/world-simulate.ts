@@ -706,6 +706,7 @@ class Sim {
     const t0 = performance.now();
     this.inv.check(this.w, { now: this.clock.t, expectedResidents: this.ags.filter((a) => a.registered).length, purchases: this.purchases, rnd: this.rnd.fork(`priv${this.inv.checkRounds}`), privacySamples: PRIV });
     this.townInvariants();
+    nearbyWakeCheck(this.w, this.inv, this.clock.t, this.clock.t - 45 * MIN);
     this.bump('check_ms', performance.now() - t0);
     void final;
   }
@@ -2162,10 +2163,172 @@ function controlDisconnectedFor(w: WorldService, principalId: string, clientId: 
   controlDisconnected(w, { principalId, clientId });
 }
 
+// ───────────────────────── 附近聊天的叫醒额度与补叫（O1/T2） ─────────────────────────
+
+interface WakeStats {
+  /** AI 对 AI 的附近聊天里，没有当场事件的（被压下的）受众行数 */
+  suppressed: number;
+  /** 补叫真的发出：事件发出的时刻晚于那句话说出的时刻 */
+  late: number;
+  /** 当场发出的 */
+  live: number;
+}
+
+/**
+ * 两条不变量，独立重算（只读表和参数数字，不调引擎里的任何判断函数）：
+ *  - 上限：任何一位 AI 听者，在任意一小时里，因别的 AI 的附近聊天收到的 chat 事件不超过 nearbyWakeBurst + nearbyWakePerHour，
+ *    其中来自同一位发言者的不超过 nearbyWakePairBurst + nearbyWakePairPerHour（当场的和补叫的都算）；
+ *  - 不丢：AI 对 AI 的一句话如果没有当场事件，三者必居其一：后来有一条附近聊天事件发给了听者（messageId 更大）；
+ *    听者名下有待办的补叫任务；听者已经不在场 / 进过对局 / 离开又回来（它回来时自己会读视图），或者那句话已经过了视图的 30 分钟窗口。
+ *    私宅里说的话只算上限，不核对「不丢」（走出又走进同一间屋的听者没法只凭表判断）。
+ * sinceSentAt：只核对这个时刻之后说的话的「不丢」（周期检查只看最近一段，收尾检查看全部）。
+ */
+function nearbyWakeCheck(w: WorldService, inv: Invariants, now: number, sinceSentAt: number): WakeStats {
+  const stats: WakeStats = { suppressed: 0, late: 0, live: 0 };
+  const P = w.params;
+  const passed = (name: string) => {
+    const r = inv.runs.get(name) ?? { checks: 0, fails: 0 };
+    r.checks++;
+    inv.runs.set(name, r);
+  };
+  const kindOf = new Map<string, string>(w.db.all('SELECT resident_id, kind FROM residents').map((r) => [String(r.resident_id), String(r.kind)]));
+  const maxInWindow = (times: number[]): number => {
+    let best = 0;
+    for (let i = 0, j = 0; i < times.length; i++) {
+      while (times[i]! - times[j]! >= HOUR) j++;
+      best = Math.max(best, i - j + 1);
+    }
+    return best;
+  };
+  for (const [L, kind] of kindOf) {
+    if (kind !== 'agent') continue;
+    const evs = w.db
+      .all("SELECT occurred_at AS at, projection FROM recipient_events WHERE resident_id = ? AND type = 'chat' ORDER BY cursor", L)
+      .map((r) => {
+        const p = JSON.parse(String(r.projection)) as { from: { id: string }; messageId: number };
+        return { at: Number(r.at), from: p.from.id, seq: p.messageId };
+      });
+    // 上限
+    const fromAgents = evs.filter((e) => e.from !== L && kindOf.get(e.from) === 'agent').sort((a, b) => a.at - b.at);
+    const total = maxInWindow(fromAgents.map((e) => e.at));
+    if (total > P.nearbyWakeBurst + P.nearbyWakePerHour) inv.fail('nearby_wake_cap', `一小时内收到别的 AI 的附近聊天事件 ${total} 条，超过 ${P.nearbyWakeBurst + P.nearbyWakePerHour}`, { listener: L }, now);
+    else passed('nearby_wake_cap');
+    const bySender = new Map<string, number[]>();
+    for (const e of fromAgents) (bySender.get(e.from) ?? bySender.set(e.from, []).get(e.from)!).push(e.at);
+    for (const [from, times] of bySender) {
+      const n = maxInWindow(times);
+      if (n > P.nearbyWakePairBurst + P.nearbyWakePairPerHour) inv.fail('nearby_wake_cap', `同一位发言者一小时内对同一位听者的事件 ${n} 条，超过 ${P.nearbyWakePairBurst + P.nearbyWakePairPerHour}`, { listener: L, from }, now);
+    }
+    // 不丢
+    const rows = w.db.all('SELECT a.message_id, m.sender_id, m.sent_at, m.space_id FROM chat_audience a JOIN chat_messages m ON m.message_id = a.message_id WHERE a.resident_id = ? ORDER BY a.message_id', L);
+    const delivered = new Map<number, number>(evs.map((e) => [e.seq, e.at]));
+    const maxEvSeq = evs.reduce((m, e) => Math.max(m, e.seq), 0);
+    const me = w.db.get('SELECT present_since, activity_id FROM residents WHERE resident_id = ?', L)!;
+    const hasJob = !!w.db.get("SELECT 1 AS x FROM scheduled_jobs WHERE dedupe_key = ? AND status = 'pending'", `nearby_wake:${L}`);
+    rows.forEach((row, i) => {
+      const seq = i + 1;
+      const S = String(row.sender_id);
+      if (S === L || kindOf.get(S) !== 'agent') return;
+      const sentAt = Number(row.sent_at);
+      const at = delivered.get(seq);
+      if (at !== undefined) {
+        stats.live++;
+        if (at > sentAt) {
+          stats.live--;
+          stats.late++;
+        }
+        return;
+      }
+      stats.suppressed++;
+      if (sentAt < sinceSentAt || String(row.space_id).startsWith('home:')) return;
+      const away =
+        me.present_since === null ||
+        me.activity_id !== null ||
+        Number(me.present_since) > sentAt ||
+        now - sentAt >= 30 * MIN ||
+        !!w.db.get('SELECT 1 AS x FROM activity_participants WHERE resident_id = ? AND joined_at > ?', L, sentAt);
+      if (maxEvSeq > seq || hasJob || away) passed('nearby_wake_lost');
+      else inv.fail('nearby_wake_lost', '被压下的附近聊天既没有后来的事件、也没有待办的补叫，听者也没有离开过', { listener: L, from: S, messageSeq: seq, sentAt }, now);
+    });
+  }
+  return stats;
+}
+
+/**
+ * 写死步骤的小场景（自己的小世界，不碰主循环的随机流）：两位专门的 AI 居民站在听得到的距离内，一位连说几句，
+ * 压下之后把时间推到补叫到期。保证「被压下」和「补叫发出」各至少发生一次，否则上面两条不变量可能在主循环里空转。
+ */
+const wakeScenarioStats: WakeStats = { suppressed: 0, late: 0, live: 0 };
+function wakeScenarios(inv: Invariants): { name: string; ok: boolean; note: string }[] {
+  const out: { name: string; ok: boolean; note: string }[] = [];
+  const clock = new Clock(TOWN_START);
+  const w = openWorld({ dbPath: ':memory:', clock, seed: `wake${SEED}`, params: { chatPerMinute: 600, chatBurst: 100 } });
+  const rnd = new Rand(`wake:${SEED}`);
+  const mk = (i: number): { p: Person; c: Conn } => {
+    const p: Person = { idx: 200 + i, name: personName(i + 40), kind: 'agent', principalId: makePrincipal(w, 200 + i, 'agent', personName(i + 40)), residentId: '' };
+    const c = new Conn(w, p, `mcp:wake-${i}`, 'mcp');
+    p.residentId = c.enter(randomProfile(rnd, p.name)).residentId;
+    return { p, c };
+  };
+  const A = mk(0);
+  const B = mk(1);
+  const hb = () => {
+    for (const x of [A, B]) {
+      try {
+        x.c.heartbeat();
+      } catch {
+        /* 已离线 */
+      }
+    }
+  };
+  const step = (ms: number) => {
+    for (let left = ms; left > 0; ) {
+      const d = Math.min(20_000, left);
+      clock.t += d;
+      left -= d;
+      hb();
+      w.tick();
+    }
+  };
+  // 两位都走到广场，站得很近（出生点以后调整也不影响：都 navigate 到同一个公共地点）
+  for (const x of [A, B]) {
+    const o = x.c.send('navigate', { to: 'plaza' });
+    if (o.ok && o.out.status === 'accepted') {
+      const t = trackNav(x.c, o.out.navigation, clock.t);
+      for (let g = 0; g < 300 && actorOf(w, x.p.residentId)?.nav; g++) {
+        clock.t += Math.max(1, Math.min(t.arriveAt, clock.t + w.params.navRenewEveryMs) - clock.t);
+        hb();
+        w.tick();
+        if (renewTrack(w, t, clock.t).result !== 'ok') break;
+      }
+    }
+  }
+  hb();
+  const nBurst = w.params.nearbyWakePairBurst;
+  const sent: boolean[] = [];
+  for (let i = 0; i < nBurst + 3; i++) sent.push(A.c.send('say_nearby', { text: `写死的话 ${i + 1}` }).ok);
+  const jobs = w.db.all("SELECT due_at FROM scheduled_jobs WHERE kind = 'nearby_wake' AND status = 'pending'");
+  const dueAt = jobs.length ? Number(jobs[0]!.due_at) : 0;
+  const mid = nearbyWakeCheck(w, inv, clock.t, 0);
+  if (dueAt > clock.t) step(dueAt - clock.t);
+  w.tick();
+  const done = nearbyWakeCheck(w, inv, clock.t, 0);
+  Object.assign(wakeScenarioStats, done);
+  const evs = Number(w.db.scalar("SELECT COUNT(*) FROM recipient_events WHERE resident_id = ? AND type = 'chat'", B.p.residentId));
+  const left = w.db.all("SELECT 1 FROM scheduled_jobs WHERE kind = 'nearby_wake' AND status = 'pending'").length;
+  out.push({
+    name: '附近聊天：被压下后补叫',
+    ok: sent.every(Boolean) && mid.suppressed === 3 && jobs.length === 1 && done.late === 1 && evs === nBurst + 1 && left === 0,
+    note: `连说 ${sent.length} 句，当场 ${mid.live} 条、压下 ${mid.suppressed} 句、待办补叫 ${jobs.length} 条；到期后补叫 ${done.late} 条，听者共 ${evs} 条事件，残留任务 ${left}`,
+  });
+  w.close();
+  return out;
+}
+
 // ───────────────────────── 主流程 ─────────────────────────
 
 const sim = new Sim();
-const scenarios = [...scenarioChecks(sim.inv), ...navScenarios(sim.inv)];
+const scenarios = [...scenarioChecks(sim.inv), ...navScenarios(sim.inv), ...wakeScenarios(sim.inv)];
 sim.init();
 console.log(`栖灯镇逻辑模拟：${DAYS} 天、${N} 位居民、种子 ${SEED}、${FILE_MODE ? `文件库 ${DB_PATH}` : '内存库'}、停机重启 ${RESTARTS} 次、不变量每 ${CHECK_EVERY / MIN} 分钟一轮`);
 const wall0 = performance.now();
@@ -2344,6 +2507,10 @@ if (coverageMissing.length) {
   console.log('\n覆盖不足：');
   for (const c of coverageMissing) console.log(`  × ${c}`);
 }
+if (wakeScenarioStats.suppressed < 1) coverageMissing.push('附近聊天的叫醒额度：「被压下」从未发生（写死的小场景没有压下任何一句）');
+if (wakeScenarioStats.late < 1) coverageMissing.push('附近聊天的叫醒额度：「补叫真的发出」从未发生');
+const wakeFinal = nearbyWakeCheck(sim.w, sim.inv, sim.clock.t, 0);
+console.log(`附近聊天叫醒额度：主循环里 AI 对 AI 当场 ${wakeFinal.live} 句、补叫 ${wakeFinal.late} 句、压下后没有单独事件的 ${wakeFinal.suppressed} 句；写死小场景 当场 ${wakeScenarioStats.live}、压下 ${wakeScenarioStats.suppressed}、补叫 ${wakeScenarioStats.late}`);
 const failed = sim.inv.totalViolations > 0 || sim.internalCount > 0 || sim.rejectChecks.failed > 0 || scenarios.some((s) => !s.ok) || coverageMissing.length > 0;
 console.log(`\n结论：${failed ? '未通过（见上面的违例 / 异常 / 覆盖不足）' : '通过：未发现不变量违例、内部异常或拒绝检查失败'}`);
 

@@ -88,6 +88,16 @@ export const townParamsSchema = z.object({
   chatPerMinute: int(6, 1, 600),
   chatBurst: int(3, 1, 100),
   chatMaxChars: int(120, 1, 1000),
+  /**
+   * 附近聊天的叫醒额度（只管「AI 说、AI 听」）：一句话对一位 AI 听者要不要当场发 chat 事件（叫醒它的 world_wait）。
+   * 听者的总额度：突发上限和每小时恢复条数；同一个发言者对同一个听者的额度：突发上限和每小时恢复条数。
+   * 两个都够才发，并且一起扣；不够就压下来：话照样进受众表和 here.chat，额度恢复后补叫一次（不会丢，只会晚到）。
+   * 真人听者、真人发言者都不受它限制。
+   */
+  nearbyWakeBurst: int(10, 1, 100),
+  nearbyWakePerHour: int(30, 1, 1000),
+  nearbyWakePairBurst: int(5, 1, 100),
+  nearbyWakePairPerHour: int(20, 1, 1000),
   /** 全镇公屏：保留期、每人每分钟几条、突发几条、重复内容的判定窗口 */
   townChatRetentionMs: ms(7 * 24 * 3600_000, 60_000),
   townChatPerMinute: int(6, 1, 600),
