@@ -329,6 +329,11 @@
         $('submit').classList.remove('wait');
         if (a.ok) {
           inputEl.value = '';
+          /* 猜成了：立刻不再是「轮到你」（等下一份视图），免得在视图回来之前还能再猜一次 */
+          if (S.mode === 'game' && S.yourTurn) {
+            S.yourTurn = false;
+            render();
+          }
           return;
         }
         var msg = a.message || T('err.default');

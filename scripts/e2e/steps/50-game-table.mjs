@@ -72,17 +72,25 @@ export default async function run(h) {
   /** 局内某一边的猜数：桌面用键盘（填数字 + Enter），手机用屏幕数字键 + 「猜」。返回猜的数。 */
   const takeTurn = async (p, number) => {
     const d0 = await gameMod(p.page);
+    if (!d0.yourTurn || d0.busy) return null; // 读的当口回合已经变了（比如刚猜完、视图还在路上）：这一轮不猜
     const num = number ?? midOf(d0.range);
     const n0 = (await godotGame(p))?.sent?.guess ?? 0;
-    if (p.touch) {
-      check(d0.inputReadonly, `${p.label} 手机上输入框应是只读（用屏幕数字键）`);
-      await p.page.click('#gamePanel [data-key="clear"]');
-      for (const ch of String(num)) await p.page.click(`#gamePanel [data-key="${ch}"]`);
-      check((await gameMod(p.page)).input === String(num), `${p.label} 屏幕数字键应拼出 ${num}：${(await gameMod(p.page)).input}`);
-      await p.page.click('#gamePanel [data-role="submit"]');
-    } else {
-      await p.page.fill('#gamePanel [data-role="input"]', String(num));
-      await p.page.press('#gamePanel [data-role="input"]', 'Enter');
+    try {
+      if (p.touch) {
+        check(d0.inputReadonly, `${p.label} 手机上输入框应是只读（用屏幕数字键）`);
+        await p.page.click('#gamePanel [data-key="clear"]', { timeout: 5000 });
+        for (const ch of String(num)) await p.page.click(`#gamePanel [data-key="${ch}"]`, { timeout: 5000 });
+        check((await gameMod(p.page)).input === String(num), `${p.label} 屏幕数字键应拼出 ${num}：${(await gameMod(p.page)).input}`);
+        await p.page.click('#gamePanel [data-role="submit"]', { timeout: 5000 });
+      } else {
+        await p.page.fill('#gamePanel [data-role="input"]', String(num), { timeout: 5000 });
+        await p.page.press('#gamePanel [data-role="input"]', 'Enter', { timeout: 5000 });
+      }
+    } catch (e) {
+      // 操作的当口回合变了（对手超时代猜、局已结束）：这一轮不猜；回合还是自己的就是真故障
+      const d1 = await gameMod(p.page);
+      if (!d1.yourTurn || d1.mode !== 'game') return null;
+      throw e;
     }
     await until(async () => (((await godotGame(p))?.sent?.guess ?? 0) > n0) || (await gameMod(p.page)).mode === 'result', 15_000, `${p.label} 的猜数发出去了`, 150);
     return num;
@@ -389,8 +397,7 @@ export default async function run(h) {
       if (ra.mode === 'result' && rb.mode === 'result') break;
       for (const [p, d, k] of [[A, ra, 'A'], [B, rb, 'B']]) {
         if (d.mode === 'game' && d.yourTurn && !d.busy) {
-          await takeTurn(p);
-          turns[k]++;
+          if ((await takeTurn(p)) !== null) turns[k]++;
         }
       }
       await sleep(250);
