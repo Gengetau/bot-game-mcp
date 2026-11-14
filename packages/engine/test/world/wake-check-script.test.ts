@@ -3,7 +3,8 @@
  *  - 序号按「水位 - 更新的受众行数」算，受众行被保留期清掉之后不错位；
  *  - 真的压下了话、又没有出路时会报违例（不是空转）；
  *  - NPC 的台词（AI 听者没有事件）不算被压下，也不带偏序号；
- *  - 「进过对局」按开局时刻算：先报名、话被压下、之后才开局的听者不算丢；
+ *  - 「在局里作罢」按补叫任务处理的时刻对那一局的起止来认：先报名、话被压下、之后才开局、补叫到期时在局里的听者不算丢；
+ *    补叫在开局之前就没了的，之后开过局也照样报；
  *  - 世界模拟脚本在违例汇总和「覆盖不足」打印之前就完成收尾核对，失败原因才列得出来。
  */
 import { readFileSync } from 'node:fs';
@@ -93,7 +94,7 @@ describe('模拟脚本：nearbyWakeCheck', () => {
     expect(bad.violations[0]).toMatchObject({ invariant: 'nearby_wake_lost', detail: { listener: b.residentId, from: a.residentId, messageSeq: 7 } });
   });
 
-  it('先报名凑桌、话被压下、之后才开局：补叫到期时听者在局里就作罢，它回到镇上后不报违例（「进过对局」按开局时刻算）；对照：只报了名、还没开局，补叫没了照样报', async () => {
+  it('先报名凑桌、话被压下、之后才开局：补叫到期时听者在局里就作罢，它回到镇上后不报违例（按补叫处理的时刻对那一局的起止来认）；对照：只报了名、还没开局，补叫没了照样报', async () => {
     const { nearbyWakeCheck, Invariants } = await lib();
     // 成对额度恢复调到最快（每小时 1000 个，约 3.6 秒一个）：补叫几秒后就到期，局还没来得及因为超时自己结束
     const t = makeTown({ params: { ...LOOSE, nearbyWakePairPerHour: 1000 } });
@@ -141,6 +142,52 @@ describe('模拟脚本：nearbyWakeCheck', () => {
     const stats = nearbyWakeCheck(t.w, inv, t.clock.t, 0);
     expect(stats.suppressed).toBeGreaterThanOrEqual(1);
     expect(inv.totalViolations).toBe(0);
+  });
+
+  it('补叫在开局之前就没了（处理时听者不在任何一局里，也没发出事件），之后听者开了一局又回来：照样报 nearby_wake_lost，不因为「之后开过局」放行', async () => {
+    const { nearbyWakeCheck, Invariants } = await lib();
+    const t = makeTown({ params: { ...LOOSE, nearbyWakePairPerHour: 1000 } });
+    const a = t.join('说话的', 'agent');
+    const b = t.join('听的', 'agent');
+    const c = t.join('牌友', 'agent');
+    for (const x of [a, b, c]) x.go('arcade:table1');
+    const beat = () => [a, b, c].forEach((x) => x.heartbeat());
+    beat();
+    for (let i = 1; i <= 6; i++) say(a, `第${i}句`); // 第 6 句对 b 被压下，补叫待办
+    const key = `nearby_wake:${b.residentId}`;
+    const job = () => t.w.db.get('SELECT status, due_at, processed_at FROM scheduled_jobs WHERE dedupe_key = ?', key)!;
+    const eventsOfB = () => Number(t.w.db.scalar("SELECT COUNT(*) FROM recipient_events WHERE resident_id = ? AND type = 'chat'", b.residentId));
+    expect(eventsOfB()).toBe(5);
+    expect(job().status).toBe('pending');
+    const sentAt = Number(t.w.db.scalar('SELECT MAX(sent_at) FROM chat_messages WHERE sender_id = ?', a.residentId));
+    // 模拟引擎把补叫弄丢：任务此刻就被标成处理完（b 在场、不在任何一局里），没有发出事件
+    const lostAt = t.clock.t;
+    t.w.db.run("UPDATE scheduled_jobs SET status = 'done', processed_at = ? WHERE dedupe_key = ?", lostAt, key);
+    expect(lostAt).toBeGreaterThanOrEqual(sentAt);
+    // 之后 b 才凑桌、开局、退出，回到镇上
+    t.advance(1000);
+    beat();
+    const p = b.act('propose_game', { game: 'number_bomb', objectId: 'arcade:table1' });
+    c.act('join_game', { activityId: p.activity.id });
+    b.act('start_game', { activityId: p.activity.id });
+    expect(b.row().activity_id).not.toBeNull();
+    const startedAt = Number(t.w.db.scalar('SELECT started_at FROM activities WHERE activity_id = ?', p.activity.id));
+    expect(startedAt).toBeGreaterThan(lostAt); // 开局晚于补叫没了的时刻
+    // b 还在局里：按「此刻不在镇上」放行（它出局时有自己的事件）
+    const during = new Invariants(() => undefined);
+    nearbyWakeCheck(t.w, during, t.clock.t, 0);
+    expect(during.totalViolations).toBe(0);
+    t.advance(1000);
+    b.act('quit_game');
+    expect(b.row().activity_id).toBeNull();
+    expect(b.row().present_since).not.toBeNull();
+    expect(Number(b.row().present_since)).toBeLessThan(sentAt); // 没有掉线重进：不靠「离开又回来」放行
+    expect(job()).toMatchObject({ status: 'done', processed_at: lostAt }); // 之后没有新的压下去重排它
+    expect(eventsOfB()).toBe(5);
+    const inv = new Invariants(() => undefined);
+    nearbyWakeCheck(t.w, inv, t.clock.t, 0);
+    expect(inv.violations.filter((v) => v.invariant === 'nearby_wake_lost')).toHaveLength(1);
+    expect(inv.violations[0]).toMatchObject({ detail: { listener: b.residentId, from: a.residentId, messageSeq: 6 } });
   });
 });
 

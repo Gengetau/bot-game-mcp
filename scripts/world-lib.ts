@@ -1178,7 +1178,8 @@ export interface WakeStats {
  *  - 上限：任何一位 AI 听者，在任意一小时里，因别的 AI 的附近聊天收到的 chat 事件不超过 nearbyWakeBurst + nearbyWakePerHour，
  *    其中来自同一位发言者的不超过 nearbyWakePairBurst + nearbyWakePairPerHour（当场的和补叫的都算）；
  *  - 不丢：AI 对 AI 的一句话如果没有当场事件，三者必居其一：后来有一条附近聊天事件发给了听者（messageId 更大）；
- *    听者名下有待办的补叫任务；听者已经不在场 / 这句话之后进过一局开打了的小游戏 / 离开又回来（它回来时自己会读视图），或者那句话已经过了视图的 30 分钟窗口。
+ *    听者名下有待办的补叫任务；听者已经不在场 / 正在一局小游戏里 / 这句话的补叫处理时它正在一局开打了的小游戏里（任务就此作罢）/
+ *    离开又回来（它回来时自己会读视图），或者那句话已经过了视图的 30 分钟窗口。
  *    私宅里说的话只算上限，不核对「不丢」（走出又走进同一间屋的听者没法只凭表判断）。
  * sinceSentAt：只核对这个时刻之后说的话的「不丢」（周期检查只看最近一段，收尾检查看全部）。
  */
@@ -1224,6 +1225,20 @@ export function nearbyWakeCheck(w: WorldService, inv: Invariants, now: number, s
     const maxEvSeq = evs.reduce((m, e) => Math.max(m, e.seq), 0);
     const me = w.db.get('SELECT present_since, activity_id FROM residents WHERE resident_id = ?', L)!;
     const hasJob = !!w.db.get("SELECT 1 AS x FROM scheduled_jobs WHERE dedupe_key = ? AND status = 'pending'", `nearby_wake:${L}`);
+    // 「在局里作罢」：补叫任务处理完的那一刻（processed_at），听者正在一局开打了的小游戏里（它出局 / 散局时有自己的事件，回来会读视图）。
+    // 按任务真正处理的时刻对那一局的起止来认，不按报名时刻，也不按「这句话之后开过局」：
+    //  - 听者可以先报名（凑桌时仍在场、仍听得到），话被压下之后才开局，补叫到期时它在局里；只凑桌没开成的不算。
+    //  - 反过来，补叫要是在开局之前就没了（处理时听者不在任何一局里，又没发出事件），之后它再开多少局也不能把这句话放行。
+    const jobDoneAt = w.db.get("SELECT processed_at FROM scheduled_jobs WHERE dedupe_key = ? AND status = 'done'", `nearby_wake:${L}`)?.processed_at;
+    const inGameAt = (at: number): boolean =>
+      !!w.db.get(
+        `SELECT 1 AS x FROM activity_participants p JOIN activities a ON a.activity_id = p.activity_id
+         WHERE p.resident_id = ? AND a.started_at IS NOT NULL AND a.started_at <= ? AND (p.returned_at IS NULL OR p.returned_at >= ?)`,
+        L,
+        at,
+        at,
+      );
+    const droppedInGameAt = jobDoneAt != null && inGameAt(Number(jobDoneAt)) ? Number(jobDoneAt) : null;
     // 听者自己的序号 = 水位 - 比它更新的受众行数（和引擎的 chatSeqOf 同一个定义，但这里独立算）；
     // 受众行被保留期清理掉之后，下标不再等于序号，所以不能用 i + 1
     const high = Number(w.db.scalar('SELECT high_water FROM stream_heads WHERE stream_key = ?', `chat:${L}`) ?? 0);
@@ -1245,19 +1260,12 @@ export function nearbyWakeCheck(w: WorldService, inv: Invariants, now: number, s
       if (sentAt < now - P.eventReplayRetentionMs) return;
       stats.suppressed++;
       if (sentAt < sinceSentAt || String(row.space_id).startsWith('home:')) return;
-      // 「进过对局」按开局时刻算，不按报名时刻：听者可以先报名（凑桌时仍在场、仍听得到），这句话被压下之后才开局，
-      // 补叫到期时它在局里就作罢（它出局 / 散局时有自己的事件，回来会读视图）。只凑桌没开成的不算离开。
       const away =
         me.present_since === null ||
         me.activity_id !== null ||
         Number(me.present_since) > sentAt ||
         now - sentAt >= 30 * MIN ||
-        !!w.db.get(
-          `SELECT 1 AS x FROM activity_participants p JOIN activities a ON a.activity_id = p.activity_id
-           WHERE p.resident_id = ? AND a.started_at IS NOT NULL AND a.started_at >= ?`,
-          L,
-          sentAt,
-        );
+        (droppedInGameAt !== null && droppedInGameAt >= sentAt);
       if (maxEvSeq > seq || hasJob || away) passed('nearby_wake_lost');
       else inv.fail('nearby_wake_lost', '被压下的附近聊天既没有后来的事件、也没有待办的补叫，听者也没有离开过', { listener: L, from: S, messageSeq: seq, sentAt }, now);
     });
