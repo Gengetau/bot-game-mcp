@@ -68,6 +68,19 @@ describe('候选点生成（纯函数）', () => {
     expect(spawnCandidates(sc, a)).toEqual(list);
   });
 
+  it('中心贴着障碍时：不可走的候选被丢掉，留下的都可走', () => {
+    const t = makeTown();
+    const sc = town(t);
+    const fountain = sc.source.obstacles.find((o) => o.id === 'plaza.fountain')!;
+    const centre = { x: fountain.x + fountain.w / 2, z: fountain.z + fountain.d + 0.75 }; // 喷泉南沿外一点
+    expect(isWalkable(sc, centre.x, centre.z)).toBe(true);
+    const ideal = spawnRingPoints(centre);
+    const list = spawnCandidates(sc, centre);
+    expect(ideal.some((p) => !isWalkable(sc, p.x, p.z))).toBe(true); // 这个中心附近确实有不可走的理想点
+    expect(list.length).toBeLessThan(ideal.length);
+    for (const p of list) expect(isWalkable(sc, p.x, p.z)).toBe(true);
+  });
+
   it('pickSpawn：跳过被占的点（半径内算占），全占了退回第一个（中心）', () => {
     const cands = [{ x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }];
     expect(pickSpawn(cands, [], 0.8)).toEqual(cands[0]);
@@ -143,6 +156,18 @@ describe('先后进入的居民', () => {
     const b = t.join('小岚');
     expect(xz(b)).not.toEqual(cands[0]);
     expect(dist(xz(b), a.pos())).toBeGreaterThanOrEqual(0.8);
+  });
+
+  it('占位用现算位置：走远了的人不再占着出发点（存下的坐标是出发点，不能拿来用）', () => {
+    const t = makeTown();
+    const a = t.join('阿灯');
+    const cands = spawnCandidates(town(t), anchor(t));
+    a.act('navigate', { to: 'tea_house' });
+    t.advance(4000);
+    expect(a.pos().moving).toBe(true);
+    expect(dist(a.pos(), cands[0]!)).toBeGreaterThan(2); // 已经离出发点很远
+    const b = t.join('小岚');
+    expect(xz(b)).toEqual(cands[0]);
   });
 
   it('NPC 站在候选点上也算占位', () => {

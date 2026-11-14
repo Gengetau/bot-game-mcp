@@ -152,6 +152,21 @@ interface Ag {
   walkPlan: { kind: 'reroute' | 'halt' | 'ghost' | 'chat'; at: number } | null;
   /** 走到物件旁边之后要去用的物件 */
   useObject: string | null;
+  /** 当面互动（问爱好、邀请、报价、成交、当面还东西）走近之后接着要做的那一件 */
+  face: FaceTask | null;
+}
+
+/** 当面互动的待办：先走近对方，到了再发动作；收到 too_far 就按回执里的 navigateTo 走过去再试一次。 */
+interface FaceTask {
+  type: string;
+  fields: Record<string, unknown>;
+  target: string;
+  due: number;
+  /** 已经为这件事发过几次「走近」 */
+  tries: number;
+  walked: boolean;
+  /** 收到过 too_far（走近之后重试成功才算「too_far 被正确处理」） */
+  tooFar: boolean;
 }
 
 type WalkStyle = 'steady' | 'stingy' | 'fickle' | 'halter' | 'ghost';
@@ -249,6 +264,7 @@ class Sim {
         renewsLeft: null,
         walkPlan: null,
         useObject: null,
+        face: null,
       };
       this.planSessions(ag);
       this.ags.push(ag);
@@ -460,6 +476,7 @@ class Sim {
     ag.reclaimAt = 0;
     ag.nav = null;
     ag.walkPlan = null;
+    ag.face = null;
     this.bump('sessions');
   }
 
@@ -1331,7 +1348,11 @@ class Sim {
       if (o.to.id === me) {
         if (rnd.chance(0.75)) {
           const accept = rnd.chance(0.7);
-          this.exec(ag, conn, accept ? 'accept_offer' : 'decline_offer', { offerId: o.id });
+          // 成交要当面：对方不在手边就先走过去
+          if (accept) {
+            const walk = this.faceExec(ag, conn, 'accept_offer', { offerId: o.id }, o.from.id);
+            if (walk !== null) return walk;
+          } else this.exec(ag, conn, 'decline_offer', { offerId: o.id });
           return rnd.range(2, 8) * 1000;
         }
       } else if (o.from.id === me && rnd.chance(0.08)) {
@@ -1373,6 +1394,13 @@ class Sim {
     if (here?.activities.some((a) => a.status === 'forming' && a.players.some((p) => p.id === me)) && rnd.chance(0.9)) {
       const d = this.gameIntent(ag, conn, v, { space: v.location.space ?? '' });
       if (d !== null) return d;
+    }
+    // 走近之后接着做当面的那件事（对方走开了、过了期就算了，属于正常）
+    if (ag.face) {
+      const f = ag.face;
+      ag.face = null;
+      if (now < f.due && this.w.resident(f.target)) return this.faceExec(ag, conn, f.type, f.fields, f.target, f) ?? rnd.range(3, 8) * 1000;
+      this.bump('face_gave_up');
     }
     const intents: [string, number][] = [];
     const residentsHere = here?.residents ?? [];
@@ -1454,6 +1482,67 @@ class Sim {
     else if (ag.walk === 'steady' && r.chance(0.12)) ag.walkPlan = { kind: r.chance(0.7) ? 'chat' : 'reroute', at: half };
     if (ag.walkPlan) return Math.max(1000, ag.walkPlan.at - now);
     return Math.max(1000, remaining + r.range(0, 3000));
+  }
+
+  /** 两位居民此刻的距离（独立读权威位置，不调引擎的 personReach）；不在同一个场景实例里返回 null。 */
+  private distBetween(aId: string, bId: string): number | null {
+    const a = positionOfResident(this.w, aId, this.clock.t);
+    const b = positionOfResident(this.w, bId, this.clock.t);
+    if (!a || !b || a.scene !== b.scene || a.instance !== b.instance) return null;
+    return Math.hypot(a.x - b.x, a.z - b.z);
+  }
+
+  /**
+   * 当面互动：够不着对方就先 navigate {approach} 走过去，下次决策再接着做（返回走路的等待时间）；够得着就直接发。
+   * 偶尔不先走近、直接发，收到 too_far 就按回执里的 navigateTo 走过去再试一次（走不到、对方走开了就算了）。
+   * 返回 null 表示这一件已经处理完（发出去了，成功与否不论）或放弃了，由调用方接着安排下一次决策。
+   */
+  private faceExec(ag: Ag, conn: Conn, type: string, fields: Record<string, unknown>, targetId: string, resume?: FaceTask): number | null {
+    const now = this.clock.t;
+    const reach = this.w.params.personReach;
+    const task: FaceTask = resume ?? { type, fields, target: targetId, due: now + 90_000, tries: 0, walked: false, tooFar: false };
+    const d = this.distBetween(ag.p.residentId, targetId);
+    if (d !== null && d > reach - 0.25 && task.tries < 3) {
+      const blind = !task.tooFar && !task.walked && d > reach + 0.5 && ag.rnd.chance(0.12);
+      if (!blind) {
+        task.tries++;
+        task.walked = true;
+        ag.face = task;
+        const delay = this.moveTo(ag, conn, targetId, 'approach');
+        if (delay === null) {
+          ag.face = null;
+          this.bump('face_walk_failed');
+          return null;
+        }
+        this.bump('face_walk');
+        return delay;
+      }
+      this.bump('face_blind');
+    }
+    ag.face = null;
+    const out = this.exec(ag, conn, type, fields);
+    if (out.ok) {
+      this.bump(`face_ok:${type}`);
+      if (task.walked) this.bump('face_walked_ok');
+      if (task.tooFar) this.bump('face_too_far_retry_ok');
+      return null;
+    }
+    if (out.reason === 'too_far') {
+      this.bump('face_too_far');
+      const to = out.data?.navigateTo;
+      if (typeof to === 'string' && !task.tooFar) {
+        task.tooFar = true;
+        task.tries = 0;
+        ag.face = task;
+        const delay = this.moveTo(ag, conn, to, 'approach');
+        if (delay !== null) {
+          this.bump('face_too_far_walk');
+          return delay;
+        }
+        ag.face = null;
+      }
+    }
+    return null;
   }
 
   /** 到了续租的时间：像真实客户端一样发一次续租（不走回执管线）。 */
@@ -1588,8 +1677,7 @@ class Sim {
       }
       case 'ask': {
         const t = rnd.pick(c.residentsHere);
-        this.exec(ag, conn, 'ask_hobby', { target: t.id });
-        return short();
+        return this.faceExec(ag, conn, 'ask_hobby', { target: t.id }, t.id) ?? short();
       }
       case 'buy': {
         const goods: { shop: string; sku: string; price: number; stock: number }[] = [];
@@ -1687,21 +1775,22 @@ class Sim {
         const target = rnd.pick(c.residentsHere);
         const kind = rnd.weighted<'gift' | 'trade' | 'loan'>([['gift', 5], ['trade', 3], ['loan', 2]])!;
         const mine = inv.items.filter((i) => TRADABLE.includes(i.type as never) && i.available > 0 && !i.borrowedFrom);
+        let fields: Record<string, unknown>;
         if (kind === 'loan') {
           const book = inv.items.find((i) => i.type === 'book' && !i.borrowedFrom && i.available > 0);
           if (!book) return null;
-          this.exec(ag, conn, 'offer', { kind, to: target.id, give: { items: [{ itemId: book.itemId }] } });
+          fields = { kind, to: target.id, give: { items: [{ itemId: book.itemId }] } };
         } else if (kind === 'gift') {
-          if (rnd.chance(0.25) && inv.coins.available > 3) this.exec(ag, conn, 'offer', { kind, to: target.id, give: { coins: rnd.range(1, 3) } });
-          else if (mine.length > 0) this.exec(ag, conn, 'offer', { kind, to: target.id, give: { items: [{ type: rnd.pick(mine).type, qty: 1 }] } });
+          if (rnd.chance(0.25) && inv.coins.available > 3) fields = { kind, to: target.id, give: { coins: rnd.range(1, 3) } };
+          else if (mine.length > 0) fields = { kind, to: target.id, give: { items: [{ type: rnd.pick(mine).type, qty: 1 }] } };
           else return null;
         } else {
           if (mine.length === 0) return null;
           const give = rnd.pick(mine).type;
           const want = rnd.pick(TRADABLE.filter((t) => t !== give));
-          this.exec(ag, conn, 'offer', { kind, to: target.id, give: { items: [{ type: give, qty: 1 }] }, want: rnd.chance(0.2) ? { coins: 1 } : { items: [{ type: want, qty: 1 }] } });
+          fields = { kind, to: target.id, give: { items: [{ type: give, qty: 1 }] }, want: rnd.chance(0.2) ? { coins: 1 } : { items: [{ type: want, qty: 1 }] } };
         }
-        return short();
+        return this.faceExec(ag, conn, 'offer', fields, target.id) ?? short();
       }
       case 'book': {
         const lib = here?.library?.filter((b) => b.available > 0) ?? [];
@@ -1725,9 +1814,14 @@ class Sim {
         }
         const owner = this.w.resident(loan.owner_id);
         if (!owner) return null;
-        if (c.residentsHere.some((x) => x.id === owner.resident_id) || c.space === 'residential') {
+        if (c.space === 'residential') {
+          // 会馆区域里够不着主人会自动放进归还箱：不先走近，让这条路径照旧被走到
           this.exec(ag, conn, 'return_item', { itemId: item.itemId });
           return short();
+        }
+        if (c.residentsHere.some((x) => x.id === owner.resident_id)) {
+          // 当面还：先走到主人身边
+          return this.faceExec(ag, conn, 'return_item', { itemId: item.itemId }, owner.resident_id) ?? short();
         }
         // 去主人所在的地方（走到他身边），或者会馆门口的归还箱
         if (!owner.location_id.startsWith('home:') && owner.location_id === c.space) return this.moveTo(ag, conn, owner.resident_id, 'approach');
@@ -1743,8 +1837,7 @@ class Sim {
       }
       case 'invite': {
         const t = rnd.pick(c.residentsHere);
-        this.exec(ag, conn, 'invite', { to: t.id, reentry: rnd.chance(0.5) });
-        return short();
+        return this.faceExec(ag, conn, 'invite', { to: t.id, reentry: rnd.chance(0.5) }, t.id) ?? short();
       }
       case 'interact': return this.interact(ag, conn, v, c);
       case 'game': return this.gameIntent(ag, conn, v, c);
@@ -2660,8 +2753,28 @@ if (DAYS >= 1 && N >= 8) {
   if (c('npc_hold_extended') < 1) coverageMissing.push('闲逛者被搭话后停留被延长从未发生（npc_hold_extended）');
   if (c('npc_spoke') < 1) coverageMissing.push('NPC 从未在附近聊天里开过口（npc_spoke）');
 }
+// 当面互动（问爱好、邀请、报价、成交、当面还东西）：居民会先走近再做，一天里各类都要真的成功过；
+// 够不着（too_far）也要被正确处理过：按回执里的 navigateTo 走近，再试一次成功。数字按实测（种子 1 到 5）留了余量
+if (DAYS >= 1 && N >= 8) {
+  const c = (k: string) => sim.counters.get(k) ?? 0;
+  const need: [string, string, number][] = [
+    ['face_ok:ask_hobby', '问爱好', 100],
+    ['face_ok:invite', '当面邀请', 70],
+    ['face_ok:offer', '报价', 150],
+    ['face_ok:accept_offer', '成交', 70],
+    ['face_ok:return_item', '当面还东西', 5],
+    ['face_walked_ok', '先走近之后成功的当面互动', 120],
+    ['face_too_far_walk', 'too_far 之后按 navigateTo 走近', 30],
+    ['face_too_far_retry_ok', 'too_far 之后走近、重试成功', 20],
+  ];
+  for (const [k, label, min] of need) if (c(k) < min) coverageMissing.push(`${label}一天里只成功了 ${c(k)} 次（至少 ${min} 次，${k}）`);
+}
 console.log(`NPC 互动：买茶 ${sim.counters.get('npc_buy') ?? 0}，问掌柜 ${sim.counters.get('npc_ask:npc:teahouse_keeper') ?? 0}，搭话闲逛者 ${sim.counters.get('npc_ask:npc:plaza_stroller') ?? 0}，开口 ${sim.counters.get('npc_spoke') ?? 0}，延长停留 ${sim.counters.get('npc_hold_extended') ?? 0}`);
 console.log(`NPC：${NPCS.map((n) => `${n.name} 路线版本 ${sim.counters.get(`npc_revision:${n.id}`) ?? '—'}`).join('，')}；到过的锚点 ${[...sim.counters].filter(([k]) => k.startsWith('npc_visit:')).map(([k]) => k.slice(10)).join('、') || '无'}`);
+{
+  const c = (k: string) => sim.counters.get(k) ?? 0;
+  console.log(`当面互动（先走近）：成功 问爱好 ${c('face_ok:ask_hobby')}，邀请 ${c('face_ok:invite')}，报价 ${c('face_ok:offer')}，成交 ${c('face_ok:accept_offer')}，当面还 ${c('face_ok:return_item')}；走近 ${c('face_walk')} 次（走近后成功 ${c('face_walked_ok')}、走不动 ${c('face_walk_failed')}、放弃 ${c('face_gave_up')}）；不走近直接发 ${c('face_blind')} 次，too_far ${c('face_too_far')} 次（按 navigateTo 走近 ${c('face_too_far_walk')}，重试成功 ${c('face_too_far_retry_ok')}）`);
+}
 if (coverageMissing.length) {
   console.log('\n覆盖不足：');
   for (const c of coverageMissing) console.log(`  × ${c}`);
