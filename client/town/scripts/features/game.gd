@@ -902,7 +902,7 @@ func tags(cam: Camera3D, size: Vector2, out: Array) -> void:
 		var text: String = ""
 		var n: int = (a.get("players", []) as Array).size()
 		if str(a.get("status", "")) == "forming":
-			text = "%s · 等人 %d/%d" % [str(a.get("name", "")), n, int(a.get("max", 2))]
+			text = "%s · 等人 %d/%d（至少 %d 人）" % [str(a.get("name", "")), n, int(a.get("max", 2)), int(a.get("min", 2))]
 		else:
 			text = "%s · 对局中" % str(a.get("name", ""))
 		_tag_texts["g:" + tid] = text

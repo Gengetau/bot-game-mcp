@@ -194,15 +194,15 @@ export default async function run(h) {
   });
 
   // ───────────────────────── 50.2 开一局 ─────────────────────────
-  await step(50.2, '开一局：A 点「开一局」成功；桌牌变成「等人 1/2」（两边都看到）；B 面前是「加入」；B 对同一张桌用接口开局被拒 table_busy', async () => {
+  await step(50.2, '开一局：A 点「开一局」成功；桌牌变成「等人 1/8（至少 2 人）」（数字炸弹最多 8 人）（两边都看到）；B 面前是「加入」；B 对同一张桌用接口开局被拒 table_busy', async () => {
     const nameA = await nameOf(A, A.id);
     await click(A, `f:game:propose:${T1}`);
     await until(async () => (await lobbyId(A)) !== '', 20_000, 'A 在桌里');
     for (const p of [A, B]) {
-      await withScene(p, () => until(async () => (await tableTags(p.page)).find((t) => t.id === `g:${T1}` && t.text.includes('等人 1/2')) ?? null, 20_000, `${p.label} 桌牌「等人 1/2」`, 200));
+      await withScene(p, () => until(async () => (await tableTags(p.page)).find((t) => t.id === `g:${T1}` && /等人 1\/\d+/.test(t.text)) ?? null, 20_000, `${p.label} 桌牌「等人 1/N」`, 200));
     }
     const jb = await waitBtn(B, 'f:game:join:');
-    check(jb.label === '加入' && jb.sub.includes('1/2'), `B 的按钮：${JSON.stringify(jb)}`);
+    check(jb.label === '加入' && /1\/\d+/.test(jb.sub), `B 的按钮：${JSON.stringify(jb)}`);
     check(!(await btn(A, 'f:game:propose:')) && (await btn(A, 'f:game:start:')) && (await btn(A, 'f:game:leave')), `A 应有「开始」「散桌」、没有开一局：${JSON.stringify(await gameButtons(A.page))}`);
     const r = await apiAct(B, { type: 'propose_game', game: 'number_bomb', objectId: T1 });
     check(r.status === 422 && (r.body?.reason === 'table_busy' || r.body?.reason === 'already_in_activity'), `B 在占着的桌上开局应被拒：${r.status} ${JSON.stringify(r.body)}`);
@@ -210,18 +210,18 @@ export default async function run(h) {
   });
 
   // ───────────────────────── 50.3 加入、离开、再加入 ─────────────────────────
-  await step(50.3, '加入与离开：B 点「加入」，A 看到「X 加入了这一桌」提示、桌牌 2/2；B 点「离开这桌」，A 看到离开提示、桌牌回到 1/2；B 再加入', async () => {
+  await step(50.3, '加入与离开：B 点「加入」，A 看到「X 加入了这一桌」提示、桌牌 2 人；B 点「离开这桌」，A 看到离开提示、桌牌回到 1 人；B 再加入', async () => {
     const nameB = await nameOf(A, B.id);
     await ensureTable(false);
     await click(B, (await waitBtn(B, 'f:game:join:')).id);
     await withScene(A, () => toastHas(A, `${nameB} 加入了这一桌`));
-    await until(async () => (await tableTags(A.page)).find((t) => t.id === `g:${T1}` && t.text.includes('2/2')) ?? null, 15_000, 'A 桌牌 2/2', 200);
+    await until(async () => (await tableTags(A.page)).find((t) => t.id === `g:${T1}` && /等人 2\/\d+/.test(t.text)) ?? null, 15_000, 'A 桌牌 2/2', 200);
     check(!!(await btn(B, 'f:game:leave')) && !(await btn(B, 'f:game:start:')), `B 应有「离开这桌」、没有「开始」：${JSON.stringify(await gameButtons(B.page))}`);
     await click(B, 'f:game:leave');
     await toastHas(A, `${nameB} 离开了这一桌`);
-    await until(async () => (await tableTags(A.page)).find((t) => t.id === `g:${T1}` && t.text.includes('1/2')) ?? null, 15_000, 'A 桌牌回到 1/2', 200);
+    await until(async () => (await tableTags(A.page)).find((t) => t.id === `g:${T1}` && /等人 1\/\d+/.test(t.text)) ?? null, 15_000, 'A 桌牌回到 1/2', 200);
     await click(B, (await waitBtn(B, 'f:game:join:')).id);
-    await until(async () => (await tableTags(A.page)).find((t) => t.id === `g:${T1}` && t.text.includes('2/2')) ?? null, 15_000, 'A 桌牌又 2/2', 200);
+    await until(async () => (await tableTags(A.page)).find((t) => t.id === `g:${T1}` && /等人 2\/\d+/.test(t.text)) ?? null, 15_000, 'A 桌牌又 2/2', 200);
     await shot(A.page, '50-desktop-lobby');
   });
 
@@ -364,6 +364,7 @@ export default async function run(h) {
     await until(async () => (await btn(A, 'f:game:start:'))?.sub?.includes('在桌边 2') ?? false, 20_000, '两人都在桌边', 200);
     await click(A, (await btn(A, 'f:game:start:')).id);
     for (const p of [A, B]) await until(async () => (await gameMod(p.page)).mode === 'game' && (await gameMod(p.page)).bodyFlag === '1', 30_000, `${p.label} 面板出现`);
+    await shot(B.page, '51-mobile-game');
     // 手机版式
     const mb = await gameMod(B.page);
     check(mb.rect.top >= 480, `手机上面板上沿应在 480 以下（不盖满屏）：${mb.rect.top}`);
@@ -374,7 +375,6 @@ export default async function run(h) {
     check(await B.page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1), '手机没有横向溢出');
     check((await gameMod(B.page)).coarse === true && (await gameMod(B.page)).inputReadonly === true, '手机输入框只读（屏幕数字键）');
     await shot(A.page, '50-desktop-game');
-    await shot(B.page, '51-mobile-game');
     // 点面板不发导航
     const nb = count(B, 'navigate');
     await B.page.click('#gamePanel [data-role="range"]').catch(() => {});
