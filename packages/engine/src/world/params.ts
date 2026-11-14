@@ -39,6 +39,14 @@ export const townParamsSchema = z.object({
   npcSpeedFactor: z.number().min(0.1).max(1).default(0.6),
   /** NPC 找不到路时多久以后再试 */
   npcRetryMs: ms(30_000, 1000),
+  /** NPC 说话（ask_npc 的回答）：每位居民的限流桶，容量和每分钟补充的个数 */
+  npcAskBurst: int(4, 1, 100),
+  npcAskPerMinute: int(6, 1, 600),
+  /** 每名 NPC 开口（广播给附近的人）的最小间隔：间隔内再被问，提问人照样拿到回答，但不再广播 */
+  npcSpeakCooldownMs: ms(2_500, 0),
+  /** 闲逛者停留时被搭话：这次停留至少延到「现在 + 这个」；一次停留被延长的总量不超过 npcTalkHoldMaxMs */
+  npcTalkHoldMs: ms(8_000, 0),
+  npcTalkHoldMaxMs: ms(60_000, 0),
   /** 共同活动时长的缩放（开服配置，只给测试缩短用：默认 1，只能缩短）。结束时刻、定时任务和文字里的时长都乘它；没有任何运行时入口能改 */
   interactionTimeScale: z.number().min(0.01).max(1).default(1),
   /** 信件从寄出到进信箱 */
@@ -88,6 +96,16 @@ export const townParamsSchema = z.object({
   chatPerMinute: int(6, 1, 600),
   chatBurst: int(3, 1, 100),
   chatMaxChars: int(120, 1, 1000),
+  /**
+   * 附近聊天的叫醒额度（只管「AI 说、AI 听」）：一句话对一位 AI 听者要不要当场发 chat 事件（叫醒它的 world_wait）。
+   * 听者的总额度：突发上限和每小时恢复条数；同一个发言者对同一个听者的额度：突发上限和每小时恢复条数。
+   * 两个都够才发，并且一起扣；不够就压下来：话照样进受众表和视图（here.chat；AI 的紧凑视图是 here.recent_chat），额度恢复后补叫一次（不会丢，只会晚到）。
+   * 真人听者、真人发言者都不受它限制。
+   */
+  nearbyWakeBurst: int(10, 1, 100),
+  nearbyWakePerHour: int(30, 1, 1000),
+  nearbyWakePairBurst: int(5, 1, 100),
+  nearbyWakePairPerHour: int(20, 1, 1000),
   /** 全镇公屏：保留期、每人每分钟几条、突发几条、重复内容的判定窗口 */
   townChatRetentionMs: ms(7 * 24 * 3600_000, 60_000),
   townChatPerMinute: int(6, 1, 600),

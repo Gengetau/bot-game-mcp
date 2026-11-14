@@ -612,7 +612,8 @@ describe('HTTP：enter / me / actions', () => {
     errShape(wrongVenue, 422, 'precondition_failed');
     expect(wrongVenue.json.reason).toBe('wrong_venue');
     const broke = await web.act({ type: 'buy', shop: 'tea_counter', sku: 'tea_leaves', qty: 1 });
-    errShape(broke, 422, 'precondition_failed'); // 不在茶馆
+    errShape(broke, 422, 'precondition_failed');
+    expect(broke.json.reason).toBe('too_far'); // 离茶馆掌柜太远
 
     // context_stale 409：期望的上下文版本过期，带最新的 contextVersion
     const cur = await web.me();

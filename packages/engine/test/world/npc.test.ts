@@ -722,4 +722,26 @@ describe('NPC：仿真不变量 npc_no_events 只看事件的主体', () => {
     run(i, t);
     expect(i.totalViolations).toBeGreaterThan(afterLeak);
   });
+
+  it('NPC 的台词只给真人听众发 chat 事件：真人有、AI 没有时不报；AI 名下出现一条 NPC 的 chat 事件就报 npc_chat_humans_only', async () => {
+    const t = makeTown({ params: { npcStayMinMs: 600_000, npcStayMaxMs: 600_000 } });
+    const h = t.join('真人');
+    const ai = t.join('旁听的AI', 'agent');
+    for (const p of [h, ai]) p.go(KEEPER);
+    for (const p of [h, ai]) p.heartbeat();
+    expect(h.act('ask_npc', { npcId: KEEPER }).spoken).toBe(true);
+    const npcChat = (x: Actor) =>
+      t.w.db.all("SELECT projection FROM recipient_events WHERE resident_id = ? AND type = 'chat'", x.residentId).filter((r) => (JSON.parse(String(r.projection)) as { from: { kind: string } }).from.kind === 'npc');
+    // 先证明这句话广播了，而且 AI 也在受众里
+    expect(npcChat(h)).toHaveLength(1);
+    expect(Number(t.w.db.scalar('SELECT COUNT(*) FROM chat_audience a JOIN chat_messages m ON m.message_id = a.message_id WHERE a.resident_id = ? AND m.sender_id = ?', ai.residentId, KEEPER))).toBe(1);
+    expect(npcChat(ai)).toHaveLength(0);
+    const i = await inv();
+    run(i, t);
+    expect(i.totalViolations).toBe(0);
+    // 反向：把真人收到的那条事件原样记到 AI 名下（等于引擎给 AI 发了 NPC 的 chat 事件）
+    t.w.db.run("INSERT INTO recipient_events (resident_id, cursor, type, projection, occurred_at, created_at) VALUES (?, 900002, 'chat', ?, 0, 0)", ai.residentId, String(npcChat(h)[0]!.projection));
+    run(i, t);
+    expect(i.violations.map((v: { invariant: string }) => v.invariant)).toEqual(['npc_chat_humans_only']);
+  });
 });

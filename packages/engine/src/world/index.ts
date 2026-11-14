@@ -10,6 +10,7 @@ import { installInteract } from './interact.js';
 import { installLife } from './life.js';
 import { installMail } from './mail.js';
 import { installNpc } from './npc.js';
+import { installNpcTalk } from './npc-talk.js';
 import { installProperty } from './property.js';
 import { installReports } from './reports.js';
 import { WorldService, type Auth, type WorldOptions } from './service.js';
@@ -24,6 +25,7 @@ export function createWorld(opts: WorldOptions): WorldService {
   installChat(w);
   installSpace(w);
   installNpc(w);
+  installNpcTalk(w);
   installProperty(w);
   installMail(w);
   installInteract(w);
@@ -71,7 +73,7 @@ export {
 } from './identity.js';
 export { townChatPage, townChatSince, townChatHead, townChatDigest, nearbyHistory, filterEventsForAgent, type TownChatMessage, type TownChatPage } from './chat.js';
 export { canHear, nearbyAudience, roomOf } from './hearing.js';
-export { agentView, chatHistory, directory, meView, publicView, type MeView, type PublicView } from './views.js';
+export { AGENT_RECENT_CHAT, agentView, chatHistory, directory, meView, publicView, type MeView, type PublicView } from './views.js';
 export { publicGameView, gameViewFor } from './games.js';
 export { listLetters } from './mail.js';
 export { relationsOf, relationMemories } from './social.js';

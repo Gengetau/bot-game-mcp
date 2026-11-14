@@ -7,7 +7,7 @@ import { WorldError } from '../../src/world/errors.js';
 import { claimControl, heartbeat, leaveWorld } from '../../src/world/identity.js';
 import { renewNavigation, whereabouts } from '../../src/world/space.js';
 import { chatHistory, publicView } from '../../src/world/views.js';
-import { Actor, makeTown, tempDb, type Town } from './helpers.js';
+import { Actor, KEEPER, makeTown, tempDb, type Town } from './helpers.js';
 import { checkSpaceInvariants } from './invariants.js';
 
 function catchErr(fn: () => unknown): WorldError {
@@ -218,7 +218,7 @@ describe('栖灯镇在场：显式离开', () => {
   it('leave 保留最后位置和个人状态；重新进入不重置需要、财产、位置', () => {
     const t = makeTown();
     const a = t.join('阿灯');
-    a.go('tea_house');
+    a.go(KEEPER);
     a.act('buy', { shop: 'tea_counter', sku: 'tea_leaves', qty: 1 });
     const coins = a.coins();
     a.leave();
