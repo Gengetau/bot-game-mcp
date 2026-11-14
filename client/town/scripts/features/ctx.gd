@@ -186,7 +186,30 @@ func key_press_edge() -> int:
 # ─────────────────────────────────────────────────────────────────────────
 
 
-# ───────────────────────── C3 分区（预留，空）─────────────────────────
+# ───────────────────────── C3 分区 ─────────────────────────
+## 走到游戏桌边的落脚点（to 形如 {"x":..,"z":..}）：只是对 main._do_navigate 的转发（它自己做 _can_control、续租、序号栅栏和错误 toast）。
+## 调用方不 await：不等它走完。
+func game_walk_to(to: Dictionary, label: String = "", mark = null) -> void:
+	await m._do_navigate(to, label, mark)
+
+
+## 最近一次 /me 之后「够不够得着」的读数是不是还有效（刚走过一段路之后是 false：此时 here.tables 里的 near 可能是旧的）
+func game_near_valid() -> bool:
+	return bool(m.near_valid)
+
+
+## 游戏桌（地图物件）的信息：{id, name, kind, center:Vector2, anchors:Array[Vector2], pos:Vector3, x, z}；没有就是空字典
+func game_object_info(oid: String) -> Dictionary:
+	return m.world.find_object(str(m.cur_scene), oid)
+
+
+## 刷新 /me 并等它读完（正在读的先等它结束，免得拿一份开局之前的旧视图）。必须 return await。
+func game_refresh_me_wait() -> bool:
+	var guard: int = 0
+	while m.me_busy and guard < 150:
+		await m.get_tree().process_frame
+		guard += 1
+	return await m._refresh_me()
 # ─────────────────────────────────────────────────────────────────────────
 
 
