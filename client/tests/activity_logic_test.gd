@@ -34,6 +34,7 @@ func _init() -> void:
 	t_cancel_text()
 	t_ended()
 	t_state_reached()
+	t_sits()
 	print("%d 项检查，%d 项失败" % [_checks, _fails])
 	quit(1 if _fails > 0 else 0)
 
@@ -287,3 +288,35 @@ func t_state_reached() -> void:
 	check(not L.state_reached("invite", "") and L.state_reached("invite", "open"), "追上: 约人之后要有活动")
 	check(not L.state_reached("join", "") and L.state_reached("join", "running"), "追上: 加入之后要有活动")
 	check(not L.state_reached("begin", "open") and L.state_reached("begin", "running"), "追上: 开始之后要是进行中")
+
+
+## 谁算坐着（C2b）：站在茶桌座位上（位置由 main 判断），而且是这张桌子当前活动的参与者。
+## 以前只看「桌子上有没有活动」：用「停下手上的事」退出的人、路过停在空座位上的人都被画成坐着。
+func t_sits() -> void:
+	var objs: Array = [
+		{"id": "t1", "active": {"id": "i1", "status": "running", "participants": [{"id": "r_a", "name": "甲"}, {"id": "r_b", "name": "乙"}]}},
+		{"id": "t2", "active": null},
+		{"id": "shelf", "active": {"id": "i2", "status": "open", "participants": [{"id": "r_c", "name": "丙"}]}},
+		{"id": "t3", "active": {"id": "i3", "status": "open"}},  # 没有名单字段：当作没有人
+		"不是字典",
+	]
+	var seats: Dictionary = L.seat_map(objs)
+	check(seats.has("t1") and not seats.has("t2") and seats.has("shelf") and seats.has("t3"), "坐着: 只有有活动的物件进表")
+	check(L.sits(seats, "t1", "r_a", false, ""), "坐着: 参与者坐")
+	check(L.sits(seats, "t1", "r_b", false, ""), "坐着: 另一个参与者也坐")
+	check(not L.sits(seats, "t1", "r_x", false, ""), "坐着: 路人站在有活动的桌边不坐")
+	check(not L.sits(seats, "t2", "r_a", false, ""), "坐着: 没有活动的桌子不坐")
+	check(not L.sits(seats, "t1", "r_c", false, ""), "坐着: 别的物件的参与者站在这张桌边不坐")
+	check(not L.sits(seats, "t3", "r_a", false, ""), "坐着: 名单缺失时不坐")
+	# 退出之后：名单里没有他了（人没挪动）
+	var after: Dictionary = L.seat_map([{"id": "t1", "active": {"id": "i1", "status": "running", "participants": [{"id": "r_b", "name": "乙"}]}}])
+	check(not L.sits(after, "t1", "r_a", false, ""), "坐着: 退出的人不再坐")
+	check(L.sits(after, "t1", "r_b", false, ""), "坐着: 留下的人仍坐")
+	# 自己：/me 的 interaction 说我在这一桌就坐（名单那一份可能还没刷新）；我的活动在别的桌时不因此坐到这张桌
+	check(L.sits({}, "t1", "r_me", true, "t1"), "坐着: 自己的活动在这一桌就坐")
+	check(not L.sits({}, "t1", "r_me", true, "t2"), "坐着: 自己的活动在别的桌，站在这张桌边不坐")
+	check(not L.sits({}, "t1", "r_me", true, ""), "坐着: 自己没有活动不坐")
+	check(L.sits(seats, "t1", "r_a", true, ""), "坐着: 自己在名单里也算（interaction 还没到）")
+	check(not L.sits(seats, "t1", "r_x", false, "t1"), "坐着: 别人不沾我的活动的光")
+	check(L.seat_map(null).is_empty() and L.seat_map("x").is_empty(), "坐着: 不是数组时给空表")
+

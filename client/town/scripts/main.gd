@@ -5,6 +5,7 @@ extends Node3D
 enum Phase { BOOT, READY, BUSY, LOGIN, ERROR, PLAYING }
 
 const API := "/town/api"
+const ActLogic := preload("res://scripts/features/activity_logic.gd")  # 只用里面的纯函数（谁算坐着）
 ## 点按判定的移动阈值，单位是 CSS 像素；实际比较时乘 devicePixelRatio 换成画布的物理像素
 ## （Godot 网页端的触摸/鼠标坐标是物理像素，高分屏手机上固定数值会把正常点按判成拖动）
 const TAP_MAX_MOVE_CSS := 10.0
@@ -49,6 +50,7 @@ var control_epoch: int = 0
 var control_mine: bool = true
 var here: Dictionary = {}
 var my_interaction = null
+var seat_people: Dictionary = {}  # 物件编号 -> {参与者编号: true}：谁算坐着，_apply_me 时从 here.objects 算好
 var my_exits: Array = []
 var me_busy: bool = false
 var me_again: bool = false
@@ -491,6 +493,7 @@ func _apply_me(view: Dictionary) -> void:
 		user_name = str(me.get("name", user_name))
 	var h = view.get("here")
 	here = h if h is Dictionary else {}
+	seat_people = ActLogic.seat_map(here.get("objects"))
 	my_exits = here.get("exits", []) if here.has("exits") else []
 	my_interaction = view.get("interaction")
 	var loc = view.get("location")
@@ -1557,7 +1560,9 @@ func _process(dt: float) -> void:
 			_push_debug()
 
 
-## 坐下：站在茶桌的座位锚点上、那张桌子正在被使用时坐着（自己的活动也算）。
+## 坐下：站在茶桌的座位锚点上，而且是那张桌子当前活动的参与者（自己另看 /me 的 interaction）。
+## 只看「桌子上有活动」不够：用「停下手上的事」退出的人还站在座位上，路过的人也可能正好停在空座位上，他们都不该被画成坐着。
+## 每帧每人只查 seat_people 这张表（_apply_me 时从 here.objects 算好），不在这里翻 here.objects。
 func _update_sitting(a: TActor) -> void:
 	if a.moving:
 		return
@@ -1565,13 +1570,8 @@ func _update_sitting(a: TActor) -> void:
 	if spot.is_empty():
 		a.set_sitting(false)
 		return
-	var active: bool = false
-	for o in here.get("objects", []):
-		if str(o.get("id", "")) == str(spot["object"]) and o.get("active") != null:
-			active = true
-	if a.is_self and my_interaction is Dictionary and str(my_interaction.get("objectId", "")) == str(spot["object"]):
-		active = true
-	a.set_sitting(active, spot["center"])
+	var mine: String = str(my_interaction.get("objectId", "")) if my_interaction is Dictionary else ""
+	a.set_sitting(ActLogic.sits(seat_people, str(spot["object"]), a.actor_id, a.is_self, mine), spot["center"])
 
 
 ## 昼夜（服务器世界时间）、遮挡淡出（屋顶、树）。

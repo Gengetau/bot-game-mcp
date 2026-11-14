@@ -67,6 +67,37 @@ static func gate(st: Dictionary, now: int, text: String, key_edge: int = -1) -> 
 	return text
 
 
+## 谁算坐着（C2b）。main 每帧给每个站在茶桌座位上的人问一次，所以名单要先算成表：
+## seat_map 把 /me 的 here.objects 变成 {物件编号: {参与者编号: true}}（只收有活动的物件），/me 到的时候算一次；
+## sits 只查表：是这张桌子当前活动的参与者才坐。自己另看 /me 的 interaction（my_table 是它的 objectId，没有就是空串）。
+## 以前的规则是「桌子上有活动就坐」：用「停下手上的事」退出的人、路过停在空座位上的人都被画成坐着。
+static func seat_map(objects) -> Dictionary:
+	var out: Dictionary = {}
+	if not (objects is Array):
+		return out
+	for o in objects:
+		if not (o is Dictionary):
+			continue
+		var a = (o as Dictionary).get("active")
+		if not (a is Dictionary):
+			continue
+		var who: Dictionary = {}
+		var parts = (a as Dictionary).get("participants")
+		if parts is Array:
+			for p in parts:
+				if p is Dictionary and (p as Dictionary).has("id"):
+					who[str((p as Dictionary)["id"])] = true
+		out[str((o as Dictionary).get("id", ""))] = who
+	return out
+
+
+static func sits(seats: Dictionary, table_id: String, actor_id: String, is_self: bool, my_table: String) -> bool:
+	if is_self and my_table != "" and my_table == table_id:
+		return true
+	var who = seats.get(table_id)
+	return who is Dictionary and (who as Dictionary).has(actor_id)
+
+
 ## 撤销刚刚的放行：点击其实没有要走开（吞掉它的 on_pick 调用）。只撤销 REVOKE_MS 之内的那一次放行（更早的窗口是玩家真的确认过要走），
 ## 撤销后放行次数退回、确认窗口作废，下一次走开重新从第一次提示开始。返回是否撤销了。
 static func gate_revoke(st: Dictionary, now: int) -> bool:
