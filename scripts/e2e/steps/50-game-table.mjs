@@ -344,6 +344,8 @@ export default async function run(h) {
     await forced(A, midOf((await gameMod(A.page)).range), undefined);
     await until(async () => (await ackN(A)) > n3, 15_000, '非自己回合得到回应');
     check((await gg(A)).lastAck.code === 'game_not_your_turn' || (await gg(A)).lastAck.reason === 'game_not_your_turn', `应是 game_not_your_turn：${JSON.stringify((await gg(A)).lastAck)}`);
+    // 退出的当口若有一次 GET /game 在路上，局一结束它就是 409 context_stale（正常的竞态，次数不定）
+    allowFailure(A.w, 'GET', /\/town\/api\/game(\?.*)?$/, { min: 0, max: 3, why: '50.5：退出时在途的 /game 读取可能得到 409 context_stale' });
     // 通过确认框退出：不弹结果卡
     await A.page.click('#gamePanel [data-role="leave"]');
     await until(async () => (await gameMod(A.page)).confirmOpen, 5_000, '确认框出现', 100);
@@ -373,6 +375,8 @@ export default async function run(h) {
     await click(A, (await btn(A, 'f:game:start:')).id);
     for (const p of [A, B]) await until(async () => (await gameMod(p.page)).mode === 'game' && (await gameMod(p.page)).bodyFlag === '1', 30_000, `${p.label} 面板出现`);
     await shot(B.page, '51-mobile-game');
+    const aid51 = (await gg(A)).activityId;
+    check(!!aid51, '局中应有活动号');
     // 手机版式
     const mb = await gameMod(B.page);
     check(mb.rect.top >= 480, `手机上面板上沿应在 480 以下（不盖满屏）：${mb.rect.top}`);
@@ -388,6 +392,8 @@ export default async function run(h) {
     await B.page.click('#gamePanel [data-role="range"]').catch(() => {});
     await frames(B.page, 3);
     check(count(B, 'navigate') === nb, '点面板不发导航');
+    // 最后一手之后：「game」事件触发的 /game 读取可能和局结束撞上，得到 409 context_stale（正常的竞态，次数不定）
+    for (const p of [A, B]) allowFailure(p.w, 'GET', /\/town\/api\/game(\?.*)?$/, { min: 0, max: 3, why: '51：局结束与在途的 /game 读取撞上' });
     // 打到结束
     const t0 = Date.now();
     const turns = { A: 0, B: 0 };
@@ -410,7 +416,11 @@ export default async function run(h) {
     check(ra.resultReason !== '' && rb.resultReason !== '', '都有原因');
     const rows = await B.page.evaluate(() => [...document.querySelectorAll('#gamePanel [data-role="resultPlayers"] li')].map((e) => e.textContent));
     check(rows.length === 2, `结果卡应列出两人：${JSON.stringify(rows)}`);
-    const pg = await publicGame(A, (await gg(A)).activityId || (await serverMe(A)).context?.activityId);
+    const pg = await publicGame(A, aid51);
+    check(pg.status === 200, `/public/game/${aid51} 应是 200：${pg.status} ${JSON.stringify(pg.body)?.slice(0, 200)}`);
+    check(pg.body?.result?.reason === ra.resultReason && ra.resultReason === rb.resultReason, `结果卡原因应与公开投影一致：A「${ra.resultReason}」B「${rb.resultReason}」公开「${pg.body?.result?.reason}」`);
+    const loser = (pg.body?.players ?? []).find((x) => (pg.body?.result?.winnerSeats ?? []).indexOf(x.seat) < 0);
+    check(!!loser && ra.resultReason.includes(loser.name), `原因里应有踩中炸弹的人的名字：${loser?.name} / ${ra.resultReason}`);
     note(`结果：A ${ra.resultKind} / B ${rb.resultKind}；原因「${ra.resultReason}」；/public/game 状态 ${pg.status}`);
     await shot(B.page, '51-mobile-result');
     await shot(A.page, '51-desktop-result');
