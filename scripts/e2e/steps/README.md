@@ -48,7 +48,7 @@ npx tsx scripts/client-e2e.mjs --only=chat-nearby --no-shots           # 按 id 
 npx tsx scripts/client-e2e.mjs --only=20 --no-shots                    # 按号段单跑（命中 n 到 n+10）
 ```
 
-命中后整个文件的所有子步骤都运行（文件内的子步骤互相依赖，不支持单跑 `20.3`）。带 `--only` 不会写 `client/demo/`。用 `flock /tmp/town-heavy.lock` 包起来，机器上同一时间只能跑一份软件渲染的 e2e。
+命中后整个文件的所有子步骤都运行（文件内的子步骤互相依赖，不支持单跑 `20.3`）。带 `--only` 不会写 `client/demo/`。`--until=60.17` 让编号大于它的步骤都跳过（只想看到某一步为止的结果时用，比如反向验证；同样不写 `client/demo/`）。用 `flock /tmp/town-heavy.lock` 包起来，机器上同一时间只能跑一份软件渲染的 e2e。
 
 ## 写法约定
 
