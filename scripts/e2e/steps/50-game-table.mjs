@@ -174,9 +174,12 @@ export default async function run(h) {
     check(!(me.here?.activities ?? []).length, `没有开出任何桌：${JSON.stringify(me.here?.activities)}`);
     check((await gg(A)).walks > walks0, 'walks 加一');
     // 回到桌一
+    const w1 = (await gg(A)).walks;
     await clickObject(A, T1);
+    await until(async () => (await gg(A)).walks > w1, 10_000, '点桌一后开始走（walks 加一）');
+    await until(async () => (await sceneOf(A)).nav, 10_000, 'A 在服务器上开始走', 150).catch(() => null);
     await waitIdle(A);
-    check((await seatDist(A, T1)) <= 2.0, 'A 回到桌一');
+    check((await seatDist(A, T1)) <= 2.0, `A 回到桌一：${await seatDist(A, T1)}`);
     await until(async () => (await snap(A.page)).nearValid === true && (await btn(A, `f:game:propose:${T1}`)), 25_000, 'A 回到桌一后又有开一局按钮', 200);
   });
 
@@ -293,7 +296,8 @@ export default async function run(h) {
     const d0 = await wait();
     const g0 = count(A, 'game_act');
     // 本地拒绝：非数字、越界
-    await A.page.fill('#gamePanel [data-role="input"]', '12ab');
+    // 桌面输入框会把非数字字符滤掉（'12ab' 会变成 '12'），所以「非数字」只剩空：提交空框要被拒
+    await A.page.fill('#gamePanel [data-role="input"]', '');
     await A.page.press('#gamePanel [data-role="input"]', 'Enter');
     await until(async () => (await gameMod(A.page)).hintKind === 'err', 5_000, '非数字的提示', 100);
     await A.page.fill('#gamePanel [data-role="input"]', String(d0.range.to + 50));
