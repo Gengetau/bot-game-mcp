@@ -88,7 +88,8 @@ export function defaultClassify(ev: TownEvent, c: ClassifyContext): EventClass {
     case 'chat': {
       const from = ev.from as { id?: string; kind?: string } | undefined;
       if (from?.id === c.residentId) return 'ignore';
-      // NPC 的话（程序台词，只在有人 ask_npc 时说）进上下文，但不触发思考：免得 AI 和 NPC 来回自动接话
+      // NPC 的话（程序台词，只在有人 ask_npc 时说）进上下文，但不触发思考：免得 AI 和 NPC 来回自动接话。
+      // 现在的引擎不给 AI 居民发 NPC 的 chat 事件；这一条留着给旧引擎兜底
       if (from?.kind === 'npc') return 'ignore';
       return inGame ? 'ignore' : 'normal';
     }

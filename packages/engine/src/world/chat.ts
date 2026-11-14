@@ -245,14 +245,18 @@ export function recentHeard(w: WorldService, residentId: string, space: string, 
     .map((m) => ({ messageId: chatSeqOf(w, residentId, high, Number(m.message_id)), from: speakerCard(w, String(m.sender_id)), text: String(m.body), at: Number(m.sent_at) }));
 }
 
-/** recentHeard 的可见规则（受众表 + 30 分钟窗口 + 私宅只在同一间屋里可见），新的在前。补叫用同一套规则找「最新的别人的话」。 */
+/**
+ * recentHeard 的可见规则（受众表 + 30 分钟窗口 + 私宅只在同一间屋里可见），新的在前。
+ * 补叫用同一套规则找「最新的别的居民的话」（othersOnly）：不要我自己说的，也不要 NPC 的台词。
+ * NPC 的话不给 AI 听者发事件（见 npc-talk.ts），所以不能拿它当「最新一句」去补叫，更不能因为最新一句是它就放弃之前被压下的话。
+ */
 function heardRows(w: WorldService, residentId: string, space: string, now: number, limit: number, othersOnly: boolean): Record<string, any>[] {
   const cut = now - 30 * 60_000;
   // message_id 随时间递增：给受众表的主键扫描加下界（30 分钟窗口内最早的消息），查询量与历史长度无关
   return w.db.all(
     `SELECT m.message_id, m.space_id, m.sender_id, m.body, m.sent_at FROM chat_audience a JOIN chat_messages m ON m.message_id = a.message_id
      WHERE a.resident_id = ? AND a.message_id >= (SELECT COALESCE(MIN(message_id), 9223372036854775807) FROM chat_messages WHERE sent_at > ?)
-       AND (m.space_id NOT LIKE 'home:%' OR m.space_id = ?) AND m.sent_at > ?${othersOnly ? ' AND m.sender_id <> a.resident_id' : ''} ORDER BY a.message_id DESC LIMIT ?`,
+       AND (m.space_id NOT LIKE 'home:%' OR m.space_id = ?) AND m.sent_at > ?${othersOnly ? ' AND m.sender_id <> a.resident_id AND EXISTS (SELECT 1 FROM residents s WHERE s.resident_id = m.sender_id)' : ''} ORDER BY a.message_id DESC LIMIT ?`,
     residentId,
     cut,
     space,

@@ -4,8 +4,10 @@
  * - 回答完全由程序生成：模板在 content.ts 的 NPC_LINES，选哪一句用可复现的随机（带种子时从「种子 + 世界 + NPC + 用途 + 说过几次」派生，
  *   不消耗共享的 w.rng；生产环境就是 w.rng）。模板里唯一的玩家文字是提问人的名字（先 sanitizeName）。
  * - NPC 开口 = 以 NPC 的身份发一条附近聊天：受众在这个事务里按 NPC 此刻的位置一次定下（hearing.ts 的 npcAudience），
- *   写 chat_messages（sender_id 是 NPC 编号）、chat_audience（只有居民）和每个听众一条私有 chat 事件（from.kind = 'npc'）。
- *   NPC 永远不是听众，不叫醒任何 AI（不走公屏、不发 town_chat_mention、不碰唤醒额度），也不记 w.fact。
+ *   写 chat_messages（sender_id 是 NPC 编号）、chat_audience（只有居民），并给每位**真人**听众一条私有 chat 事件（from.kind = 'npc'，界面靠它显示）。
+ *   AI 听众不发事件：私有事件会叫醒挂着的 world_wait，而 NPC 的话不叫醒任何 AI（否则几个 AI 围着 NPC 问话就绕过了附近聊天的叫醒额度）。
+ *   这句话照样在 AI 的受众表里，出现在 here.chat 和历史里；提问的 AI 从回执的 text 拿到回答。
+ *   NPC 永远不是听众，不走公屏、不发 town_chat_mention、不碰任何唤醒额度、不取消也不安排补叫，也不记 w.fact。
  * - 每名 NPC 有开口的最小间隔（npcSpeakCooldownMs）：间隔内提问人照样拿到 text，但不再广播。
  * - 闲逛者停留时被搭话：把这次停留至少延到 现在 + npcTalkHoldMs，一次停留总共最多延长 npcTalkHoldMaxMs。
  * - 位置只读（positionOfNpc / interactivePos），不写 world_actors。
@@ -123,7 +125,8 @@ export function npcSpeak(w: WorldService, def: NpcDef, text: string, now: number
     const seq = Number(w.db.scalar('SELECT high_water FROM stream_heads WHERE stream_key = ?', key) ?? 0) + 1;
     w.db.run('INSERT INTO stream_heads(stream_key, high_water, retained_from) VALUES (?,?,1) ON CONFLICT(stream_key) DO UPDATE SET high_water = excluded.high_water', key, seq);
     seqOf.set(a.resident_id, seq);
-    w.emitTo([a.resident_id], 'chat', { scope: 'nearby', space: zone, from: npcCard(def), text, messageId: seq }, now);
+    // 只给真人发事件；AI 听众靠 here.chat（和提问人的回执）看到这句话，不被叫醒
+    if (a.kind === 'human') w.emitTo([a.resident_id], 'chat', { scope: 'nearby', space: zone, from: npcCard(def), text, messageId: seq }, now);
   }
   return { spoken: true, seqOf };
 }
