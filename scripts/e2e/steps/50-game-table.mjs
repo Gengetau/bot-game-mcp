@@ -23,6 +23,16 @@ export default async function run(h) {
   const gg = async (p) => (await godotGame(p)) ?? {};
   const objOf = async (p, oid) => (await snap(p.page)).objects.find((o) => o.id === oid) ?? null;
   const btn = async (p, prefix) => (await gameButtons(p.page)).find((b) => b.id.startsWith(prefix)) ?? null;
+  /** 等待失败时把现场写进错误信息：Godot 一侧 game 状态、桌牌、按钮、提示条。 */
+  const withScene = async (p, fn) => {
+    try {
+      return await fn();
+    } catch (e) {
+      const dbg = { game: await gg(p).catch(() => null), tags: await tableTags(p.page).catch(() => null), buttons: await gameButtons(p.page).catch(() => null), toasts: await toastTexts(p.page).catch(() => null) };
+      e.message += ` 现场：${JSON.stringify(dbg)}`;
+      throw e;
+    }
+  };
   const waitBtn = async (p, prefix, ms = 25_000) => {
     try {
       return await until(() => btn(p, prefix), ms, `${p.label} 出现按钮 ${prefix}`, 200);
@@ -189,7 +199,7 @@ export default async function run(h) {
     await click(A, `f:game:propose:${T1}`);
     await until(async () => (await lobbyId(A)) !== '', 20_000, 'A 在桌里');
     for (const p of [A, B]) {
-      await until(async () => (await tableTags(p.page)).find((t) => t.id === `g:${T1}` && t.text.includes('等人 1/2')) ?? null, 20_000, `${p.label} 桌牌「等人 1/2」`, 200);
+      await withScene(p, () => until(async () => (await tableTags(p.page)).find((t) => t.id === `g:${T1}` && t.text.includes('等人 1/2')) ?? null, 20_000, `${p.label} 桌牌「等人 1/2」`, 200));
     }
     const jb = await waitBtn(B, 'f:game:join:');
     check(jb.label === '加入' && jb.sub.includes('1/2'), `B 的按钮：${JSON.stringify(jb)}`);
@@ -204,7 +214,7 @@ export default async function run(h) {
     const nameB = await nameOf(A, B.id);
     await ensureTable(false);
     await click(B, (await waitBtn(B, 'f:game:join:')).id);
-    await toastHas(A, `${nameB} 加入了这一桌`);
+    await withScene(A, () => toastHas(A, `${nameB} 加入了这一桌`));
     await until(async () => (await tableTags(A.page)).find((t) => t.id === `g:${T1}` && t.text.includes('2/2')) ?? null, 15_000, 'A 桌牌 2/2', 200);
     check(!!(await btn(B, 'f:game:leave')) && !(await btn(B, 'f:game:start:')), `B 应有「离开这桌」、没有「开始」：${JSON.stringify(await gameButtons(B.page))}`);
     await click(B, 'f:game:leave');
