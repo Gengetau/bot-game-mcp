@@ -192,8 +192,8 @@ func _forget_gone(fresh: Dictionary) -> void:
 
 
 func _enter_game(aid: String, g: Dictionary) -> void:
-	if not _in_game and _ended_aids.has(aid):
-		return  # 这一局已经结束 / 退出了：迟到的旧 /me 不能把它复活，也不能抹掉结果卡
+	if _ended_aids.has(aid):
+		return  # 这一局已经结束 / 退出了（活动号不复用）：迟到的旧 /me 不能把它复活，不能抹掉结果卡，也不能把已经开始的下一局换回去
 	if not _in_game or aid != _act_id:
 		_in_game = true
 		_act_id = aid
@@ -837,6 +837,10 @@ func _quit() -> void:
 	if bool(r.get("ok", false)):
 		_quit_rid = ""
 		_held_end.erase(aid)
+		# 这一局的 game_ended 还没到（到过的话 _on_ended 已经登记了）：把「我退出了」的记号补上。
+		# 请求在路上时先到的一份没有 game 的 /me 会经 _game_vanished 把记号用掉，不补的话之后到的 game_ended 会给主动退出的人弹结果卡
+		if not _ended_aids.has(aid):
+			_ignored[aid] = true
 		_ended_aids[aid] = true  # 服务端确认退出了：之后迟到的旧 /me 不能把这一局接回来
 		if _act_id == aid:
 			_clear_game()

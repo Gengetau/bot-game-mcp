@@ -7,7 +7,9 @@ extends SceneTree
 ##  - 离开一桌之后重新加入同一桌，这一桌之后被取消要照常提示「这一桌散了」；
 ##  - 开局那一刻还在路上的旧 /me（没有 game）晚到，推断出「结束了」之后，下一份带着 game 的 /me 要把局接回来（推断的结束不登记）；
 ##  - 推断出来的结果卡被公开投影补全（kind 不再是 unknown）之后，真实的 game_ended 仍要覆盖它；
-##  - 退出时网络失败留下的请求号只对同一局有效，下一局退出要换新的请求号。
+##  - 退出时网络失败留下的请求号只对同一局有效，下一局退出要换新的请求号；
+##  - 退出请求在路上时一份没有 game 的 /me 抢先到（把「我退出了」的记号用掉）：退出成功后记号要补上，之后到的 game_ended 不弹卡；
+##  - 上一局确实结束、下一局已经开始，还带着上一局的旧 /me 晚到：不能把面板换回上一局。
 ## 用法：npm run client:unit（或 /opt/godot/godot --headless --path client/town --script ../tests/game_feature_test.gd）
 
 const Game := preload("res://scripts/features/game.gd")
@@ -128,6 +130,8 @@ func _run() -> void:
 	t_stale_me_at_start_heals()
 	t_inferred_resolved_then_real()
 	await t_quit_rid_per_game()
+	await t_quit_me_races_ahead()
+	t_ended_game_cannot_replace_next()
 	print("%d 项检查，%d 项失败" % [_checks, _fails])
 	quit(1 if _fails > 0 else 0)
 
@@ -226,6 +230,7 @@ func t_quit_collides_with_end() -> void:
 	c2.act_release.emit()
 	await process_frame
 	check(f2._result.is_empty() and f2._held_end.is_empty(), "退出成功：不补卡、不留暂存")
+	check(not f2._ignored.has(AID), "game_ended 已经到过：退出成功后不把记号重新记上（不残留）")
 
 
 ## lifecycle#4：离开一桌之后又加入同一桌，这一桌被取消：照常提示「这一桌散了」
@@ -303,3 +308,37 @@ func t_quit_rid_per_game() -> void:
 	check(not f._in_game and f._ignored.has("act_2"), "下一局退出成功")
 	f.on_me(_me(_game_view("act_2")))  # 退出成功之后迟到的旧 /me：不接回来
 	check(not f._in_game, "退出成功之后迟到的旧 /me 不把局接回来")
+
+
+## 退出请求在路上时，一份（退出提交之后才发出的）没有 game 的 /me 抢在回执和 game_ended 前面到：它经 _game_vanished 把「我退出了」的记号用掉。
+## 退出成功的回执到了要把记号补上，之后到的 game_ended 不能给主动退出的人弹结果卡
+func t_quit_me_races_ahead() -> void:
+	var s: Array = _make()
+	var f = s[0]
+	var c: FakeCtx = s[1]
+	f.on_me(_me(_game_view()))
+	c.hold_act = true
+	f.on_ui("leave", "")  # 不 await：请求在路上
+	check(f._quitting and f._ignored.has(AID), "退出请求在路上：记号已记")
+	f.on_me(_me())  # 没有 game 的 /me 先到
+	check(not f._in_game and f._result.is_empty(), "先到的 /me：出局、不弹卡：%s" % str(f._result))
+	c.act_release.emit()
+	await process_frame
+	check(not f._quitting and f._ignored.has(AID), "退出成功的回执到了：记号补上")
+	f.on_event(_ended())
+	check(f._result.is_empty(), "之后到的 game_ended 不给主动退出的人弹结果卡：%s" % str(f._result))
+	check(not f._ignored.has(AID), "记号用掉了，不残留")
+
+
+## 上一局确实结束了、下一局已经开始，一份还带着上一局的旧 /me 晚到：不能把面板换回上一局（活动号不复用，结束过的不再认）
+func t_ended_game_cannot_replace_next() -> void:
+	var s: Array = _make()
+	var f = s[0]
+	f.on_me(_me(_game_view()))
+	f.on_event(_ended())
+	f.on_event({"type": "game_started", "data": {"activityId": "act_2", "gameId": "g_act_2", "name": "数字炸弹", "seat": 1}})
+	check(f._in_game and f._act_id == "act_2", "下一局开始")
+	f.on_me(_me(_game_view()))  # 还带着上一局（act_1）的旧 /me
+	check(f._in_game and f._act_id == "act_2", "带着上一局的旧 /me 不能把面板换回去：%s" % f._act_id)
+	f.on_me(_me(_game_view("act_2")))
+	check(f._act_id == "act_2" and not f._view.is_empty(), "下一局自己的 /me 照常收下")
