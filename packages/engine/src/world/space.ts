@@ -153,7 +153,7 @@ const SPAWN_CLEARANCE = 0.8;
  * 候选点的生成在 spatial/spawn.ts（纯函数）；这里只查「此刻有没有人」。不用随机数。私宅门口不错开（只有房主一个实例）。
  * selfId：换图重新安置时，自己的旧行不算占位。
  */
-function spreadSpot<T extends { scene: string; instance: string; x: number; z: number }>(w: WorldService, spot: T, now: number, selfId?: string): T {
+export function spreadSpot<T extends { scene: string; instance: string; x: number; z: number }>(w: WorldService, spot: T, now: number, selfId?: string): T {
   const scene = w.map.scenes.get(spot.scene);
   if (!scene || scene.instanced) return spot;
   const occupied: Vec2[] = [];

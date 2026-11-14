@@ -3,7 +3,9 @@
  * 候选点生成是 spatial/spawn.ts 的纯函数；「此刻有没有人」由 space.ts 的 spreadSpot 现算（居民、NPC、正在走路的人都算）。
  */
 import { afterEach, describe, expect, it } from 'vitest';
-import { actorOf, placeNpc } from '../../src/world/space.js';
+import { SeededRng } from '../../src/core/rng.js';
+import { actorOf, ensureActor, placeNpc, spreadSpot } from '../../src/world/space.js';
+import { compileMap, type MapSource } from '../../src/world/spatial/index.js';
 import { isWalkable, zoneAt } from '../../src/world/spatial/grid.js';
 import { pickSpawn, spawnCandidates, spawnRingPoints } from '../../src/world/spatial/spawn.js';
 import { FakeClock } from '../helpers.js';
@@ -81,6 +83,43 @@ describe('候选点生成（纯函数）', () => {
     for (const p of list) expect(isWalkable(sc, p.x, p.z)).toBe(true);
   });
 
+  it('中心旁边隔着一堵墙：墙另一侧同样可走的点不在候选里（只有视线检查能挡住）', () => {
+    const src: MapSource = {
+      mapVersion: 'wall-1',
+      agentRadius: 0,
+      speed: 1.4,
+      interactDistance: 1.5,
+      hearDistance: 8,
+      scenes: [
+        {
+          id: 's',
+          name: '场景',
+          instanced: false,
+          cell: 0.5,
+          bounds: { x: 0, z: 0, w: 12, d: 12 },
+          walk: [{ x: 0, z: 0, w: 12, d: 12 }],
+          obstacles: [{ id: 'wall', kind: 'wall', x: 5, z: 0, w: 0.5, d: 12 }], // 把场景从 x=5 到 5.5 整条隔开
+          zones: [],
+          defaultZone: { id: 'street', name: '街上', indoor: false },
+          anchors: [{ id: 'a', x: 4.25, z: 6.25 }],
+          interactables: [],
+          portals: [],
+        },
+      ],
+      aliases: {},
+      spawn: { scene: 's', anchor: 'a' },
+    };
+    const sc = compileMap(src).scenes.get('s')!;
+    const centre = { x: 4.25, z: 6.25 };
+    const ideal = spawnRingPoints(centre);
+    const behind = ideal.filter((p) => p.x > 5.5 && isWalkable(sc, p.x, p.z));
+    expect(behind.length).toBeGreaterThan(0); // 墙后确实有可走、同区域的理想点
+    expect(behind.every((p) => zoneAt(sc, p.x, p.z).id === zoneAt(sc, centre.x, centre.z).id)).toBe(true);
+    const list = spawnCandidates(sc, centre);
+    expect(list.length).toBeGreaterThan(5);
+    for (const p of list) expect(p.x).toBeLessThan(5);
+  });
+
   it('pickSpawn：跳过被占的点（半径内算占），全占了退回第一个（中心）', () => {
     const cands = [{ x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }];
     expect(pickSpawn(cands, [], 0.8)).toEqual(cands[0]);
@@ -122,13 +161,18 @@ describe('先后进入的居民', () => {
     expect(run('s-one')).toEqual(run('s-two'));
   });
 
-  it('不碰 w.rng：错开前后别的随机编号序列一样（单人与多人的第一个人编号一致）', () => {
-    const solo = makeTown({ seed: 'rng-check' });
-    const a1 = solo.join('阿灯');
-    const duo = makeTown({ seed: 'rng-check' });
-    const a2 = duo.join('阿灯');
-    duo.join('小岚');
-    expect(a2.residentId).toBe(a1.residentId);
+  it('不碰 w.rng：在已有人占着中心的广场上放一个新角色行，随机数流的状态一点没动', () => {
+    const t = makeTown({ seed: 'rng-check' });
+    const a = t.join('阿灯');
+    t.join('小岚'); // 中心和第一圈第一个点已被占，新来的要在候选里挑
+    const c = t.join('阿树');
+    // 只重做「放人」这一步：删掉阿树的角色行再补行，期间不经过编号生成
+    t.w.db.run('DELETE FROM world_actors WHERE actor_id = ?', c.residentId);
+    const rng = t.w.rng as SeededRng;
+    const before = rng.saveState();
+    ensureActor(t.w, t.w.resident(c.residentId)!, t.w.now());
+    expect(rng.saveState()).toBe(before);
+    expect(dist(xz(c), xz(a))).toBeGreaterThanOrEqual(0.8); // 确实走过了「挑候选点」的路
   });
 
   it('站着的人占着候选点：新来的跳过它', () => {
@@ -170,6 +214,17 @@ describe('先后进入的居民', () => {
     expect(xz(b)).toEqual(cands[0]);
   });
 
+  it('selfId：自己的行不算占位（换图重新安置时自己的旧位置不能把自己挤到下一个点）', () => {
+    const t = makeTown();
+    const a = t.join('阿灯'); // 站在中心
+    const an = anchor(t);
+    const spot = { scene: 'town', instance: '', x: an.x, z: an.z };
+    const cands = spawnCandidates(town(t), an);
+    const now = t.w.now();
+    expect(spreadSpot(t.w, spot, now)).toMatchObject(cands[1]!); // 别人来：中心被阿灯占着
+    expect(spreadSpot(t.w, spot, now, a.residentId)).toMatchObject(cands[0]!); // 阿灯自己重新安置：中心不算被占
+  });
+
   it('NPC 站在候选点上也算占位', () => {
     const t = makeTown();
     const an = anchor(t);
@@ -204,12 +259,25 @@ describe('先后进入的居民', () => {
     expect(xz(b)).toEqual(beforeB);
   });
 
-  it('错开不改公开事件和公开投影：事件里没有坐标', () => {
+  it('错开不改公开事件和公开投影：世界事件、公开事件、每位居民的私有事件和回执里都没有坐标', () => {
     const t = makeTown();
-    t.join('阿灯');
-    t.join('小岚');
-    const rows = t.w.db.all('SELECT payload FROM world_events').map((r) => String(r.payload));
-    for (const p of rows) expect(p).not.toMatch(/"(x|z)":/);
+    const a = t.join('阿灯');
+    const b = t.join('小岚');
+    a.act('navigate', { to: 'tea_house' }); // 走起来之后各表里都有些内容
+    const receipt = b.act('say_nearby', { text: '你好' });
+    expect(JSON.stringify(receipt)).not.toMatch(/"(x|z)":/);
+    const tables = [
+      ['world_events', 'payload'],
+      ['public_events', 'projection'],
+      ['recipient_events', 'projection'],
+    ] as const;
+    const seen: Record<string, number> = {};
+    for (const [table, col] of tables) {
+      const rows = t.w.db.all(`SELECT ${col} AS p FROM ${table}`).map((r) => String(r.p));
+      seen[table] = rows.length;
+      for (const p of rows) expect(p, table).not.toMatch(/"(x|z)":/);
+    }
+    expect(Object.values(seen).reduce((a, b) => a + b, 0), '表里要有内容，否则这条断言是空的').toBeGreaterThan(0);
   });
 });
 
