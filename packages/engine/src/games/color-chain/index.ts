@@ -451,7 +451,8 @@ export class ColorChainGame extends BaseGame<ColorChainState, ColorChainOptions>
     const previousColor = st.currentColor!;
     hand.splice(hand.indexOf(card), 1);
     st.discard.push(card);
-    st.currentColor = input.color as ChainColor;
+    // 托管动作不经过 onAction 补齐颜色；普通牌始终以牌面颜色为准。
+    st.currentColor = cardColor(card) ?? input.color as ChainColor;
     st.drawn = null;
     const target = this.nextSeat(seat);
     const symbol = cardSymbol(card);
