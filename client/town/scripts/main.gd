@@ -99,6 +99,11 @@ var pending: int = 0
 var selected_obj: String = ""
 var near_valid: bool = false
 var nav_generation: int = 0
+## 自己发出的 navigate 还有几个没等到回答；以及最近一次「服务器答应开始走」的时刻。
+## 快照里的 has_nav 要晚一两帧才跟上：这段空档里按 Esc / 点「停下」也得算「正在走」，否则刚点错地方马上按 Esc 会没反应
+var nav_inflight: int = 0
+var nav_acked_ms: float = -1.0e9
+const NAV_ACK_GRACE_MS := 1500.0
 var req_counter: int = 0
 var _was_moving: bool = false
 var step_timer: float = 0.0
@@ -130,6 +135,11 @@ var _state_timer: float = 0.0
 var _debug_timer: float = 0.0
 var _last_tags: String = ""
 
+# 面板功能（附近聊天等）：见 features/。main 只持有 hub，对它的调用都是一行转发。
+var features := TFeatureHub.new()
+var server_cfg: Dictionary = {}
+var _had_hello: bool = false
+
 
 func _ready() -> void:
 	bridge.setup()
@@ -149,6 +159,10 @@ func _ready() -> void:
 	client_id = bridge.client_id()
 	if not bridge.web:
 		print("[town] 不是网页环境：只做了加载检查。")
+		return
+	features.setup(self)
+	if bridge.hud_protocol() != TBridge.HUD_PROTOCOL:
+		_fail("页面文件和客户端版本不一致，请强制刷新（Ctrl+F5）")
 		return
 	phase = Phase.READY
 	_dirty = true
@@ -225,7 +239,11 @@ func _on_ui(ev: String, arg: String) -> void:
 		"keys":
 			_on_keys(arg)
 		"interact":
-			_do_interact()
+			# arg 是来源：键盘 E 不带参数（"key"）；将来手机的「互动」按钮发 emit('interact', 'button')，走同一个入口
+			_do_interact(arg if arg != "" else "key")
+		"debug_pick_stub":
+			if bridge.debug:
+				features.set_pick_stub(arg)
 		"esc":
 			_do_esc()
 		"claim":
@@ -252,6 +270,8 @@ func _on_ui(ev: String, arg: String) -> void:
 					var r2: Dictionary = await _act(parsed)
 					_toast(str(r2.get("message", "ok")), "ok" if r2["ok"] else "err")
 					await _refresh_me()
+		_:
+			features.on_ui(ev, arg)
 
 
 func _on_visibility(vis: bool) -> void:
@@ -282,6 +302,8 @@ func _start_probe(t: float) -> void:
 
 func _set_phase(p: int, msg: String = "", link: String = "") -> void:
 	phase = p
+	if p == Phase.READY or p == Phase.LOGIN or p == Phase.ERROR:
+		features.on_leave()
 	if p != Phase.PLAYING:
 		_dir_reset()
 	phase_msg = msg
@@ -348,6 +370,7 @@ func _flow_body() -> bool:
 		return false
 	var cfg: Dictionary = await bridge.http("GET", API + "/config")
 	if int(cfg["status"]) == 200 and cfg["data"] is Dictionary:
+		server_cfg = cfg["data"]
 		dev_login = bool(cfg["data"].get("devLogin", false))
 		heartbeat_ms = int(cfg["data"].get("heartbeatMs", 20000))
 		var winfo = cfg["data"].get("world")
@@ -444,6 +467,7 @@ func _after_ready() -> void:
 	backoff_ms = 1000.0
 	next_heartbeat = clock.ticks_ms() + float(heartbeat_ms)
 	_dirty = true
+	features.on_enter()
 
 
 var _me_loc: Dictionary = {}
@@ -474,6 +498,7 @@ func _apply_me(view: Dictionary) -> void:
 		cur_space = str(loc.get("space", cur_space))
 		cur_space_name = str(loc.get("name", cur_space_name))
 	near_valid = true
+	features.on_me(view)
 	_dirty = true
 
 
@@ -497,6 +522,7 @@ func _refresh_me() -> bool:
 
 
 func _relogin() -> void:
+	features.on_leave()  # 它不设 phase，随后 _flow_body 把 PLAYING 直接设成 BUSY：共用设备换人登录时不能留着上一个人听到的话
 	want_net = false
 	ws_ready = false
 	net.close_now()
@@ -581,6 +607,7 @@ func _on_ws_open() -> void:
 
 
 func _on_ws_closed(code: int, _reason: String) -> void:
+	features.on_ws_closed()
 	ws_ready = false
 	dir_active = false  # 发不出零向量了；服务器最迟 500 毫秒后自己停
 	_dirty = true
@@ -656,11 +683,15 @@ func _on_ws_message(msg: Dictionary) -> void:
 			clock.rough(float(msg.get("serverTime", 0.0)))
 			renew_every_ms = maxf(1000.0, float(msg.get("renewEveryMs", 3000.0)))
 			dir_conn = int(msg.get("dirConn", -1))
+			# 服务器只在我们带的事件游标可用时回显它，否则回新水位并随后发 resync：相等即被接受（要在覆盖 ev_cursor 之前算）
+			var resumed: bool = ev_cursor != "" and str(msg.get("cursor", "")) == ev_cursor
 			ev_cursor = str(msg.get("cursor", ev_cursor))
 			next_ping = 0.0
 			var m = msg.get("map")
 			if m is Dictionary and manifest.has("checksum") and str(m.get("checksum", "")) != str(manifest["checksum"]):
 				_reload_map_after_mismatch()
+			features.on_hello(msg, resumed, not _had_hello)
+			_had_hello = true
 			_dirty = true
 		"scene":
 			_on_scene(msg)
@@ -671,6 +702,7 @@ func _on_ws_message(msg: Dictionary) -> void:
 					_on_event(ev)
 		"resync":
 			ev_cursor = str(msg.get("cursor", ev_cursor))
+			features.on_resync()
 			_refresh_me()
 		"pong":
 			var n = msg.get("n")
@@ -697,12 +729,21 @@ func _on_ws_message(msg: Dictionary) -> void:
 				_dir_hint(str(msg.get("message", "")))
 			elif code != "rate_limited" and not (code == "precondition_failed" and str(msg.get("reason", "")) == "not_present"):
 				last_error = code + ": " + str(msg.get("message", ""))
+		_:
+			features.on_frame(t, msg)
 
 
 func _on_event(ev: Dictionary) -> void:
 	var t: String = str(ev.get("type", ""))
 	var data: Dictionary = ev.get("data", {}) if ev.get("data") is Dictionary else {}
-	audio.on_event(ev)  # 提示音：按事件编号去重，太旧的不补播
+	# 提示音：按事件编号去重，太旧的不补播。自己说的附近聊天回声不响（只在这里过滤，不动 audio.gd）
+	var echo: bool = false
+	if t == "chat":
+		var frm = data.get("from")
+		echo = frm is Dictionary and str(frm.get("id", "")) == self_id
+	if not echo:
+		audio.on_event(ev)
+	features.on_event(ev)
 	match t:
 		"you_arrived":
 			arrival_refresh_at = clock.ticks_ms() + 80.0
@@ -818,6 +859,7 @@ func _on_scene(msg: Dictionary) -> void:
 		if not seen.has(id):
 			(actors[id] as TActor).queue_free()
 			actors.erase(id)
+	features.on_scene(msg)
 	_dirty = true
 
 
@@ -899,8 +941,54 @@ func _act(action: Dictionary) -> Dictionary:
 	return out
 
 
+## 一次性提交一个动作（聊天用）：请求体与 _act 相同（放在这里避免复制漂移），但不动 pending、不置 _dirty
+## （聊天不能让所有按钮变灰），不对 rate_limited / recovering 睡眠重试，直接返回给调用方。
+## opts.rid：给了就复用（网络层失败后重发同一句话时带回，服务器按请求号回放回执，不会说两遍）；
+## opts.retry_stale（默认 true）：context_stale / request_expired 时刷新 /me、换新请求号再发一次（被拒的请求没执行，重发安全）。
+## 返回 {ok, data, error, reason, message, retry_after_ms, net_fail, rid}；data 保留整个响应。
+func _act_once(action: Dictionary, opts: Dictionary = {}) -> Dictionary:
+	var rid: String = str(opts.get("rid", ""))
+	if rid == "":
+		rid = _new_req_id()
+	var may_retry: bool = bool(opts.get("retry_stale", true))
+	var out: Dictionary = {}
+	while true:
+		var body := {
+			"clientId": client_id,
+			"requestId": rid,
+			"actionWindow": action_window,
+			"expected": {"contextVersion": ctx_version, "controlEpoch": control_epoch, "activityId": ctx_activity},
+			"action": action,
+		}
+		var res: Dictionary = await bridge.http("POST", API + "/actions", body)
+		var d = res["data"]
+		if int(res["status"]) == 200 and d is Dictionary and bool(d.get("ok", false)):
+			ctx_version = int(d.get("contextVersion", ctx_version))
+			return {"ok": true, "data": d, "error": "", "reason": "", "message": "", "retry_after_ms": 0, "net_fail": false, "rid": rid}
+		var code: String = str(d.get("error", "")) if d is Dictionary else ""
+		var reason: String = str(d.get("reason", "")) if d is Dictionary else ""
+		var retry_ms: int = int(d.get("retryAfterMs", 0)) if d is Dictionary else 0
+		out = {"ok": false, "data": d, "error": code, "reason": reason, "message": _err_msg(res), "retry_after_ms": retry_ms, "net_fail": int(res["status"]) == 0, "rid": rid}
+		if (code == "context_stale" or code == "request_expired") and may_retry:
+			may_retry = false
+			await _refresh_me()
+			rid = _new_req_id()
+			continue
+		if code == "control_lost":
+			control_mine = false
+			_dirty = true
+		elif code == "unauthenticated":
+			_relogin()
+		break
+	return out
+
+
 func _can_control() -> bool:
 	if phase != Phase.PLAYING:
+		return false
+	var why: String = features.blocks_input()
+	if why != "":
+		_toast(why, "warn")
 		return false
 	if not control_mine:
 		_toast("现在是只读：另一处握着控制权。点上方「接管」拿回来。", "warn")
@@ -928,7 +1016,11 @@ func _do_navigate(to: Dictionary, label: String, mark = null) -> void:
 	near_valid = false
 	if mark is Vector3:
 		_show_marker(mark, false)
+	nav_inflight += 1
 	var r: Dictionary = await _act({"type": "navigate"}.merged(to).merged(_dir_fence()))
+	nav_inflight -= 1
+	if r["ok"] and r["data"] is Dictionary and r["data"].get("navigation") is Dictionary:
+		nav_acked_ms = clock.ticks_ms()  # 服务器已经让角色走起来了（不管这个回答还代不代表现状）
 	if gen != nav_generation:
 		# 之后又点了别处或又按了方向键，这个回答不再代表现状，不画标记；但服务器的现状照记：谁生效由服务器的序号栅栏决定
 		if r["ok"] and r["data"] is Dictionary and r["data"].get("navigation") is Dictionary:
@@ -964,6 +1056,15 @@ func _do_stop() -> void:
 		return
 	_dir_cancel()
 	nav_generation += 1
+	var gen: int = nav_generation
+	# 点地的请求还在路上：等它有了回答再发停步。两个请求各走各的连接，停步先到、导航后到的话角色会照走不误
+	var guard: int = 0
+	while nav_inflight > 0 and guard < 240:
+		await get_tree().process_frame
+		guard += 1
+	if gen != nav_generation or phase != Phase.PLAYING:
+		return  # 等的时候又点了别处 / 又按了方向键 / 已经离开：以后来的为准
+	nav_acked_ms = -1.0e9
 	var r: Dictionary = await _act({"type": "stop_navigation"}.merged(_dir_fence()))
 	_hide_marker()
 	if r["ok"]:
@@ -999,6 +1100,9 @@ func _do_claim() -> void:
 func _on_act_button(arg: String) -> void:
 	var parts: PackedStringArray = arg.split(":", true, 1)
 	if parts.size() < 2:
+		return
+	if parts[0] == "f":
+		features.on_action(parts[1])  # "f:<功能>:<动作>:<参数>"
 		return
 	var oid: String = parts[1]
 	if parts[0] == "go":
@@ -1074,6 +1178,10 @@ func _tick_dir(now_t: float) -> void:
 		return
 	if dir_suppressed or not ws_ready or not net.is_open() or not control_mine or ctx_activity != null:
 		return
+	var why: String = features.blocks_input()
+	if why != "":
+		_dir_hint(why)  # 3 秒节流，不每帧提示
+		return
 	var gap: float = now_t - dir_sent_ms
 	if (v != dir_last and gap >= DIR_MIN_GAP_MS) or gap >= DIR_RESEND_MS:
 		if not dir_active:
@@ -1107,7 +1215,9 @@ func _do_esc() -> void:
 	if phase != Phase.PLAYING or not control_mine:
 		return
 	var sa: TActor = actors.get(self_id)
-	if dir_active or (sa != null and sa.has_nav):
+	# 「正在走」不只看快照：自己刚点的地方，请求还在路上、或服务器刚答应而快照还没跟上，也算
+	var just_started: bool = nav_inflight > 0 or clock.ticks_ms() - nav_acked_ms < NAV_ACK_GRACE_MS
+	if dir_active or (sa != null and sa.has_nav) or just_started:
 		_do_stop()
 	elif _key_vec() != Vector2.ZERO:
 		dir_suppressed = true  # 没在走但键按着：Esc 也让这次按住作废
@@ -1136,7 +1246,7 @@ func _dir_hint(msg: String) -> void:
 
 
 ## E：和最近的可互动物件或人互动。复用点击的入口：够得着的物件直接开始动作，远的先走过去，人就走到身边。
-func _do_interact() -> void:
+func _do_interact(src: String = "key") -> void:
 	if phase != Phase.PLAYING or not _can_control():
 		return
 	var sa: TActor = actors.get(self_id)
@@ -1173,6 +1283,9 @@ func _do_interact() -> void:
 			best_id = id
 	if best_kind == "":
 		_toast("附近没有可以互动的东西。", "info")
+		return
+	# 先问功能模块：和点击一样，有功能接管就由它处理（居民卡、入座、一起喝茶），不再走下面的旧逻辑
+	if features.on_pick(best_kind, best_id, src):
 		return
 	if best_kind == "actor":
 		selected_obj = ""
@@ -1300,6 +1413,8 @@ func _on_tap(p: Vector2) -> void:
 				best_t = t2
 				best_kind = "obj"
 				best_id = str(ob["id"])
+	if best_kind != "" and features.on_pick(best_kind, best_id, "tap"):
+		return
 	if best_kind == "actor":
 		selected_obj = ""
 		var a2: TActor = actors[best_id]
@@ -1395,6 +1510,7 @@ func _process(dt: float) -> void:
 		_heartbeat()
 
 	_tick_dir(now_t)
+	features.tick(dt, now_t)
 
 	# 角色
 	for id in actors:
@@ -1553,6 +1669,7 @@ func _build_actions() -> Array:
 		var wo: Dictionary = world.find_object(cur_scene, selected_obj)
 		if not wo.is_empty():
 			out.append({"id": "go:" + selected_obj, "label": "走过去", "sub": str(wo.get("name", "")), "mode": "go"})
+	features.actions(out)
 	return out
 
 
@@ -1629,6 +1746,7 @@ func _update_tags() -> void:
 			continue
 		var sp4: Vector2 = cam.unproject_position(wp4)
 		tags.append({"i": "p:" + str(pl["id"]), "n": str(pl["name"]), "x": snappedf(sp4.x / size.x, 0.0005), "y": snappedf(sp4.y / size.y, 0.0005), "k": "p"})
+	features.tags(cam, size, tags)
 	var s: String = JSON.stringify(tags)
 	if s != _last_tags:
 		_last_tags = s
@@ -1687,6 +1805,7 @@ func _push_debug() -> void:
 		# 自上次推送以来最长的一帧间隔（毫秒）。网页层累计，端到端每步结束时读，用来分清「机器忙」和「某处卡了主线程」
 		"frameMaxMs": snappedf(_frame_max_ms, 0.1),
 		"slow": _slow,
+		"features": features.debug(),
 	}
 	_frame_max_ms = 0.0
 	bridge.hud_debug(JSON.stringify(d))

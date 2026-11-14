@@ -1,0 +1,128 @@
+/* 面板底座的样式：钉在深色 HUD 上的「纸与木牌」。
+ * 方向：《牧场物语：重聚矿石镇》的生活感加《织梦岛》重制版的微缩感。米白纸面、木棕边框、灰蓝（别人）、柔和绿（自己）、少量暖橙。
+ * 只用 transform 和 opacity 做动画；不用 backdrop-filter、大半径阴影、循环动画（软件渲染和低端手机吃紧）。
+ * 本文件由 C1a 拥有并冻结；功能自己的样式写在 web/mod/<id>.css。 */
+:root {
+  --d-paper: #f4ecd9;
+  --d-paper-2: #eadfc4;
+  --d-line: rgba(95, 70, 49, 0.18);
+  --d-ink: #3b2e22;
+  --d-ink-soft: #7a6853; /* 名字、时间；不低于 12px，11px 的信息不单靠它 */
+  --d-wood: #8b5e3c;
+  --d-wood-dark: #5b3d27;
+  --d-wood-light: #b58558;
+  --d-slate: #6f8aa3; /* 别人的名字线；C1b 全镇 / C6 NPC 色 */
+  --d-slate-ink: #3f5870;
+  --d-leaf: #8fb58a;
+  --d-leaf-bg: #e0ebd0; /* 自己的话、成功提示 */
+  --d-ember: #e6994f; /* 暖橙：仅未读角标、限流倒计时、发送钮，少量 */
+  --d-note: #f6edc4; /* 便签黄：提示条 */
+  --d-err: #b0432e;
+  --d-serif: "Songti SC", "Noto Serif CJK SC", "Source Han Serif SC", serif;
+  --kb: 0px;
+  --dock-h: 0px;
+}
+
+/* hud.css 的 #hud 本身是 pointer-events:none，白名单里没有面板：这里补上 */
+#dock, #dock *, #dockBtn, #dockOverlays > * { pointer-events: auto; }
+#dockOverlays { position: absolute; inset: 0; z-index: 4; pointer-events: none; }
+
+/* ── 启动按钮：和「停下 / 回家 / 地点」同形，在同一行 ── */
+#dockBtn { position: relative; }
+#dockBtn.on { border-color: rgba(243, 201, 105, 0.6); color: var(--accent); }
+.dock-badge {
+  position: absolute; top: -7px; right: -5px; min-width: 18px; height: 18px; padding: 0 5px; border-radius: 9px; box-sizing: border-box;
+  background: var(--d-ember); color: #2b1a08; font-weight: 700; font-size: 12px; line-height: 18px; font-style: normal; text-align: center; pointer-events: none;
+  box-shadow: 0 1px 0 rgba(0, 0, 0, 0.35);
+}
+.dock-badge.pop { animation: dockPop 0.2s ease-out; }
+@keyframes dockPop { from { transform: scale(0.6); } 60% { transform: scale(1.1); } to { transform: scale(1); } }
+
+/* ── 面板本体 ── */
+#dock {
+  position: absolute; z-index: 3; display: flex; flex-direction: column; box-sizing: border-box;
+  color: var(--d-ink); background: var(--d-wood); border: 5px solid var(--d-wood); border-radius: 16px; overflow: hidden;
+  box-shadow: 0 0 0 1px var(--d-wood-dark), 0 4px 0 rgba(60, 40, 20, 0.25);
+  opacity: 0; transition: opacity 0.12s ease-out, transform 0.12s ease-out;
+  user-select: text; -webkit-user-select: text;
+}
+#dock.in { opacity: 1; transform: none; transition: opacity 0.18s ease-out, transform 0.18s ease-out; }
+#dock button { font: inherit; color: inherit; background: none; border: 0; border-radius: 0; padding: 0; min-height: 0; cursor: pointer; touch-action: manipulation; }
+#dock button:hover:not(:disabled) { background: none; }
+
+body[data-dock="side"] #dock {
+  top: calc(56px + var(--safe-top)); bottom: calc(14px + var(--safe-bottom)); right: calc(12px + var(--safe-right));
+  width: clamp(300px, 24vw, 340px); transform: translateX(16px);
+}
+@media (orientation: landscape) and (max-height: 520px) {
+  body[data-dock="side"] #dock { top: calc(52px + var(--safe-top)); width: min(300px, 42vw); }
+}
+/* 横屏软键盘：侧栏也抬到键盘上沿，并让出顶部，输入栏不被盖住 */
+body[data-dock="side"][data-kb="1"] #dock { top: calc(8px + var(--safe-top)); bottom: calc(var(--kb) + 8px + var(--safe-bottom)); }
+body[data-dock="drawer"] #dock {
+  left: calc(8px + var(--safe-left)); right: calc(8px + var(--safe-right)); bottom: calc(var(--kb) + var(--safe-bottom));
+  height: min(calc(var(--vvh, 100dvh) * 0.44), 340px); border-radius: 16px 16px 0 0; border-bottom-width: 0; transform: translateY(24px);
+}
+body[data-dock="drawer"][data-kb="1"] #dock { height: min(170px, calc(var(--vvh, 100dvh) - 120px)); }
+body[data-dock="drawer"] #dock.in, body[data-dock="side"] #dock.in { transform: none; }
+
+/* 手机：抽屉把「停下 / 回家 / 地点 / 聊天」整体顶到抽屉上沿之上，启动按钮始终可点，兼任开关 */
+body[data-dock="drawer"][data-dock-open="1"] #bottombar { bottom: calc(14px + var(--dock-h, 0px) + var(--safe-bottom)); }
+/* 软键盘出现：只留「停下」，其余让位给输入栏 */
+body[data-kb="1"] #actions, body[data-kb="1"] #homeBtn, body[data-kb="1"] #destBtn, body[data-kb="1"] #dockBtn, body[data-kb="1"] #destMenu { display: none !important; }
+
+/* 把手（抽屉才有）：点击关闭、下拉超过 40px 关闭；热区 44px 高 */
+#dockGrip { display: none; position: absolute; left: 0; right: 56px; top: 0; height: 44px; z-index: 2; touch-action: none; cursor: grab; }
+#dockGrip::after { content: ""; position: absolute; left: 50%; top: 7px; width: 36px; height: 4px; margin-left: -18px; border-radius: 2px; background: var(--d-paper-2); opacity: 0.7; }
+body[data-dock="drawer"] #dockGrip { display: block; }
+
+/* 页签像挂在木框上的小木牌：未选中木色底纸色字，选中纸面底墨色字并与纸面连成一体 */
+#dockTabs {
+  display: flex; align-items: flex-end; gap: 2px; flex: none; height: 36px; padding: 0 44px 0 6px; background: var(--d-wood); position: relative;
+  /* 放不下五六个页签时横向滚动（隐藏滚动条）；右边的 44px 内边距让最后一个页签能滚到关闭钮左边 */
+  overflow-x: auto; overflow-y: hidden; scrollbar-width: none; -ms-overflow-style: none; overscroll-behavior-x: contain;
+}
+#dockTabs::-webkit-scrollbar { display: none; }
+body[data-dock="drawer"] #dockTabs { height: 44px; padding-top: 6px; }
+/* 前缀 #dock：#dock button 的重置（背景、字体、颜色、内边距）特异性更高，不加前缀这些样式一直没生效 */
+#dock .dock-tab {
+  position: relative; flex: none; height: 30px; padding: 0 9px; border-radius: 8px 8px 0 0; font: 14px/30px var(--d-serif); color: var(--d-paper);
+  background: var(--d-wood-dark); white-space: nowrap;
+  z-index: 3; /* 抽屉里把手（#dockGrip，z-index 2）整条盖在页签条上，不抬高页签就点不到：页签压过把手，条上没有页签的空处仍是把手 */
+}
+.dock-tab::before { content: ""; position: absolute; left: 0; right: 0; top: -6px; bottom: 0; } /* 垂直点按区：侧栏占满 36px 的条高，抽屉 44px（条被裁切，不能再往外扩） */
+body[data-dock="drawer"] .dock-tab::before { top: -14px; }
+/* #dock button:hover（1,2,1）会把背景清成 none：悬停（含触屏点按后残留的 :hover）时选中页签露出木色底，墨色字落在木色上读不出来。这里按同样的特异性显式写回 */
+#dock .dock-tab:hover:not(:disabled) { background: var(--d-wood-dark); }
+#dock .dock-tab.sel:hover:not(:disabled) { background: var(--d-paper); }
+#dock .dock-tab.sel { background: var(--d-paper); color: var(--d-ink); font-weight: 600; box-shadow: inset 0 -3px 0 var(--d-ember); }
+/* 只有一个页签：不可点的标题（外观和 S0 之前一样：无底、继承字体和颜色） */
+#dock #dockTabs[data-count="1"] .dock-tab { pointer-events: none; background: none; box-shadow: none; color: inherit; font: inherit; font-weight: inherit; padding: 0; border-radius: 0; }
+.tab-dot { position: absolute; top: 3px; right: 3px; width: 8px; height: 8px; border-radius: 50%; background: var(--d-ember); }
+.tab-dot[hidden] { display: none; }
+
+#dock #dockClose {
+  position: absolute; z-index: 4; top: 0; right: 0; width: 44px; height: 40px; /* 盖在滚动的页签上面时不透出下面的字：木色底只画到页签条的高度 */
+  background: linear-gradient(var(--d-wood), var(--d-wood)) 0 0 / 100% 36px no-repeat;
+}
+body[data-dock="drawer"] #dock #dockClose { height: 44px; background-size: 100% 44px; }
+body[data-dock="drawer"] #dockClose::before, body[data-dock="drawer"] #dockClose::after { top: 21px; }
+#dockClose::before, #dockClose::after { content: ""; position: absolute; left: 14px; top: 19px; width: 16px; height: 2px; border-radius: 1px; background: var(--d-paper); }
+#dockClose::before { transform: rotate(45deg); }
+#dockClose::after { transform: rotate(-45deg); }
+#dockClose:hover::before, #dockClose:hover::after { background: #fff; }
+#dockClose:focus-visible, .dock-tab:focus-visible { outline: 2px solid var(--d-ember); outline-offset: -2px; }
+
+/* 纸面：淡横线，不用图片 */
+#dockBody {
+  position: relative; flex: 1; min-height: 0; background-color: var(--d-paper);
+  background-image: repeating-linear-gradient(transparent 0 21px, rgba(139, 94, 60, 0.1) 21px 22px);
+  border-radius: 0 0 8px 8px;
+}
+.dock-pane { position: absolute; inset: 0; display: flex; flex-direction: column; min-height: 0; font-size: 14px; line-height: 1.5; }
+.dock-pane[hidden] { display: none; }
+
+@media (prefers-reduced-motion: reduce) {
+  #dock, #dock.in { transition: none; transform: none; }
+  .dock-badge.pop { animation: none; }
+}

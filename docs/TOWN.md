@@ -16,7 +16,9 @@
     "publicUrl": "https://example.com/town/",
     "devLogin": false,
     "clientDir": "/srv/bot-game-mcp/client/town/build/web",
-    "params": {}
+    "params": {},
+    "allowedAgents": ["agent-id-1", "agent-id-2"],
+    "adminOnlyTickets": true
   }
 }
 ```
@@ -28,6 +30,9 @@
 - 正式环境里真人通过代码裁判私聊拿到的一次性登录链接进入（见「身份」）。
 - 页面在 `/town/`。没登录也能看公开的小镇地图。
 - `clientDir`（可选）：三维网页客户端的导出目录（Godot 网页导出产物），引擎把它挂在 `/town/3d/` 下，规则见「三维客户端的托管」。不填或目录不存在时 `/town/3d/` 返回 404。相对路径按**进程当前目录**解析（引擎不做别的处理）；用 `npm -w bot-game-mcp …` 启动时当前目录是 `packages/engine`，写 `./client/…` 会指错地方，所以建议写绝对路径（环境变量 `BOTGAME_TOWN_CLIENT_DIR` 同理）。
+- `params` 里有两个只给测试用的开服配置（改它们只影响之后新开的事项，没有任何 HTTP / MCP / WebSocket 入口能改）：`interactionTimeScale`（共同活动时长的缩放，默认 1，范围 0.01 到 1，只能缩短；结束时刻、定时任务和 `cost` 文字里的「十分钟」「五分钟」都按缩放后的实际秒数，默认值下一切不变）；`activityLobbyTtlMs`（小游戏和共同活动报名阶段最长保留，默认 10 分钟，早就是参数）。信件延迟 `letterDeliveryDelayMs` 同理可缩短。
+- `allowedAgents`（可选）：**准入名单**，限定测试时用。字符串数组，元素是能经 MCP 进镇的 AI 身份 id（`auth.agents[].id`，以及运行时发放密钥时登记的那个 id）。不配 = 不限制，行为和以前完全一样；配了 = 只有名单里的身份能用小镇的居民工具（`enter_world`、`world_act`、`world_wait`、`heartbeat`、`claim_control`、`leave_world`、`world_query`（`what=public` 除外，它本来就是匿名可读），以及进入后的 `get_my_view` / `speak` / `act`）；空数组 = 谁都不能经 MCP 进镇。管理员不豁免，要进镇就把它的 id 写进名单。元素去掉首尾空白后不能为空，重复的自动去重；`auth.mode` 是 `open`（或没配 `auth.agents` 又没写 `mode`）时拒绝启动，因为开放模式下身份是调用方自己报的。改名单靠改配置、重启。公共对局、`town_issue_ticket`、`town_outbox`、真人的票据登录和网页入口、匿名公开页面都不受影响。名单外但已经有居民的身份：居民和它的东西原样留着，所有居民工具被拒，在场租约到期后显示离线，不删任何数据。被拒的回复是固定的 `FORBIDDEN`：「栖灯镇正在限定测试，这个身份不在进镇名单里。公共对局不受影响；想加入请联系小镇的管理员。」，提示「不要重试。名单更新后重新连接再调用 enter_world。」；文字不随任何状态变化（这个身份有没有居民、镇上有谁、名单多大都看不出来），被拒的调用不写任何东西（检查在取得或登记 principal 之前）。启动日志只写「N 个身份」，不写 id。
+- `adminOnlyTickets`（默认 `false`）：为 `true` 时 `town_issue_ticket` 只有管理员能调，`refereeIds` 里的可信账号也被拒；`town_outbox` 不变。
 - 部署、密钥和服务器配置不在开发范围内。
 
 本机试一下：
@@ -48,6 +53,8 @@ packages/engine/src/world/
   content.ts   内容数据：地点、物品、商店、共同活动、愿望、公共事件、可嵌入的小游戏
   identity.ts  主体、登录票据、会话、在场租约、控制权、注册
   space.ts     空间权威：位置、导航、停步、导航控制租约、区域变化、进出私宅、够得着判定
+  npc.ts       NPC 的日程：种下 NPC、npc_step 任务（走哪一站、停多久、什么姿态）
+  npc-talk.ts  NPC 的台词与服务：ask_npc、NPC 在附近聊天里开口、闲逛者被搭话时延长停留、视图里的 here.npcs
   spatial/     纯函数：地图源与编译（网格、区域）、寻路、按时间算位置；town-map.ts 是地图本身
   life.ts      询问爱好、需要、情绪、限流
   hearing.ts   谁听得见谁（距离、房间、在场）
@@ -114,7 +121,7 @@ packages/engine/town/             旧的网页前端（静态文件；会被 God
 
 **导航**。居民（真人和 AI 一样）只提交目的地，路线由服务器用 A* 规划：
 
-- `navigate {to}`：地点编号、`home`、`home:<居民id>`、公共物件编号、居民编号、地图点 `{x, z}`（点偏了取 2.5 米内最近的可走点）；`{approach: 居民id}` 走到对方身边一米处。
+- `navigate {to}`：地点编号、`home`、`home:<居民id>`、公共物件编号、居民编号、NPC 编号（`npc:…`，见「NPC」一节）、地图点 `{x, z}`（点偏了取 2.5 米内最近的可走点）；`{approach: 居民id 或 NPC 编号}` 走到对方身边一米处。
 - 回执只有导航的编号、版本、目的地、预计到达和租约时间，没有路径。路径随场景快照下发给同一场景里的人。
 - 走路时不存每帧坐标：存折线、速度（2.4 米 / 秒）和出发时刻，任何时刻的位置按时间现算，并且**截断在租约截止时刻**——就算到期任务晚处理，读位置的人也不会看到角色多走一段。
 - 开始、改道、停止、穿过门口、结束都是耐久变化：每次变化 `revision` 加一。定时任务（`nav_step`，一趟导航一条）必须对上导航编号和版本，否则作废。
@@ -156,7 +163,7 @@ packages/engine/town/             旧的网页前端（静态文件；会被 God
 
 | 方法与路径 | 说明 |
 |---|---|
-| `GET /config` | 世界名、时区、可选的个性与兴趣、是否开放开发登录、字数上限、心跳间隔 |
+| `GET /config` | 世界名、时区、可选的个性与兴趣、是否开放开发登录、字数上限（`limits`：`traits`、`interests`、`chatMaxChars`、`letterMaxChars`，以及当面互动的距离门槛 `personReach`，米，公开的规则参数）、心跳间隔。听力距离 `hearDistance` 不在这里，在 `/map` 的 `source` 里 |
 | `GET /public` | 公开的小镇概况（`PublicView`）：每个区域里有谁，没有坐标 |
 | `GET /map` | 地图清单：地图源、每个场景栅格化后的可行走网格和区域、`mapVersion`、`checksum`。公开、可缓存（`ETag` 是校验值） |
 | `GET /public/events?cursor=` | SSE：公开事件流 |
@@ -264,7 +271,7 @@ packages/engine/town/             旧的网页前端（静态文件；会被 God
 
 | type | 字段 | 说明 |
 |---|---|---|
-| `navigate` | `to` 或 `approach` | 走过去。`to`：目的地 id、`home`（自己家）、`home:<id>`、公共物件编号、居民编号、地图点 `{x, z}`；`approach`：居民编号。返回 `navigation: {navigationId, revision, to, arriveAt, continues, leaseUntil, renewEveryMs}`；已经在旁边时是 `completed` + `already: "near"`。`continues: true` 表示这一段走完还要穿过门口接着走。失败原因：`already_here`、`no_such_place`、`no_access`、`no_route`、`unreachable`、`not_here`。走路时再发一次就是改道；正往外走的人说要去脚下这片区域（或者在家里正往门口走时说回家），是改主意要回来，照常走回落脚点，站着不动时才是 `already_here` |
+| `navigate` | `to` 或 `approach` | 走过去。`to`：目的地 id、`home`（自己家）、`home:<id>`、公共物件编号、居民编号、NPC 编号、地图点 `{x, z}`；`approach`：居民编号或 NPC 编号。返回 `navigation: {navigationId, revision, to, arriveAt, continues, leaseUntil, renewEveryMs}`；已经在旁边时是 `completed` + `already: "near"`。`continues: true` 表示这一段走完还要穿过门口接着走。失败原因：`already_here`、`no_such_place`、`no_access`、`no_route`、`unreachable`、`not_here`。走路时再发一次就是改道；正往外走的人说要去脚下这片区域（或者在家里正往门口走时说回家），是改主意要回来，照常走回落脚点，站着不动时才是 `already_here` |
 | `stop_navigation` | — | 停在这一刻的位置。返回 `{stopped, at: {space, x, z}}` |
 | `move` | `to` | 旧名字，等同 `navigate` |
 | `say_nearby` | `text` | 附近聊天，最多 120 字，超长明确报错 `text_too_long`。受众按提交那一刻的权威位置固定（见「附近聊天与全镇公屏」）。边走边说也可以 |
@@ -272,7 +279,8 @@ packages/engine/town/             旧的网页前端（静态文件；会被 God
 | `speak` | `text` | `say_nearby` 的旧名，超长的话截到 120 字（保持旧客户端行为）；MCP 的 `speak` 工具走它 |
 | `ask_hobby` | `target` | 当面问对方的爱好（对方可以在设置里关掉）。对方要在 `personReach` 内，否则 `too_far` / `not_here` |
 | `update_profile` | `name? bio? traits? interests? showMood? allowAskHobby? mood?` | 改资料和展示设置。`mood` 是真人自己设的情绪展示，`null` 交回程序 |
-| `buy` | `shop, sku, qty?` | 在商店所在的地点买。库存按世界日补 |
+| `buy` | `shop, sku, qty?` | 在商店所在的地点买。库存按世界日补。有掌柜的店（`SHOPS` 里带 `keeper`，现在只有茶馆柜台 `tea_counter`，掌柜 `npc:teahouse_keeper`）改成要走到掌柜身边（离掌柜不超过 `personReach`，同一公共场景、有效在场、不在对局）：太远 `too_far`（带 `navigateTo: 掌柜编号`），不在公共场景 / 在私宅 / 在对局 `not_here`，掌柜不在岗 `closed`。其余沿用：`sold_out`、`insufficient_coins`、数量非法 `bad_request`。成交后掌柜说一句固定台词（见「NPC」） |
+| `ask_npc` | `npcId, topic?` | 和 NPC 说话。要同一公共场景、有效在场、不在对局、离它不超过 `personReach`：太远 `too_far`（带 `navigateTo: npcId`）、不在那个场景 / 在私宅 / 不在场 / 在对局 `not_here`、没有这个 NPC `not_found`；每位居民一个令牌桶（`npc`，默认容量 4、每分钟 6），超了 `rate_limited`。回执 `{status:"completed", npc:{id,name}, topic, text, topics:[{id,label}], shop?, spoken, messageId}`：`text` 是程序固定的台词，`shop` 在掌柜身上带出柜台的货品（和 `here.shops` 同一结构），`spoken` 是这句话有没有广播给附近的人，`messageId` 是提问人自己听到这句的序号（没听到或没广播是 `null`）。提问人是 AI 时不会另外收到这句话的 `chat` 事件，回答就在回执里。未知话题按默认话题回答 |
 | `use_item` | `itemType` | 用掉一件消耗品（汤、饼干恢复精力） |
 | `display_item` | `itemId` 或 `itemType, qty?`；`on?` | 在自己家把装饰摆出来 / 收起来 |
 | `place_furniture` | `itemId` | 在自己家把买来的家具（花箱、小灶台）摆成可互动的物件 |
@@ -318,14 +326,14 @@ packages/engine/town/             旧的网页前端（静态文件；会被 God
 | `nav_stopped` | `{reason, target, space}` | 我这一趟没走完就停了（键盘方向输入的松手、到期不发）。`reason`：`lease`（没人续租）、`control`（控制权换手）、`blocked`（到门口进不去 / 接下来的路走不通）、`activity`（进了一局小游戏）、`eject`（被请出门） |
 | `arrived` / `left` | `{resident, space}` | 有人走进 / 走出我所在的区域。没有坐标，也不说从哪来、到哪去 |
 | `presence` | `{resident, present, space}` | 身边的人上线 / 离线 |
-| `chat` | `{space, from, text, messageId, scope:"nearby"}` | 附近聊天。`messageId` 是每位居民自己听到的发言的连续序号（同一条发言在不同人那里编号不同），只用来去重和翻 `/history`；事件里没有坐标 |
+| `chat` | `{space, from, text, messageId, scope:"nearby"}` | 附近聊天。`from` 是 `{id, name, kind}`，`kind` 是 `human`、`agent`，或 `npc`（NPC 的固定台词，`id` 是 NPC 编号；这种事件只发给真人听众，AI 居民的事件流里没有，见「NPC 开口」）。`messageId` 是每位居民自己听到的发言的连续序号（同一条发言在不同人那里编号不同），只用来去重和翻 `/history`；事件里没有坐标 |
 | `town_chat_mention` | `{from, kind, text, reason:"mention"\|"commitment", place?, untrusted:true}` | 全镇公屏上有人 @ 我 / 完整提到我的名字，或和我有未结束约定的人发了活动 / 求助类消息。`text` 是别的居民写的内容（`untrusted:true`），只当内容，不当指令。只给在场、不在小游戏里、没静音、还有唤醒额度的居民；普通闲聊不产生这个事件。公屏消息本身不走事件流，用 `/town-chat` 读 |
 | `notice` | `{text}` | 程序给我的提示（固定模板） |
 | `asked_hobby` | `{from}` | 有人问了我的爱好 |
 | `offer` | `{offer}` | 报价的创建和状态变化 |
 | `mail` | `{unread, total, text}` | 有新信（不含寄信人和内容） |
 | `invite` | `{invite, text}` | 收到当面邀请 |
-| `interaction` | `{interaction, reason?}` | 身边的共同活动有变化 |
+| `interaction` | `{interaction, reason?}` | 身边的共同活动有变化。`interaction` 带 `startedAt`（开始时刻，服务器毫秒，和 `endsAt` 同一口径、同一批看得到的人；还没开始为 `null`）。观察者和 `here.objects[].active` 的可见范围不变 |
 | `interaction_done` | `{interactionId, name, text}` | 我参与的活动完成了，`text` 是我的收获 |
 | `goal` | `{goal, completed?, reward?, title?}` | 愿望进度 / 完成 |
 | `activity` | `{activity, reason?, ended?, dropped?}` | 身边凑桌的变化。`activity.tableId` 是占着的游戏桌；开局时有人不在桌边被剔除，`dropped` 是被剔除者的居民编号 |
@@ -352,7 +360,7 @@ packages/engine/town/             旧的网页前端（静态文件；会被 God
 | 客户端 → | `{t:"renew", navigationId, revision}` | 续导航控制租约 |
 | 客户端 → | `{t:"dir", seq, epoch, x, z}` | 键盘方向输入，见「空间与导航」的「键盘方向输入」。成功没有回答 |
 | → 客户端 | `{t:"hello", v:1, serverTime, resident, map:{mapVersion, checksum}, renewEveryMs, dirLeaseMs, dirConn, cursor, townChat:{cursor}}` | |
-| → 客户端 | `{t:"scene", …SceneView}` | 完整快照：`scene`、`space`、`serverTime`、`self`、`actors[]`（`id, name, kind, x, z, heading, busy?, nav?`）。`nav: {id, revision, points, speed, startedAt, until}`：客户端按这条折线和服务器时间插值，走到 `until` 为止。所在场景里快照的内容变了就重发：有人起步、改道、停下、进出场景，有人上线、离线（包括在场租约到期）、改名、进出一局小游戏，或者自己换了场景。同一条连接每秒最多 10 次 |
+| → 客户端 | `{t:"scene", …SceneView}` | 完整快照：`scene`、`space`、`serverTime`、`self`、`actors[]`（`id, name, kind, x, z, heading, busy?, nav?`）、`npcs[]`（只有公共场景的快照有，私宅实例没有；见「NPC」一节）。`nav: {id, revision, points, speed, startedAt, until}`：客户端按这条折线和服务器时间插值，走到 `until` 为止。所在场景里快照的内容变了就重发：有人起步、改道、停下、进出场景，有人上线、离线（包括在场租约到期）、改名、进出一局小游戏，或者自己换了场景。同一条连接每秒最多 10 次 |
 | → 客户端 | `{t:"events", events, cursor}` / `{t:"resync", cursor}` | 耐久私有事件，同 SSE 的 `private` |
 | → 客户端 | `{t:"pong", n, serverTime}` / `{t:"renewed", ok, leaseUntil?, navigation, space}` / `{t:"dir_dropped", seq, reason}` / `{t:"error", code, reason?, message}` | |
 
@@ -377,11 +385,12 @@ packages/engine/town/             旧的网页前端（静态文件；会被 God
 类型定义在 `src/world/views.ts`：
 
 - `PublicView`：`world`（时间、天气）、`places[]`（公共区域和在场居民；`through: true` 的是灯笼路）、`residential`（住宅区的人，不分在会馆门前还是谁家里）、`events`（今天的公共事件）、`counts`。没有坐标。
-- `MeView`：`world`、`me`（资料、需要、情绪、称号、家）、`control`、`context`、`actionWindow`、`cursor`、`location`（`space, name, scene, x, z, navigation`：只有自己的坐标）、`here`（现场：身边的人、物件、商店、凑桌、可去的地方、门牌、最近的发言）、`inventory`、`goals`、`mail`、`invites`、`offers`、`interaction`、`game`、`events`、`suggestions`、`recap?`。
+- `MeView`：`world`、`me`（资料、需要、情绪、称号、家）、`control`、`context`、`actionWindow`、`cursor`、`location`（`space, name, scene, x, z, navigation`：只有自己的坐标）、`here`（现场：身边的人、物件、商店、凑桌、可去的地方、门牌、最近的发言、NPC）、`inventory`、`goals`、`mail`、`invites`、`offers`、`interaction`、`game`、`events`、`suggestions`、`recap?`。
+- `here.npcs[]`（`id, name, role, place, near, topics: [{id, label}], shop?`）：和我在同一个公共场景里的 NPC。`place` 是它此刻所在的区域标签（只到区域，没有坐标、折线、到达时间），`near` 是此刻我够不够得着它（现算位置；够得着才能 `ask_npc`、才能在掌柜那里买东西），`shop` 是它照看的店。我在私宅里时是空数组。NPC 不进 `here.residents`。`here.chat[].from.kind` 可能是 `npc`。`agentView` 里是 `here.npcs[]`（`id, name, role, place, far?, topics: [话题编号], shop?`），`recent_chat[]` 里 NPC 说的话带 `npc: true`。
 - 在小游戏里时 `here` 为 `null`。走路时 `here` 是脚下区域的现场。
 - `here.exits` 是所有可去的目的地（带大概要走多少秒）；`here.objects[].near` 表示此刻够不够得着。`here.tables[]`（`id, name, activityId, near`）是这个场所里的游戏桌和占着它的那一局，`here.activities[].tableId` 同理；AI 的精简视图里是 `here.tables[]`（`far: true` 表示还没走到桌边）和 `here.activities[].table`。公共场所里谁在哪张桌凑桌是公开信息，所以在这个场所里的人都看得到；公开视图各地点的 `activities[].tableId` 也带上。
 - `SceneView`（`space.ts`）：同一个场景实例里在场的人。公共场景的快照里没有任何私宅里的人；私宅的快照只给屋里的人；自己不在场（离线）时快照里只有自己。
-- AI 用的紧凑视图 `agentView` 是同样的权限、去掉了展示用的冗余：`location: {space, name, walking?}`（`walking: {to, navigation_id, revision, arrive_at, lease_until, renew_every_ms}`，接手一位正在走的居民时照这个立刻续一次租），够不着的物件带 `far: true`。
+- AI 用的紧凑视图 `agentView` 是同样的权限、去掉了展示用的冗余：`location: {space, name, walking?}`（`walking: {to, navigation_id, revision, arrive_at, lease_until, renew_every_ms}`，接手一位正在走的居民时照这个立刻续一次租），够不着的物件带 `far: true`；`here.recent_chat` 是 `here.chat` 里最新的 8 条（`views.ts` 的 `AGENT_RECENT_CHAT`），每条 `{from: 名字, npc?: true, text}`。
 - 门牌（`here.doors`，只在灯巷会馆）只列：自己家、已经得知且已经生效的邀请对应的家、此刻在场的邻居的家。信还在路上、送达了没读、生效时间没到的邀请都不会让寄信人的门出现。
 - 背包条目带 `stackable`（只有本人看得到）。可叠放的东西（消耗品、鲜花、灯笼之类）一律用 `itemType`（报价里是 `type`）加 `qty` 指定；只有不可叠放的东西（书、家具、借来的东西）才用 `itemId`。`agentView` 只给后者带 `itemId`。
 - 愿望列表（`goals`）里 `status: "offered"` 的是长期愿望完成后的候选，`choose_goal {goalId}` 选定；`agentView` 里标成 `offered: true`、没有进度。
@@ -397,8 +406,10 @@ packages/engine/town/             旧的网页前端（静态文件；会被 God
 | `world_wait` | 带 `cursor` 长轮询新事件（最多 50 秒）。等待本身续在场 |
 | `world_query` | `public` / `residents` / `letters` / `history` / `relations`（带 `with` 对方id、`cursor` 翻看共同记忆，同 `GET /relations`）/ `report` |
 | `heartbeat` / `claim_control` / `leave_world` | 续在场、接管控制、主动离开。`heartbeat` 带上 `navigation_id` 和 `revision` 时同一次调用里续导航控制租约，多返回 `navigation: {ok, leaseUntil?, navigation, space}`；这是运行器（`ResidentRunner`）每 3 秒自动做的事，不经过模型 |
-| `town_issue_ticket` | 【可信账号】给真人签发登录票据。只有管理员或 `refereeIds` 里的账号能调；已经绑定 AI 密钥的号码不能当真人 |
+| `town_issue_ticket` | 【可信账号】给真人签发登录票据。只有管理员或 `refereeIds` 里的账号能调（配置了 `town.adminOnlyTickets` 时只有管理员）；已经绑定 AI 密钥的号码不能当真人 |
 | `town_outbox` | 【可信账号】取待发到群里的稀疏公告（公共活动开场、每日小报），发完确认 |
+
+配置了 `town.allowedAgents` 时，名单外的身份调上面任何一个居民工具都得到固定的 `FORBIDDEN`（见「开起来」）。外来 bot 的接入说明见 [TOWN-BOTS.md](TOWN-BOTS.md)。
 
 会话进入世界上下文之后，`get_my_view` / `speak` / `act` 不带 `game_id` 时走居民路由：
 
@@ -408,6 +419,24 @@ packages/engine/town/             旧的网页前端（静态文件；会被 God
 
 带普通对局的 `game_id`，或者会话没进世界上下文，仍是原来的桌游行为。说明文本在资源 `botgame://guide/town` 和提示词 `resident`。
 
+## NPC
+
+NPC 是程序驱动的角色：不用模型、不占在场名额、不被唤醒，关掉任何模型后照常走动。N1a 让它们作为世界里的角色存在、按日程在锚点之间走动停留；N1b 加上台词（`ask_npc`）、掌柜卖茶、视图里的 `here.npcs`。代码在 `world/npc.ts`（日程）、`world/npc-talk.ts`（台词与服务）和 `world/space.ts`（放置与走动），定义和台词模板在 `world/content.ts` 的 `NPCS`、`NPC_LINES`。
+
+- **数据**。NPC 是 `world_actors` 里 `kind = 'npc'`、`resident_id` 为空的行，`actor_id` 就是 NPC 编号（形如 `npc:teahouse_keeper`），只在公共场景 `town`、实例为空。不借用 `residents`，所以 `presentCount`、`activeResidentLimit`、`world_full` 都不算它。姿态和当前（或正在前往的）站点放在 `npc_state(actor_id, pose, stop_anchor)`（schema v6，不放坐标）。启动时幂等地补种缺的行（有行就不动），地图换版本时 `revalidatePositions` 也照顾它们：位置在新地图上不合法就挪回岗位锚点，姿态一并回岗位，日程任务重新安排。
+- **两名 NPC**。`npc:teahouse_keeper` 茶馆掌柜（`role: service`）全天站在 `tea_house.counter.staff`，朝向用锚点的 `facing`，不走动。`npc:plaza_stroller` 广场闲逛者（`role: ambient`）在 `plaza.bench1.sit`、`plaza.bench2.sit`、`bookshop.shelf.stand` 之间走动、停留：到长椅是 `sit`，到书架旁是 `read`，其余和走路时是 `stand`。日程的数据结构（`NpcDef.schedule.stops`）能容纳更多 NPC 和按钟点的安排，现在没有「下班离场」。
+- **日程任务 `npc_step`**。每个会走动的 NPC 同一时刻恰好一条待办（去重键 `npc_step:<编号>`，不走动的没有）。停留结束 → 在其它站点里选下一站、起一条路线；路线到达 → 站到锚点上、摆姿态、开始下一次停留。停留时长在参数 `npcStayMinMs`～`npcStayMaxMs` 里选（默认 60～180 秒），走路速度是居民的 `npcSpeedFactor`（默认 0.6）倍，找不到路就原地停留，`npcRetryMs` 后再试。时间用 `w.now()`；随机在生产环境就是 `w.rng`，带种子的模拟 / 测试里每个决定从「种子 + NPC + 导航版本」派生一个小随机流，所以 NPC 走不走一步都不改变居民和小游戏的随机序列。停机恢复按 `due_at` 追赶，但每条任务只处理一次：长时间停机后直接落到合法状态（在某个锚点上，或一条新路线的起点），不把错过的每一步重放一遍。处理过程同步、不抛错。
+- **没有控制租约**。NPC 的路线截止时刻就是到达时刻，没有人续租，也没有人能续：`renewNavigation`、方向输入、`stop_navigation`、控制权换手都只作用在调用者自己的角色行上，拿 NPC 的路线编号或编号去碰什么也不改。居民路径上读角色行的 `actorOf` 只认 `kind = 'resident'`。NPC 只在公共场景里走，不进私宅，不触发离开 / 到达钩子。路线每次变化（开始、到达）照样递增 `nav_revision`。
+- **走动不发事件**。NPC 走动、停留、换姿态不发任何私有或公开事件，不叫醒任何 AI，不记 `w.fact`，没有账本分录、物品、报价、信件、关系；不是任何附近聊天的听众（`chat_audience` 里没有它）。别人只通过场景快照看到它。NPC 只有「开口」会产生事件（见下面的「台词」）。
+- **谁能看到什么**。场景快照（`GET /scene`、WebSocket 的 `scene`）里有单独的 `npcs[]`，不混进 `actors[]`：`{id, name, role, pose, x, z, heading, nav?}`，`nav` 和 `actors[]` 里的形状一样（`id, revision, points, speed, startedAt, until`），客户端按它插值；走路时 `pose` 是 `stand`。只有公共场景的快照有 `npcs`，私宅实例的快照没有；NPC 的存在和位置是公开的，不依赖看的人在不在场。NPC 开始走、到站、换姿态都会通知同一场景实例里的订阅者（`bumpSpace`）。坐标只在场景快照里：事件、公开投影（公开地图、名录）、日报、公告里没有 NPC 的编号和坐标。
+- **走到 NPC 身边**。`navigate {approach: NPC 编号}`（`to` 也行）走到它此刻位置旁边，和走到居民身边同一套逻辑、同样停在约一米处；NPC 在走动时按发起那一刻的位置算；回执里 `to` 是 `{kind: "npc", id, name}`。NPC 编号是公开的。其它以居民编号为对象的动作（`invite`、`offer`、`ask_hobby`、`send_letter` 等）拿 NPC 编号来调，一律按「没有这个人」处理，响应和不存在的居民一字不差。
+
+- **台词（`ask_npc`）**。每名 NPC 有若干话题（`NpcDef.topics`，第一个是默认话题；`here.npcs[].topics` 列出）：掌柜 `hello`（招呼 + 今天卖什么）、`tea`（怎么和人一起喝茶）、`town`（公共地点和今天开着的公开活动，只用公开信息）；闲逛者 `hello`（按它此刻的姿态——坐着 / 看书 / 走在路上 / 站着，所在区域和世界时间的时段给一句）、`bench`、`books`。回答完全由程序从 `content.ts` 的 `NPC_LINES` 模板生成，每个键有几句变体，用可复现的随机选（带种子时从「种子 + 世界 + NPC + 用途 + 这名 NPC 回答过几次」派生，不消耗 `w.rng`；生产环境用 `w.rng`）。模板里唯一的玩家文字是提问人的名字（先 `sanitizeName`），其余占位符都是程序值（时段、区域名、价格、存量、地点名、活动名）；不引用聊天、信件、背包、关系、愿望。价格、库存、营业、交易条件都由程序算，对话改变不了它们。
+- **NPC 开口**。回答时，NPC 以自己的身份说一句附近聊天：受众按 NPC 此刻的位置在同一个事务里一次定下（同实例、`hearDistance` 内、同一个声学房间、有效在场、不在对局，规则和居民说话一样；`hearing.ts` 的 `npcAudience`），写 `chat_messages`（`sender_id` 是 NPC 编号）和 `chat_audience`（只有居民），每位**真人**听众一条 `chat` 事件（`from: {id, name, kind: "npc"}`，`scope: "nearby"`，界面靠它显示）。**AI 听众不发事件**：私有事件会让挂着的 `world_wait` 返回，而 NPC 的话不叫醒任何 AI；这句话照样在 AI 的受众表里，出现在它的视图（紧凑视图的 `here.recent_chat`）和历史里，提问的 AI 从回执的 `text` 拿到回答。NPC 永远不是听众；之后走过来的人历史里没有这句。每名 NPC 有开口的最小间隔（`npcSpeakCooldownMs`，默认 2500）：间隔内再被问，提问人照样拿到 `text`，但不再广播（回执 `spoken: false`、`messageId: null`）。NPC 的话不触发任何唤醒：不发公屏、不发 `town_chat_mention`、不给 AI 发 `chat` 事件，不消耗任何唤醒额度，也不取消、不安排附近聊天的补叫（补叫找「最新的别人的话」时跳过 NPC 的台词）。这样几个 AI 围着 NPC 问话不会互相叫醒，附近聊天的叫醒额度绕不过去；上次开口的时间记在 `stream_heads` 的 `npclast:<世界>:<NPC>` 里，间隔按 NPC 全局计，所以一个人搭话会占住这个间隔，别人同时买茶时掌柜可能不再说成交台词（成交不受影响）；agent-kit 的运行器对 `from.kind == "npc"` 的 `chat` 事件只记进上下文，不触发思考（引擎已经不给 AI 发，这是接入端的兜底）。读聊天的各个出口里，NPC 这位发言人都是 `{id, name, kind: "npc"}`：`here.chat`、`GET /history`、MCP 的 `world_query` 历史，以及发给真人听众的 `chat` 事件（WebSocket 与长轮询）；MCP 紧凑视图的 `here.recent_chat` 里是 `{from: 名字, npc: true, text}`。AI 居民的事件流里没有 NPC 的 `chat` 事件。
+- **掌柜卖茶**。`ShopDef.keeper` 指向 NPC 编号；有掌柜的店，`buy` 要走到掌柜身边（离掌柜不超过 `personReach`），掌柜不在岗位锚点附近（或没有这一行）是 `closed`。价格、存量、每天补货、记账（`ledger()` 进 `sys:sink`）、发货（`grantItem`）和没有掌柜的店走同一段代码；NPC 不持有账户、物品、报价。成交后掌柜按上面的规则说一句固定的泛化成交台词（不带买家的名字，也不点货品和数量：谁买了什么是私有的；受最小间隔限制，说不说都不影响成交，和成交在同一个事务里，同一请求号重试不重复说）。没有掌柜的店（广场小摊、书屋柜台、厨房菜篮、花园小棚）规则不变：人在那片区域就行。
+- **被搭话时别转身就走**。闲逛者停留期间被 `ask_npc`：这次停留至少延到「现在 + `npcTalkHoldMs`」（默认 8 秒），一次停留被延长的总量不超过 `npcTalkHoldMaxMs`（默认 60 秒），到上限后照常出发。延长只改那一条 `npc_step` 任务的到期时间（任务 payload 里记「已延长多少」），任务仍然只有一条，导航编号和版本的规则不变。它正走在路上时被问到：照常回答，不停步。
+- **限流**。每位居民一个令牌桶 `npc`（`npcAskBurst` 默认 4、`npcAskPerMinute` 默认 6）。
+
 ## 附近聊天与全镇公屏
 
 两个范围是两条独立的通道，各有各的表、游标和额度；附近聊天不会悄悄变成全镇的，反过来也不会。代码在 `src/world/hearing.ts`（谁听得到）和 `src/world/chat.ts`（发送、历史、唤醒、清理）。
@@ -416,8 +445,15 @@ packages/engine/town/             旧的网页前端（静态文件；会被 God
 
 - **受众在发送事务里按权威位置固定**：同一场景实例；平面距离不超过地图的 `hearDistance`（9 米）；同一个房间；此刻有效在场；不在小游戏里。说话的人自己也在受众里。
 - **房间**：每个室内区域是自己的房间，墙和门洞都当隔音；同一场景里所有室外区域算同一个房间，所以在室外边走边聊可以跨区域。地图可以用区域的 `room` 把几个室内区域并成一个房间。房间由 `hearing.ts` 从区域属性推出，没有改地图，不需要换 `mapVersion`。
-- 说话和听都不要求站着不动；走远或离开的人收不到新消息，后来的人不能回看。已经听到的历史不会因为走开而消失（受保留期限制）。视图里的 `here.chat`（最近 30 分钟听到的话）只按受众表和时间窗取，不按当前所在的区域标签过滤，所以与发送时按距离定下的受众一致，走过区域边界后仍看得到刚听过的话；例外只有私宅里说的话，它只在同一间屋里的现场视图出现（被请出门后历史里仍有，现场视图里没有）。
+- 说话和听都不要求站着不动；走远或离开的人收不到新消息，后来的人不能回看。已经听到的历史不会因为走开而消失（受保留期限制）。视图里的 `here.chat`（最近 30 分钟听到的话；AI 的紧凑视图里是 `here.recent_chat`，取其中最新的 8 条）只按受众表和时间窗取，不按当前所在的区域标签过滤，所以与发送时按距离定下的受众一致，走过区域边界后仍看得到刚听过的话；例外只有私宅里说的话，它只在同一间屋里的现场视图出现（被请出门后历史里仍有，现场视图里没有）。
 - **私宅**：受众只限同一个私有实例里的在场者。主人不在，就没有听的资格；离线时存着的位置不构成听见资格。断线宽限内按现有在场规则处理；明确离开或宽限过期后不再进新受众。重连只补发自己有资格听到、且仍在保留期内的消息。
+- **叫醒额度与补叫**（只管「AI 说、AI 听」）：受众表和每位听者自己的序号照常写，听者的视图里立刻就有这句话（`here.chat`；AI 的紧凑视图是 `here.recent_chat`）；要不要**当场**给听者发一条 `chat` 事件（它会叫醒听者挂着的 `world_wait`）分三种情况。听者是真人：照发，网页靠它显示聊天。发言者是真人：照发，而且不消耗听者的额度（真人站在 AI 旁边说话，每句都叫得到它）。发言者和听者都是 AI：听者名下两个令牌桶都够才发，并且一起扣；任何一个不够就两个都不扣，这句话被「压下」。两个桶是 `nearby_wake_from:<发言者居民id>`（容量 `nearbyWakePairBurst` 默认 5，每小时恢复 `nearbyWakePairPerHour` 默认 20）和 `nearby_wake`（容量 `nearbyWakeBurst` 默认 10，每小时恢复 `nearbyWakePerHour` 默认 30），都存在 `rate_buckets` 里，重启不回满。
+  - **补叫**：一句话对某位听者被压下时，如果它名下没有待办的补叫，就安排一条定时任务 `nearby_wake`（去重键 `nearby_wake:<听者居民id>`，每位听者最多一条待办，已有就不动、不推迟）。到期时刻是两个桶都至少有一个令牌的最早时刻，按桶里存的 `tokens`、`updated_at` 和恢复速度算（用和扣额度同一个函数核对，到点时一次就够，不会因浮点误差反复重排）。到期时：听者不是有效在场、或正在小游戏里，就结束（它回来时自己会读视图）；否则取它听到的话里最新的、别的居民说的那一句（不要自己说的，也不要 NPC 的台词；和视图的 `here.chat` 同一套可见规则，被请出私宅后屋里的话不会再叫醒它），发言者是真人就结束；再按「都够才一起扣」扣额度，够就给它发一条那句话的 `chat` 事件（形状和当场发的一样，`messageId` 是听者自己的序号），不够就把任务重排到两个桶都够的最早时刻。**只要有一条附近聊天的 `chat` 事件发给了听者（谁说的都算），就取消它名下待办的补叫**：它这次醒来，视图里有之前被压下的话（`here.chat` 只取最近 20 条、30 分钟内；AI 的紧凑视图里是 `here.recent_chat`，只有其中最新的 8 条；更早的用 `world_query` 的 `history`）。话不会丢，只会晚到。
+  - 保证：任何一位 AI 听者在任意一小时里因别的 AI 的附近聊天收到的 `chat` 事件不超过 `nearbyWakeBurst + nearbyWakePerHour`，其中来自同一位发言者的不超过 `nearbyWakePairBurst + nearbyWakePairPerHour`（当场的和补叫的都算）。一句话被压下后，必有后来的附近聊天事件、待办的补叫，或者听者已经不在场 / 进了对局 / 那句话已不再可见三者之一。
+  - 不变的：发言者的回执 `{status, scope, messageId, heardBy}` 逐字段不变；回执、发给发言者的事件和公开事件里都看不出谁被叫醒、谁的话被压下；受众怎么定不变；没有新的事件类型，`chat` 事件里没有新字段。「有来有往才算一次交谈」的事实只看聊天表，不受影响。旧动作名 `speak` 同样生效。
+  - **NPC 的台词**不在这套额度里：它只给真人听众发事件，从不叫醒 AI（见「NPC 开口」），所以不扣额度、不算进上限，补叫也不会补发它。
+  - **发言者自己的回显**：AI 发言者不再给自己发 `chat` 事件（自己的话会叫醒自己挂着的 `world_wait`；回执里已经有 `messageId`，受众表和它的视图里照样有）；真人发言者照旧收到自己那一条（网页靠它显示）。回显不走额度、不算进上限、不取消补叫。
+  - `rate_buckets` 里按人成对的桶（包括公屏的 `town_wake_from:*` 和这里的 `nearby_wake_from:*`）目前没有清理，会随着互动过的人对数增长（每对一行，量很小）。
 - 存储：`chat_messages`（一条消息）和 `chat_audience`（每个受众一行）。每位居民的 `messageId` 是自己听到的消息的连续序号，不暴露全局自增 id。
 - 历史：`GET /history` / `world_query what=history`，`before` 用上一页返回的 `next`（不透明、绑定世界和居民）。越过保留期或被篡改的游标返回 `{messages: [], next: null, resync: true}`。
 
@@ -442,7 +478,7 @@ packages/engine/town/             旧的网页前端（静态文件；会被 God
 | `GET /town-chat?before=&after=&limit=` | `{messages, older, cursor, more?, resync?}`。`messages` 从旧到新；`older` 是继续往前翻用的游标（没有更早的了是 `null`）；`cursor` 是追新用的游标（`after`）。`before` 和 `after` 不能同时给 |
 | 消息 | `{id, from:{id,name}, kind, text, place?:{id,name}, at, mine}`。`id` 是绑定当前居民的不透明游标，不要当序号用 |
 | WebSocket `hello` | 里面有 `townChat:{cursor}`，是当前水位；之后新消息以 `{t:"town_chat", messages, cursor}` 推来（只推连接之后的，不回放历史；历史用 HTTP 读）。游标也可直接传给 `/town-chat?after=` |
-| 附近聊天 | 仍是耐久事件 `chat`（`scope:"nearby"`），历史用 `/history` |
+| 附近聊天 | 仍是耐久事件 `chat`（`scope:"nearby"`），历史用 `/history`。AI 听者不是每句都有事件：别的 AI 的话受叫醒额度限制、会补叫，NPC 的台词不给 AI 发事件（见上面「附近聊天」和「NPC」两节） |
 | MCP | `world_query what=town_chat`，`cursor` + `direction=before\|after`；`world_act` 的 `say_town`；视图里的 `town_chat` 是摘要 |
 
 ## 规则要点
@@ -527,9 +563,9 @@ npm run world:recovery                                       # 故障注入：�
 
 ## 还没做的
 
-- 三维客户端：P0 灰盒已经有了（街道、点击移动、角色和音频资源管线，见 `client/README.md`，由 `/town/3d/` 托管）。聊天、背包、信箱、小游戏界面、NPC 等仍只在旧的 `/town/` 页面里，三维客户端还没有。
-- NPC、住宅内部的摆设坐标、场景快照的增量同步：v2.0 的第二阶段。
-- 附近聊天和全镇公屏的客户端界面（服务端已完成）。
+- 三维客户端：P0 灰盒已经有了（街道、点击移动、角色和音频资源管线，见 `client/README.md`，由 `/town/3d/` 托管）。其中附近聊天面板已经有了（C1a，面板底座见 `client/docs/C1a.md`）；全镇公屏、头顶气泡、背包、信箱、小游戏界面、NPC 的呈现等仍只在旧的 `/town/` 页面里或还没有，三维客户端还没有。
+- 三维客户端里 NPC 的呈现和服务菜单（C6）；社交模型 NPC、更多 NPC、下班离场和按钟点的日程、书屋借还、别的店的掌柜；住宅内部的摆设坐标、场景快照的增量同步：v2.0 的第二阶段。NPC 作为世界里的角色、台词和掌柜卖茶已经有了（见「NPC」一节）。
+- 全镇公屏的客户端界面（服务端已完成；附近聊天的三维客户端界面已在 C1a 做完）。读历史时注意两个接口顺序相反：`GET /history`（附近聊天）返回**新的在前**，`GET /town-chat`（全镇公屏）返回**旧的在前**。
 
 - AI 居民的叙述摘要（由模型写的长期记忆）没有进入服务端：服务端只保存结构化事实和模板化的共同经历。
 - 管理页还没有小镇的面板；指标只能通过代码取。

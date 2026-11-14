@@ -75,6 +75,8 @@ export function createRuntime(config: BotGameConfig, log: (msg: string) => void 
       })
     : undefined;
   if (world) {
+    if (config.town.allowedAgents) log(`栖灯镇准入名单已启用：${config.town.allowedAgents.length} 个身份可以经 MCP 进镇`);
+    if (config.town.adminOnlyTickets) log('栖灯镇的真人登录票据只有管理员能签');
     if (config.town.devLogin) log('⚠️  栖灯镇开了本机试玩登录（town.devLogin）：任何人输入名字就能进入，只应用于本机或可信内网！');
     // 启动恢复：按停机前的检查点追赶到期事务；完成前小镇的写接口返回 recovering
     void world.start().then(

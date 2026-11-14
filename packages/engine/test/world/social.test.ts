@@ -7,7 +7,7 @@ import { EMBEDDED_GAMES, GOALS, INTERACTIONS, type GoalDef } from '../../src/wor
 import { effectivePresentMs } from '../../src/world/life.js';
 import { goalsOf, relationLevel, relationsOf, titlesOf } from '../../src/world/social.js';
 import { directory } from '../../src/world/views.js';
-import { Actor, makeTown, tempDb, type Town, type TownOpts } from './helpers.js';
+import { Actor, KEEPER, makeTown, tempDb, type Town, type TownOpts } from './helpers.js';
 import { checkInvariants } from './invariants.js';
 
 const MIN = 60_000;
@@ -367,8 +367,9 @@ describe('关系：结构化事实驱动', () => {
     const a = t.join('阿灯');
     const b = t.join('小岚', 'agent');
     gather('tea_house', a, b);
-    near('tea_house:table1', a, b);
+    a.go(KEEPER);
     a.act('buy', { shop: 'tea_counter', sku: 'tea_leaves', qty: 3 });
+    near('tea_house:table1', a, b);
     for (let i = 0; i < 5; i++) {
       const ix = a.act('start_interaction', { objectId: 'tea_house:table1', wait: true }).interaction;
       b.act('join_interaction', { interactionId: ix.id });
@@ -927,8 +928,9 @@ describe('防刷：两个居民互相刷', () => {
     const a = t.join('阿灯', 'human', { interests: ['tea'] });
     const b = t.join('小岚', 'agent', { interests: ['tea'] });
     gather('tea_house', a, b);
-    near('tea_house:table1', a, b);
+    a.go(KEEPER);
     a.act('buy', { shop: 'tea_counter', sku: 'tea_leaves', qty: 5 });
+    near('tea_house:table1', a, b);
     const coins0 = a.coins() + b.coins();
     // 交谈刷屏
     for (let i = 0; i < 20; i++) {
@@ -964,7 +966,11 @@ describe('防刷：两个居民互相刷', () => {
       a.act('begin_interaction', { interactionId: ix.id });
       t.advanceAlive(10 * MIN + 2000, [a, b]);
       social.push(a.view().me.needs.social - before);
-      if (i === 4) a.act('buy', { shop: 'tea_counter', sku: 'tea_leaves', qty: 5 });
+      if (i === 4) {
+        a.go(KEEPER);
+        a.act('buy', { shop: 'tea_counter', sku: 'tea_leaves', qty: 5 });
+        a.go('tea_house:table1');
+      }
     }
     // 关系：交谈 3 次(+3)、礼物类 1(同种往返)+1(硬币往返)=2 次(+2)、问爱好 3 次(+6)、喝茶 3 次(+6)
     const r = rel(t, a, b)!;
@@ -985,8 +991,9 @@ describe('防刷：两个居民互相刷', () => {
     const a = t.join('阿灯');
     const b = t.join('小岚', 'agent');
     gather('tea_house', a, b);
-    near('tea_house:table1', a, b);
+    a.go(KEEPER);
     a.act('buy', { shop: 'tea_counter', sku: 'tea_leaves', qty: 6 });
+    near('tea_house:table1', a, b);
     const coins0 = a.coins() + b.coins();
     for (let i = 0; i < 6; i++) {
       const ix = a.act('start_interaction', { objectId: 'tea_house:table1', wait: true }).interaction;

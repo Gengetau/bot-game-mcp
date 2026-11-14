@@ -6,6 +6,9 @@
  *   npm run client:e2e      # 起引擎（子进程、开发登录、临时库、随机端口）+ 两个浏览器上下文 + 一个 AI 居民
  *
  * 选项：--no-shots 不写截图；--only=3,4 只跑指定步骤（步骤之间有先后依赖，只用于调试）；--keep-engine-log 失败时不删临时目录。
+ * 新步骤文件在 scripts/e2e/steps/（写法和号段见那里的 README.md）：--only=chat-nearby（meta.id）或 --only=20（落在 [n, n+10) 的数字）只跑这个文件，
+ * 命中后整个文件的所有子步骤都运行；--list 列出全部新步骤后退出。--until=60.17 编号大于它的步骤都跳过（调试、反向验证用：
+ * 只想看到某一步为止的结果时，不必把这个文件后面的步骤连同它们的超时都等完；和 --only 一样，这样的一遍不算验收记录）。
  * 反向验证：E2E_AI_NO_RENEW=1 npx tsx scripts/client-e2e.mjs --only=1,8 --no-shots（步骤 8 里让 AI 的端口没有续租方法，运行器不续租，这一步应当失败）。
  * 退出码：全部通过为 0；任何步骤失败、控制台错误、页面错误、CSP 违规、请求失败都算失败（非零）。
  * 结果写到 client/demo/results.json，截图写到 client/demo/NN-说明.jpg（手机 deviceScaleFactor 2，桌面 1）。
@@ -21,11 +24,11 @@
  */
 import { spawn, execFileSync } from 'node:child_process';
 import { createRequire } from 'node:module';
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { randomBytes } from 'node:crypto';
 
 const ROOT = resolve(fileURLToPath(new URL('..', import.meta.url)));
@@ -35,7 +38,11 @@ const ARGS = process.argv.slice(2);
 const NO_SHOTS = ARGS.includes('--no-shots');
 const KEEP = ARGS.includes('--keep-engine-log');
 const AI_NO_RENEW = process.env.E2E_AI_NO_RENEW === '1'; // 反向验证用：步骤 8 里让端口没有 renewNavigation，运行器就不续租，这一步应当失败
-const ONLY = (ARGS.find((a) => a.startsWith('--only=')) ?? '').slice(7).split(',').filter(Boolean).map(Number);
+const ONLY_RAW = (ARGS.find((a) => a.startsWith('--only=')) ?? '').slice(7).split(',').filter(Boolean);
+const ONLY = ONLY_RAW.map(Number); // 非数字变 NaN：ONLY.length 仍为真，所以旧步骤全部跳过（保持原行为）
+const ONLY_IDS = ONLY_RAW.filter((x) => Number.isNaN(Number(x))); // 新步骤文件的 meta.id（如 chat-nearby）
+const UNTIL = Number((ARGS.find((a) => a.startsWith('--until=')) ?? '').slice(8) || NaN); // 编号大于它的步骤都跳过；没给就是 NaN
+const LIST = ARGS.includes('--list');
 const T_POS = 0.6; // 页面里的位置 与 服务器折线现算位置 的容差（米）
 // 页面的服务器时间估计与服务器真实时间的容差（毫秒）。页面的 serverNow 一秒内只在 Godot 帧里写进 __town（软件渲染约 3~7 帧每秒，
 // 最旧约 300 毫秒），脚本用「值变化的那一刻」去对齐，剩下的是时钟估计本身的误差；走路速度 2.4 米每秒，400 毫秒约 1 米。
@@ -43,6 +50,32 @@ const T_CLOCK_MS = 400;
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const rnd = () => randomBytes(3).toString('hex');
+
+// ───────────────────────── 新步骤文件（scripts/e2e/steps/*.mjs，写法见那里的 README.md）─────────────────────────
+
+const STEPS_DIR = join(ROOT, 'scripts', 'e2e', 'steps');
+/** 读全部步骤文件（按文件名排序）；id 或 n 重复就抛错，免得两个人的步骤互相覆盖。 */
+async function loadStepFiles() {
+  if (!existsSync(STEPS_DIR)) return [];
+  const mods = [];
+  const ids = new Map();
+  const ns = new Map();
+  for (const f of readdirSync(STEPS_DIR).filter((x) => x.endsWith('.mjs')).sort()) {
+    const m = await import(pathToFileURL(join(STEPS_DIR, f)).href);
+    if (!m.meta || typeof m.default !== 'function') throw new Error(`步骤文件 ${f} 必须导出 meta 和 default 函数`);
+    const { id, n } = m.meta;
+    if (ids.has(id)) throw new Error(`步骤文件 ${f} 的 meta.id「${id}」与 ${ids.get(id)} 重复`);
+    if (ns.has(n)) throw new Error(`步骤文件 ${f} 的 meta.n ${n} 与 ${ns.get(n)} 重复`);
+    ids.set(id, f);
+    ns.set(n, f);
+    mods.push({ file: f, meta: m.meta, run: m.default });
+  }
+  return mods;
+}
+if (LIST) {
+  for (const m of await loadStepFiles()) console.log(`${m.meta.n}\t${m.meta.id}\t${m.meta.title}\t${m.file}`);
+  process.exit(0);
+}
 
 // ───────────────────────── 前置检查 ─────────────────────────
 
@@ -81,6 +114,14 @@ const browsers = [];
 const TMP = mkdtempSync(join(tmpdir(), 'town-client-e2e-'));
 const SHOT_TMP = join(TMP, 'shots'); // 截图先写这里，全部通过后才搬进 client/demo/
 const AI_KEY = `bgk_e2e_${rnd()}${rnd()}${rnd()}`;
+/**
+ * 引擎的小镇参数（开服配置）。浏览器端到端不能真等十分钟，所以把几个「等」缩短；步骤文件通过 h.townParams 读它，按参数算等待，不写死秒数。
+ *  - interactionTimeScale 0.075：600 秒的共同活动约 45 秒、300 秒的约 23 秒。再短，软件渲染下（一帧可能 0.3 到 1 秒）来不及断言「进行中」的界面；再长，拖慢整遍。
+ *  - letterDeliveryDelayMs 4000：信 4 秒进信箱（默认 60 秒）。
+ *  - activityLobbyTtlMs 25000：小游戏 / 共同活动开了桌没人来，25 秒后自动散（默认 10 分钟）。旧步骤不凑桌；凑人的步骤要在 25 秒内完成「开桌 + 加入」。
+ * 旧的 1 到 15 步里只有步骤 6 开了一次读书（马上点「停下」），不依赖时长；其余步骤不涉及信件和报名。
+ */
+const TOWN_PARAMS = Object.freeze({ interactionTimeScale: 0.075, letterDeliveryDelayMs: 4000, activityLobbyTtlMs: 25_000 });
 let engine = null;
 const engineTail = [];
 let BASE = '';
@@ -95,7 +136,7 @@ async function startEngine() {
     stateFile: null,
     seed: 'client-e2e',
     auth: { mode: 'keys', adminKeys: [], agents: [{ key: AI_KEY, id: '9001', name: '灯灯' }] },
-    town: { enabled: true, dbFile: join(TMP, 'town.db'), devLogin: true, clientDir: CLIENT_DIR },
+    town: { enabled: true, dbFile: join(TMP, 'town.db'), devLogin: true, clientDir: CLIENT_DIR, params: { ...TOWN_PARAMS } },
   };
   const cfgFile = join(TMP, 'engine.json');
   writeFileSync(cfgFile, JSON.stringify(cfg));
@@ -209,8 +250,10 @@ async function noteFrameStats() {
   }
   if (rows.length) note(`最长帧间隔：${rows.join('；')}`);
 }
+let fileSelected = false; // 正在跑的新步骤文件被 --only 选中：它的所有子步骤都运行
 async function step(n, title, fn) {
-  if (ONLY.length && !ONLY.includes(n)) return;
+  if (ONLY.length && !ONLY.includes(n) && !fileSelected) return;
+  if (Number.isFinite(UNTIL) && n > UNTIL) return;
   current = { n, title, ok: false, ms: 0, notes: [] };
   notes.length = 0;
   const t0 = Date.now();
@@ -225,6 +268,10 @@ async function step(n, title, fn) {
     for (const p of [A, B, A2, A3, ...extra].filter(Boolean)) p.w.allow = [];
     current.error = e instanceof Error ? e.message : String(e);
     console.log(`  ✗ 步骤 ${n} 失败：${current.error}`);
+    // 步骤半路失败时可能还按着方向键（角色会一直走下去，把后面的步骤也带红）：都松开。没按着的键松开是空操作
+    for (const p of [A, B, A2, A3, ...extra].filter(Boolean)) {
+      for (const key of ['w', 'a', 's', 'd', 'ArrowUp', 'ArrowLeft', 'ArrowDown', 'ArrowRight']) await p.page.keyboard.up(key).catch(() => {});
+    }
   }
   current.ms = Date.now() - t0;
   await noteFrameStats();
@@ -368,9 +415,9 @@ async function newPlayer(browser, label, ctxOpts, { wsGate = false } = {}) {
   return { ctx, page, w, label, touch: !!ctxOpts.hasTouch, gate, name: null };
 }
 
-async function login(p, name, { shotEnter } = {}) {
+async function login(p, name, { shotEnter, query = '' } = {}) {
   const t0 = Date.now();
-  await p.page.goto(`${BASE}/town/3d/?debug=1`);
+  await p.page.goto(`${BASE}/town/3d/?debug=1${query}`); // query：新步骤用（如 &hour=19.5 固定傍晚）
   await p.page.waitForSelector('#enterBtn:not([hidden])', { timeout: 120_000 });
   const tButton = Date.now() - t0;
   if (shotEnter) await shot(p.page, shotEnter);
@@ -420,24 +467,38 @@ const snap = (page) =>
 const viewport = (page) => page.evaluate(() => ({ w: window.innerWidth, h: window.innerHeight }));
 const project = (page, x, z) => page.evaluate(([x, z]) => window.__town.project(x, 0, z), [x, z]);
 
-/** 点在页面里的世界坐标上（鼠标或触摸）。目标不在可点区域内就沿着自己到目标的连线往回缩，直到点得到。 */
-async function clickWorld(p, x, z) {
-  const s = await snap(p.page);
-  const me = s.actors.find((a) => a.id === s.self);
+/**
+ * 点在页面里的世界坐标上（鼠标或触摸）。目标不在可点区域内就沿着自己到目标的连线往回缩，直到点得到。
+ *
+ * 投影和往回缩在页面里对着同一份 window.__town 一次算完（自己的位置和投影矩阵来自 Godot 的同一帧）。
+ * 以前是先取一次自己的位置，再一趟趟往返页面去投影：自己正按着方向键走路时镜头每帧都在跟，
+ * 软件渲染下一趟往返约一帧（0.25 秒，够走 1 米），先取到的位置越来越旧，每缩一步都追不上镜头，
+ * 机器一忙就报「投影不到可点区域」（步骤 4.5 的「按着 D 时点地」，目标本来就贴着屏幕左缘）。
+ */
+async function clickWorld(p, x, z, opts = {}) {
   const vp = await viewport(p.page);
-  const ok = (q) => q.x > 24 && q.x < vp.w - 24 && q.y > 100 && q.y < vp.h - 170;
-  let k = 1;
-  let q = await project(p.page, x, z);
-  while (!ok(q) && k > 0.05) {
-    k -= 0.05;
-    q = await project(p.page, me.x + (x - me.x) * k, me.z + (z - me.z) * k);
-  }
-  if (!ok(q)) {
-    // 连自己脚边都点不到：把镜头和投影的现状写进报错里，否则只能猜
-    const mq = await project(p.page, me.x, me.z);
-    const cam = await p.page.evaluate(() => ({ zoom: window.__town.zoom ?? null, rect: window.__town.canvasRect, phase: window.__town.phase ?? null }));
-    check(false, `世界点 (${x},${z}) 投影不到可点区域：自己在 (${me.x.toFixed(2)},${me.z.toFixed(2)}) 投影 (${mq.x.toFixed(0)},${mq.y.toFixed(0)})，视口 ${vp.w}×${vp.h}，${JSON.stringify(cam)}`);
-  }
+  // opts.avoidDock（新步骤用）：面板开着时，点位还要避开没被面板盖住的矩形以外的地方（桌面侧栏在右、手机抽屉在下）
+  const fr = opts.avoidDock ? await p.page.evaluate(() => (window.TownDock?.freeRect ? window.TownDock.freeRect() : null)) : null;
+  const r = await p.page.evaluate(
+    ([x, z, vp, fr]) => {
+      const t = window.__town;
+      const self = t.actors.find((a) => a.id === t.self);
+      const me = { x: self.x, z: self.z };
+      const ok = (q) => q.x > 24 && q.x < vp.w - 24 && q.y > 100 && q.y < vp.h - 170 && (!fr || (q.x < fr.r - 24 && q.y < fr.b - 24 && q.x > fr.l + 24));
+      let k = 1;
+      let q = t.project(x, 0, z);
+      while (!ok(q) && k > 0.05) {
+        k -= 0.05;
+        q = t.project(me.x + (x - me.x) * k, 0, me.z + (z - me.z) * k);
+      }
+      const mq = t.project(me.x, 0, me.z);
+      return { ok: ok(q), k, q: { x: q.x, y: q.y }, me, mq: { x: mq.x, y: mq.y }, cam: { zoom: t.zoom ?? null, rect: t.canvasRect, phase: t.phase ?? null } };
+    },
+    [x, z, vp, fr],
+  );
+  const { me, q, k } = r;
+  // 连自己脚边都点不到：把镜头和投影的现状写进报错里，否则只能猜
+  if (!r.ok) check(false, `世界点 (${x},${z}) 投影不到可点区域：自己在 (${me.x.toFixed(2)},${me.z.toFixed(2)}) 投影 (${r.mq.x.toFixed(0)},${r.mq.y.toFixed(0)})，视口 ${vp.w}×${vp.h}，${JSON.stringify(r.cam)}`);
   if (p.touch) await p.page.touchscreen.tap(q.x, q.y);
   else await p.page.mouse.click(q.x, q.y);
   return { x: me.x + (x - me.x) * k, z: me.z + (z - me.z) * k, px: q };
@@ -527,11 +588,11 @@ function polyAt(nav, t) {
 const dist = (a, b) => Math.hypot(a.x - b.x, a.z - b.z);
 
 /** 分几段走到 (x,z)：每一段点视野内能点到的点（clickWorld 会缩回），等服务器里走完再点下一段。 */
-async function walkTo(p, x, z, tol = 0.8) {
+async function walkTo(p, x, z, tol = 0.8, opts = {}) {
   for (let hop = 0; hop < 10; hop++) {
     const me = selfActor(await serverScene(p));
     if (dist(me, { x, z }) < tol) return me;
-    await clickWorld(p, x, z);
+    await clickWorld(p, x, z, opts);
     // 点的地方离得太近时服务器当场就算走完，没有导航：回头重新量距离
     const started = await until(async () => selfActor(await serverScene(p))?.nav, 5000, '开始走', 250).catch(() => null);
     if (!started) continue;
@@ -566,6 +627,97 @@ let aiClient = null;
 let runner = null;
 let aiId = null;
 const metrics = { versions: {}, bundle: [], load: {} };
+const finishedWatches = []; // release 过的页面的监视记录：最后的全程检查仍统计它们的问题
+
+/** 新步骤文件用的一对新页面：桌面 1440x900 DSF 1（A）+ 手机 390x844 DSF 2 触摸（B），都带 wsGate，名字随机，登录好并互相看见。 */
+async function pair() {
+  const a = await newPlayer(browsers[0], 'N-A 桌面', { viewport: { width: 1440, height: 900 }, deviceScaleFactor: 1 }, { wsGate: true }); // 桌面 DSF 必须是 1：DSF 2 会把软件渲染拖到 1~2 帧每秒
+  const b = await newPlayer(browsers[1], 'N-B 手机', { viewport: { width: 390, height: 844 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true }, { wsGate: true });
+  extra.push(a, b);
+  await Promise.all([login(a, `阿桌${rnd()}`), login(b, `阿机${rnd()}`)]);
+  a.id = (await snap(a.page)).self;
+  b.id = (await snap(b.page)).self;
+  await until(async () => (await snap(a.page)).actors.some((x) => x.id === b.id) && (await snap(b.page)).actors.some((x) => x.id === a.id), 20_000, '新的一对页面互相看到对方');
+  return { A: a, B: b };
+}
+
+/**
+ * 让一个页面的居民离开并关掉页面：先带它自己的 clientId POST /leave（只关上下文不会让居民下线，在场租约 60 秒，
+ * 会继续被后面的步骤当成「附近的人」听见），再关上下文。它的监视记录并入 finishedWatches，最后的全程检查仍统计。
+ */
+async function release(p) {
+  if (!p) return;
+  try {
+    const cid = await p.page.evaluate(() => window.TownHud.clientId());
+    await p.ctx.request.post(`${BASE}/town/api/leave`, { data: { clientId: cid } });
+  } catch {
+    /* 空白页面（--only 单跑时旧的 A、B 没登录过）或已关闭：没有居民可离开 */
+  }
+  try {
+    const v = await p.page.evaluate(() => window.__csp ?? []);
+    if (v.length) {
+      p.w.problems.push(`CSP 违规事件：${v.join('; ')}`);
+      p.w.csp += v.length;
+    }
+  } catch {
+    /* 页面已关 */
+  }
+  p.w.closing = true;
+  const shared = A && p !== A && p.ctx === A.ctx; // A2、A3 是 A 的上下文里的第二、三个标签页：只关页面
+  if (shared) await p.page.close().catch(() => {});
+  else await p.ctx.close().catch(() => {});
+  if (!finishedWatches.includes(p.w)) finishedWatches.push(p.w);
+  const i = extra.indexOf(p);
+  if (i >= 0) extra.splice(i, 1);
+  if (p === A) A = null;
+  if (p === B) B = null;
+  if (p === A2) A2 = null;
+  if (p === A3) A3 = null;
+}
+
+/** 新步骤文件的入口：在步骤 15 之后、全程检查之前执行。 */
+async function runStepFiles(hh) {
+  const mods = await loadStepFiles();
+  const sel = mods.filter((m) => !ONLY.length || ONLY_IDS.includes(m.meta.id) || ONLY.some((x) => Number.isFinite(x) && x >= m.meta.n && x < m.meta.n + 10));
+  if (!sel.length) return;
+  // 清场：旧的页面和 AI 居民还在镇上，同出生点，会污染 heardBy 与「恰好一条」的断言
+  for (const p of [A2, A3, ...extra, A, B].filter(Boolean)) await release(p);
+  try {
+    await runner?.stop();
+    await aiClient?.close();
+  } catch {
+    /* 忽略 */
+  }
+  runner = null;
+  aiClient = null;
+  for (const m of sel) {
+    fileSelected = ONLY.length > 0;
+    console.log(`\n── 步骤文件 ${m.file}（${m.meta.title}）──`);
+    try {
+      await m.run(hh);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      console.log(`  ✗ 步骤文件 ${m.file} 出错：${msg}`);
+      results.push({ n: m.meta.n, title: `${m.meta.title}（步骤文件出错）`, ok: false, ms: 0, error: msg, notes: [] });
+    } finally {
+      fileSelected = false;
+    }
+  }
+}
+
+/** 传给新步骤文件的工具集（转发现有函数；旧步骤不搬、不抽 harness）。 */
+const h = {
+  step, until, sleep, check, note, shot, allowFailure, newPlayer, login, serverScene, snap, clickWorld, walkTo, rnd, browsers,
+  selfActor, dist, project, viewport, seen, clearSpot, assertClock, polyAt, normPts, T_POS, T_CLOCK_MS,
+  get BASE() {
+    return BASE;
+  },
+  get NO_SHOTS() {
+    return NO_SHOTS;
+  },
+  townParams: TOWN_PARAMS,
+  pair, release,
+};
 
 async function main() {
   console.log(`栖灯镇客户端端到端：临时目录 ${TMP}`);
@@ -582,7 +734,7 @@ async function main() {
   } catch {
     metrics.versions.godot = '（本机没有 Godot 可执行文件，未取到版本）';
   }
-  for (const f of ['index.wasm', 'index.pck', 'index.js']) {
+  for (const f of ['index.wasm', 'index.pck', 'index.js', 'town-modules.js', 'town-modules.css'].filter((x) => existsSync(join(CLIENT_DIR, x)))) {
     const raw = statSync(join(CLIENT_DIR, f)).size;
     const gz = existsSync(join(CLIENT_DIR, `${f}.gz`)) ? statSync(join(CLIENT_DIR, `${f}.gz`)).size : null;
     const br = existsSync(join(CLIENT_DIR, `${f}.br`)) ? statSync(join(CLIENT_DIR, `${f}.br`)).size : null;
@@ -882,7 +1034,14 @@ async function main() {
       const lp = normPts(longNav.points);
       const lastP = lp[lp.length - 1];
       const stillLong = await navNow();
-      check(dist(lastP, clicked) < 3 && dist(lp[0], c1) > 1.0 && (!stillLong || stillLong.id === longNav.id), `点地之后应沿点地路线走，不能被还按着的 D 盖回去：终点 (${lastP.x.toFixed(1)}, ${lastP.z.toFixed(1)})，走了 ${dist(c0, c1).toFixed(2)} 米，折线 ${JSON.stringify(lp)}，起点 (${c0.x.toFixed(1)}, ${c0.z.toFixed(1)}) 现在 (${c1.x.toFixed(1)}, ${c1.z.toFixed(1)})`);
+      // 终点以客户端实际发给服务器的目标点为准（和步骤 4 一样）：人按着 D 在走，镜头每帧都在跟，从算出点位到鼠标落下之间
+      // 屏幕下的世界点会往东漂一截（一两帧，软件渲染下 1 到 3 米），拿 clickWorld 估的点去比会把这截漂移算成路线不对
+      const sentNav = [...A.w.actions.slice(act0)].reverse().find((r) => r.type === 'navigate' && r.to && typeof r.to === 'object');
+      check(sentNav, `第 ${round} 遍：点地之后没有记录到带目标点的 navigate：${JSON.stringify(A.w.actions.slice(act0))}`);
+      const goal = { x: sentNav.to.x, z: sentNav.to.z };
+      note(`第 ${round} 遍：客户端实际发出的目标 (${goal.x.toFixed(2)}, ${goal.z.toFixed(2)})，离估算的点击点 ${dist(goal, clicked).toFixed(2)} 米；路线终点离目标 ${dist(lastP, goal).toFixed(2)} 米`);
+      check(goal.x < c0.x - 4 && dist(goal, clicked) < 6, `第 ${round} 遍：点的是西边约 12 米处，客户端发出的目标却是 (${goal.x.toFixed(2)}, ${goal.z.toFixed(2)})（按下时自己在 x=${c0.x.toFixed(2)}，估算的点击点 (${clicked.x.toFixed(2)}, ${clicked.z.toFixed(2)})）`);
+      check(dist(lastP, goal) < 1.0 && dist(lp[0], c1) > 1.0 && (!stillLong || stillLong.id === longNav.id), `点地之后应沿点地路线走，不能被还按着的 D 盖回去：终点 (${lastP.x.toFixed(1)}, ${lastP.z.toFixed(1)})，走了 ${dist(c0, c1).toFixed(2)} 米，折线 ${JSON.stringify(lp)}，起点 (${c0.x.toFixed(1)}, ${c0.z.toFixed(1)}) 现在 (${c1.x.toFixed(1)}, ${c1.z.toFixed(1)})`);
       await A.page.keyboard.up('d');
       await sleep(500);
       check(await navNow(), `松开 D 不应取消点地路线；点地后页面又发了方向帧：${A.gate.dirFrames.slice(fr0).join(' ')}；动作 ${JSON.stringify(A.w.actions.slice(-3))}`);
@@ -1441,8 +1600,40 @@ async function main() {
   });
 
   // ── 15 ──
+  const snd = (p) => p.page.evaluate(() => (window.__town ? window.__town.snd : null));
+  // 等音乐的几处共用：超时的时候把当时的声音状态一起报出来（两首音乐的 loaded/playing/gain、night、hour、enabled、busDb、vol，
+  // 以及音频代码里「取文件」的状态 musicFetch：正在取、第几次、结果码、HTTP 码、字节数、耗时、是否在等重试）
+  const musicState = (x) =>
+    x
+      ? JSON.stringify({
+          night: x.night,
+          hour: x.hour,
+          enabled: x.enabled,
+          hidden: x.hidden,
+          bgMute: x.bgMute,
+          busDb: x.busDb,
+          vol: x.vol,
+          music_day: x.layers.music_day,
+          music_night: x.layers.music_night,
+          musicTried: x.musicTried,
+          musicFetch: x.musicFetch,
+          ticksMs: x.ticksMs,
+        })
+      : 'null';
+  const untilMusic = async (C_, fn, ms, what, every) => {
+    try {
+      return await until(fn, ms, what, every);
+    } catch (e) {
+      let st;
+      try {
+        st = musicState(await snd(C_));
+      } catch (e2) {
+        st = `读声音状态失败：${e2.message}`;
+      }
+      throw new Error(`${e.message}；当时的声音状态 ${st}`);
+    }
+  };
   await step(15, '声音：手势后 AudioContext 为 running；昼夜按服务器世界时间；三个音量与总静音生效并在刷新后保持；后台挂起/回前台不叠播；断线重连不重新起播；进屋切环境声；音乐文件取不到时照常运行', async () => {
-    const snd = (p) => p.page.evaluate(() => (window.__town ? window.__town.snd : null));
     const near = (a, b, tol) => typeof a === 'number' && Math.abs(a - b) <= tol;
     const dbOf = (v) => (v <= 0.0001 ? -80 : 20 * Math.log10(v));
     const setRange = (p, id, v) =>
@@ -1512,7 +1703,7 @@ async function main() {
     // 音乐从 /town/3d/music/ 流式取到并淡入；环境声和音效在包里
     const want = s.night ? 'night' : 'day';
     const other = want === 'day' ? 'night' : 'day';
-    s = await until(async () => {
+    s = await untilMusic(C, async () => {
       const x = await snd(C);
       const l = x.layers[`music_${want}`];
       return l.loaded && l.playing && l.gain > 0.99 ? x : null;
@@ -1520,7 +1711,7 @@ async function main() {
     check(!s.layers[`music_${other}`].playing, '另一时段的音乐不应同时在放（不叠播）');
     check(s.layers[`amb_${want}`].playing && s.layers[`amb_${want}`].gain > 0.99, `室外应放${want}环境声`);
     check(!s.layers.amb_indoor.playing, '室外不应放室内环境声');
-    await until(async () => (await snd(C)).layers[`music_${other}`].loaded, 60_000, '另一首音乐也取到了');
+    await untilMusic(C, async () => (await snd(C)).layers[`music_${other}`].loaded, 60_000, '另一首音乐也取到了');
     note(`音乐 ${want} 在播（增益 ${s.layers[`music_${want}`].gain}），环境声 ${want} 在播；总线(dB) ${JSON.stringify(s.busDb)}`);
 
     // 昼夜切换：把世界钟点改到另一个时段（?debug=1&hour=，页面运行中改地址栏参数即可），两首音乐交叉淡入淡出，中途两首同时在放，结束后只剩一首；再改回来
@@ -1528,7 +1719,7 @@ async function main() {
       const farHour = want === 'night' ? 12 : 21;
       await C.page.evaluate((h) => history.replaceState(null, '', `${location.pathname}?debug=1&hour=${h}`), farHour);
       let overlap = false;
-      s = await until(async () => {
+      s = await untilMusic(C, async () => {
         const x = await snd(C);
         const a = x.layers[`music_${want}`];
         const b = x.layers[`music_${other}`];
@@ -1539,7 +1730,7 @@ async function main() {
       check(s.layers[`amb_${other}`].gain > 0.99 && s.layers[`amb_${want}`].gain < 0.01, '环境声也应跟着切到另一时段');
       note(`世界钟点改到 ${farHour} 点：音乐 ${want} -> ${other} 交叉淡化（中途两首同时在放），环境声同步切换`);
       await C.page.evaluate(() => history.replaceState(null, '', `${location.pathname}?debug=1`));
-      await until(async () => {
+      await untilMusic(C, async () => {
         const x = await snd(C);
         return x.layers[`music_${want}`].gain > 0.99 && x.layers[`music_${other}`].gain < 0.01 && x.night === (want === 'night') ? x : null;
       }, 90_000, '钟点改回后切回原来的曲子', 100);
@@ -1629,7 +1820,7 @@ async function main() {
       const x = await snd(C);
       return x.enabled && near(x.busDb.master, 0, 0.5) ? x : null;
     }, 10_000, '取消总静音后主总线恢复');
-    await until(async () => {
+    await untilMusic(C, async () => {
       const l = (await snd(C)).layers[`music_${want}`];
       return l.loaded && l.playing && l.gain > 0.99;
     }, 90_000, '刷新后音乐重新淡入');
@@ -1727,12 +1918,86 @@ async function main() {
     D.w.closing = true;
     await D.ctx.close();
   });
+
+  // 步骤 15 里「刷新后音乐重新淡入」只走整遍恰好跑到的那个时段（夜里跑整遍就只测夜晚曲，白天跑就只测白天曲），
+  // 夜晚那一支曾在 18 点到 24 点的整遍里超时、白天却一直是绿的。这里用 ?debug=1&hour= 把钟点固定住，夜晚（22 点）和白天（12 点）
+  // 各做一遍：刷新 → 静音进入 → 取消静音 → 该时段的音乐淡入到满、另一首不在放，不再依赖整遍在哪个钟点跑。
+  // 怎么让 15.1 失败：把 audio.gd 的 _fetch 改回「req.timeout = 30」的总时长超时（去掉停滞计时和 download_chunk_size），重新导出：夜晚这一遍
+  // 里 night 曲第一次取会被总时长超时掐掉（result=13；注意超时时 bytes 恒为 0，不能说明有没有收到过数据）、第二次才成功，「第一次取就应成功」那条断言变红。
+  await step(15.1, '声音：钟点固定在夜晚（22 点）和白天（12 点），各做一遍「刷新 → 静音进入 → 取消静音 → 该时段的音乐淡入、另一首不在放」', async () => {
+    const near = (a, b, tol) => typeof a === 'number' && Math.abs(a - b) <= tol;
+    const E = await newPlayer(chromiumBrowserA, 'E 钟点', { viewport: { width: 1000, height: 700 }, deviceScaleFactor: 1 });
+    extra.push(E);
+    await login(E, `阿钟${rnd()}`, { query: '&hour=22' }); // 第一次进入：登录、建居民（地址栏带着 hour=22）
+    // 夜晚这一遍把页面的 CPU 压慢 8 倍（Chromium 的 CDP，只影响这个页面）：模拟「机器忙 / 弱设备」。刷新后进场景的预热会把主线程卡住十几秒，
+    // 以前音乐请求按「整个请求 30 秒」计时，卡一次就被判超时（与有没有收到字节无关），再空等 20 秒重试，曲子晚一截
+    // （整遍在 18 到 24 点、机器正忙时红过两次；这条路径最坏约 71 秒，单靠它不一定能解释那两次真失败，那两次的 musicFetch 现场没有留下，
+    // 之后再红请看失败信息里的 musicFetch.history）。现在这一遍不论整遍几点跑、机器忙不忙都走同一条路径。
+    // （点击都带 noWaitAfter：页面被压慢时 Playwright 点完后「等待可能的导航」会白等 30 秒）
+    // 点击自己的等待也放宽到 120 秒：Playwright 要等按钮「稳定」（连续两帧位置不变）才点，而被压慢的页面进场景后的预热会把主线程一口气卡住
+    // 二三十秒，这期间一帧都不出。整遍里同时开着另外三个页面，这一卡本来就贴着默认的 30 秒上限（单跑这一步约 110 到 230 秒，整遍里约 300 到 335 秒）；
+    // 11-15 红过一次：卡了 30.1 秒，「取消总静音」那一下点不下去。这一步验的是取曲的路径，不是点击的快慢；每次点击等了多久记在说明里。
+    const slowClick = { noWaitAfter: true, timeout: 120_000 };
+    const clickWaits = [];
+    const clickE = async (selector, what) => {
+      const t = Date.now();
+      await E.page.click(selector, slowClick);
+      clickWaits.push(`${what} ${((Date.now() - t) / 1000).toFixed(1)} 秒`);
+    };
+    const cdp = await E.ctx.newCDPSession(E.page);
+    const throttle = (rate) => cdp.send('Emulation.setCPUThrottlingRate', { rate });
+    await throttle(8);
+    await until(async () => {
+      const x = await snd(E);
+      return x && x.inited ? x : null;
+    }, 20_000, '音频初始化');
+    for (const [hour, want, other] of [[22, 'night', 'day'], [12, 'day', 'night']]) {
+      const t0 = Date.now();
+      if (hour === 12) await throttle(1); // 白天这一遍不压
+      // 让总静音是开着的（上一遍结束时是取消静音的），然后刷新：第一遍用 reload 保持地址栏的 hour=22，第二遍换成 hour=12 重新载入
+      clickWaits.length = 0;
+      if ((await snd(E)).enabled) await clickE('#soundBtn', '开总静音');
+      await until(async () => (await snd(E)).enabled === false && (await E.page.$eval('#soundBtn', (e) => e.textContent)) === '声音：关', 10_000, `钟点 ${hour}：总静音已开`);
+      E.w.closing = true;
+      if (hour === 22) await E.page.reload();
+      else await E.page.goto(`${BASE}/town/3d/?debug=1&hour=${hour}`);
+      await E.page.waitForSelector('#enterBtn:not([hidden])', { timeout: 120_000 });
+      E.w.closing = false;
+      check((await E.page.evaluate(() => location.search)).includes(`hour=${hour}`), `刷新后地址栏应还带着 hour=${hour}`);
+      await clickE('#enterBtn', '进入');
+      await E.page.waitForFunction(() => window.__town && window.__town.actors.length > 0 && document.body.dataset.phase === 'playing', null, { timeout: 240_000 }); // 压慢 8 倍时进场景要一两分钟，只是上限
+      const sEnter = await untilMusic(E, async () => {
+        const x = await snd(E);
+        return x && x.inited && x.enabled === false && x.busDb.master <= -60 && x.night === (want === 'night') && near(x.hour, hour, 0.01) ? x : null;
+      }, 120_000, `钟点 ${hour}：静音进入，音频钟点与昼夜判定对得上`);
+      check(sEnter.firstPlay && sEnter.firstPlay.masterDb <= -60, `钟点 ${hour}：静音进入的第一声应已是静音，实际 ${JSON.stringify(sEnter.firstPlay)}`);
+      await clickE('#soundBtn', '取消总静音');
+      await until(async () => {
+        const x = await snd(E);
+        return x.enabled && near(x.busDb.master, 0, 0.5) ? x : null;
+      }, 10_000, `钟点 ${hour}：取消总静音后主总线恢复`);
+      const s = await untilMusic(E, async () => {
+        const x = await snd(E);
+        const l = x.layers[`music_${want}`];
+        return l.loaded && l.playing && l.gain > 0.99 ? x : null;
+      }, 90_000, `钟点 ${hour}：刷新后${want === 'night' ? '夜晚' : '白天'}曲载入并淡入`);
+      check(!s.layers[`music_${other}`].playing, `钟点 ${hour}：另一首（${other}）不应在放（不叠播）`);
+      // 刷新后第一次取就应该成功：不能靠第一次超时、等 20 秒再取第二次才到（机器闲的时候第二次也能过，所以要明确断言）
+      const f = s.musicFetch[want];
+      check(f && f.attempt === 1 && f.history.length === 0 && f.result === 0, `钟点 ${hour}：${want} 曲第一次取就应成功，实际 ${JSON.stringify(f)}`);
+      note(`钟点固定 ${hour}：静音进入 → 取消静音后 ${want} 曲淡入（增益 ${s.layers[`music_${want}`].gain}），${other} 不在放，用时 ${((Date.now() - t0) / 1000).toFixed(0)} 秒；点击等待：${clickWaits.join('、')}`);
+    }
+    E.w.closing = true;
+    await E.ctx.close();
+  });
+
+  await runStepFiles(h);
 }
 
 // ───────────────────────── 收尾 ─────────────────────────
 
 function allWatches() {
-  return [A, B, A2, A3, ...extra].filter(Boolean).map((p) => p.w);
+  return [...[A, B, A2, A3, ...extra].filter(Boolean).map((p) => p.w), ...finishedWatches];
 }
 
 async function collectCsp() {
@@ -1792,8 +2057,8 @@ try {
   } else console.log(`\n全部 ${results.length} 项通过。`);
   const report = { date: new Date().toISOString().slice(0, 10), versions: metrics.versions, bundle: metrics.bundle, load: metrics.load, audio: metrics.audio, aiRunner: metrics.aiRunner, steps: results, shots };
   try {
-    // 只有完整的一遍（没有 --only、没有 --no-shots）才算验收记录：否则 results.json 会和已提交的截图对不上
-    if (!ONLY.length && !NO_SHOTS && !interrupted) {
+    // 只有完整的一遍（没有 --only、没有 --until、没有 --no-shots）才算验收记录：否则 results.json 会和已提交的截图对不上
+    if (!ONLY.length && !Number.isFinite(UNTIL) && !NO_SHOTS && !interrupted) {
       mkdirSync(DEMO_DIR, { recursive: true });
       if (exitCode === 0) {
         // 全部通过：截图和 results.json 一起换成这一遍的（截图是先写在临时目录里的）
@@ -1809,6 +2074,12 @@ try {
   } catch (e) {
     console.error('写结果失败：', e);
     exitCode = 1;
+  }
+  // --shots-dir=<目录>（看图用）：不管是否 --only，把这一遍拍到的截图另存一份，不动 client/demo/
+  const shotsDir = (ARGS.find((x) => x.startsWith('--shots-dir=')) ?? '').slice(12);
+  if (shotsDir && shots.length) {
+    mkdirSync(shotsDir, { recursive: true });
+    for (const sh of shots) copyFileSync(join(SHOT_TMP, `${sh.name}.jpg`), join(shotsDir, `${sh.name}.jpg`));
   }
   // 引擎真正退出之后才删临时目录
   await stopEngine();

@@ -1,0 +1,73 @@
+<template id="tpl-dock-town" data-mod="town" data-tab-label="全镇" data-order="20" data-layout="tab">
+  <section class="dock-pane chat-pane" data-pane="town">
+    <div class="scope" data-role="scope">
+      <span class="plaque" data-role="scopeText"></span>
+      <span class="place" data-role="place"></span>
+      <button class="mute" type="button" data-role="mute" aria-pressed="false">
+        <svg class="spk" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false"><path d="M2 6h3l4-3v10L5 10H2z" fill="currentColor"/><path class="wave" d="M11 5.5a3.5 3.5 0 0 1 0 5" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/><path class="slash" d="M2.5 13.5l11-11" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+        <span data-role="muteText"></span>
+      </button>
+    </div>
+    <p class="rules" data-role="rules"></p>
+    <div class="strip" data-role="strip" hidden>
+      <span data-role="stripText"></span>
+      <button class="older" type="button" data-role="older" hidden></button>
+    </div>
+    <ol class="list" data-role="list" role="log" aria-live="polite" aria-label="全镇公屏"></ol>
+    <button class="jump" type="button" data-role="jump" hidden>有新消息</button>
+    <p class="hint" data-role="hint" role="status"></p>
+    <div class="pick" data-role="pick">
+      <div class="kinds" data-role="kinds" role="radiogroup" aria-label="类型">
+        <button type="button" role="radio" aria-checked="true" data-kind="chat"></button>
+        <button type="button" role="radio" aria-checked="false" data-kind="activity"></button>
+        <button type="button" role="radio" aria-checked="false" data-kind="help"></button>
+      </div>
+      <select class="placesel" data-role="placeSel" aria-label="地点" hidden></select>
+    </div>
+    <form class="compose" data-role="compose" autocomplete="off">
+      <input data-focus data-role="input" type="text" enterkeyhint="send" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" aria-label="在公屏说话">
+      <span class="count" data-role="count"></span>
+      <button class="send" type="submit" data-role="send">说</button>
+    </form>
+    <div hidden data-bank>
+      <span data-t="scope">全镇 · 所有居民都看得到</span>
+      <span data-t="rules">公屏上的话所有进过小镇的居民都读得到，别在这里说私密的事。</span>
+      <span data-t="ph.ok">对全镇的人说点什么…</span>
+      <span data-t="ph.readonly">另一处握着你的居民，这里只能看</span>
+      <span data-t="ph.game">对局中公屏只能看，不能发</span>
+      <span data-t="ph.offline">连不上小镇，恢复后再说</span>
+      <span data-t="kind.chat">闲聊</span>
+      <span data-t="kind.activity">组织活动</span>
+      <span data-t="kind.help">求助</span>
+      <span data-t="place.none">不指定地点</span>
+      <span data-t="place.plaza">灯下广场</span>
+      <span data-t="place.tea_house">栖灯茶馆</span>
+      <span data-t="place.bookshop">檐下书屋</span>
+      <span data-t="place.kitchen">公共厨房</span>
+      <span data-t="place.garden">后巷花园</span>
+      <span data-t="place.arcade">游戏馆</span>
+      <span data-t="place.residential">灯巷会馆</span>
+      <span data-t="err.rate_limited">歇 {n} 秒再发</span>
+      <span data-t="err.text_too_long">太长了，最多 {n} 字</span>
+      <span data-t="err.duplicate">刚刚发过一模一样的话了，换个说法，或者过几分钟再发</span>
+      <span data-t="err.in_activity">对局中公屏只能看，不能发</span>
+      <span data-t="err.not_present">你现在不在小镇里</span>
+      <span data-t="err.readonly">另一处握着你的居民，这里只能看</span>
+      <span data-t="err.control_lost">另一处握着你的居民，这里只能看</span>
+      <span data-t="err.net">网络不通，稍后再试，话还在</span>
+      <span data-t="loading">正在读公屏…</span>
+      <span data-t="loadErr">公屏读不出来，正在重试…</span>
+      <span data-t="older">看更早的话</span>
+      <span data-t="olderBusy">正在读…</span>
+      <span data-t="atCap">只留最近 200 条</span>
+      <span data-t="end">没有更早的话了</span>
+      <span data-t="mute.off">静音</span>
+      <span data-t="mute.on">已静音</span>
+      <span data-t="mute.tip">静音后公屏的新话不再提醒，仍然可以翻看和发言</span>
+      <span data-t="go">走过去</span>
+    </div>
+  </section>
+</template>
+<template id="tpl-town-msg">
+  <li class="msg"><div class="who"><span class="nm" data-role="name"></span><b class="ai" data-role="ai" hidden>AI</b></div><div class="bub" data-role="text"></div></li>
+</template>

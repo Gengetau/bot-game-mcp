@@ -8,6 +8,7 @@
 import { precondition } from './errors.js';
 import type { WorldService } from './service.js';
 import { interactivePos } from './hearing.js';
+import { positionOfNpc } from './space.js';
 import { distance } from './spatial/grid.js';
 import type { ResidentRow } from './types.js';
 
@@ -41,4 +42,20 @@ export function requirePersonReach(w: WorldService, a: ResidentRow, b: ResidentR
   if (res.ok) return b;
   if (res.why === 'too_far') throw precondition(`离${b.name}太远了，先走到ta身边。`, 'too_far', { navigateTo: b.resident_id });
   throw precondition(notHereMessage, 'not_here');
+}
+
+export type NpcReach = { ok: true; distance: number } | { ok: false; why: 'not_found' | 'not_here' | 'too_far' };
+
+/**
+ * 居民够不够得着一名 NPC：同一个公共场景实例、我有效在场且不在对局（interactivePos）、此刻距离不超过 personReach。
+ * 双方的位置都按折线和时间现算（NPC 正在走时也是）。NPC 的位置是公开的，所以这里可以把「太远」和「不在这里」分开说。
+ * not_found：没有这名 NPC。
+ */
+export function npcReach(w: WorldService, a: ResidentRow, npcId: string, now: number = w.now()): NpcReach {
+  const pn = positionOfNpc(w, npcId, now);
+  if (!pn) return { ok: false, why: 'not_found' };
+  const pa = interactivePos(w, a, now);
+  if (!pa || pa.scene !== pn.scene || pa.instance !== pn.instance) return { ok: false, why: 'not_here' };
+  const d = distance(pa, pn);
+  return d <= w.params.personReach + EPS ? { ok: true, distance: d } : { ok: false, why: 'too_far' };
 }

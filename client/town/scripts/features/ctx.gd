@@ -1,0 +1,232 @@
+class_name TCtx
+extends RefCounted
+## 功能模块看 main 的只读窗口，加几个调用口。功能代码不许写 ctx.m.xxx；main 改变量名只改这一个文件。
+## 需要新的访问口：加在下面自己那一段的预留分区里，不动别人的分区，也不动公共部分。
+## 所有转发协程的包装函数必须 `return await …`，漏掉 await 会拿到协程状态对象而不是 Dictionary。
+
+var m  # main，无类型；只有本文件读 m 的字段
+
+
+func bridge() -> TBridge:
+	return m.bridge
+
+
+func self_id() -> String:
+	return str(m.self_id)
+
+
+## id -> TActor，只读（每次现取，不要缓存引用）
+func actors() -> Dictionary:
+	return m.actors
+
+
+## /me 的 here 视图
+func here() -> Dictionary:
+	return m.here
+
+
+## 最近一次 /me 里的 location（scene、space、name、x、z）；没有时是空字典
+func me_view() -> Dictionary:
+	return m._me_loc
+
+
+func manifest() -> Dictionary:
+	return m.manifest
+
+
+## manifest["source"]["hearDistance"]，缺失时 9.0（只作软提示，服务端 heardBy 才是准的）
+func hear_distance() -> float:
+	var src = m.manifest.get("source")
+	if src is Dictionary and src.has("hearDistance"):
+		return float(src["hearDistance"])
+	return 9.0
+
+
+## 读 /config 的 limits（main 在 _flow_body 读到 /config 时存下 server_cfg）
+func cfg_limit(key: String, default_v: int) -> int:
+	var lim = m.server_cfg.get("limits")
+	if lim is Dictionary and lim.has(key):
+		return int(lim[key])
+	return default_v
+
+
+func playing() -> bool:
+	return m.phase == m.Phase.PLAYING
+
+
+func control_mine() -> bool:
+	return bool(m.control_mine)
+
+
+## 在一局小游戏里（activity_id 非空；茶馆等家具互动不写它）
+func in_game() -> bool:
+	return m.ctx_activity != null
+
+
+## "ok" | "reconnecting" | "offline"
+func conn() -> String:
+	return m._conn_state()
+
+
+func ws_ready() -> bool:
+	return bool(m.ws_ready)
+
+
+func cur_scene() -> String:
+	return str(m.cur_scene)
+
+
+func cur_space() -> String:
+	return str(m.cur_space)
+
+
+func space_name() -> String:
+	return str(m.cur_space_name)
+
+
+func server_now() -> float:
+	return m.clock.server_now()
+
+
+func new_req_id() -> String:
+	return m._new_req_id()
+
+
+## 3 次自动重试，会让所有按钮变灰（pending）：适合导航类
+func act(action: Dictionary) -> Dictionary:
+	return await m._act(action)
+
+
+## 一次性提交，不动 pending、不睡眠重试：聊天用。opts: {rid, retry_stale}
+func act_once(action: Dictionary, opts: Dictionary = {}) -> Dictionary:
+	return await m._act_once(action, opts)
+
+
+## path 不带 /town/api 前缀，如 "/history?limit=30"
+func api_get(path: String) -> Dictionary:
+	return await m.bridge.http("GET", m.API + path)
+
+
+func api_post(path: String, body = null) -> Dictionary:
+	return await m.bridge.http("POST", m.API + path, body)
+
+
+func net_send(d: Dictionary) -> void:
+	m.net.send(d)
+
+
+func toast(text: String, kind: String = "info") -> void:
+	m._toast(text, kind)
+
+
+func refresh_me() -> void:
+	m._refresh_me()
+
+
+func mark_dirty() -> void:
+	m._dirty = true
+
+
+## 取别的功能（只在确有需要时用；默认模块之间不互相引用）
+func feature(fid: String):
+	return m.features.get_feature(fid)
+
+
+# ───────────────────────── C1b 分区 ─────────────────────────
+## 走到某个公共地点（只是走过去，不替玩家入座或做别的）。必须走 main._do_navigate：它管续租、序号栅栏、落点标记、只读与对局中的拦截。
+func navigate_to_place(place_id: String) -> void:
+	m.selected_obj = ""
+	await m._do_navigate({"to": place_id}, "")
+# ─────────────────────────────────────────────────────────────────────────
+
+
+# ───────────────────────── C2 分区 ─────────────────────────
+## 场景里的物件（world.gd 的 find_object）：anchors（使用位，Vector2 数组）、center、pos、kind、name；家里的物件没有，返回 {}
+func object_info(oid: String) -> Dictionary:
+	return m.world.find_object(m.cur_scene, oid)
+
+
+## 走到某个地图点（选座）。必须走 main._do_navigate：它管续租、序号栅栏、落点标记、只读与拦截；绝不用 act 直接发 navigate（租约没人续，走一半停下）。
+## 清掉 selected_obj：不让旧的「走过去」按钮留着。
+func walk_to(to: Dictionary, label: String, mark = null) -> void:
+	m.selected_obj = ""
+	await m._do_navigate(to, label, mark)
+
+
+## 现在够得着这件物件吗（/me 的 near 且位置没在动）
+func near_ok(oid: String) -> bool:
+	return m.near_valid and m._is_near(oid)
+
+
+## 够不够得着的缓存作废（too_far 之后）：按钮收起，等下一次 /me
+func invalidate_near() -> void:
+	m.near_valid = false
+	m._dirty = true
+
+
+## 刷新 /me 并等它读完；正有一次在读时返回 false（读完会再读一次，on_me 照常到）
+func refresh_me_wait() -> bool:
+	return await m._refresh_me()
+
+
+## 导航代号：main 每次发起新的走路（点地、点人、点物件、方向键起步、停下）都加一。比较前后两次就知道「中间有没有改过道」
+func nav_gen() -> int:
+	return m.nav_generation
+
+
+## 等下一帧（动作之后等 /me 回来时用，不阻塞）
+func next_frame() -> void:
+	await m.get_tree().process_frame
+
+
+## 方向键现在按着时，是「这一次按下」的编号（main 的 key_edge，网页层每次新按下加一，松开再按才变）；没按着是 -1。
+## 走开拦截靠它认「新的一次按下」，不靠两次被问的时间间隔（按着不放时一帧卡顿就会被当成第二次尝试）。每帧可调，只读两个变量
+func key_press_edge() -> int:
+	return m.key_edge if m._key_vec() != Vector2.ZERO else -1
+# ─────────────────────────────────────────────────────────────────────────
+
+
+# ───────────────────────── C3 分区（预留，空）─────────────────────────
+# ─────────────────────────────────────────────────────────────────────────
+
+
+# ───────────────────────── C4 分区 ─────────────────────────
+## 走过去 / 进门 / 出门：只是对 main._do_navigate 的转发（它自己做 _can_control、续租、序号栅栏和错误 toast）。
+## 协程不 await：调用方不等它走完。to 形如 {"to": "home:<居民编号>"}、{"to": "home"}、{"to": "residential"}。
+## 返回 false 表示被拦下没有发出（走开确认、只读等，提示 main 已弹）；true 只表示请求发出了，服务器是否接受要等 you_arrived / 提示。
+func c4_go(to: Dictionary, label: String = "") -> bool:
+	if not m._can_control():
+		return false
+	m._do_navigate(to, label)
+	return true
+
+
+## 走到某个居民身边（和 main._on_tap 里点人的调用一致）
+## 返回值同 c4_go：没发出（对方不在场景里、被拦下）为 false
+func c4_approach(actor_id: String) -> bool:
+	var a = m.actors.get(actor_id)
+	if a == null or not m._can_control():
+		return false
+	m._do_navigate({"approach": actor_id}, (a as TActor).actor_name, Vector3((a as TActor).disp.x, 0.0, (a as TActor).disp.y))
+	return true
+
+
+## 人和人当面互动的够得着距离（米）：读 /config 的 limits.personReach，服务端没给就用 3.0
+func c4_person_reach() -> float:
+	var lim = m.server_cfg.get("limits")
+	if lim is Dictionary and lim.has("personReach"):
+		return float(lim["personReach"])
+	return 3.0
+# ─────────────────────────────────────────────────────────────────────────
+
+
+# ───────────────────────── C5 分区（预留，空）─────────────────────────
+# ─────────────────────────────────────────────────────────────────────────
+
+
+# ───────────────────────── C6 分区（预留，空）─────────────────────────
+# ─────────────────────────────────────────────────────────────────────────
+
+
+# ───────────────────────── C7 分区（预留，空）─────────────────────────
+# ─────────────────────────────────────────────────────────────────────────

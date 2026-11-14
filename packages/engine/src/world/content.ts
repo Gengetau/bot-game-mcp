@@ -143,6 +143,8 @@ export interface ShopDef {
   place: string;
   name: string;
   goods: ShopGood[];
+  /** 照看这家店的 NPC 编号：有掌柜的店，买东西要走到掌柜身边（够得着掌柜），不再只看人在不在这片区域 */
+  keeper?: string;
 }
 
 export const SHOPS: readonly ShopDef[] = [
@@ -156,7 +158,7 @@ export const SHOPS: readonly ShopDef[] = [
       { sku: 'paper_lamp', type: 'paper_lamp', price: 3, dailyStock: 10, onlyDuringEvent: 'lantern_market' },
     ],
   },
-  { id: 'tea_counter', place: 'tea_house', name: '茶馆柜台', goods: [{ sku: 'tea_leaves', type: 'tea_leaves', price: 2, dailyStock: 30 }] },
+  { id: 'tea_counter', place: 'tea_house', name: '茶馆柜台', keeper: 'npc:teahouse_keeper', goods: [{ sku: 'tea_leaves', type: 'tea_leaves', price: 2, dailyStock: 30 }] },
   {
     id: 'book_counter',
     place: 'bookshop',
@@ -686,3 +688,192 @@ export const EMBEDDED_GAMES: readonly EmbeddedGameDef[] = [
 ];
 
 export const embeddedGameDef = (type: string): EmbeddedGameDef | undefined => EMBEDDED_GAMES.find((g) => g.type === type);
+
+// ───────────────────────── NPC ─────────────────────────
+
+export type NpcRole = 'service' | 'ambient';
+/** 姿态：站着、坐着、站着看书。走路时是 stand（走没走由快照里的 nav 表示）。 */
+export type NpcPose = 'stand' | 'sit' | 'read';
+
+/** 日程里的一站：到了某个地图锚点，摆什么姿态。 */
+export interface NpcStop {
+  anchor: string;
+  pose: NpcPose;
+}
+
+/**
+ * 程序驱动的 NPC：不用模型、不占在场名额、不被唤醒、不发事件。
+ * 编号稳定（npc:<名字>），同时就是 world_actors 的 actor_id。
+ * schedule 为 null 的 NPC 全天站在岗位上；有 schedule 的在这些站点之间走动、停留（停留时长和下一站由 w.rng 选，范围在参数里）。
+ * 以后要加更多 NPC、按钟点分段的安排，在这里加定义，不改引擎代码。
+ */
+export interface NpcDef {
+  id: string;
+  name: string;
+  role: NpcRole;
+  /** 岗位（也是地图换版本后挪回的位置）：地图锚点编号 */
+  post: NpcStop;
+  schedule: { stops: NpcStop[] } | null;
+  /** 可以问它的话题；第一个是默认话题（未知话题按它回答） */
+  topics: NpcTopic[];
+  /** 它照看的店（SHOPS 的编号）。有店的 NPC 回答里带出柜台的货品 */
+  shop?: string;
+}
+
+export interface NpcTopic {
+  id: string;
+  label: string;
+}
+
+export const NPCS: readonly NpcDef[] = [
+  { id: 'npc:teahouse_keeper', name: '茶馆掌柜', role: 'service', post: { anchor: 'tea_house.counter.staff', pose: 'stand' },
+    schedule: null,
+    shop: 'tea_counter',
+    topics: [
+      { id: 'hello', label: '打个招呼' },
+      { id: 'tea', label: '怎么喝茶' },
+      { id: 'town', label: '镇上的事' },
+    ],
+  },
+  {
+    id: 'npc:plaza_stroller',
+    name: '广场闲逛者',
+    role: 'ambient',
+    post: { anchor: 'plaza.bench1.sit', pose: 'sit' },
+    schedule: {
+      stops: [
+        { anchor: 'plaza.bench1.sit', pose: 'sit' },
+        { anchor: 'plaza.bench2.sit', pose: 'sit' },
+        { anchor: 'bookshop.shelf.stand', pose: 'read' },
+      ],
+    },
+    topics: [
+      { id: 'hello', label: '打个招呼' },
+      { id: 'bench', label: '广场的长椅' },
+      { id: 'books', label: '书' },
+    ],
+  },
+];
+
+export const npcDef = (id: string): NpcDef | undefined => NPCS.find((n) => n.id === id);
+
+// ───────────────────────── NPC 的台词 ─────────────────────────
+
+/**
+ * NPC 的固定台词模板。键是 `<NPC 编号>/<话题>`（带情境的话题再加 `.<情境>`）；每个键有几句变体，由可复现的随机选。
+ * 模板里唯一允许的「动态」部分是占位符：{name} 提问人的名字（注册时已清洗，拼之前再清洗一次）、{period} 时段、
+ * {place} 区域名、{price} {stock} 柜台的价格和今天的存量、{places} 公共地点名、{events} 今天开着的公开活动的名字。
+ * 除此之外不引用任何玩家文字，也不引用聊天、信件、背包、关系、愿望。
+ */
+export const NPC_LINES: Readonly<Record<string, readonly string[]>> = {
+  'npc:teahouse_keeper/hello': [
+    '{name}，来啦。茶叶{price}枚一份，今天还剩{stock}份，要的话直接说。',
+    '欢迎来栖灯茶馆，{name}。茶叶{price}枚一份，今天还有{stock}份。',
+    '{name}，随便坐。要茶叶的话，{price}枚一份，今天还剩{stock}份。',
+  ],
+  'npc:teahouse_keeper/hello.empty': [
+    '{name}，来啦。茶叶今天卖完了，明天再来吧，一份{price}枚。',
+    '欢迎来栖灯茶馆，{name}。今天的茶叶已经卖完，明天会补上。',
+  ],
+  'npc:teahouse_keeper/tea': [
+    '想喝茶先备好茶叶，再找个人作伴：两个人一起走到茶桌旁，就能开一壶。',
+    '茶叶柜台这儿有卖，一份{price}枚。拿着茶叶，约一位同伴走到茶桌边，两个人才泡得成。',
+    '一起喝茶要有茶叶、要有两个人，还要走到茶桌旁边。一个人是开不了一壶的。',
+  ],
+  'npc:teahouse_keeper/town.event': [
+    '镇上的公共地点有：{places}。今天开着的活动有：{events}。',
+    '想四处走走的话：{places}，都可以去。眼下开着的活动有：{events}。',
+  ],
+  'npc:teahouse_keeper/town.none': [
+    '镇上的公共地点有：{places}。眼下没有开着的活动。',
+    '想四处走走的话：{places}，都可以去。眼下没有开着的活动。',
+  ],
+  // 成交台词是泛化的：不带买家的名字，也不点货品和数量（谁买了什么是私有的，不能靠旁听得知）
+  'npc:teahouse_keeper/sold': [
+    '好嘞，收好，慢走。',
+    '两清了，欢迎再来。',
+    '东西给你包好了，路上慢些。',
+  ],
+  'npc:plaza_stroller/hello.sit': [
+    '{name}，这会儿是{period}，我坐在{place}的长椅上歇脚。',
+    '{name}，来坐坐？{period}的{place}最适合发呆了。',
+  ],
+  'npc:plaza_stroller/hello.read': [
+    '嘘，{name}……我在{place}翻书呢。这会儿是{period}，正适合看一会儿。',
+    '{name}，我在{place}的书架旁看书，{period}的光线刚好。',
+  ],
+  'npc:plaza_stroller/hello.walk': [
+    '{name}，我正在{place}一带慢慢走，这会儿是{period}，不赶时间。',
+    '{name}，边走边聊吧，{period}的镇子走起来很舒服。',
+  ],
+  'npc:plaza_stroller/hello.stand': [
+    '{name}，我在{place}站一会儿，{period}的镇子挺安静的。',
+    '{name}，在{place}站着看看风景，这会儿是{period}。',
+  ],
+  'npc:plaza_stroller/bench': [
+    '广场上有两张长椅，累了就坐下，路过的人都能搭上两句。',
+    '长椅是镇上最好的位置，能看到整个广场的人来人往。',
+  ],
+  'npc:plaza_stroller/books': [
+    '檐下书屋的书可以借也可以买，借了记得按时还。',
+    '我常去书屋的书架旁站着看书，一站就是半天。',
+  ],
+};
+
+/** 时段（按世界时区的钟点）。 */
+export function dayPeriod(hour: number): string {
+  if (hour < 5) return '夜里';
+  if (hour < 11) return '早上';
+  if (hour < 13) return '中午';
+  if (hour < 18) return '下午';
+  if (hour < 21) return '傍晚';
+  return '夜里';
+}
+
+const reEscape = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const alt = (xs: readonly string[]): string => `(?:${xs.map(reEscape).join('|')})`;
+/** 除了 {name} 之外的占位符：都只能是程序里的固定值（时段、地点名、价格、公开活动标题），不是自由文字。 */
+function placeholderPatterns(names: readonly string[]): Record<string, string> {
+  const events = alt(PUBLIC_EVENTS.map((e) => e.title));
+  return {
+    // {name} 只能是调用方给的真实居民名（空表则什么也匹配不上）
+    name: names.length > 0 ? alt(names) : '(?!)',
+    period: '(?:早上|中午|下午|傍晚|夜里)',
+    place: alt([...PLACES.map((p) => p.name), '这一带']),
+    price: '\\d{1,4}',
+    stock: '\\d{1,4}',
+    // 公共地点：固定的那一串；公开活动：公开活动标题用「、」连起来
+    places: reEscape(DESTINATIONS.filter((p) => p.kind === 'public').map((p) => p.name).join('、')),
+    events: `${events}(?:${reEscape('、')}${events})*`,
+  };
+}
+
+/** 把模板里的占位符换成值（缺的值保持原样，测试和不变量会发现）。 */
+export function renderNpcLine(template: string, vars: Record<string, string | number>): string {
+  return template.replace(/\{(\w+)\}/g, (m, k: string) => (k in vars ? String(vars[k]) : m));
+}
+
+/** 一条模板对应的完整匹配正则：占位符只能出现在占位符的位置，其余字一字不差；{name} 只能是 names 里的名字。 */
+export function npcLinePattern(template: string, names: readonly string[]): RegExp {
+  const patterns = placeholderPatterns(names);
+  let out = '';
+  let last = 0;
+  for (const m of template.matchAll(/\{(\w+)\}/g)) {
+    out += reEscape(template.slice(last, m.index)) + (patterns[m[1]!] ?? '(?!)');
+    last = m.index! + m[0].length;
+  }
+  out += reEscape(template.slice(last));
+  return new RegExp(`^${out}$`, 'u');
+}
+
+/**
+ * 这句话是不是这名 NPC 的某条模板渲染出来的（不变量和测试用，不依赖实现怎么选模板）。
+ * names 是世界里真实居民的名字：模板里唯一的玩家文字只能是其中一个。
+ */
+export function npcLineMatches(npcId: string, text: string, names: readonly string[]): boolean {
+  for (const [key, lines] of Object.entries(NPC_LINES)) {
+    if (!key.startsWith(`${npcId}/`)) continue;
+    if (lines.some((t) => npcLinePattern(t, names).test(text))) return true;
+  }
+  return false;
+}
