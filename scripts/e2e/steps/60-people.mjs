@@ -38,8 +38,21 @@ export default async function run(h) {
     await until(async () => (await where(p)).space === 'residential', 120_000, `${p.label} 到了灯巷会馆`, 700);
     await waitIdle(p);
   };
-  /** 离 A 一定距离处，找一个能走到的点让 B 走过去并停稳（API 代发，短路） */
-  const moveBAway = async (min, max) => {
+  /** A 的画面里，世界坐标 (x, z) 处 1 米高的那一点（clickActor 点的就是这个高度）点不点得到：在视口里（留边），而且最上面是画布 */
+  const clickableFromA = (x, z) =>
+    A.page.evaluate(([wx, wz]) => {
+      const q = window.__town.project(wx, 1.0, wz);
+      const m = 48;
+      if (!(q.x >= m && q.x <= window.innerWidth - m && q.y >= m && q.y <= window.innerHeight - m)) return false;
+      return (document.elementFromPoint(q.x, q.y)?.id ?? '') === 'canvas';
+    }, [x, z]);
+  /**
+   * 离 A 一定距离处，找一个能走到的点让 B 走过去并停稳（API 代发，短路）。
+   * clickable：之后要在 A 的画面上点 B，落点必须在 A 的画面里、没被界面盖住。
+   * 沿「A 到 B 现在的方向」拉开是第一选择，但这个方向由前面的步骤留下的站位决定（比如 A 刚从正左边走到 B 身边），
+   * 拉到 9 米可能正好出了 1440 像素宽的画面：所以先按投影筛一遍落点，B 停稳后再按页面上的真实位置核一遍。
+   */
+  const moveBAway = async (min, max, { clickable = false } = {}) => {
     const offs = [[5, 0], [-5, 0], [0, 5], [0, -5], [6, 4], [-6, -4], [4, -6], [-4, 6], [7, 0], [-7, 0], [0, 7], [0, -7]];
     const sc0 = await sceneOf(A);
     // 先沿 A 到 B 现在的方向直接拉到目标距离：B 少绕路，A 开着的卡也不会因为 B 路上绕到 8 米外而自动关掉
@@ -48,16 +61,48 @@ export default async function run(h) {
       const vx = scb.x - sc0.x;
       const vz = scb.z - sc0.z;
       const vl = Math.hypot(vx, vz);
-      if (vl > 0.5) offs.unshift([(vx / vl) * ((min + max) / 2), (vz / vl) * ((min + max) / 2)]);
+      if (vl > 0.5) {
+        // 要点得到的时候，同一方向上再备一个近一点的落点（刚过下限 1 米）
+        if (clickable) offs.unshift([(vx / vl) * (min + 1), (vz / vl) * (min + 1)]);
+        offs.unshift([(vx / vl) * ((min + max) / 2), (vz / vl) * ((min + max) / 2)]);
+      }
     }
+    const skipped = [];
     for (const [dx, dz] of offs) {
-      const r = await apiAct(B, { type: 'navigate', to: { x: sc0.x + dx, z: sc0.z + dz } });
+      const tx = sc0.x + dx;
+      const tz = sc0.z + dz;
+      if (clickable && !(await clickableFromA(tx, tz))) {
+        skipped.push(`(${dx.toFixed(1)},${dz.toFixed(1)}) 落点不在 A 的画面里`);
+        continue;
+      }
+      const r = await apiAct(B, { type: 'navigate', to: { x: tx, z: tz } });
       if (r.status !== 200) continue;
       await waitIdle(B);
       const g = await gapAB();
-      if (g >= min && g <= max) return g;
+      if (g < min || g > max) continue;
+      if (clickable) {
+        // 页面上的 B 是按服务器时间插值的：等它也停到位，再看那一点是不是真的点得到（落点可能被吸附到别处）
+        const ok = await until(
+          async () => {
+            const s = await screenOf(A.page, B.id);
+            if (!s) return false;
+            const m = 24;
+            const vp = await A.page.evaluate(() => ({ w: window.innerWidth, h: window.innerHeight }));
+            if (!(s.x >= m && s.x <= vp.w - m && s.y >= m && s.y <= vp.h - m)) return false;
+            return (await A.page.evaluate(([x, y]) => document.elementFromPoint(x, y)?.id ?? '', [s.x, s.y])) === 'canvas';
+          },
+          3000,
+          'B 停稳后在 A 的画面里点得到',
+          200,
+        ).then(() => true, () => false);
+        if (!ok) {
+          skipped.push(`(${dx.toFixed(1)},${dz.toFixed(1)}) 停稳后点不到`);
+          continue;
+        }
+      }
+      return g;
     }
-    throw new Error(`B 找不到离 A ${min}~${max} 米的落点`);
+    throw new Error(`B 找不到离 A ${min}~${max} 米${clickable ? '、又在 A 画面里点得到' : ''}的落点${skipped.length ? `（跳过：${skipped.join('；')}）` : ''}`);
   };
   const apiCount = (p, type) => actionsOf(p, type).length;
   /** 最后一条该类型请求的记录；等它的回应体读完（client-e2e 的监视是异步读 json 的，reason 在那之后才有） */
@@ -202,7 +247,7 @@ export default async function run(h) {
 
   // ───────────────────────── 60.2 远处点人先走过去 ─────────────────────────
   await step(60.2, '远处点人先走过去：B 走到 6 米外；A 点 B -> 走路时没有卡、发 navigate、停下后离 B 小于 1.5 米，卡自动出现；全程没有 ask_hobby / invite', async () => {
-    const g = await moveBAway(6, 12);
+    const g = await moveBAway(6, 12, { clickable: true });
     note(`B 走到离 A ${g.toFixed(1)} 米`);
     const nav0 = apiCount(A, 'navigate');
     const ask0 = apiCount(A, 'ask_hobby');
@@ -735,13 +780,21 @@ export default async function run(h) {
     await until(() => B.page.evaluate(() => document.getElementById('destMenu').hidden), 5000, '这一下 Esc 关了地点菜单');
     await frames(B.page, 3);
     check((await peopleCard(B.page)).cardOpen && (await godotPeople(B)).cardId === A.id, '地点菜单开着时那一下 Esc 不该顺带关卡');
-    // 卡被 CSS 藏起来时（软键盘出现）Esc 不去关一张看不见的卡
-    await B.page.evaluate(() => { document.body.dataset.kb = '1'; });
+    // 卡被 CSS 藏起来时（软键盘出现）Esc 不去关一张看不见的卡。
+    // 软键盘用底座的测试钩子装出来，不直接写 body 的 data-kb：刚点过的「地点」按钮还握着焦点，它被这个标记藏起来就会失焦，
+    // 底座一见焦点变化就重算键盘高度、把手写的标记清回 0（卡又看得见了），之后那一下 Esc 关卡是对的——手写标记只在按键抢在重算之前才测得到想测的东西
+    await B.page.evaluate(() => window.TownDock.test.setKeyboard(300));
     await until(() => B.page.evaluate(() => getComputedStyle(document.getElementById('peopleCard')).display === 'none'), 5000, '软键盘状态下卡被藏起来');
+    // 屏障：失焦引出的那次重算已经过去（失焦 -> 下一个宏任务 -> 下一帧），标记仍在
+    await until(() => B.page.evaluate(() => document.activeElement === document.body), 5000, '被藏起来的「地点」按钮已经失焦');
+    await frames(B.page, 4);
+    const kbState = await B.page.evaluate(() => ({ flag: document.body.dataset.kb, display: getComputedStyle(document.getElementById('peopleCard')).display }));
+    check(kbState.flag === '1' && kbState.display === 'none', `重算之后软键盘状态仍在、卡仍藏着：${JSON.stringify(kbState)}`);
     await B.page.keyboard.press('Escape');
     await frames(B.page, 3);
-    check((await godotPeople(B)).cardId === A.id, '卡被 CSS 藏起来时 Esc 不该关它');
-    await B.page.evaluate(() => { delete document.body.dataset.kb; });
+    const gpHidden = await godotPeople(B);
+    check(gpHidden.cardId === A.id, `卡被 CSS 藏起来时 Esc 不该关它：${JSON.stringify({ cardId: gpHidden.cardId, flag: await B.page.evaluate(() => document.body.dataset.kb) })}`);
+    await B.page.evaluate(() => window.TownDock.test.setKeyboard(null));
     await until(() => B.page.evaluate(() => getComputedStyle(document.getElementById('peopleCard')).display !== 'none'), 5000, '软键盘状态解除，卡又看得见');
     await B.page.keyboard.press('Escape');
     await cardClosed(B);

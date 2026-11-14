@@ -375,8 +375,9 @@ export default async function run(h) {
     await until(() => actionsOf(A, 'navigate').length > nav0, 20_000, '撤掉假接管后旧行为恢复（发出 navigate）');
     await idle(A);
     } finally {
-      // 任何一条 check 抛出时也要撤掉假接管，免得它留在 A 页面上把后面步骤里对 B 的 E 键 / 点选都变成「被接管」
-      await clearStub(A);
+      // 任何一条 check 抛出时也要撤掉假接管，免得它留在 A 页面上把后面步骤里对 B 的 E 键 / 点选都变成「被接管」。
+      // 反向验证口：E2E_KEEP_PICK_STUB=1 时故意不撤，25.5 应当红（见文件末尾）
+      if (process.env.E2E_KEEP_PICK_STUB !== '1') await clearStub(A);
     }
   });
 
