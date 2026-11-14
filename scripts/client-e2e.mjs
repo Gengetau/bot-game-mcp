@@ -1934,6 +1934,16 @@ async function main() {
     // （整遍在 18 到 24 点、机器正忙时红过两次；这条路径最坏约 71 秒，单靠它不一定能解释那两次真失败，那两次的 musicFetch 现场没有留下，
     // 之后再红请看失败信息里的 musicFetch.history）。现在这一遍不论整遍几点跑、机器忙不忙都走同一条路径。
     // （点击都带 noWaitAfter：页面被压慢时 Playwright 点完后「等待可能的导航」会白等 30 秒）
+    // 点击自己的等待也放宽到 120 秒：Playwright 要等按钮「稳定」（连续两帧位置不变）才点，而被压慢的页面进场景后的预热会把主线程一口气卡住
+    // 二三十秒，这期间一帧都不出。整遍里同时开着另外三个页面，这一卡本来就贴着默认的 30 秒上限（单跑这一步约 110 到 230 秒，整遍里约 300 到 335 秒）；
+    // 11-15 红过一次：卡了 30.1 秒，「取消总静音」那一下点不下去。这一步验的是取曲的路径，不是点击的快慢；每次点击等了多久记在说明里。
+    const slowClick = { noWaitAfter: true, timeout: 120_000 };
+    const clickWaits = [];
+    const clickE = async (selector, what) => {
+      const t = Date.now();
+      await E.page.click(selector, slowClick);
+      clickWaits.push(`${what} ${((Date.now() - t) / 1000).toFixed(1)} 秒`);
+    };
     const cdp = await E.ctx.newCDPSession(E.page);
     const throttle = (rate) => cdp.send('Emulation.setCPUThrottlingRate', { rate });
     await throttle(8);
@@ -1945,7 +1955,8 @@ async function main() {
       const t0 = Date.now();
       if (hour === 12) await throttle(1); // 白天这一遍不压
       // 让总静音是开着的（上一遍结束时是取消静音的），然后刷新：第一遍用 reload 保持地址栏的 hour=22，第二遍换成 hour=12 重新载入
-      if ((await snd(E)).enabled) await E.page.click('#soundBtn', { noWaitAfter: true });
+      clickWaits.length = 0;
+      if ((await snd(E)).enabled) await clickE('#soundBtn', '开总静音');
       await until(async () => (await snd(E)).enabled === false && (await E.page.$eval('#soundBtn', (e) => e.textContent)) === '声音：关', 10_000, `钟点 ${hour}：总静音已开`);
       E.w.closing = true;
       if (hour === 22) await E.page.reload();
@@ -1953,14 +1964,14 @@ async function main() {
       await E.page.waitForSelector('#enterBtn:not([hidden])', { timeout: 120_000 });
       E.w.closing = false;
       check((await E.page.evaluate(() => location.search)).includes(`hour=${hour}`), `刷新后地址栏应还带着 hour=${hour}`);
-      await E.page.click('#enterBtn', { noWaitAfter: true });
+      await clickE('#enterBtn', '进入');
       await E.page.waitForFunction(() => window.__town && window.__town.actors.length > 0 && document.body.dataset.phase === 'playing', null, { timeout: 240_000 }); // 压慢 8 倍时进场景要一两分钟，只是上限
       const sEnter = await untilMusic(E, async () => {
         const x = await snd(E);
         return x && x.inited && x.enabled === false && x.busDb.master <= -60 && x.night === (want === 'night') && near(x.hour, hour, 0.01) ? x : null;
       }, 120_000, `钟点 ${hour}：静音进入，音频钟点与昼夜判定对得上`);
       check(sEnter.firstPlay && sEnter.firstPlay.masterDb <= -60, `钟点 ${hour}：静音进入的第一声应已是静音，实际 ${JSON.stringify(sEnter.firstPlay)}`);
-      await E.page.click('#soundBtn', { noWaitAfter: true }); // 取消总静音
+      await clickE('#soundBtn', '取消总静音');
       await until(async () => {
         const x = await snd(E);
         return x.enabled && near(x.busDb.master, 0, 0.5) ? x : null;
@@ -1974,7 +1985,7 @@ async function main() {
       // 刷新后第一次取就应该成功：不能靠第一次超时、等 20 秒再取第二次才到（机器闲的时候第二次也能过，所以要明确断言）
       const f = s.musicFetch[want];
       check(f && f.attempt === 1 && f.history.length === 0 && f.result === 0, `钟点 ${hour}：${want} 曲第一次取就应成功，实际 ${JSON.stringify(f)}`);
-      note(`钟点固定 ${hour}：静音进入 → 取消静音后 ${want} 曲淡入（增益 ${s.layers[`music_${want}`].gain}），${other} 不在放，用时 ${((Date.now() - t0) / 1000).toFixed(0)} 秒`);
+      note(`钟点固定 ${hour}：静音进入 → 取消静音后 ${want} 曲淡入（增益 ${s.layers[`music_${want}`].gain}），${other} 不在放，用时 ${((Date.now() - t0) / 1000).toFixed(0)} 秒；点击等待：${clickWaits.join('、')}`);
     }
     E.w.closing = true;
     await E.ctx.close();
