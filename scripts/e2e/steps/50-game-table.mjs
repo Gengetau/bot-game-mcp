@@ -1,6 +1,6 @@
 // C3：走到游戏桌入座，玩一局数字炸弹。A 桌面 1440x900（键盘），B 手机 390x844 触摸（屏幕数字键），C 是只走 API 的居民（凑人数、当对手）。
 // 步骤号都是数字（50.15 就是「50.1 之后的一步」），文件内的子步骤按顺序互相依赖，只能整个文件一起跑。
-// 末尾有一段「怎么让它失败」，每条新断言都按那里写的做过反向验证（或明说只是推理）。
+// 末尾有一段「怎么让它失败」：每条后面写明是「实测过」（临时改坏实现，确认那一步变红，再恢复）还是「只是推理」；没写实测的就是没实测过。
 import { frames, rectOf, godotFeature, closeDock, openDock, dockState, modState } from '../lib/ui.mjs';
 import { apiSay, apiHistory } from '../lib/chat.mjs';
 import { openTown, townRows, townCompose, apiTownSay, apiTownSayWait } from '../lib/town.mjs';
@@ -782,12 +782,23 @@ export default async function run(h) {
 }
 
 // ───────────────────────── 怎么让它失败（反向验证清单）─────────────────────────
-// 每条：改哪里 → 哪一条断言变红。做完要恢复，且改动期间不提交。
-// 1. game.gd on_pick 里去掉「_walk_table == pick_id and _clock < _walk_until」那一行 -> 50 的「连按两下 E 只发一次 navigate」。
-// 2. game.gd pick_seat 里把 taken 判断去掉 -> 50.1 的「落脚点相距 1 米以上」。
-// 3. game.gd blocks_input 恒返回空 -> 50.45 的「局中点地不应发 navigate」。
-// 4. game.gd _guess 去掉本地范围核对（并把 game.js 的范围校验也去掉）-> 50.5 的「本地拒绝的猜数不发 game_act」。
-// 5. game.gd _quit 里去掉 _ignored[aid] = true -> 50.5 的「A 已主动退出：局结束后不应弹结果卡」。
-// 6. game.gd _on_started 里不丢出不在桌边的人（或去掉被丢出的提示）-> 50.4 的「B 收到被丢出的提示」。
-// 7. game.css 去掉 body[data-game] 对 #actions 等的隐藏 -> 50.45 的「局中 #actions 应藏起来」。
-// 8. game.html 的数字键换成 40 像素 -> 51 的「数字键都不小于 44 像素」。
+// 每条：改哪里 -> 哪一条断言变红；末尾标明「实测」（11-15 评审修复时真的改坏过、跑 --only=1,50 --until=<步骤> 看到那一步变红、再恢复）或「推理」（没有实测）。
+// 做完要恢复，且改动期间不提交。
+// 1. game.gd on_pick 里去掉「_walk_table == pick_id and _clock < _walk_until」那一行 -> 50 的「连按两下 E 只发一次 navigate」。【推理】
+// 2. game.gd pick_seat 里把 taken 判断去掉 -> 50.1 的「落脚点相距 1 米以上」。【推理】
+// 3. game.gd blocks_input 恒返回空 -> 50.45 开头的「blocks 文字」；点地不发 navigate 靠的是 main._can_control 先问 blocks_input，所以它同样会红，但那条断言排在后面看不到。
+//    局中 WASD 不发方向帧那条断言靠的是 main._tick_dir 在「在活动里」时先返回（ctx_activity 非空），与 blocks_input 无关，改坏 blocks_input 它不会红。【推理】
+// 4. game.gd _guess 去掉本地范围核对（if rg.size() == 2 ... 那一段）-> 50.5 的「强发越界应在 Godot 一侧被拒」。【实测：变红】
+//    （game.js 的范围校验去掉则是 50.5 的「越界的提示」超时。【推理】）
+// 5. game.gd _quit 里去掉 _ignored[aid] = true -> 50.5 的「A 已主动退出：局结束后不应弹结果卡」。【实测：变红】
+// 6. game.gd 开局被丢出的人不弹提示（两处 ctx.toast(DROPPED_TEXT...) 都去掉）-> 50.4 的「N-B 手机 出现提示「开局的时候你不在桌边…」」。【实测：变红】
+// 7. game.css 去掉 body[data-game] 对 #actions 等的隐藏 -> 50.45 的「局中 #actions 应藏起来」。【推理】
+// 8. game.html 的数字键换成 40 像素 -> 51 的「数字键都不小于 44 像素」。【推理】
+// 9. too_far 不自动重发：game.gd _lobby_act 的 too_far 分支里走过去之后再调一次 _lobby_act -> 50.15 的「不重发 propose_game」（0 -> 4）。【实测：变红】
+// 10. not_enough 名册不变：game.gd _lobby_act 失败分支里对 start 清掉 _acts -> 50.4 的「名册不变、没有开局」。【实测：变红】
+// 11. 结果卡原因与公开投影一致：game.gd _show_result 里给 reason 拼一个「?」-> 51 的「结果卡原因应与公开投影一致」。【实测：变红】
+// 12. 确认条开着时局结束：game.js render() 非对局分支里把 closeConfirm() 改回 $('confirm').hidden = true -> 50.05 的「下一局的「离开这局」按钮应回来」。【实测：变红】
+// 13. 画布持焦时自动聚焦：game.js 聚焦条件改回「activeElement 为空或 body」-> 50.05 的「焦点在画布上时轮到自己：输入框应自动聚焦」。【实测：变红】
+// 14. 触屏接实体键盘：game.js keydown 里 coarse 时直接 return -> 50.05 的「实体键盘的数字进了输入框」。【实测：变红】
+// 15. 横屏矮屏开着侧栏：game.css 换回改前的版本 -> 50.05 的「面板不应盖住右侧栏」。【实测：变红】
+// 16. 50.4 桌保留时间、51 的双击提交 / 断线追上 / 手机实体键盘「没执行到就重打」：【推理】（要靠桌恰好散掉、一局恰好很短才触发，没有做实测）。
