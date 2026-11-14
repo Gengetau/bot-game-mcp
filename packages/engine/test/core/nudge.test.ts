@@ -152,4 +152,20 @@ describe('nudge_ai option', () => {
     await manager.refereeStep(REF, gameId);
     expect(nudges(rec)).toHaveLength(0);
   });
+  it('nudgeAllAgents @ every AI seat (dead included) in secret phases only', () => {
+    const { manager } = setup(3);
+    const { rec } = startGame(manager, 'werewolf', { players: [1, 2, 3, 4, 5, 6].map((n) => bot(n)), referee: REF, options: { nudge_ai: true } });
+    const inst = (manager as any).inst(rec);
+    rec.players.find((p) => p.seat === 2)!.alive = false;
+    const run = (spec: Record<string, unknown>) => {
+      const mark = rec.outboxSeq;
+      inst.openPhase({ key: 'x', title: '测试', requests: [], timeoutMs: 30_000, ...spec });
+      return rec.outbox.filter((d) => d.seq > mark && d.text.includes('查看自己的行动面板')).map((d) => d.mentions.map((m) => m.id).sort());
+    };
+    const all = rec.players.map((p) => p.id).sort();
+    const living = rec.players.filter((p) => p.alive).map((p) => p.id).sort();
+    expect(run({ secret: true, nudgeAllAgents: true })).toEqual([all]);
+    expect(run({ secret: true })).toEqual([living]);
+    expect(run({ secret: false, nudgeAllAgents: true })).toEqual([]);
+  });
 });

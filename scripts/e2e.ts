@@ -873,7 +873,7 @@ class Humans {
     const groupSrc = this.recentGroup(8);
     const sources = [h.lastPrompt, ...groupSrc, h.roleMsg];
     if (key === 'night') {
-      if (h.role === '狼人') {
+      if (h.role === '狼人' || h.role === '狼王') {
         if (!h.chatted.has(title) && chance(this.rng, 0.5)) {
           h.chatted.add(title);
           await this.relay(h, '今晚刀谁比较好？', channel, title);
@@ -897,7 +897,7 @@ class Humans {
       if (canSave && roll < 45) await this.relay(h, this.cmd(h, 'save', undefined, sources, title), channel, title);
       else if (canPoison && roll >= 45 && roll < 70 && others.length > 0) await this.tryTargets(h, title, channel, others, (t) => this.cmd(h, 'poison', t, sources, title), this.cmd(h, 'skipWitch', undefined, sources, title));
       else await this.relay(h, this.cmd(h, 'skipWitch', undefined, sources, title), channel, title);
-    } else if (key === 'hunter') {
+    } else if (key === 'final') {
       if (chance(this.rng, 0.8) && others.length > 0) await this.tryTargets(h, title, channel, others, (t) => this.cmd(h, 'shoot', t, sources, title), this.cmd(h, 'noShoot', undefined, sources, title));
       else await this.relay(h, this.cmd(h, 'noShoot', undefined, sources, title), channel, title);
     } else if (key === 'vote' || key === 'pk_vote') {
@@ -1272,7 +1272,7 @@ async function scenarioWerewolf(env: Env, rng: Rng): Promise<Scenario> {
 
   const refConn = sc.conn(env, 'ref', env.ref.key);
   const ais = aiCfgs.map((cfg, i) => ({ cfg, selfPost: i % 2 === 0, conn: sc.conn(env, `ai${i + 1}`, cfg.key, 'http', i % 3 === 2 ? 'x-api-key' : 'bearer') }));
-  const options = { night_min_s: 0, speech_gap_ms: 200, night_timeout_s: 40, witch_timeout_s: 30, speech_timeout_s: 30, vote_timeout_s: 30, last_words_timeout_s: 30, hunter_timeout_s: 20, pk_speech_timeout_s: 30 };
+  const options = { wolf_king: true, night_min_s: 0, speech_gap_ms: 200, night_timeout_s: 40, witch_timeout_s: 30, speech_timeout_s: 30, vote_timeout_s: 30, last_words_timeout_s: 30, hunter_timeout_s: 20, pk_speech_timeout_s: 30 };
   const gameId = await lobby(env, sc, refConn, 'werewolf', groupId, options, ais.map((a) => ({ conn: a.conn, selfPost: a.selfPost })), humanSpecs);
   log('S2', `狼人杀 ${gameId} 开局：9 人（7 AI + 2 真人）`);
 

@@ -95,11 +95,11 @@ const GODS: Role[] = ['seer', 'witch', 'hunter', 'guard', 'idiot'];
 const ABILITY: Record<Role, string> = {
   werewolf: '每晚与狼队友商量并选择一名玩家袭击（可空刀）；白天隐藏身份，帮狼队赢。白天发言阶段可以自爆：亮明狼人身份立即出局（没有遗言），当天直接结束、不再投票，进入黑夜。',
   wolf_king:
-    '狼人阵营，和狼队友一起刀人、密谈、可自爆。出局时（被刀、被放逐、被猎人带走）可以开枪带走一名玩家；被女巫毒死或自爆则不能开枪。',
+    '狼人阵营，和狼队友一起刀人、密谈、可自爆。出局时（被刀、被放逐、被开枪带走）会进入匿名的「临终」环节，可以在里面私下选择带走一名玩家，也可以不开枪，环节结束时群里才公布你的身份和结果；被女巫毒死或自爆则不能开枪。',
   villager: '没有特殊技能，白天通过发言与投票找出狼人。',
   seer: '每晚可查验一名玩家（不含自己）是「好人」还是「狼人」。',
   witch: '拥有一瓶解药和一瓶毒药（各限一次，同一晚最多用一瓶）。解药可救当晚被刀的人，毒药可毒杀任意一人。',
-  hunter: '被狼人刀杀或被放逐出局时，可开枪带走一名玩家；被女巫毒死则不能开枪；若这次死亡已使某一方满足胜利条件，游戏立即结束，不能开枪。',
+  hunter: '出局时（被狼人刀杀、被放逐、被开枪带走）会进入匿名的「临终」环节，可以在里面私下选择带走一名玩家，也可以不开枪，环节结束时群里才公布你的身份和结果；被女巫毒死则不能开枪；若这次死亡已使某一方满足胜利条件，游戏立即结束，不能开枪。',
   guard: '每晚可守护一名玩家（可守自己），使其不被狼人刀杀；不能连续两晚守护同一人。同守同救则目标仍会死亡。',
   idiot: '被放逐时翻牌公开身份且不会死亡，但此后永远失去投票权；其他方式死亡与常人相同。',
 };
@@ -107,11 +107,11 @@ const ABILITY: Record<Role, string> = {
 const HUMAN_CMDS: Record<Role, string> = {
   werewolf: '夜间私聊我：「刀3」选择袭击目标，「空刀」放弃；夜间发其他任意文字会转发给狼队友。白天发言阶段在群里发「自爆」可以自爆。',
   wolf_king:
-    '夜间私聊我：「刀3」选择袭击目标，「空刀」放弃；夜间发其他任意文字会转发给狼队友。白天发言阶段在群里发「自爆」可以自爆。出局时按提示发「开枪3」带走 3 号，或「不开枪」。',
+    '夜间私聊我：「刀3」选择袭击目标，「空刀」放弃；夜间发其他任意文字会转发给狼队友。白天发言阶段在群里发「自爆」可以自爆。出局后会进入「临终」环节：裁判会私聊你提示，请私聊裁判发「开枪3」带走 3 号，或「不开枪」；不要在群里发。',
   villager: '白天按提示在群里发言（说完发「过」），投票发「投3」或「弃票」。',
   seer: '夜间私聊我：「验3」查验 3 号。',
   witch: '夜间私聊我：「救」使用解药，「毒3」毒杀 3 号，「不用」跳过。',
-  hunter: '死亡时按提示发：「开枪3」带走 3 号，或「不开枪」。',
+  hunter: '出局后会进入「临终」环节：裁判会私聊你提示，请私聊裁判发「开枪3」带走 3 号，或「不开枪」；不要在群里发。',
   guard: '夜间私聊我：「守3」守护 3 号，「空守」放弃。',
   idiot: '白天按提示发言、投票；被放逐时会自动翻牌。',
 };
@@ -131,7 +131,10 @@ type Step =
   | { t: 'witch' }
   | { t: 'dawn' }
   | { t: 'last_words'; seat: Seat }
+  /** 已废弃，不再生成；只为读旧存档，按 final 处理。 */
   | { t: 'hunter'; seat: Seat }
+  /** 匿名的保密「临终」环节；seat 是这一批里可以开枪的人，没有则为 0（空转）。 */
+  | { t: 'final'; seat: Seat }
   | { t: 'discussion' }
   | { t: 'speech'; seat: Seat; second?: boolean }
   | { t: 'claim' }
@@ -194,6 +197,8 @@ export interface WerewolfState {
   nightLog?: NightRecord[];
   /** 每个座位自己夜里做过什么（只进本人的私密视图，帮 AI 记住自己用过的药、守过的人）。旧存档没有这个字段。 */
   acts?: Record<string, string[]>;
+  /** 身份已经公开的可开枪者座位（自爆亮明的狼王、临终环节里亮明的猎人/狼王）。旧存档没有这个字段。 */
+  revealed?: Seat[];
 }
 
 const SPEECH_KEYS = new Set(['speech', 'speech2', 'last_words', 'pk_speech', 'sheriff_speech']);
@@ -207,18 +212,19 @@ const RULES = `## 狼人杀
 **流程**：
 1. 🌙 夜晚（秘密）：守卫守人 → 狼人刀人（多狼取最多票，平票随机，可空刀；提交后到阶段结束前可改刀，可用私聊密谈）→ 预言家验人（立即得知结果）。
 2. 女巫：若有药，得知被刀的人（仅当还有解药时），可救 / 毒 / 不用，同夜最多用一瓶。
-3. ☀️ 天亮：公布死亡名单（不说死因）或平安夜。被刀的人：被守或被救则活，**同守同救则死**。第一夜死者有遗言；猎人被刀死可开枪（被毒死不能）。**胜负判定优先**：若这次死亡已使某一方满足胜利条件，游戏立即结束，不再有猎人开枪和遗言。
+3. ☀️ 天亮：公布死亡名单（不说死因）或平安夜。被刀的人：被守或被救则活，**同守同救则死**。第一夜死者有遗言；猎人、狼王出局后的开枪见下面「临终环节」（被毒死不能开枪）。**胜负判定优先**：若这次死亡已使某一方满足胜利条件，游戏立即结束，不再有遗言和临终环节。
 4. 👮 警长竞选（\`sheriff\`，默认 8 人及以上开启）：仅第 1 天，在讨论前进行。想当警长的发「上警」→ 上警者依次竞选发言 → 未上警的人投票；平票则平票者再发言、再投一次，仍平票则警徽流失；只有一人上警直接当选。警长放逐投票算 **1.5 票**，每天讨论前由警长**决定发言顺序**（「顺序」号码从小到大 /「逆序」从大到小；昨夜单死时从死者的下一位开始，否则从警长的下一位开始），警长**最后发言归票**；警长出局时（遗言后）可「警徽给3」移交或「撕警徽」。
 5. 🙋 起跳（\`claim_phase\`，默认关闭；有警长或当天有警长竞选时跳过）：讨论前限时报名，发「起跳」的人按起跳先后**最先发言**，其余人随后。起跳只决定顺序，真跳悍跳都可以，具体内容在发言里讲。
 6. 🗣 依次发言（有警长按警长定的顺序；没有警长时，昨夜单死从死者的下一位开始，否则随机起点，方向随机；真人说完发「过」；\`second_round\` 开启时所有人再补充发言一轮）→ 🗳 投票放逐得票最多者；平票则平票者 PK 发言，再由其他人投票，仍平票则无人出局。
 7. 💥 自爆（\`self_explode\`，默认开启）：白天的警长竞选报名/发言、警长定序、起跳、发言、PK 发言阶段，存活的狼人（含狼王）可以在群里发「自爆」：亮明狼人身份立即出局，**没有遗言**，当天剩下的发言和投票全部取消，直接进入黑夜。警长竞选中自爆则警徽流失；警长自爆，警徽也随之流失。遗言、开枪、移交警徽和投票时不能自爆。
-8. 被放逐者有遗言；猎人、狼王可开枪；白痴被放逐则翻牌免死但失去投票权。同样，若放逐（或猎人开枪）已使某一方满足胜利条件，游戏立即结束，不再有猎人开枪和遗言。
+8. 被放逐者有遗言；猎人、狼王可开枪（见「临终环节」）；白痴被放逐则翻牌免死但失去投票权。同样，若放逐（或开枪）已使某一方满足胜利条件，游戏立即结束，不再有遗言和临终环节。
 **狼王**：狼人阵营，夜里和狼队友一起刀人；出局时（被刀、被放逐、被开枪带走）可以开枪带走一人，被女巫毒死或自爆则不能开枪。
+**临终环节（猎人、狼王的开枪）**：猎人、狼王的开枪是**私下选**的，选完之前身份不公开。板子里有猎人或狼王、且还有没亮明身份的，每次有人出局（自爆除外，一批一次；被开枪带走的人也算一批）之后都会进入一个匿名的保密环节「第N天·临终」，在遗言和警徽移交之后。不论出局的是谁、有没有人要行动，名称和时长（\`night_min_s>0\` 时固定等满 \`hunter_timeout_s\` 秒；设为 0 则没有时长保护）都一样，环节里大家请安静。出局的猎人或狼王在里面私下选（真人私聊裁判发「开枪3」或「不开枪」，AI 用 act），环节结束时群里才公布「🔫 3号 小明 是猎人，开枪带走了 5号 小红。」（不开枪、超时也同样亮明身份）。猎人、狼王都亮明（开枪、不开枪、超时或自爆）之后不再有这个环节；被毒死的猎人、狼王不会亮明，所以之后每次出局仍有这个环节（对局里是空转的，谁也不知道有没有人在行动）。
 **胜负**：狼人（含狼王）全灭 → 好人胜。\`win_mode=side\`（屠边）：所有神职死光 或 所有村民死光 → 狼人胜；\`all\`（屠城）：所有好人死光 → 狼人胜；\`auto\`（默认）：6~7 人屠城、8 人及以上屠边。结束时公布身份并**复盘每一夜**（刀谁、守谁、救/毒、验人结果）。
-**选项**：\`witch_self_save\`（first_night 默认/never/always）、\`witch_sees_victim\`（until_antidote 默认：解药用掉后看不到刀口，这是常见规则；always：没解药也告诉女巫刀口）、\`first_night_last_words\`、各阶段超时（秒）、\`night_min_s\`（夜晚与女巫阶段最短时长，默认 20 秒，防止通过结算速度推断谁还活着；只要板子里有女巫，每晚都会开启女巫阶段，女巫死亡或药用完时只是空等）。
+**选项**：\`witch_self_save\`（first_night 默认/never/always）、\`witch_sees_victim\`（until_antidote 默认：解药用掉后看不到刀口，这是常见规则；always：没解药也告诉女巫刀口）、\`first_night_last_words\`、各阶段超时（秒）、\`night_min_s\`（夜晚与女巫阶段最短时长，默认 20 秒，防止通过结算速度推断谁还活着；只要板子里有女巫，每晚都会开启女巫阶段，女巫死亡或药用完时只是空等；板子里有猎人或狼王时，它也让「临终」环节固定持续满 \`hunter_timeout_s\` 秒）。
 **超时**：未行动视为放弃（空刀/空守/不用药/弃票/过）；发言超时会公告，投票结果里「未投票（超时）」和主动「弃票」分开标出。连续 6 个昼夜无人死亡视为平局。
 
-**真人指令**：夜间私聊——狼人「刀3」「空刀」、预言家「验3」、守卫「守3」「空守」、女巫「救」「毒3」「不用」；白天——「上警」「不上警」、警长定序「顺序」「逆序」，发言直接说，结束发「过」；投票「投3」「弃票」；猎人/狼王「开枪3」「不开枪」；狼人白天「自爆」；警长出局「警徽给3」「撕警徽」。
+**真人指令**：夜间私聊——狼人「刀3」「空刀」、预言家「验3」、守卫「守3」「空守」、女巫「救」「毒3」「不用」；白天——「上警」「不上警」、警长定序「顺序」「逆序」，发言直接说，结束发「过」；投票「投3」「弃票」；猎人/狼王出局后收到私聊提示时，私聊发「开枪3」「不开枪」；狼人白天「自爆」；警长出局「警徽给3」「撕警徽」。
 **bot 指令**：\`act({"action":"kill|check|guard|save|poison|vote|shoot|run|claim|forward|backward|pass_badge|explode|skip","target":N})\`；发言 \`speak({"text":"…"})\`；狼人夜间密谈 \`speak({"text":"…","channel":"team"})\`。`;
 
 export class WerewolfGame extends BaseGame<WerewolfState, WerewolfOptions> {
@@ -357,8 +363,8 @@ export class WerewolfGame extends BaseGame<WerewolfState, WerewolfOptions> {
       case 'witch':
         this.afterWitch();
         break;
-      case 'hunter':
-        if (this.afterHunter()) return;
+      case 'final':
+        if (this.afterFinal()) return;
         break;
       case 'claim':
         this.afterClaim();
@@ -428,8 +434,10 @@ export class WerewolfGame extends BaseGame<WerewolfState, WerewolfOptions> {
         return this.openBadge(step.seat);
       case 'pk_speech':
         return this.openSpeech('pk_speech', step.seat);
-      case 'hunter':
-        return this.openHunter(step.seat);
+      case 'final':
+        return this.openFinal(step.seat);
+      case 'hunter': // 旧存档里排着的步骤，按临终环节处理
+        return this.openFinal(step.seat);
       case 'discussion':
         if (this.sheriffSeat() && !this.state.orderDir) {
           this.push({ t: 'sheriff_order' }, { t: 'discussion' });
@@ -446,6 +454,33 @@ export class WerewolfGame extends BaseGame<WerewolfState, WerewolfOptions> {
 
   private nightMinMs(): number {
     return this.options.night_min_s * 1000;
+  }
+
+  /** 临终环节的最短时长：有时长保护时固定等满 hunter_timeout_s，空转和有人行动的环节一样长。 */
+  private finalMinMs(): number {
+    return this.options.night_min_s > 0 ? this.options.hunter_timeout_s * 1000 : 0;
+  }
+
+  /** 还有几个可开枪身份没公开亮明：板子配置（公开）减去已亮明的座位数（公开）。 */
+  private shootersLeft(): number {
+    const c = this.state.config;
+    return Math.max(0, c.hunter + c.wolf_king - (this.state.revealed ?? []).length);
+  }
+
+  /** 还没亮明的可开枪身份的名字（公告用）。 */
+  private shooterNamesLeft(): string[] {
+    const revealed = this.state.revealed ?? [];
+    const out: string[] = [];
+    for (const r of ['hunter', 'wolf_king'] as const) {
+      const used = revealed.filter((s) => this.roleOf(s) === r).length;
+      if (this.state.config[r] - used > 0) out.push(ROLE_NAME[r]);
+    }
+    return out;
+  }
+
+  private reveal(seat: Seat): void {
+    const rv = (this.state.revealed ??= []);
+    if (!rv.includes(seat)) rv.push(seat);
   }
 
   // ───────────────────────── 夜晚 ─────────────────────────
@@ -748,7 +783,14 @@ export class WerewolfGame extends BaseGame<WerewolfState, WerewolfOptions> {
     if (lastWords) for (const d of deaths) steps.push({ t: 'last_words', seat: d.seat });
     // 警长出局：遗言之后移交警徽
     for (const d of deaths) if (this.state.sheriff && this.state.sheriff === d.seat) steps.push({ t: 'badge', seat: d.seat });
-    for (const d of deaths) if (isShooter(this.roleOf(d.seat)) && d.cause !== 'poison' && d.cause !== 'explode') steps.push({ t: 'hunter', seat: d.seat });
+    // 临终环节：出现与否只看公开信息（这批有没有死人、板子里有几个可开枪身份、已亮明几个），
+    // 不看死者身份和死因；seat 只存在序列化状态里，不进任何视图。
+    if (deaths.length > 0 && this.shootersLeft() > 0) {
+      const eligible = deaths.filter((d) => isShooter(this.roleOf(d.seat)) && d.cause !== 'poison' && d.cause !== 'explode');
+      // 一批里至多一个可开枪者：狼刀至多一个、毒死的不能开枪、放逐一个、开枪带走一个，自爆不经这里。
+      if (eligible.length > 1) throw new Error('werewolf: 一批里不应出现多个可开枪者');
+      steps.push({ t: 'final', seat: eligible[0]?.seat ?? 0 });
+    }
     this.push(...steps);
   }
 
@@ -1165,52 +1207,66 @@ export class WerewolfGame extends BaseGame<WerewolfState, WerewolfOptions> {
     }
   }
 
-  // ───────────────────────── 猎人 ─────────────────────────
+  // ───────────────────────── 临终（猎人、狼王私下开枪） ─────────────────────────
 
-  private openHunter(seat: Seat): boolean {
+  private openFinal(seat: Seat): boolean {
     const alive = this.aliveSeats();
-    const who = ROLE_NAME[this.roleOf(seat)];
+    const T = this.options.hunter_timeout_s;
     this.announce(
-      `🔫 ${this.label(seat)} 是${who}！请在 ${this.options.hunter_timeout_s} 秒内在群里发「${this.exampleCmd('开枪3', alive)}」带走 ${this.exampleCmd('3号', alive)}，或发「不开枪」放弃。`,
+      `⏳ 第${this.rec.round}天·临终环节（限时 ${T} 秒）：本局还有${this.shooterNamesLeft().join('、')}没有亮明身份，所以每次有人出局之后都会有这个环节，不论出局的是谁。需要行动的人会私下收到提示，结果在环节结束后才公布；其余人请安静等候，不要发言。`,
     );
+    const requests = seat
+      ? [
+          {
+            seat,
+            channel: 'private' as const,
+            prompt: `你是${ROLE_NAME[this.roleOf(seat)]}，刚刚出局。请在这个环节里私下选择带走一名玩家，或选择不开枪。结果和你的身份要等环节结束才公布：真人请私聊裁判（也可以用你的座位网页）、AI 用 act，不要在群里发指令。`,
+            actions: [this.specTarget('shoot', '开枪', alive, '开枪3'), this.specSkip('不开枪', '不开枪')],
+          },
+        ]
+      : [];
     this.openPhase({
-      key: 'hunter',
-      title: `第${this.rec.round}天·${who}开枪`,
-      requests: [
-        {
-          seat,
-          channel: 'group',
-          prompt: `你是${who}，请选择带走一名玩家，或不开枪。`,
-          actions: [this.specTarget('shoot', '开枪', alive, '开枪3'), this.specSkip('不开枪', '不开枪')],
-        },
-      ],
-      timeoutMs: this.options.hunter_timeout_s * 1000,
+      key: 'final',
+      title: `第${this.rec.round}天·临终`,
+      requests,
+      timeoutMs: T * 1000,
+      secret: true,
+      minDurationMs: this.finalMinMs(),
+      nudgeAllAgents: true,
       data: { seat },
     });
     return true;
   }
 
-  private hunterAction(seat: Seat, input: ActionInput): string {
+  private finalAction(seat: Seat, input: ActionInput, meta: ActionMeta): string {
     const req = this.requireTurn(seat, input.action);
     const ph = this.phase!;
     if (input.action === 'shoot') ph.data.target = this.requireTarget(req, 'shoot', input.target);
-    else if (input.action !== 'skip') throw invalidAction('开枪阶段可执行：shoot、skip。');
-    if (input.action === 'skip') ph.data.skipped = true;
+    else if (input.action === 'skip') ph.data.skipped = true;
+    else throw invalidAction('临终环节可执行：shoot（开枪）、skip（不开枪）。');
     this.markDone(seat);
-    return input.action === 'shoot' ? `你选择开枪带走 ${this.label(ph.data.target)}。` : '你选择不开枪。';
+    if (meta.channel === 'group') {
+      this.tell(seat, '⚠️ 你刚才在群里发了开枪指令。我已经按你的选择记录，但这条消息群里的人都看得到；下次请私聊裁判。', { kind: 'info', category: 'feedback' });
+    }
+    return input.action === 'shoot'
+      ? `你选择开枪带走 ${this.label(ph.data.target)}。结果和你的身份会在这个环节结束时公布。`
+      : '你选择不开枪。你的身份会在这个环节结束时公布。';
   }
 
-  /** 返回 true 表示游戏已结束。 */
-  private afterHunter(): boolean {
+  /** 环节结束时结算。返回 true 表示游戏已结束。 */
+  private afterFinal(): boolean {
     const ph = this.phase!;
-    const hunter = ph.data.seat as Seat;
+    const seat = ph.data.seat as Seat;
+    if (!seat) return false; // 空转：什么都不公布
+    this.reveal(seat);
+    const who = ROLE_NAME[this.roleOf(seat)];
     const target = ph.data.target as Seat | undefined;
     if (!target || !this.isAlive(target)) {
-      this.announce(ph.data.skipped ? `🔫 ${this.label(hunter)} 选择不开枪。` : `🔫 ${this.label(hunter)} 超时未开枪。`);
+      this.announce(ph.data.skipped ? `🔫 ${this.label(seat)} 是${who}，选择不开枪。` : `🔫 ${this.label(seat)} 是${who}，超时未开枪。`);
       return false;
     }
-    this.markDead(target, 'shot', `第${this.rec.round}天被${ROLE_NAME[this.roleOf(hunter)]}带走`);
-    this.announce(`🔫 ${this.label(hunter)} 开枪带走了 ${this.label(target)}。`, { kind: 'death', data: { seats: [target] } });
+    this.markDead(target, 'shot', `第${this.rec.round}天被${who}带走`);
+    this.announce(`🔫 ${this.label(seat)} 是${who}，开枪带走了 ${this.label(target)}。`, { kind: 'death', data: { seats: [target] } });
     if (this.checkWin()) return true;
     this.afterDeaths([{ seat: target, cause: 'shot' }], true);
     return false;
@@ -1261,6 +1317,7 @@ export class WerewolfGame extends BaseGame<WerewolfState, WerewolfOptions> {
       { kind: 'death', data: { seats: [seat], explode: true } },
     );
     this.state.voteLog.push({ day, kind: 'vote', votes: {}, abstain: [], result: `${seat}号 自爆，当天无放逐` });
+    if (isShooter(this.roleOf(seat))) this.reveal(seat);
     if (this.checkWin()) return '你自爆了。';
     this.state.agenda = [{ t: 'night', n: day + 1 }];
     this.proceed();
@@ -1404,7 +1461,7 @@ export class WerewolfGame extends BaseGame<WerewolfState, WerewolfOptions> {
     const key = this.phase?.key;
     if (key === 'night') return this.nightAction(seat, input);
     if (key === 'witch') return this.witchAction(seat, input);
-    if (key === 'hunter') return this.hunterAction(seat, input);
+    if (key === 'final') return this.finalAction(seat, input, meta);
     if (key === 'vote' || key === 'pk_vote' || key === 'sheriff_vote') return this.voteAction(seat, input);
     if (key === 'claim') return this.claimAction(seat, input);
     if (key === 'sheriff_order') return this.sheriffOrderAction(seat, input);
@@ -1536,7 +1593,7 @@ export class WerewolfGame extends BaseGame<WerewolfState, WerewolfOptions> {
       if (/^(?:不救|不毒|不用药)$/u.test(bare) || isSkipWord(bare)) return { action: 'skip' };
       return null;
     }
-    if (key === 'hunter') {
+    if (key === 'final') {
       if (!this.pendingOf(seat)) return null;
       const tg = targetOf(/^(?:开枪|带走|枪|崩|射)\s*(.+)$/u);
       if (tg !== null) return { action: 'shoot', target: tg };
@@ -1636,12 +1693,12 @@ export const werewolfDefinition: GameDefinition<WerewolfOptions> = {
   summary: '经典身份推理：狼人夜间刀人，好人白天发言投票。含预言家、女巫、猎人、守卫、白痴、狼王，狼人可自爆，身份与结算全由程序决定。',
   rules: RULES,
   playerTips:
-    '- 好人：认真分析发言与投票，预言家验到狼人后要想办法让大家信任。\n- 不要只说「等预言家」「先听听」：每次发言至少点出一个怀疑对象和理由，没有信息就分析别人的发言和投票。\n- 预言家：一般第 1 天就起跳（或上警）报出查验结果，并说明今晚打算验谁；被悍跳时要对跳，讲清楚对方哪里不像。\n- 女巫：可以在合适时机报出银水（救下的人）或毒了谁来帮好人站边；被投票威胁时亮身份自保。\n- 警长：每天讨论前用 forward（顺序）/ backward（逆序）决定发言方向，想先听谁就往那边排；警长（1.5 票）最后发言时要明确归票。\n- 狼人：夜间可密谈（speak channel=team），白天不要暴露队友；可以悍跳预言家。局面不利时（队友今天要被票出、警徽要落到真预言家手里）可以 act({\"action\":\"explode\"}) 自爆，当天立即结束进入黑夜，代价是自己出局、没有遗言。狼王出局时还能开枪带走一人，优先带走神职。\n- 夜里的私密信息只写在自己的视角里，不要在群里复述工具内容。\n- 白天发言只说话，不要在发言里透露不该公开的程序信息。',
+    '- 好人：认真分析发言与投票，预言家验到狼人后要想办法让大家信任。\n- 不要只说「等预言家」「先听听」：每次发言至少点出一个怀疑对象和理由，没有信息就分析别人的发言和投票。\n- 预言家：一般第 1 天就起跳（或上警）报出查验结果，并说明今晚打算验谁；被悍跳时要对跳，讲清楚对方哪里不像。\n- 女巫：可以在合适时机报出银水（救下的人）或毒了谁来帮好人站边；被投票威胁时亮身份自保。\n- 警长：每天讨论前用 forward（顺序）/ backward（逆序）决定发言方向，想先听谁就往那边排；警长（1.5 票）最后发言时要明确归票。\n- 狼人：夜间可密谈（speak channel=team），白天不要暴露队友；可以悍跳预言家。局面不利时（队友今天要被票出、警徽要落到真预言家手里）可以 act({\"action\":\"explode\"}) 自爆，当天立即结束进入黑夜，代价是自己出局、没有遗言。猎人、狼王出局时会进入匿名的「临终」环节（不论谁出局都有，直到猎人、狼王都亮明身份），在里面私下用 act 选择开枪目标（也可不开枪），环节结束时才公布；优先带走神职。出局后如果 get_my_view 里还有 todo（临终环节），照常提交；没有 todo 就安静等待，不要在群里发言或猜测谁在行动。\n- 夜里的私密信息只写在自己的视角里，不要在群里复述工具内容。\n- 白天发言只说话，不要在发言里透露不该公开的程序信息。',
   optionsSchema,
   optionsHelp: {
     ...commonOptionsHelp,
     roles: '自定义身份数量 {werewolf,wolf_king,villager,seer,witch,hunter,guard,idiot}，合计须等于玩家数；13~16 人必填',
-    wolf_king: '默认板子里把一只普通狼换成狼王（默认 false）。狼王出局时可开枪带走一人，被毒或自爆不能开枪',
+    wolf_king: '默认板子里把一只普通狼换成狼王（默认 false）。狼王出局时在匿名的「临终」环节私下开枪带走一人（不开枪或超时也亮明身份），被毒或自爆不能开枪',
     self_explode: '狼人白天发言阶段能否自爆（默认 true）。自爆者立即出局、无遗言，当天结束直接进入黑夜；警长竞选时自爆则警徽流失',
     win_mode: 'auto=6~7 人屠城、8 人及以上屠边（默认）；side=屠边（神职或村民全灭则狼胜）；all=屠城（好人全灭才狼胜）',
     claim_phase: '没有警长时，每天讨论前是否有起跳环节，起跳者先发言（默认 false；有警长或当天竞选警长时跳过）',
@@ -1659,9 +1716,9 @@ export const werewolfDefinition: GameDefinition<WerewolfOptions> = {
     speech_timeout_s: '白天发言限时（秒，默认 90）',
     vote_timeout_s: '投票限时（秒，默认 45）',
     last_words_timeout_s: '遗言限时（秒，默认 60）',
-    hunter_timeout_s: '猎人开枪限时（秒，默认 30）',
+    hunter_timeout_s: '猎人、狼王「临终」开枪环节的限时（秒，默认 30）',
     pk_speech_timeout_s: 'PK 发言限时（秒，默认 60）',
-    night_min_s: '夜晚/女巫阶段最短持续秒数（默认 20）；>0 时即使都提交了也等满，避免从结算速度推断谁还活着；设 0 可关闭',
+    night_min_s: '夜晚/女巫阶段最短持续秒数（默认 20）；>0 时即使都提交了也等满，避免从结算速度推断谁还活着；板子里有猎人或狼王时，「临终」环节也固定持续满 hunter_timeout_s 秒；设 0 可关闭',
   },
   checkStart(playerCount, options) {
     const r = resolveRoles(playerCount, options);
