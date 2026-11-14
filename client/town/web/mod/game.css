@@ -112,11 +112,12 @@ body[data-dock="drawer"] #gamePanel .game-input { margin-top: 6px; }
 body[data-dock="drawer"] #gamePanel .game-hint { margin-top: 2px; }
 body[data-dock="drawer"][data-dock-open="1"] #gamePanel { bottom: calc(var(--dock-h, 0px) + 8px); }
 
-/* 横屏矮屏：左右两栏，左边是局面，右边是输入 */
+/* 横屏矮屏：左右两栏，左边是局面，右边是输入。
+   右栏要放得下一排 6 个数字键、每个不小于 44 像素（6 x 44 + 5 x 4 = 284），所以右栏最窄 292px，面板也跟着放宽 */
 @media (orientation: landscape) and (max-height: 520px) {
-  #gamePanel { width: min(560px, 62vw); max-height: calc(100vh - 70px); }
-  body[data-dock="drawer"] #gamePanel { left: calc(8px + var(--safe-left)); right: auto; width: min(560px, 70vw); max-height: calc(100vh - var(--game-bottom) - 60px); }
-  #gamePanel .game-play { display: grid; grid-template-columns: 1fr minmax(210px, 42%); grid-auto-flow: dense; column-gap: 12px; align-items: start; }
+  #gamePanel { width: min(600px, 86vw); max-height: calc(100vh - 70px); }
+  body[data-dock="drawer"] #gamePanel { left: calc(8px + var(--safe-left)); right: auto; width: min(600px, 86vw); max-height: calc(100vh - var(--game-bottom) - 60px); }
+  #gamePanel .game-play { display: grid; grid-template-columns: minmax(0, 1fr) minmax(292px, 55%); grid-auto-flow: dense; column-gap: 12px; align-items: start; }
   #gamePanel .game-head, #gamePanel .game-confirm { grid-column: 1 / 3; }
   #gamePanel .game-range, #gamePanel .game-players, #gamePanel .game-hist { grid-column: 1; }
   #gamePanel .game-input { grid-column: 2; grid-row: 3 / 6; margin-top: 6px; }

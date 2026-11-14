@@ -428,8 +428,10 @@ export default async function run(h) {
       check(await B.page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1), `${what}：没有横向溢出`);
       const ib = await rectOf(B.page, '#gamePanel [data-role="input"]');
       check(fits(ib, vw, vh), `${what}：输入框应在视口里：${JSON.stringify(ib)}`);
-      const pk = await rectOf(B.page, '#gamePanel [data-key="5"]');
-      check(fits(pk, vw, vh) && pk.width >= 44 && pk.height >= 44, `${what}：数字键应在视口里且不小于 44 像素：${JSON.stringify(pk)}`);
+      // 12 个键逐个看：都在视口里、都不小于 44 像素（只看中间一个键的话，最后一排被挤出视口也发现不了）
+      const pks = await B.page.evaluate(() => [...document.querySelectorAll('#gamePanel [data-key]')].map((e) => { const r = e.getBoundingClientRect(); return { key: e.dataset.key, left: r.left, top: r.top, right: r.right, bottom: r.bottom, width: r.width, height: r.height }; }));
+      const badKeys = pks.filter((k) => !fits(k, vw, vh) || k.width < 44 || k.height < 44);
+      check(pks.length === 12 && badKeys.length === 0, `${what}：12 个数字键都应在视口里且不小于 44 像素：共 ${pks.length} 个，不合格的 ${JSON.stringify(badKeys.slice(0, 3))}`);
     }
     await B.page.setViewportSize({ width: 390, height: 844 });
     await frames(B.page, 4);
@@ -531,6 +533,9 @@ export default async function run(h) {
       note(`恶意名字「${evil}」登录后服务端存的名字是「${dname}」`);
       await D.walk('arcade');
       await D.walk(T2);
+      // 51 的收尾里 A 按过 S（核对局后 WASD 能走），已经离开桌边：先走回桌二，再等桌边的按钮
+      check((await apiAct(A, { type: 'navigate', to: T2 })).status === 200, 'A 走回桌二');
+      await waitIdle(A);
       for (const p of [A, B]) await until(async () => (await snap(p.page)).nearValid === true && ((await btn(p, `f:game:propose:${T2}`)) || (await btn(p, 'f:game:join:'))), 25_000, `${p.label} 在桌二边`, 200);
       await click(A, `f:game:propose:${T2}`);
       await until(async () => (await lobbyId(A)) !== '', 20_000, 'A 开了桌二');
