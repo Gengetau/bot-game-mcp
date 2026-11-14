@@ -905,6 +905,13 @@ export class Invariants {
       db.scalar("SELECT COUNT(*) FROM world_events WHERE payload LIKE '%npc:%'") +
       db.scalar("SELECT COUNT(*) FROM event_parties WHERE resident_id LIKE 'npc:%'");
     if (ev > 0) fail('npc_no_events', `有 ${ev} 条事件 / 事实提到了 NPC`, null);
+    // NPC 的台词只给真人听众发 chat 事件：AI 居民一条也不该有（私有事件会让 AI 挂着的 world_wait 返回，等于绕过附近聊天的叫醒额度）
+    this.pass('npc_chat_humans_only');
+    const toAgents = db.scalar(
+      `SELECT COUNT(*) FROM recipient_events e JOIN residents r ON r.resident_id = e.resident_id
+       WHERE e.type = 'chat' AND r.kind <> 'human' AND e.projection LIKE '%"kind":"npc"%'`,
+    );
+    if (toAgents > 0) fail('npc_chat_humans_only', `有 ${toAgents} 条 NPC 台词的 chat 事件发给了 AI 居民`, null);
   }
 
   /** 空间这一层：位置、区域标签、导航任务、租约截止。只读。 */
@@ -1171,7 +1178,7 @@ export interface WakeStats {
  *  - 上限：任何一位 AI 听者，在任意一小时里，因别的 AI 的附近聊天收到的 chat 事件不超过 nearbyWakeBurst + nearbyWakePerHour，
  *    其中来自同一位发言者的不超过 nearbyWakePairBurst + nearbyWakePairPerHour（当场的和补叫的都算）；
  *  - 不丢：AI 对 AI 的一句话如果没有当场事件，三者必居其一：后来有一条附近聊天事件发给了听者（messageId 更大）；
- *    听者名下有待办的补叫任务；听者已经不在场 / 进过对局 / 离开又回来（它回来时自己会读视图），或者那句话已经过了视图的 30 分钟窗口。
+ *    听者名下有待办的补叫任务；听者已经不在场 / 这句话之后进过一局开打了的小游戏 / 离开又回来（它回来时自己会读视图），或者那句话已经过了视图的 30 分钟窗口。
  *    私宅里说的话只算上限，不核对「不丢」（走出又走进同一间屋的听者没法只凭表判断）。
  * sinceSentAt：只核对这个时刻之后说的话的「不丢」（周期检查只看最近一段，收尾检查看全部）。
  */
@@ -1238,12 +1245,19 @@ export function nearbyWakeCheck(w: WorldService, inv: Invariants, now: number, s
       if (sentAt < now - P.eventReplayRetentionMs) return;
       stats.suppressed++;
       if (sentAt < sinceSentAt || String(row.space_id).startsWith('home:')) return;
+      // 「进过对局」按开局时刻算，不按报名时刻：听者可以先报名（凑桌时仍在场、仍听得到），这句话被压下之后才开局，
+      // 补叫到期时它在局里就作罢（它出局 / 散局时有自己的事件，回来会读视图）。只凑桌没开成的不算离开。
       const away =
         me.present_since === null ||
         me.activity_id !== null ||
         Number(me.present_since) > sentAt ||
         now - sentAt >= 30 * MIN ||
-        !!w.db.get('SELECT 1 AS x FROM activity_participants WHERE resident_id = ? AND joined_at > ?', L, sentAt);
+        !!w.db.get(
+          `SELECT 1 AS x FROM activity_participants p JOIN activities a ON a.activity_id = p.activity_id
+           WHERE p.resident_id = ? AND a.started_at IS NOT NULL AND a.started_at >= ?`,
+          L,
+          sentAt,
+        );
       if (maxEvSeq > seq || hasJob || away) passed('nearby_wake_lost');
       else inv.fail('nearby_wake_lost', '被压下的附近聊天既没有后来的事件、也没有待办的补叫，听者也没有离开过', { listener: L, from: S, messageSeq: seq, sentAt }, now);
     });

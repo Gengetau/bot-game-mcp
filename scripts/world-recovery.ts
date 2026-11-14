@@ -17,7 +17,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parseArgs } from 'node:util';
-import { SeededRng, WorldError, createRegistry, createWorld, enterWorld, agentPrincipal, townHeartbeat, town, type WorldService } from '../packages/engine/src/index.js';
+import { SeededRng, WorldError, createRegistry, createWorld, enterWorld, agentPrincipal, exchangeTicket, issueTicket, sessionPrincipal, townHeartbeat, town, type WorldService } from '../packages/engine/src/index.js';
 import { actorOf, posOf, npcActorOf, positionOfNpc, positionOfResident, renewNavigation, whereabouts } from '../packages/engine/src/world/space.js';
 import { NPCS, npcLineMatches } from '../packages/engine/src/world/content.js';
 import { isWalkable, zoneAt } from '../packages/engine/src/world/spatial/grid.js';
@@ -78,6 +78,8 @@ interface Who {
   principalId: string;
   clientId: string;
   residentId: string;
+  /** 不写就是 AI（MCP 身份）；NPC 故障场景里有一位真人听众 */
+  clientKind?: 'web' | 'mcp';
 }
 const who: Who[] = [];
 
@@ -435,14 +437,17 @@ function checkSpace(round: number, label = '', ww: WorldService = w, ppl: Who[] 
   });
   check(round, npcMentions.length === 0, () => `${tag}有 ${npcMentions.length} 条居民事件以不允许的形状提到了 NPC：${JSON.stringify(npcMentions.slice(0, 2))}`);
   check(round, db.scalar("SELECT COUNT(*) FROM recipient_events WHERE resident_id LIKE 'npc:%'") + db.scalar("SELECT COUNT(*) FROM public_events WHERE projection LIKE '%npc:%'") + db.scalar("SELECT COUNT(*) FROM world_events WHERE payload LIKE '%npc:%'") === 0, `${tag}有公开事件或事实提到了 NPC，或 NPC 当了事件的接收者`);
-  // NPC 的话：说话人是定义的 NPC、受众都是居民、不进 NPC 当听众、每句都出自模板；每个受众恰好一条 chat 事件
+  // NPC 的话：说话人是定义的 NPC、受众都是居民、不进 NPC 当听众、每句都出自模板；每位真人听众恰好一条 chat 事件，AI 听众一条也没有（NPC 的话不叫醒 AI）
   const npcMsgs = db.all("SELECT message_id, sender_id, body FROM chat_messages WHERE sender_id LIKE 'npc:%'");
   check(round, db.scalar("SELECT COUNT(*) FROM chat_audience WHERE resident_id LIKE 'npc:%'") === 0, `${tag}NPC 进了听众`);
   const residentNames = db.all('SELECT name FROM residents').map((x) => String(x.name));
   check(round, npcMsgs.every((m) => NPCS.some((n) => n.id === m.sender_id) && npcLineMatches(String(m.sender_id), String(m.body), residentNames)), () => `${tag}有 NPC 的话对不上台词模板`);
-  const audienceRows = db.scalar("SELECT COUNT(*) FROM chat_audience a JOIN chat_messages m ON m.message_id = a.message_id WHERE m.sender_id LIKE 'npc:%'");
-  const npcChatEvents = db.scalar("SELECT COUNT(*) FROM recipient_events WHERE type = 'chat' AND projection LIKE '%\"kind\":\"npc\"%'");
-  check(round, audienceRows === npcChatEvents, () => `${tag}NPC 的话的受众行 ${audienceRows} 条，对应的 chat 事件 ${npcChatEvents} 条`);
+  const npcAudienceOf = (human: boolean) =>
+    Number(db.scalar(`SELECT COUNT(*) FROM chat_audience a JOIN chat_messages m ON m.message_id = a.message_id JOIN residents r ON r.resident_id = a.resident_id WHERE m.sender_id LIKE 'npc:%' AND r.kind ${human ? '=' : '<>'} 'human'`));
+  const npcEventsTo = (human: boolean) =>
+    Number(db.scalar(`SELECT COUNT(*) FROM recipient_events e JOIN residents r ON r.resident_id = e.resident_id WHERE e.type = 'chat' AND e.projection LIKE '%"kind":"npc"%' AND r.kind ${human ? '=' : '<>'} 'human'`));
+  check(round, npcAudienceOf(true) === npcEventsTo(true), () => `${tag}NPC 的话的真人受众行 ${npcAudienceOf(true)} 条，对应的 chat 事件 ${npcEventsTo(true)} 条`);
+  check(round, npcEventsTo(false) === 0, () => `${tag}有 ${npcEventsTo(false)} 条 NPC 台词的 chat 事件发给了 AI 居民（AI 受众行 ${npcAudienceOf(false)} 条，应该一条事件也没有）`);
   const pendingNav = new Set(db.all("SELECT dedupe_key FROM scheduled_jobs WHERE kind = 'nav_step' AND status = 'pending'").map((j) => String(j.dedupe_key)));
   for (const x of ppl) {
     const a = actorOf(ww, x.residentId);
@@ -1086,7 +1091,8 @@ function navFaultScenarios(): { name: string; checks: number }[] {
  * ask_npc 和经掌柜的 buy 各在「提交前」「提交后」崩溃一次（还有闲逛者被搭话时延长停留的那一次）：
  *   before_commit：重启后命令完全没发生（钱、货、库存、回答计数、NPC 的话、听众的 chat 事件、待办都原样）；同一请求号重试是全新执行，只发生一次
  *   after_commit：重启后已经发生过一次；同一请求号重试是重放，不多扣钱、不多发货、不多一句话、不少一条待办
- * 每个场景有两位居民：甲站在 NPC 身边发命令，乙站在甲旁边当听众。
+ * 每个场景有三位居民，都站在 NPC 身边：甲（AI）发命令；乙（真人）当听众，NPC 的话恰好给它一条 chat 事件；
+ * 丙（AI）也在受众里，但一条事件也没有（NPC 的话不叫醒 AI；甲自己也没有，回答在回执里）。
  */
 function npcFaultScenarios(): { name: string; checks: number }[] {
   const done: { name: string; checks: number }[] = [];
@@ -1107,13 +1113,19 @@ function npcFaultScenarios(): { name: string; checks: number }[] {
       };
       let ww = open();
       const people: Who[] = [];
-      for (let i = 0; i < 2; i++) {
-        const nm = ['甲', '乙'][i]!;
-        const p = agentPrincipal(ww, { id: `6${no}0${i}`, name: nm });
-        const out = enterWorld(ww, { principalId: p.principal_id, clientId: `mcp:npc-${no}-${i}` }, { clientKind: 'mcp', profile: { name: nm } });
-        people.push({ name: nm, principalId: p.principal_id, clientId: `mcp:npc-${no}-${i}`, residentId: out.enter.residentId });
+      for (let i = 0; i < 3; i++) {
+        const nm = ['甲', '乙', '丙'][i]!;
+        const clientKind = i === 1 ? ('web' as const) : ('mcp' as const);
+        const clientId = `${clientKind}:npc-${no}-${i}`;
+        // 乙是真人：走「票据 → 会话」；甲、丙是 AI
+        const principalId =
+          clientKind === 'web'
+            ? sessionPrincipal(ww, exchangeTicket(ww, issueTicket(ww, { provider: 'qq', subject: `6${no}0${i}`, name: nm }).ticket).token)!.principal_id
+            : agentPrincipal(ww, { id: `6${no}0${i}`, name: nm }).principal_id;
+        const out = enterWorld(ww, { principalId, clientId }, { clientKind, profile: { name: nm } });
+        people.push({ name: nm, principalId, clientId, residentId: out.enter.residentId, clientKind });
       }
-      const [a, b] = people as [Who, Who];
+      const [a, b, c] = people as [Who, Who, Who];
       const auth = (x: Who) => ({ principalId: x.principalId, clientId: x.clientId });
       let hb = clock.t;
       const advanceTo = (t: number) => {
@@ -1134,7 +1146,7 @@ function npcFaultScenarios(): { name: string; checks: number }[] {
               try {
                 townHeartbeat(ww, auth(x), ww.mustResident(x.residentId).presence_epoch);
               } catch {
-                enterWorld(ww, auth(x), { clientKind: 'mcp' });
+                enterWorld(ww, auth(x), { clientKind: x.clientKind ?? 'mcp' });
               }
             }
           }
@@ -1146,7 +1158,7 @@ function npcFaultScenarios(): { name: string; checks: number }[] {
         return ww.command(auth(x), { requestId, actionWindow: ww.issueActionWindow(x.residentId), expected: { contextVersion: r.context_version, controlEpoch: r.control_epoch, activityId: r.activity_id }, action: act }) as Record<string, any>;
       };
       const target = action === 'ask_stroller' ? STROLLER_ID : KEEPER_ID;
-      // 甲、乙都走到 NPC 身边（闲逛者此刻在岗位上，停留 120 秒后才出发）
+      // 三个人都走到 NPC 身边（闲逛者此刻在岗位上，停留 120 秒后才出发）
       people.forEach((x, i) => cmd(x, { type: 'navigate', approach: target }, `npcscn-${no}-go-${i}`));
       advanceTo(clock.t + 40 * SEC);
       const reach = (x: Who) => {
@@ -1154,7 +1166,8 @@ function npcFaultScenarios(): { name: string; checks: number }[] {
         const n = positionOfNpc(ww, target, clock.t);
         return !!p && !!n && Math.hypot(p.x - n.x, p.z - n.z) <= ww.params.personReach;
       };
-      check(rd, reach(a) && reach(b), `${name}：甲乙没走到 ${target} 身边`);
+      check(rd, reach(a) && reach(b) && reach(c), `${name}：甲乙丙没走到 ${target} 身边`);
+      check(rd, ww.mustResident(a.residentId).kind === 'agent' && ww.mustResident(b.residentId).kind === 'human' && ww.mustResident(c.residentId).kind === 'agent', `${name}：三位居民的身份不是 AI / 真人 / AI`);
       if (action === 'ask_stroller') {
         // 推到闲逛者快要出发（还剩 3 秒）：搭话应把这次停留延到 现在 + 8 秒
         const job0 = ww.db.get("SELECT due_at FROM scheduled_jobs WHERE dedupe_key = ? AND status = 'pending'", `npc_step:${STROLLER_ID}`)!;
@@ -1166,8 +1179,9 @@ function npcFaultScenarios(): { name: string; checks: number }[] {
         stock: ww.db.get("SELECT stock FROM shop_stock WHERE shop_id = 'tea_counter' AND sku = 'tea_leaves'")?.stock ?? null,
         said: Number(ww.db.scalar("SELECT COALESCE(SUM(high_water), 0) FROM stream_heads WHERE stream_key LIKE 'npcsay:%'")),
         msgs: Number(ww.db.scalar("SELECT COUNT(*) FROM chat_messages WHERE sender_id LIKE 'npc:%'")),
-        heardB: Number(ww.db.scalar("SELECT COUNT(*) FROM recipient_events WHERE resident_id = ? AND type = 'chat' AND projection LIKE '%\"kind\":\"npc\"%'", b.residentId)),
-        heardA: Number(ww.db.scalar("SELECT COUNT(*) FROM recipient_events WHERE resident_id = ? AND type = 'chat' AND projection LIKE '%\"kind\":\"npc\"%'", a.residentId)),
+        // NPC 的话给每个人的 chat 事件数（只有真人乙该有）和每个人的受众行数（三个人都该有）
+        heard: people.map((x) => Number(ww.db.scalar("SELECT COUNT(*) FROM recipient_events WHERE resident_id = ? AND type = 'chat' AND projection LIKE '%\"kind\":\"npc\"%'", x.residentId))),
+        aud: people.map((x) => Number(ww.db.scalar("SELECT COUNT(*) FROM chat_audience a JOIN chat_messages m ON m.message_id = a.message_id WHERE a.resident_id = ? AND m.sender_id LIKE 'npc:%'", x.residentId))),
         job: JSON.stringify(ww.db.all("SELECT dedupe_key, due_at, payload FROM scheduled_jobs WHERE kind = 'npc_step' AND status = 'pending' ORDER BY dedupe_key")),
         pending: Number(ww.db.scalar("SELECT COUNT(*) FROM scheduled_jobs WHERE kind = 'npc_step' AND status = 'pending'")),
       });
@@ -1193,16 +1207,24 @@ function npcFaultScenarios(): { name: string; checks: number }[] {
       ww.db.db.close();
       clock.t += 500; // 很短的停机：不让闲逛者的停留到期
       ww = open();
-      for (const x of people) enterWorld(ww, auth(x), { clientKind: 'mcp' });
+      for (const x of people) enterWorld(ww, auth(x), { clientKind: x.clientKind ?? 'mcp' });
       hb = clock.t;
       const s1 = snap();
+      // 恰好说了一句：三个人的受众行各多一条；chat 事件只有真人乙多一条，AI 甲、丙始终是零
+      const spokeOnce = (s: ReturnType<typeof snap>) =>
+        s.said === s0.said + 1 &&
+        s.msgs === s0.msgs + 1 &&
+        s.aud.every((n, i) => n === s0.aud[i]! + 1) &&
+        s.heard[1] === s0.heard[1]! + 1 &&
+        s.heard[0] === 0 &&
+        s.heard[2] === 0;
       if (point === 'before_commit') {
         check(rd, JSON.stringify(s1) === JSON.stringify(s0), () => `${name}：提交前崩溃后状态变了：${JSON.stringify(s0)} → ${JSON.stringify(s1)}`);
         check(rd, !ww.db.get('SELECT 1 AS x FROM request_receipts WHERE resident_id = ? AND request_id = ?', a.residentId, requestId), `${name}：提交前崩溃后留着回执`);
       } else {
         const bought = action === 'buy' ? 1 : 0;
         check(rd, s1.coins === s0.coins - 2 * bought && s1.tea === s0.tea + bought && s1.stock === (action === 'buy' ? 29 : s0.stock), () => `${name}：提交后崩溃的账货不对：${JSON.stringify(s0)} → ${JSON.stringify(s1)}`);
-        check(rd, s1.said === s0.said + 1 && s1.msgs === s0.msgs + 1 && s1.heardB === s0.heardB + 1 && s1.heardA === s0.heardA + 1, () => `${name}：提交后崩溃的回答 / 话 / 事件不对：${JSON.stringify(s0)} → ${JSON.stringify(s1)}`);
+        check(rd, spokeOnce(s1), () => `${name}：提交后崩溃的回答 / 话 / 受众 / 事件不对：${JSON.stringify(s0)} → ${JSON.stringify(s1)}`);
         check(rd, s1.pending === s0.pending, `${name}：提交后崩溃后 npc_step 待办数变了`);
       }
       // 用原请求号重试：把心跳补上（重启后大家在场），时间不动
@@ -1218,7 +1240,7 @@ function npcFaultScenarios(): { name: string; checks: number }[] {
       const bought2 = action === 'buy' ? 1 : 0;
       // 不管哪种崩溃，重试之后都恰好发生了一次：多扣钱、多发货、多一句话、少一条待办都会在这里抓到
       check(rd, s2.coins === s0.coins - 2 * bought2 && s2.tea === s0.tea + bought2 && (action !== 'buy' || s2.stock === 29), () => `${name}：重试后账货不是恰好一次：${JSON.stringify(s0)} → ${JSON.stringify(s2)}`);
-      check(rd, s2.said === s0.said + 1 && s2.msgs === s0.msgs + 1 && s2.heardB === s0.heardB + 1 && s2.heardA === s0.heardA + 1, () => `${name}：重试后回答 / 话 / 事件不是恰好一次：${JSON.stringify(s0)} → ${JSON.stringify(s2)}`);
+      check(rd, spokeOnce(s2), () => `${name}：重试后回答 / 话 / 受众 / 事件不是恰好一次：${JSON.stringify(s0)} → ${JSON.stringify(s2)}`);
       check(rd, s2.pending === s0.pending, `${name}：重试后 npc_step 待办数变了`);
       if (action === 'ask_stroller') {
         const j = ww.db.get("SELECT due_at, payload FROM scheduled_jobs WHERE dedupe_key = ? AND status = 'pending'", `npc_step:${STROLLER_ID}`)!;

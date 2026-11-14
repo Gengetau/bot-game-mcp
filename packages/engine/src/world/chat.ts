@@ -585,7 +585,7 @@ export function installChat(w: WorldService): void {
       // 两个桶都够才发（一起扣）；不够就压下来，话已经在受众表里，额度恢复后补叫一次。
       if (a.kind === 'human' || r.kind === 'human' || takeWakeBoth(w, a.resident_id, r.resident_id, now)) {
         w.emitTo([a.resident_id], 'chat', { scope: 'nearby', space, from: card(r), text, messageId: seq }, now);
-        // 听者这次醒来，here.chat 里有之前被压下的全部的话：不用再补叫
+        // 听者这次醒来会读视图，之前被压下的话就在 here.chat 里（最近 20 条、30 分钟内；AI 的紧凑视图是其中最近几条，更早的翻历史）：不用再补叫
         w.cancelJob(wakeJobKey(a.resident_id));
       } else {
         ensureWake(w, a.resident_id, r.resident_id, now);

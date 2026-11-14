@@ -73,7 +73,7 @@ export {
 } from './identity.js';
 export { townChatPage, townChatSince, townChatHead, townChatDigest, nearbyHistory, filterEventsForAgent, type TownChatMessage, type TownChatPage } from './chat.js';
 export { canHear, nearbyAudience, roomOf } from './hearing.js';
-export { agentView, chatHistory, directory, meView, publicView, type MeView, type PublicView } from './views.js';
+export { AGENT_RECENT_CHAT, agentView, chatHistory, directory, meView, publicView, type MeView, type PublicView } from './views.js';
 export { publicGameView, gameViewFor } from './games.js';
 export { listLetters } from './mail.js';
 export { relationsOf, relationMemories } from './social.js';

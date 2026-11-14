@@ -4,7 +4,8 @@
  * 时间全用假时钟；到期任务靠 t.advance / t.advanceTo 触发。
  */
 import { describe, expect, it } from 'vitest';
-import { chatHistory, meView } from '../../src/world/views.js';
+import { TOWN_GUIDE } from '../../src/mcp/town.js';
+import { AGENT_RECENT_CHAT, agentView, chatHistory, meView } from '../../src/world/views.js';
 import { Actor, KEEPER, makeTown, tempDb, type Town } from './helpers.js';
 
 const HOUR = 3600_000;
@@ -537,5 +538,26 @@ describe('NPC 的台词与叫醒额度', () => {
     advanceTo(t, t.clock.t + HOUR, all);
     expect(texts(t, l)).toEqual(['第一句']);
     expect(wakeJobs(t, 'pending')).toHaveLength(0);
+  });
+});
+
+describe('AI 的视图怎么看到被压下的话', () => {
+  it('20. AI 的紧凑视图里是 here.recent_chat，只有最新的 AGENT_RECENT_CHAT 条（没有 here.chat）；被压下的话比这多时，历史里翻得到全部；指南写的字段名和条数与此一致', () => {
+    const { t, people } = cast(['agent', 'agent']);
+    const [a, b] = people as [Actor, Actor];
+    const N = AGENT_RECENT_CHAT + 4;
+    for (let i = 1; i <= N; i++) say(a, `第${i}句`);
+    // 前 5 句当场，后面的都被压下：b 醒来时要靠视图和历史补上
+    expect(texts(t, b)).toHaveLength(5);
+    const here = agentView(t.w, b.row(), b.clientId).here as { recent_chat: { from: string; text: string }[]; chat?: unknown };
+    expect(here.chat).toBeUndefined();
+    expect(here.recent_chat.map((c) => c.text)).toEqual(Array.from({ length: AGENT_RECENT_CHAT }, (_, i) => `第${N - AGENT_RECENT_CHAT + 1 + i}句`));
+    // 真人视图（和内部的 here.chat）有全部 N 句；AI 要看更早的，用历史
+    expect(hereChat(t, b)).toHaveLength(N);
+    expect(heard(t, b).reverse()).toEqual(Array.from({ length: N }, (_, i) => `第${i + 1}句`));
+    // 指南指的是 AI 视图里真有的字段、说的是真的条数
+    expect(TOWN_GUIDE).toContain('here.recent_chat');
+    expect(TOWN_GUIDE).not.toContain('here.chat');
+    expect(TOWN_GUIDE).toContain(`最多 ${AGENT_RECENT_CHAT} 条、30 分钟内`);
   });
 });

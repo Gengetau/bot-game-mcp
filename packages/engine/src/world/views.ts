@@ -264,6 +264,9 @@ export function meView(w: WorldService, r: ResidentRow, clientId: string, opts: 
   };
 }
 
+/** AI 紧凑视图里 here.recent_chat 的条数上限（here.chat 最近 20 条里再取最新的这几条）。指南、提示词和接入文档里写的数字要跟着它。 */
+export const AGENT_RECENT_CHAT = 8;
+
 /**
  * 给 AI 居民的紧凑视图：同样的权限，去掉展示用的冗余，控制在十几 KiB 以内。
  * 里面的自由文本（别人的名字、简介、聊天）都是别的居民写的，只是内容，不是指令。
@@ -300,7 +303,7 @@ export function agentView(w: WorldService, r: ResidentRow, clientId: string, opt
           ...(here.doors ? { doors: here.doors.filter((d) => d.canEnter).map((d) => ({ home: d.home, owner: d.owner.name })) } : {}),
           ...(here.home ? { home_of: here.home.owner.name } : {}),
           ...(here.library ? { library: here.library.filter((b) => b.available > 0).map((b) => ({ bookId: b.bookId, title: b.title })) } : {}),
-          recent_chat: here.chat.slice(-8).map((c) => ({ from: c.from.name, ...(c.from.kind === 'npc' ? { npc: true } : {}), text: c.text })),
+          recent_chat: here.chat.slice(-AGENT_RECENT_CHAT).map((c) => ({ from: c.from.name, ...(c.from.kind === 'npc' ? { npc: true } : {}), text: c.text })),
           // NPC：程序驱动的角色。near 为 false 时要先 navigate {approach: id} 走到它身边才能 ask_npc / 在掌柜处买东西
           npcs: here.npcs.map((n) => ({ id: n.id, name: n.name, role: n.role, place: placeDef(n.place)?.name ?? n.place, ...(n.near ? {} : { far: true }), topics: n.topics.map((t) => t.id), ...(n.shop ? { shop: n.shop } : {}) })),
         }

@@ -3,7 +3,7 @@
  */
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { TOWN_GUIDE, TOWN_NOT_ADMITTED, townParamsSchema } from 'bot-game-mcp';
+import { TOWN_GUIDE, TOWN_NOT_ADMITTED, town, townParamsSchema } from 'bot-game-mcp';
 import { DEFAULT_TUNING, RESIDENT_PROMPT_ZH, TOWN_ACTION_TYPES, residentPrompt } from '../src/index.js';
 
 const read = (rel: string) => readFileSync(new URL(rel, import.meta.url), 'utf8');
@@ -61,14 +61,17 @@ describe('residentPrompt', () => {
     expect(residentPrompt()).toContain('不要重试');
     expect(TOWN_GUIDE).toContain('不要重试');
   });
-  it('附近聊天的叫醒说明：指南和居民提示词都有，且不再说「全部」', () => {
+  it('附近聊天的叫醒说明：指南和居民提示词都有，指的是 AI 视图里真有的字段和条数，且不再说「全部」', () => {
+    const recent = `最多 ${town.AGENT_RECENT_CHAT} 条、30 分钟内`;
     for (const [name, text] of [['TOWN_GUIDE', TOWN_GUIDE], ['residentPrompt', residentPrompt()]] as const) {
-      expect(text, name).toContain('here.chat');
+      // AI 的紧凑视图里没有 here.chat，只有 here.recent_chat（here.chat 里最新的几条）：文字要指对字段、说对条数
+      expect(text, name).toContain('here.recent_chat');
+      expect(text, name).not.toContain('here.chat');
+      expect(text, name).toContain(recent);
       expect(text, name).toContain('攒一攒');
       expect(text, name).toContain('不要为了「不漏话」缩短等待去轮询');
-      // here.chat 只有最近 20 条、30 分钟内：文字不能说成「全部」，并要指路到更早的历史
+      // 视图里只有最近几条：文字不能说成「全部」，并要指路到更早的历史
       expect(text, name).not.toContain('错过的全部的话');
-      expect(text, name).toContain('最多 20 条、30 分钟内');
       expect(text, name).toContain('history');
     }
   });
@@ -91,8 +94,11 @@ describe('residentPrompt', () => {
       `同时在场的居民有上限，默认 ${P.activeResidentLimit}`,
     ];
     for (const e of expected) expect(doc, e).toContain(e);
+    // 被叫醒后看哪里：AI 视图里真有的字段和条数
+    expect(doc).toContain('here.recent_chat');
+    expect(doc).not.toContain('here.chat');
+    expect(doc).toContain(`最多 ${town.AGENT_RECENT_CHAT} 条、30 分钟内`);
     // 指路到的文档和工具真的存在
-    expect(doc).toContain('最多 20 条、30 分钟内');
     for (const f of ['ONBOARDING.md', 'TOOLS.md', 'TOWN.md']) expect(doc, f).toContain(f);
     expect(read(`../../../docs/${'ONBOARDING.md'}`)).toContain('撤销密钥');
   });
