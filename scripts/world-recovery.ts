@@ -1044,7 +1044,7 @@ function npcFaultScenarios(): { name: string; checks: number }[] {
       };
       const target = action === 'ask_stroller' ? STROLLER_ID : KEEPER_ID;
       // 甲、乙都走到 NPC 身边（闲逛者此刻在岗位上，停留 120 秒后才出发）
-      for (const x of people) cmd(x, { type: 'navigate', approach: target }, `npcscn-${no}-go-${x.name}`);
+      people.forEach((x, i) => cmd(x, { type: 'navigate', approach: target }, `npcscn-${no}-go-${i}`));
       advanceTo(clock.t + 40 * SEC);
       const reach = (x: Who) => {
         const p = positionOfResident(ww, x.residentId, clock.t);

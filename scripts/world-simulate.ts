@@ -687,6 +687,12 @@ class Sim {
     this.sampleNpcs();
   }
 
+  /** 探针居民盯的 NPC 编号：编号 0 盯掌柜，编号 1 盯闲逛者；人数不足 8 时没有探针。 */
+  private probeNpc(ag: Ag): string | null {
+    if (this.ags.length < 8) return null;
+    return ag.p.idx === 0 ? 'npc:teahouse_keeper' : ag.p.idx === 1 ? 'npc:plaza_stroller' : null;
+  }
+
   /** 闲逛者此刻停留任务的到期时间和已延长量（覆盖断言用）；正在走路或没有待办返回 null。 */
   private npcStay(npcId: string): { due: number; extended: number } | null {
     const job = this.w.db.get("SELECT due_at, payload FROM scheduled_jobs WHERE dedupe_key = ? AND status = 'pending'", `npc_step:${npcId}`);
@@ -1224,7 +1230,9 @@ class Sim {
     intents.push(['ask', residentsHere.length > 0 ? 1.5 : 0]);
     intents.push(['buy', here && here.shops.some((s) => shopReachable(here, s.id)) ? 3 : 0]);
     // 和 NPC 打交道：够不着就先走到它身边（掌柜卖茶、问话、搭话闲逛者）
-    intents.push(['npc', here && here.npcs.length > 0 ? 2.5 : 0]);
+    // 探针居民（编号 0、1，人数够多时）：确定性地覆盖「问掌柜」和「搭话闲逛者并延长停留」，不靠随机碰上
+    const probe = this.probeNpc(ag);
+    intents.push(['npc', probe ? 14 : here && here.npcs.length > 0 ? 2.5 : 0]);
     intents.push(['use', energy < 75 && (avail('soup') > 0 || avail('cookie') > 0) ? 2.5 : 0]);
     intents.push(['decor', atHome ? 3 : 0]);
     intents.push(['offer', residentsHere.length > 0 ? 2.5 : 0]);
@@ -1448,11 +1456,17 @@ class Sim {
         return short();
       }
       case 'npc': {
-        const npcs = here!.npcs;
-        if (npcs.length === 0) return null;
+        const npcs = here?.npcs ?? [];
+        const probe = this.probeNpc(ag);
+        if (npcs.length === 0 && !probe) return null;
+        // 探针居民：不在同一场景就先走过去（approach 编号）
+        if (probe && !npcs.some((n) => n.id === probe)) {
+          this.bump('npc_walk');
+          return this.moveTo(ag, conn, probe, 'approach');
+        }
         // 有钱就偏向掌柜（买茶），否则找闲逛者搭话
         const keeper = npcs.find((n) => n.shop);
-        const forced = forceNpc ? npcs.find((n) => n.id === forceNpc) : undefined;
+        const forced = (forceNpc ? npcs.find((n) => n.id === forceNpc) : undefined) ?? (probe ? npcs.find((n) => n.id === probe) : undefined);
         const pick = forced ?? (keeper && inv.coins.available >= 2 && rnd.chance(0.55) ? keeper : rnd.pick(npcs));
         if (!pick.near) {
           this.bump('npc_walk');
@@ -1461,11 +1475,12 @@ class Sim {
         const stay = pick.shop ? null : this.npcStay(pick.id);
         // 有的居民会等闲逛者快要出发再搭话（停留任务的到期时间是公开的程序状态，这里读它只是模拟居民的「看时间」）：
         // 先等到离出发只剩 3 秒，下一次决策直接去问，这样「被搭话延长停留」每天都稳定发生，不靠随机碰上最后几秒
-        if (!forced && stay && !pick.shop && stay.due - now > this.w.params.npcTalkHoldMs + 4000 && rnd.chance(0.5)) {
+        if (probe && !pick.shop && !stay) return 4000; // 探针等闲逛者停下再搭话（正在路上问不会延长）
+        if ((!forced || probe) && stay && !pick.shop && stay.due - now > this.w.params.npcTalkHoldMs + 4000 && (probe || rnd.chance(0.5))) {
           this.lingerAsk.set(me, pick.id);
           return stay.due - now - 3000;
         }
-        if (pick.shop && inv.coins.available >= 2 && rnd.chance(0.6)) {
+        if (pick.shop && inv.coins.available >= 2 && rnd.chance(probe ? 0.3 : 0.6)) {
           const o = this.exec(ag, conn, 'buy', { shop: pick.shop, sku: 'tea_leaves', qty: 1 });
           if (o.ok) {
             this.bump('npc_buy');
