@@ -128,6 +128,7 @@ var dir_sent_ms: float = -1.0e9
 var dir_active: bool = false  # 已经发过非零方向、还没发零
 var dir_suppressed: bool = false  # 点了地面或物件、按了 Esc：不再发方向，直到出现新的按下沿（向量归零本身不解除）
 var key_edge: int = 0  # hud.js 给的按下沿计数
+var key_gesture: int = 0  # 「这一次按住」的编号：从全部松开到按下加一；按住期间加按、换按别的方向键不变（走开拦截靠它认新的一次尝试）
 var dir_conn: int = -1  # hello 里的连接序号，点地 / 停下时连同 dir_seq 一起作栅栏发给服务器
 var dir_toast_ms: float = -1.0e9
 var _dirty: bool = true
@@ -1143,6 +1144,8 @@ func _on_keys(arg: String) -> void:
 		key_edge = edge
 		if _key_vec() != Vector2.ZERO:
 			dir_suppressed = false  # 新按下了一个方向键：这才是新的一次起步
+			if was_idle:
+				key_gesture += 1  # 从全部松开到按下：新的一次按住。按着 W 再加按 D 走斜线不算（那还是同一次按住）
 	if phase != Phase.PLAYING:
 		return
 	if was_idle and _key_vec() != Vector2.ZERO and not control_mine:

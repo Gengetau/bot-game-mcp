@@ -21,6 +21,7 @@ func _init() -> void:
 	t_gate_hold_key()
 	t_gate_hold_key_gap()
 	t_gate_click_gap()
+	t_gate_double_tap_hold()
 	t_gate_window_expiry()
 	t_gate_clear()
 	t_gate_confirmed_window()
@@ -102,6 +103,58 @@ func t_gate_click_gap() -> void:
 	var st3: Dictionary = L.new_gate()
 	check(L.gate(st3, 1000, TXT, 5) == TXT, "混用: 先按住方向键被拦")
 	check(L.gate(st3, 1500, TXT) == "", "混用: 松开隔 500 毫秒后点击放行")
+
+
+## 快速连按两下并按住第二下（C2b）：第二下是新的一次按住，但离第一次提示不到 300 毫秒，先不放行；
+## 按住到第一次提示满 300 毫秒就放行，不用松手重按。以前「距上一次被问」每帧被刷新，按住时永远到不了 300 毫秒，会一直被拦到松手。
+func t_gate_double_tap_hold() -> void:
+	var st: Dictionary = L.new_gate()
+	check(L.gate(st, 1000, TXT, 5) == TXT, "连按后按住: 第一下被拦")
+	check(L.gate(st, 1016, TXT, 5) == TXT, "连按后按住: 第一下按着仍被拦")
+	# 松开（没有问询），150 毫秒后第二下按下并一直按住，每帧都问
+	var t: int = 1150
+	var early: int = 0  # 满 300 毫秒之前被放行的帧数（应为 0）
+	var passed_at: int = -1
+	while t <= 1700 and passed_at < 0:
+		var r: String = L.gate(st, t, TXT, 6)
+		if r == "":
+			passed_at = t
+			if t <= 1000 + L.REPEAT_GAP_MS:
+				early += 1
+		t += 16
+	check(early == 0, "连按后按住: 第一次提示满 300 毫秒之前不放行")
+	check(passed_at > 1000 + L.REPEAT_GAP_MS and passed_at <= 1000 + L.REPEAT_GAP_MS + 32, "连按后按住: 满 300 毫秒后的头一两帧就放行，不用松手（放行于 %d）" % passed_at)
+	check(int(st["warned"]) == 1 and int(st["passed"]) == 1, "连按后按住: 只提示一次、放行一次")
+	# 同一次按住 10 秒，中间还卡过一帧 900 毫秒：一次都不放行（回归，40.7 的那条）
+	var st2: Dictionary = L.new_gate()
+	var leaks: int = 0
+	t = 1000
+	for i in range(600):
+		if L.gate(st2, t, TXT, 5) == "":
+			leaks += 1
+		t += 900 if i == 100 else 16
+	check(leaks == 0 and int(st2["passed"]) == 0, "同一次按住: 10 秒里（含一帧 900 毫秒的卡顿）一次都不放行（漏了 %d 帧）" % leaks)
+	# 提示来自点击（编号 -1），随后 100 毫秒按下方向键并按住：同样在提示满 300 毫秒后放行
+	var st3: Dictionary = L.new_gate()
+	check(L.gate(st3, 1000, TXT) == TXT, "点击后按住: 点击被拦")
+	check(L.gate(st3, 1100, TXT, 9) == TXT, "点击后按住: 100 毫秒后按下的方向键先被拦")
+	check(L.gate(st3, 1290, TXT, 9) == TXT, "点击后按住: 290 毫秒仍被拦")
+	check(L.gate(st3, 1310, TXT, 9) == "", "点击后按住: 提示满 300 毫秒后放行")
+	# 第二下按得很晚（提示窗口已过期）：重新提示，不放行；再松开重按才放行
+	var st4: Dictionary = L.new_gate()
+	check(L.gate(st4, 1000, TXT, 5) == TXT, "过期后再按: 第一下被拦")
+	check(L.gate(st4, 1000 + L.WINDOW_MS + 10, TXT, 6) == TXT, "过期后再按: 窗口过期后的新按下重新提示")
+	check(int(st4["warned"]) == 2, "过期后再按: 计第二次提示")
+	check(L.gate(st4, 1000 + L.WINDOW_MS + 200, TXT, 6) == TXT, "过期后再按: 同一次按住仍被拦")
+	check(L.gate(st4, 1000 + L.WINDOW_MS + 600, TXT, 7) == "", "过期后再按: 松开重按放行")
+	# 按住被拦 2 秒，松开后马上（50 毫秒）重按：是提示之后新的一次按住，直接放行（以前要再等 300 毫秒的空档）
+	var st5: Dictionary = L.new_gate()
+	t = 1000
+	for i in range(125):
+		L.gate(st5, t, TXT, 5)
+		t += 16
+	check(int(st5["passed"]) == 0, "久按后快速重按: 按住的 2 秒里没放行")
+	check(L.gate(st5, t + 50, TXT, 6) == "", "久按后快速重按: 新的一次按住放行")
 
 
 func t_gate_window_expiry() -> void:

@@ -4,10 +4,12 @@ extends RefCounted
 
 ## 走开拦截：第二次尝试必须是「新的一次操作」，且在第一次提示之后 6 秒内；放行后 6 秒内都不再拦。
 ## 新的一次操作怎么认：
-##  - 方向键：靠「新的一次按下」这个边沿（main 的 key_edge，每次新按下加一，由调用方传进来）。按着不放时每帧都在问、编号不变，
-##    哪怕中间有一帧卡了几百毫秒也不算新的一次；松开再按编号变了才算。不靠时间间隔推断（以前靠「间隔大于 300 毫秒」，一帧卡顿就被当成第二次而放行）。
+##  - 方向键：靠「新的一次按住」（main 的 key_gesture：从全部松开到按下加一，由调用方传进来）。按着不放时每帧都在问、编号不变，
+##    哪怕中间有一帧卡了几百毫秒、或者按住期间又加按了一个方向键走斜线，也不算新的一次；松开再按编号变了才算。
+##    不靠两次被问的时间间隔推断（以前靠「间隔大于 300 毫秒」，一帧卡顿就被当成第二次而放行）。
 ##  - 点击：被拦的每一下点击只问一次，每次被问就是一次点击。
-## 300 毫秒：不管哪种，双击 / 触摸点两下（间隔常在 100 到 250 毫秒）算同一次手势，距上一次被问不到 300 毫秒的不放行（这条只作用于「新的一次操作」之间，不再用来区分按住和重按）。
+## 300 毫秒：双击 / 触摸点两下 / 连按两下（间隔常在 100 到 250 毫秒）算同一次手势。点击按「距上一次被问」算；
+##    方向键按「距第一次提示」算：连按的第二下如果一直按着，满 300 毫秒就算数（见 gate 的注释）。
 ## 6 秒：给玩家「看到提示、想一想、再点一次」的时间，也是放行之后连续走几步不再被拦的窗口；过期就重新提示，免得很久以前的一次提示让以后的误触直接放行。
 const REPEAT_GAP_MS := 300
 const WINDOW_MS := 6000
@@ -36,14 +38,23 @@ static func gate_clear(st: Dictionary) -> void:
 
 
 ## 每次被问「现在许不许走」时调用，返回空串放行、非空串是提示文字。st 是 new_gate() 的字典，now 是毫秒。
-## key_edge：方向键按着时是这一次按下的编号，没按着（点击等）是 -1。
+## key_edge：方向键按着时是「这一次按住」的编号（从全部松开到按下算新的一次，按住期间加按、换按别的方向键不变），没按着（点击等）是 -1。
+## 第二次尝试怎么认（都要在提示窗口之内）：
+##  - 方向键：编号和提示时记下的不同，并且离第一次提示已经超过 REPEAT_GAP_MS。从「提示」算起而不是从「上一次被问」算起：
+##    按住时每帧都在问，「距上一次被问」永远到不了 300 毫秒，快速连按第二下并按住的人会一直被拦到松手（C2b 之前就是这样）。
+##    同一次按住（编号没变）永远不是第二次尝试，不管按了多久、帧间隔多长。
+##  - 点击：距上一次被问超过 REPEAT_GAP_MS（双击算同一次手势）。
 static func gate(st: Dictionary, now: int, text: String, key_edge: int = -1) -> String:
 	if now < int(st["confirmed_until"]):
 		return ""
 	var warn_at: int = int(st["warn_at"])
-	# 同一次按住（编号没变）永远不是第二次尝试，不管帧间隔多长
-	var same_hold: bool = key_edge >= 0 and key_edge == int(st["warn_edge"])
-	if warn_at > 0 and not same_hold and now - int(st["last_call"]) > REPEAT_GAP_MS and now - warn_at < WINDOW_MS:
+	var again: bool = false
+	if warn_at > 0 and now - warn_at < WINDOW_MS:
+		if key_edge >= 0:
+			again = key_edge != int(st["warn_edge"]) and now - warn_at > REPEAT_GAP_MS
+		else:
+			again = now - int(st["last_call"]) > REPEAT_GAP_MS
+	if again:
 		st["confirmed_until"] = now + WINDOW_MS
 		st["passed"] = int(st["passed"]) + 1
 		st["passed_at"] = now
