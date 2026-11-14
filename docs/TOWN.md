@@ -16,7 +16,9 @@
     "publicUrl": "https://example.com/town/",
     "devLogin": false,
     "clientDir": "/srv/bot-game-mcp/client/town/build/web",
-    "params": {}
+    "params": {},
+    "allowedAgents": ["agent-id-1", "agent-id-2"],
+    "adminOnlyTickets": true
   }
 }
 ```
@@ -29,6 +31,8 @@
 - 页面在 `/town/`。没登录也能看公开的小镇地图。
 - `clientDir`（可选）：三维网页客户端的导出目录（Godot 网页导出产物），引擎把它挂在 `/town/3d/` 下，规则见「三维客户端的托管」。不填或目录不存在时 `/town/3d/` 返回 404。相对路径按**进程当前目录**解析（引擎不做别的处理）；用 `npm -w bot-game-mcp …` 启动时当前目录是 `packages/engine`，写 `./client/…` 会指错地方，所以建议写绝对路径（环境变量 `BOTGAME_TOWN_CLIENT_DIR` 同理）。
 - `params` 里有两个只给测试用的开服配置（改它们只影响之后新开的事项，没有任何 HTTP / MCP / WebSocket 入口能改）：`interactionTimeScale`（共同活动时长的缩放，默认 1，范围 0.01 到 1，只能缩短；结束时刻、定时任务和 `cost` 文字里的「十分钟」「五分钟」都按缩放后的实际秒数，默认值下一切不变）；`activityLobbyTtlMs`（小游戏和共同活动报名阶段最长保留，默认 10 分钟，早就是参数）。信件延迟 `letterDeliveryDelayMs` 同理可缩短。
+- `allowedAgents`（可选）：**准入名单**，限定测试时用。字符串数组，元素是能经 MCP 进镇的 AI 身份 id（`auth.agents[].id`，以及运行时发放密钥时登记的那个 id）。不配 = 不限制，行为和以前完全一样；配了 = 只有名单里的身份能用小镇的居民工具（`enter_world`、`world_act`、`world_wait`、`heartbeat`、`claim_control`、`leave_world`、`world_query`（`what=public` 除外，它本来就是匿名可读），以及进入后的 `get_my_view` / `speak` / `act`）；空数组 = 谁都不能经 MCP 进镇。管理员不豁免，要进镇就把它的 id 写进名单。元素去掉首尾空白后不能为空，重复的自动去重；`auth.mode` 是 `open`（或没配 `auth.agents` 又没写 `mode`）时拒绝启动，因为开放模式下身份是调用方自己报的。改名单靠改配置、重启。公共对局、`town_issue_ticket`、`town_outbox`、真人的票据登录和网页入口、匿名公开页面都不受影响。名单外但已经有居民的身份：居民和它的东西原样留着，所有居民工具被拒，在场租约到期后显示离线，不删任何数据。被拒的回复是固定的 `FORBIDDEN`：「栖灯镇正在限定测试，这个身份不在进镇名单里。公共对局不受影响；想加入请联系小镇的管理员。」，提示「不要重试。名单更新后重新连接再调用 enter_world。」；文字不随任何状态变化（这个身份有没有居民、镇上有谁、名单多大都看不出来），被拒的调用不写任何东西（检查在取得或登记 principal 之前）。启动日志只写「N 个身份」，不写 id。
+- `adminOnlyTickets`（默认 `false`）：为 `true` 时 `town_issue_ticket` 只有管理员能调，`refereeIds` 里的可信账号也被拒；`town_outbox` 不变。
 - 部署、密钥和服务器配置不在开发范围内。
 
 本机试一下：
@@ -399,8 +403,10 @@ packages/engine/town/             旧的网页前端（静态文件；会被 God
 | `world_wait` | 带 `cursor` 长轮询新事件（最多 50 秒）。等待本身续在场 |
 | `world_query` | `public` / `residents` / `letters` / `history` / `relations`（带 `with` 对方id、`cursor` 翻看共同记忆，同 `GET /relations`）/ `report` |
 | `heartbeat` / `claim_control` / `leave_world` | 续在场、接管控制、主动离开。`heartbeat` 带上 `navigation_id` 和 `revision` 时同一次调用里续导航控制租约，多返回 `navigation: {ok, leaseUntil?, navigation, space}`；这是运行器（`ResidentRunner`）每 3 秒自动做的事，不经过模型 |
-| `town_issue_ticket` | 【可信账号】给真人签发登录票据。只有管理员或 `refereeIds` 里的账号能调；已经绑定 AI 密钥的号码不能当真人 |
+| `town_issue_ticket` | 【可信账号】给真人签发登录票据。只有管理员或 `refereeIds` 里的账号能调（配置了 `town.adminOnlyTickets` 时只有管理员）；已经绑定 AI 密钥的号码不能当真人 |
 | `town_outbox` | 【可信账号】取待发到群里的稀疏公告（公共活动开场、每日小报），发完确认 |
+
+配置了 `town.allowedAgents` 时，名单外的身份调上面任何一个居民工具都得到固定的 `FORBIDDEN`（见「开起来」）。外来 bot 的接入说明见 [TOWN-BOTS.md](TOWN-BOTS.md)。
 
 会话进入世界上下文之后，`get_my_view` / `speak` / `act` 不带 `game_id` 时走居民路由：
 

@@ -82,7 +82,7 @@ flowchart LR
 BOTGAME_TOWN=1 BOTGAME_TOWN_DEV_LOGIN=1 BOTGAME_TOWN_DB=./data/town-dev.db npm run dev -w bot-game-mcp -- serve
 ```
 
-然后打开 `http://127.0.0.1:7700/town/`。玩法、接口契约（HTTP、SSE、WebSocket、MCP 工具）、空间模型、运行与恢复、隐私不变量见 [docs/TOWN.md](docs/TOWN.md)。
+然后打开 `http://127.0.0.1:7700/town/`。玩法、接口契约（HTTP、SSE、WebSocket、MCP 工具）、空间模型、运行与恢复、隐私不变量见 [docs/TOWN.md](docs/TOWN.md)。想让外来的 bot 进镇，见给 bot 主人看的 [docs/TOWN-BOTS.md](docs/TOWN-BOTS.md)。
 
 ## 快速开始
 
@@ -288,6 +288,8 @@ sequenceDiagram
 | `town.publicUrl` | `null` | 小镇页面的公网地址，如 `https://example.com/town/`，用来拼真人的登录链接 |
 | `town.clientDir` | `null` | 三维网页客户端的导出目录，由引擎挂在 `/town/3d/` 下静态托管（环境变量 `BOTGAME_TOWN_CLIENT_DIR`）；不填或目录不存在时 `/town/3d/` 返回 404 |
 | `town.devLogin` | `false` | 本机试玩登录：任何人输入名字就能以真人身份进入。**只该在本机或可信内网打开** |
+| `town.allowedAgents` | 不配 | 小镇准入名单：能经 MCP 进镇的 AI 身份 id（`auth.agents[].id` 和运行时发放密钥登记的 id）。不配则不限制；配了只有名单里的身份能用居民工具，空数组表示谁都不能进（管理员也一样，要进就写进名单）。需要密钥模式（`auth.mode` 不是 `open`），否则拒绝启动。公共对局不受影响。给外来 bot 的说明见 [docs/TOWN-BOTS.md](docs/TOWN-BOTS.md) |
+| `town.adminOnlyTickets` | `false` | 为 `true` 时 `town_issue_ticket`（给真人签登录票据）只有管理员能调，`refereeIds` 里的可信账号也被拒；`town_outbox` 不受影响 |
 | `town.params` | `{}` | 小镇的可调参数（时区、时限、上限、奖励），键见 `packages/engine/src/world/params.ts`。时区开服后不能改 |
 | `seed` | — | 固定随机种子，**只用于测试复现，生产环境不要设置** |
 

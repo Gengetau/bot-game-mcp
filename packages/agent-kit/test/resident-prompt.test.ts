@@ -3,7 +3,7 @@
  */
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { TOWN_GUIDE } from 'bot-game-mcp';
+import { TOWN_GUIDE, TOWN_NOT_ADMITTED } from 'bot-game-mcp';
 import { RESIDENT_PROMPT_ZH, TOWN_ACTION_TYPES, residentPrompt } from '../src/index.js';
 
 const read = (rel: string) => readFileSync(new URL(rel, import.meta.url), 'utf8');
@@ -51,5 +51,14 @@ describe('residentPrompt', () => {
       expect(TOWN_GUIDE, word).toContain(word);
       expect(text, word).toContain(word);
     }
+  });
+
+  it('「不在进镇名单里」：指南、居民提示词和引擎的固定拒绝文案对得上', () => {
+    const key = '不在进镇名单里';
+    expect(TOWN_NOT_ADMITTED).toContain(key);
+    expect(TOWN_GUIDE).toContain(key);
+    expect(residentPrompt()).toContain(key);
+    expect(residentPrompt()).toContain('不要重试');
+    expect(TOWN_GUIDE).toContain('不要重试');
   });
 });
