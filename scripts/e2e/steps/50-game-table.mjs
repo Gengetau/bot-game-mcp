@@ -117,7 +117,7 @@ export default async function run(h) {
   });
 
   // ───────────────────────── 50.1 点桌子走到不同的落脚点 ─────────────────────────
-  await step(50.1, '点桌子：A 用鼠标点桌一、B 用手指点桌一，各走到自己的落脚点（都在桌心 2 米内），两人落脚点相距 1 米以上；走到后桌牌「数字炸弹」出现、出现开一局按钮', async () => {
+  await step(50.1, '点桌子：A 用鼠标点桌一、B 用手指点桌一，各走到自己的落脚点（都在桌心 2 米内），两人落脚点相距 1 米以上；走到后出现开一局按钮、还没人开桌所以没有桌牌', async () => {
     // 50 步里 A 用 E 键走到了某一张桌边（两张同样远，选哪张不论）。
     // 若正好是桌一：A 已站在落脚点上，点桌子应被 on_pick 吞掉、什么都不发（带屏障：等同一时刻 B 的点击发出导航之后再核）；
     // 若是桌二：A 点桌一应发出导航走过来。
@@ -143,8 +143,8 @@ export default async function run(h) {
     for (const p of [A, B]) {
       await until(async () => (await snap(p.page)).nearValid === true, 20_000, `${p.label} 够得着状态有效`);
       await waitBtn(p, `f:game:propose:${T1}`);
-      const tg = (await tableTags(p.page)).find((t) => t.id === `g:${T1}`);
-      check(tg && tg.text.includes('数字炸弹'), `${p.label} 桌一上应有桌牌：${JSON.stringify(await tableTags(p.page))}`);
+      // 桌牌只在有人凑桌之后才有（50.2 检查「等人 1/2」）；还没有人开桌时桌上没有牌
+      check((await tableTags(p.page)).length === 0, `${p.label} 还没人开桌时不应有桌牌：${JSON.stringify(await tableTags(p.page))}`);
     }
     const bb = await btn(A, `f:game:propose:${T1}`);
     check(bb.label === '开一局：数字炸弹', `按钮文字：${bb.label}`);
@@ -163,7 +163,7 @@ export default async function run(h) {
     const prop0 = count(A, 'propose_game');
     const walks0 = (await gg(A)).walks;
     const nav0 = count(A, 'navigate');
-    await A.page.evaluate((id) => window.TownHost.emit('act', id), `f:game:propose:${T2}`);
+    await A.page.evaluate((id) => window.TownHost.emit('ui', 'act', id), `f:game:propose:${T2}`);
     await until(async () => count(A, 'propose_game') > prop0, 15_000, '发出了 propose_game');
     const rec = await until(() => { const r = actionsOf(A, 'propose_game').at(-1); return r && 'reason' in r ? r : null; }, 10_000, '读完回应', 100);
     check(rec.reason === 'too_far', `应是 too_far：${JSON.stringify(rec)}`);
