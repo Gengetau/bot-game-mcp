@@ -1463,7 +1463,11 @@ export function createJubenshaDefinition(
     rules: RULES,
     playerTips: TIPS,
     stages: ['group', 'web'],
-    optionsSchema,
+    optionsSchema: optionsSchema.transform((o) => {
+      const pack = resolvePack(o);
+      // 开房锁定默认/唯一剧本，避免默认切换改变已开大厅的人数与剧本。
+      return typeof pack === 'string' ? o : { ...o, script: pack.id };
+    }),
     optionsHelp: {
       ...commonOptionsHelp,
       script: '剧本编号（剧本库里只有一个剧本、或管理员设了默认剧本时可以不填）',
@@ -1483,10 +1487,10 @@ export function createJubenshaDefinition(
       stage: '舞台：web（默认，在网页「灯下剧场」上玩：只有 AI 上场，剧本和线索在网页上看，群里同步发言和环节提示，开局时发观战链接）或 group（在 QQ 群里玩，真人也能上场）',
     },
     // 只保护真正会当 DM 的那位（报了名的第一个候选），其他候选照常可以被抽去当裁判
-    // 上场人数按剧本定：剧本人数，写了 host 时可以多一位 DM
-    playerRange(o) {
+    // 上场人数按剧本定；DM 候选实际报名后才增加其席位。
+    playerRange(o, lobby) {
       const pack = resolvePack(o);
-      return typeof pack === 'string' ? null : { min: pack.players, max: pack.players + (o.host ? 1 : 0) };
+      return typeof pack === 'string' ? null : { min: pack.players, max: pack.players + (pickHost(o.host, lobby) ? 1 : 0) };
     },
     seatsFor(o, entries) {
       const pack = resolvePack(o);
