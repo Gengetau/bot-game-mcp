@@ -3,7 +3,7 @@
  * 玩家和服务器给的文字（名字、活动名、收获、投入说明）一律 textContent；类名和 data-* 只放白名单值。
  * 倒计时：收到 state 时记下 performance.now() + remainMs，1 秒一次的定时器刷新文字（面板不可见时不刷新，onShow 立即刷一次）；
  * 到 0 显示 00:00 而不是负数，等 Godot 的下一次 state 把这一桌收起。
- * 文字都在 activity.html 的文字库里，这个文件里没有汉字字面量（lint 检查）。 */
+ * 文字都在 together.html 的文字库里，这个文件里没有汉字字面量（lint 检查）。 */
 (function () {
   'use strict';
   window.TownDock.register({
