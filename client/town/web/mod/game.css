@@ -1,0 +1,144 @@
+/* 小游戏面板（数字炸弹）。#gamePanel 是 #dockOverlays 的直接子节点，一块木框纸板：桌面靠左下，手机贴着 #bottombar 上沿（底部抽屉式）。
+ * 选择器一律挂在 #gamePanel 下（hud.css / dock.css 里有通用的 button / .chip / .tag 样式，裸写会串味）。
+ * 局中（body[data-game="1"]）藏掉底栏的动作按钮和「停下 / 回家 / 地点」，保留 #dockBtn（还能看全镇公屏）。
+ * 只用 transform / opacity 做动画；不用图片和字体文件。 */
+
+/* ───── 局中的底栏 ───── */
+body[data-game="1"] #actions, body[data-game="1"] #stopBtn, body[data-game="1"] #homeBtn, body[data-game="1"] #destBtn, body[data-game="1"] #destMenu { display: none !important; }
+
+/* ───── 面板本体 ───── */
+#gamePanel {
+  --game-bottom: 90px;
+  position: absolute; box-sizing: border-box; z-index: 1; left: calc(12px + var(--safe-left)); bottom: max(var(--game-bottom), calc(var(--kb, 0px) + 8px));
+  width: min(360px, 44vw); max-height: calc(100vh - 120px - var(--game-bottom)); overflow-y: auto; overflow-x: hidden;
+  padding: 10px 12px 10px; color: var(--d-ink); background-color: var(--d-paper); border: 4px solid var(--d-wood); border-radius: 12px;
+  box-shadow: 0 0 0 1px var(--d-wood-dark), 0 4px 0 rgba(60, 40, 20, 0.28); font-size: 14px; line-height: 1.4;
+  background-image: repeating-linear-gradient(transparent 0 21px, rgba(139, 94, 60, 0.07) 21px 22px);
+  animation: gameIn 0.16s ease-out; user-select: none; -webkit-user-select: none; touch-action: manipulation; overscroll-behavior: contain;
+}
+#gamePanel[hidden] { display: none; }
+#gamePanel [hidden] { display: none !important; }
+@keyframes gameIn { from { opacity: 0; transform: translateY(8px); } }
+@media (prefers-reduced-motion: reduce) { #gamePanel { animation: none; } }
+body[data-dock="drawer"] #gamePanel { left: calc(8px + var(--safe-left)); right: calc(8px + var(--safe-right)); width: auto; max-height: calc(100vh - var(--game-bottom) - 96px); padding: 6px 10px 8px; }
+
+/* 按钮：全部重新定义（纸面底、木色边） */
+#gamePanel button { font: inherit; color: var(--d-ink); background: none; border: 0; border-radius: 0; padding: 0; min-height: 0; cursor: pointer; touch-action: manipulation; }
+#gamePanel button:hover:not(:disabled) { background: none; }
+#gamePanel .game-btn, #gamePanel .game-leave {
+  font-size: 14px; font-weight: 600; background: var(--d-paper-2); border: 2px solid var(--d-wood); border-radius: 8px; box-shadow: 0 2px 0 var(--d-wood-dark); min-height: 44px; padding: 4px 12px; overflow-wrap: anywhere;
+}
+#gamePanel .game-btn.main { background: var(--d-leaf-bg); border-color: #6e9a69; box-shadow: 0 2px 0 #4d7449; }
+#gamePanel .game-btn:hover:not(:disabled):not(.off), #gamePanel .game-leave:hover { background: #f8f1df; }
+#gamePanel .game-btn.main:hover:not(:disabled):not(.off) { background: #eaf3dc; }
+#gamePanel .game-btn.off { opacity: 0.55; box-shadow: none; }
+#gamePanel .game-btn.wait { opacity: 0.7; }
+#gamePanel button:focus-visible { outline: 2px solid var(--d-ember); outline-offset: 1px; }
+
+/* ───── 头：炸弹、标题、轮到谁、倒计时、离开 ───── */
+#gamePanel .game-head { display: flex; align-items: center; gap: 8px; min-width: 0; }
+#gamePanel .game-bomb { flex: none; width: 34px; height: 34px; }
+#gamePanel .game-headtext { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+#gamePanel .game-title { font-size: 12px; color: var(--d-ink-soft); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; unicode-bidi: plaintext; }
+#gamePanel .game-turn { font: 700 18px/1.25 var(--d-serif); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; unicode-bidi: plaintext; }
+#gamePanel .game-turn.mine { color: #a35f17; }
+#gamePanel .game-timer { flex: none; min-width: 52px; text-align: center; font: 700 15px/22px var(--d-serif); color: var(--d-wood-dark); background: var(--d-paper-2); border: 2px solid var(--d-wood-light); border-radius: 11px; padding: 0 8px; }
+#gamePanel .game-timer.urgent { color: #fff; background: var(--d-ember); border-color: #c97d2f; }
+#gamePanel .game-leave { flex: none; font-size: 13px; min-width: 44px; padding: 2px 8px; }
+#gamePanel .game-confirm { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 8px; margin-top: 6px; padding: 6px 8px; background: var(--d-note); border: 1px dashed var(--d-wood-light); border-radius: 6px; font-size: 13px; }
+#gamePanel .game-confirm > span { flex: 1 1 100%; }
+#gamePanel .game-confirm .game-btn { flex: 1 1 0; }
+
+/* ───── 引信条：范围随猜数收窄 ───── */
+#gamePanel .game-range { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
+#gamePanel .game-end { flex: none; min-width: 28px; font: 700 15px/1 var(--d-serif); color: var(--d-wood-dark); text-align: center; }
+#gamePanel .game-fuse { position: relative; flex: 1; height: 10px; border-radius: 5px; background: rgba(91, 61, 39, 0.22); border: 1px solid var(--d-wood-light); overflow: visible; }
+#gamePanel .game-fuse i { position: absolute; left: 0; top: -1px; bottom: -1px; width: 100%; border-radius: 5px; background: linear-gradient(90deg, #8b5e3c, #c98a45); transition: width 0.35s ease-out; }
+#gamePanel .game-fuse i::after { content: ""; position: absolute; right: -5px; top: 50%; width: 10px; height: 10px; margin-top: -5px; border-radius: 50%; background: var(--d-ember); box-shadow: 0 0 0 2px #f6d9a8; }
+@media (prefers-reduced-motion: reduce) { #gamePanel .game-fuse i { transition: none; } }
+
+/* ───── 玩家 ───── */
+#gamePanel .game-players { display: flex; flex-wrap: wrap; gap: 4px 6px; margin: 6px 0 0; padding: 0; list-style: none; }
+#gamePanel .game-player { display: inline-flex; align-items: center; gap: 4px; max-width: 100%; padding: 1px 6px 1px 3px; background: var(--d-paper-2); border: 2px solid var(--d-line); border-radius: 12px; font-size: 13px; line-height: 20px; }
+#gamePanel .game-player.turn { border-color: var(--d-ember); background: #fbeed7; font-weight: 700; }
+#gamePanel .game-player.out { opacity: 0.55; text-decoration: line-through; }
+#gamePanel .game-seat { flex: none; min-width: 18px; height: 18px; border-radius: 9px; background: var(--d-wood); color: var(--d-paper); font: 700 12px/18px var(--d-serif); text-align: center; }
+#gamePanel .game-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 9em; unicode-bidi: plaintext; }
+#gamePanel .game-kind { flex: none; font-size: 11px; line-height: 16px; padding: 0 5px; border-radius: 8px; border: 1px solid transparent; }
+#gamePanel .game-kind.human { background: var(--d-leaf-bg); color: #3e6a3a; border-color: var(--d-leaf); }
+#gamePanel .game-kind.ai { background: var(--d-slate); color: #fff; border-color: var(--d-slate-ink); }
+#gamePanel .game-kind.out { background: var(--d-paper); color: var(--d-ink-soft); border-color: var(--d-line); }
+
+/* ───── 最近的猜数：新的在最上面 ───── */
+#gamePanel .game-hist { margin: 6px 0 0; padding: 0; list-style: none; max-height: 112px; overflow-y: auto; }
+#gamePanel .game-hist:empty { display: none; }
+#gamePanel .game-h { display: flex; align-items: baseline; gap: 8px; padding: 1px 0; font-size: 13px; border-bottom: 1px dotted var(--d-line); }
+#gamePanel .game-hwho { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--d-ink-soft); unicode-bidi: plaintext; }
+#gamePanel .game-hnum { flex: none; font: 700 15px/1.3 var(--d-serif); }
+#gamePanel .game-hres { flex: none; color: var(--d-wood-dark); }
+
+/* ───── 输入区 ───── */
+#gamePanel .game-input { margin-top: 8px; }
+#gamePanel .game-field { display: flex; gap: 6px; align-items: stretch; }
+#gamePanel .game-num {
+  flex: 1 1 0; min-width: 0; min-height: 44px; box-sizing: border-box; font: 700 22px/1 var(--d-serif); color: var(--d-ink); text-align: center; letter-spacing: 1px; background: #fffaf0; border: 2px solid var(--d-wood); border-radius: 8px; padding: 4px 8px;
+  box-shadow: inset 0 2px 0 rgba(60, 40, 20, 0.1); user-select: text; -webkit-user-select: text;
+}
+#gamePanel .game-num:focus { outline: 2px solid var(--d-ember); outline-offset: 1px; }
+#gamePanel .game-num[aria-disabled="true"] { background: var(--d-paper-2); }
+#gamePanel .game-num::placeholder { color: var(--d-ink-soft); font-weight: 400; font-size: 16px; }
+#gamePanel .game-pad { display: none; grid-template-columns: repeat(6, 1fr); gap: 4px; margin-top: 4px; }
+#gamePanel[data-input="pad"] .game-pad { display: grid; }
+#gamePanel .game-pad button { min-height: 44px; font: 700 20px/1 var(--d-serif); background: var(--d-paper-2); border: 2px solid var(--d-wood-light); border-radius: 8px; box-shadow: 0 2px 0 var(--d-wood-dark); }
+#gamePanel .game-pad button:active:not(.off) { background: #f3e2bd; transform: translateY(1px); box-shadow: 0 1px 0 var(--d-wood-dark); }
+#gamePanel .game-pad button.off { opacity: 0.5; box-shadow: none; }
+#gamePanel .game-hint { margin: 4px 0 0; min-height: 18px; font-size: 13px; line-height: 18px; color: var(--d-ink); overflow-wrap: anywhere; }
+#gamePanel .game-hint.warn { color: #8a5214; }
+#gamePanel .game-hint.err { color: var(--d-err); font-weight: 600; }
+
+/* 手机：把玩家和猜数压成单行，给小键盘腾地方（390x844 下面板顶边要在 480px 以下） */
+body[data-dock="drawer"] #gamePanel .game-bomb { width: 30px; height: 30px; }
+body[data-dock="drawer"] #gamePanel .game-turn { font-size: 17px; }
+body[data-dock="drawer"] #gamePanel .game-players { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; }
+body[data-dock="drawer"] #gamePanel .game-players::-webkit-scrollbar { display: none; }
+body[data-dock="drawer"] #gamePanel .game-player { flex: none; }
+body[data-dock="drawer"] #gamePanel .game-hist { display: flex; flex-wrap: nowrap; gap: 6px; max-height: none; overflow-x: auto; overflow-y: hidden; scrollbar-width: none; margin-top: 4px; }
+body[data-dock="drawer"] #gamePanel .game-hist::-webkit-scrollbar { display: none; }
+body[data-dock="drawer"] #gamePanel .game-h { flex: none; gap: 4px; border: 1px solid var(--d-line); border-radius: 10px; padding: 0 7px; font-size: 12px; background: var(--d-paper-2); }
+body[data-dock="drawer"] #gamePanel .game-hwho { max-width: 5em; }
+body[data-dock="drawer"] #gamePanel .game-hnum { font-size: 13px; }
+body[data-dock="drawer"] #gamePanel .game-input { margin-top: 6px; }
+body[data-dock="drawer"] #gamePanel .game-hint { margin-top: 2px; }
+body[data-dock="drawer"][data-dock-open="1"] #gamePanel { bottom: calc(var(--dock-h, 0px) + 8px); }
+
+/* 横屏矮屏：左右两栏，左边是局面，右边是输入 */
+@media (orientation: landscape) and (max-height: 520px) {
+  #gamePanel { width: min(560px, 62vw); max-height: calc(100vh - 70px); }
+  body[data-dock="drawer"] #gamePanel { left: calc(8px + var(--safe-left)); right: auto; width: min(560px, 70vw); max-height: calc(100vh - var(--game-bottom) - 60px); }
+  #gamePanel .game-play { display: grid; grid-template-columns: 1fr minmax(210px, 42%); grid-auto-flow: dense; column-gap: 12px; align-items: start; }
+  #gamePanel .game-head, #gamePanel .game-confirm { grid-column: 1 / 3; }
+  #gamePanel .game-range, #gamePanel .game-players, #gamePanel .game-hist { grid-column: 1; }
+  #gamePanel .game-input { grid-column: 2; grid-row: 3 / 6; margin-top: 6px; }
+  #gamePanel .game-hint { grid-column: 2; }
+}
+
+/* ───── 结果卡 ───── */
+#gamePanel .game-result { text-align: center; padding: 4px 6px 2px; }
+#gamePanel .game-boom { width: 54px; height: 54px; }
+#gamePanel[data-result="won"] .game-boom { filter: hue-rotate(60deg) saturate(0.9); }
+#gamePanel[data-result="aborted"] .game-boom { filter: grayscale(0.8); }
+#gamePanel .game-rtitle { margin: 2px 0 4px; font: 700 22px/1.3 var(--d-serif); color: var(--d-wood-dark); }
+#gamePanel[data-result="lost"] .game-rtitle { color: var(--d-err); }
+#gamePanel[data-result="won"] .game-rtitle { color: #3e6a3a; }
+#gamePanel .game-rreason { margin: 0 0 6px; font: 600 15px/1.45 var(--d-serif); overflow-wrap: anywhere; unicode-bidi: plaintext; }
+#gamePanel .game-rplayers { margin: 0 0 6px; padding: 0; list-style: none; display: flex; flex-wrap: wrap; gap: 4px 8px; justify-content: center; font-size: 13px; }
+#gamePanel .game-rp { padding: 1px 8px; background: var(--d-paper-2); border: 1px solid var(--d-line); border-radius: 10px; overflow-wrap: anywhere; }
+#gamePanel .game-rp b { margin-left: 6px; font-weight: 600; color: var(--d-wood-dark); }
+#gamePanel .game-reward { margin: 0 0 8px; padding: 2px 10px; display: inline-block; background: var(--d-note); border: 1px dashed var(--d-wood-light); border-radius: 4px; font-size: 14px; }
+#gamePanel .game-result .game-btn { display: block; width: 100%; }
+
+/* ───── 桌上方的牌（#tags 里的 .tag.g）：奶油纸小牌，写着「数字炸弹 · 等人 1/2」。hud.js 的 setTags 用行内样式设 z-index，层级靠位置（在桌子上方）错开 ───── */
+#tags .tag.g {
+  background: var(--d-paper); color: var(--d-ink); border: 2px solid var(--d-wood); border-radius: 8px; padding: 1px 9px; font-size: 13px; font-weight: 600; text-shadow: none;
+  box-shadow: 0 2px 0 rgba(60, 40, 20, 0.3); max-width: min(70vw, 260px);
+}

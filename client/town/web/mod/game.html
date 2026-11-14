@@ -1,0 +1,101 @@
+<template id="tpl-dock-game" data-mod="game" data-tab-label="游戏" data-order="90" data-layout="overlay">
+  <section class="dock-pane game-pane" id="gamePanel" data-pane="game" role="dialog" aria-label="数字炸弹" hidden>
+    <div class="game-play" data-role="play" hidden>
+      <header class="game-head">
+        <svg class="game-bomb" viewBox="0 0 40 40" aria-hidden="true" focusable="false">
+          <path d="M26 9 Q30 4 35 6" fill="none" stroke="#8b5e3c" stroke-width="2.4" stroke-linecap="round"/>
+          <circle cx="36" cy="5.5" r="2.6" fill="#e6994f"/>
+          <circle cx="17" cy="24" r="12.5" fill="#4b4036" stroke="#2f2820" stroke-width="2"/>
+          <rect x="21" y="8.5" width="8" height="5" rx="1.5" fill="#8b5e3c" transform="rotate(35 25 11)"/>
+          <ellipse cx="12.5" cy="19.5" rx="3.4" ry="2.2" fill="#fff" opacity="0.28" transform="rotate(-30 12.5 19.5)"/>
+        </svg>
+        <div class="game-headtext">
+          <span class="game-title" data-role="title"></span>
+          <b class="game-turn" data-role="turn" role="status" aria-live="polite"></b>
+        </div>
+        <span class="game-timer" data-role="timer" aria-live="off"></span>
+        <button class="game-leave" type="button" data-role="leave">离开这局</button>
+      </header>
+      <div class="game-confirm" data-role="confirm" role="alertdialog" aria-label="离开这局" hidden>
+        <span data-role="confirmText"></span>
+        <button class="game-btn" type="button" data-role="leaveYes">离开</button>
+        <button class="game-btn main" type="button" data-role="leaveNo">留下</button>
+      </div>
+      <div class="game-range" data-role="range" role="img">
+        <b class="game-end" data-role="rangeFrom"></b>
+        <div class="game-fuse"><i data-role="bar"></i></div>
+        <b class="game-end" data-role="rangeTo"></b>
+      </div>
+      <ol class="game-players" data-role="players"></ol>
+      <ol class="game-hist" data-role="history" aria-label="最近的猜数"></ol>
+      <div class="game-input" data-role="inputBox">
+        <div class="game-field">
+          <input class="game-num" data-role="input" type="text" inputmode="numeric" pattern="[0-9]*" maxlength="9" autocomplete="off" autocapitalize="off" spellcheck="false" aria-label="你猜的数">
+          <button class="game-btn" type="button" data-role="mid">取中间</button>
+          <button class="game-btn main" type="button" data-role="submit">猜</button>
+        </div>
+        <div class="game-pad" data-role="pad">
+          <button type="button" data-key="1">1</button><button type="button" data-key="2">2</button><button type="button" data-key="3">3</button>
+          <button type="button" data-key="4">4</button><button type="button" data-key="5">5</button><button type="button" data-key="6">6</button>
+          <button type="button" data-key="7">7</button><button type="button" data-key="8">8</button><button type="button" data-key="9">9</button>
+          <button type="button" data-key="clear">清</button><button type="button" data-key="0">0</button><button type="button" data-key="del">删</button>
+        </div>
+      </div>
+      <p class="game-hint" data-role="hint" role="status" aria-live="polite"></p>
+    </div>
+    <div class="game-result" data-role="result" role="alertdialog" aria-labelledby="gameResultTitle" hidden>
+      <svg class="game-boom" viewBox="0 0 40 40" aria-hidden="true" focusable="false">
+        <path d="M20 2 L24 13 L35 8 L29 18 L38 22 L28 26 L33 36 L22 31 L18 38 L15 28 L5 32 L11 23 L2 17 L13 15 L10 5 L18 11 Z" fill="#e6994f" stroke="#a35f17" stroke-width="1.6" stroke-linejoin="round"/>
+      </svg>
+      <h3 class="game-rtitle" id="gameResultTitle" data-role="resultTitle"></h3>
+      <p class="game-rreason" data-role="resultReason"></p>
+      <ul class="game-rplayers" data-role="resultPlayers"></ul>
+      <p class="game-reward" data-role="reward"></p>
+      <button class="game-btn main" type="button" data-role="dismiss">回到小镇</button>
+    </div>
+    <div hidden data-bank>
+      <span data-t="title.fallback">数字炸弹</span>
+      <span data-t="loading">正在进入对局…</span>
+      <span data-t="turn.you">轮到你了</span>
+      <span data-t="turn.other">轮到 {name}</span>
+      <span data-t="turn.wait">等待中…</span>
+      <span data-t="turn.over">这一局结束了</span>
+      <span data-t="round">第 {n} 轮</span>
+      <span data-t="timer">{n} 秒</span>
+      <span data-t="range.label">炸弹在 {from} 到 {to} 之间</span>
+      <span data-t="kind.human">真人</span>
+      <span data-t="kind.ai">AI</span>
+      <span data-t="me">你</span>
+      <span data-t="out">出局</span>
+      <span data-t="hist.auto">代猜</span>
+      <span data-t="hist.row">{name} 猜 {guess}</span>
+      <span data-t="hist.empty">还没有人猜过</span>
+      <span data-t="ph">{from}~{to}</span>
+      <span data-t="ph.wait">等对方…</span>
+      <span data-t="err.nan">请输入一个整数。</span>
+      <span data-t="err.range">只能猜 {from}~{to} 之间的数。</span>
+      <span data-t="err.turn">还没轮到你。</span>
+      <span data-t="err.busy">上一个还在发送，稍等一下。</span>
+      <span data-t="err.net">网络不通，再点一次就好。</span>
+      <span data-t="err.default">没能猜成，稍后再试。</span>
+      <span data-t="ok.sent">猜了 {n}，等结果…</span>
+      <span data-t="confirm.ask">真的要离开这一局吗？你的座位会交给程序代猜。</span>
+      <span data-t="result.won">你赢了</span>
+      <span data-t="result.lost">你踩中了炸弹</span>
+      <span data-t="result.aborted">这一局没打完</span>
+      <span data-t="result.unknown">这一局结束了</span>
+      <span data-t="result.noreason">没有记下原因。</span>
+      <span data-t="reward">奖励 {n} 个硬币</span>
+      <span data-t="reward.none">这一局没有奖励</span>
+    </div>
+  </section>
+</template>
+<template id="tpl-game-player">
+  <li class="game-player"><span class="game-seat" data-role="seat"></span><span class="game-name" data-role="name"></span><b class="game-kind" data-role="kind"></b></li>
+</template>
+<template id="tpl-game-hist">
+  <li class="game-h"><span class="game-hwho" data-role="who"></span><b class="game-hnum" data-role="num"></b><span class="game-hres" data-role="res"></span></li>
+</template>
+<template id="tpl-game-rplayer">
+  <li class="game-rp"><span data-role="name"></span><b data-role="tag"></b></li>
+</template>
