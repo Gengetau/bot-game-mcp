@@ -80,6 +80,10 @@ const { values: args } = parseArgs({
 });
 const DAYS = Number(args.days);
 const N = Number(args.residents);
+/** 剧本居民：人数不少于 8 时额外加四名（编号 N 到 N+3，不占普通居民的位置、不改普通居民的随机流）。
+ * 他们按写死的步骤演一天里必须发生的几件事：三人凑桌、一人走开、发起人开局（剔除走开的人）；闲逛者被搭话延长停留；两次问掌柜。
+ * 全部经真实的命令管线，和随机居民在同一个世界里；演完（或一天里没演成）之后和普通居民一样随机活动。 */
+const SCRIPTED = N >= 8 ? 4 : 0;
 const SEED = String(args.seed);
 const DB_PATH = args.db ?? ':memory:';
 const VERBOSE = Boolean(args.verbose);
@@ -115,7 +119,9 @@ interface Cli {
 interface Ag {
   p: Person;
   rnd: Rand;
-  persona: 'regular' | 'daily' | 'sporadic';
+  persona: 'regular' | 'daily' | 'sporadic' | 'script';
+  /** 剧本居民的角色；演完置空 */
+  script?: 'host' | 'stay' | 'walk' | 'npc' | null;
   playful: number;
   dual: boolean;
   registered: boolean;
@@ -205,11 +211,11 @@ class Sim {
 
   init(): void {
     this.w = openWorld({ dbPath: DB_PATH, clock: this.clock, seed: `sim${SEED}`, bootTag: '0', params: { activeResidentLimit: LIMIT }, log: (m) => this.logs.push(m) });
-    for (let i = 0; i < N; i++) {
+    for (let i = 0; i < N + SCRIPTED; i++) {
       const kind: Kind = i % 3 === 1 ? 'human' : 'agent';
       const name = personName(i);
       const rnd = this.rnd.fork(`ag${i}`);
-      const persona = i < Math.ceil(N * 0.4) ? 'regular' : i < Math.ceil(N * 0.75) ? 'daily' : 'sporadic';
+      const persona = i >= N ? 'script' : i < Math.ceil(N * 0.4) ? 'regular' : i < Math.ceil(N * 0.75) ? 'daily' : 'sporadic';
       const principalId = makePrincipal(this.w, i, kind, name);
       const p: Person = { idx: i, name, kind, principalId, residentId: '' };
       const ag: Ag = {
@@ -235,7 +241,8 @@ class Sim {
         lastTown: -1e15,
         firstSeen: true,
         // 固定分配几种“不守规矩”的走路方式，保证小规模模拟里每种路径都会走到
-        walk: (['steady', 'steady', 'stingy', 'fickle', 'halter', 'ghost', 'steady'] as const)[i % 7]!,
+        walk: i >= N ? 'steady' : (['steady', 'steady', 'stingy', 'fickle', 'halter', 'ghost', 'steady'] as const)[i % 7]!,
+        script: i >= N ? (['host', 'stay', 'walk', 'npc'] as const)[i - N] : null,
         nav: null,
         renewsLeft: null,
         walkPlan: null,
@@ -250,6 +257,11 @@ class Sim {
   /** 为整个模拟期间一次性排好作息（可复现）。 */
   private planSessions(ag: Ag): void {
     const r = ag.rnd;
+    if (ag.persona === 'script') {
+      // 剧本居民整个模拟期间一直在场（不掉线、不换会话），步骤才不会被作息打断
+      ag.sessions.push([TOWN_START + 20 * MIN, this.endT + 2 * DAY]);
+      return;
+    }
     const days = Math.ceil(DAYS) + 1;
     const hourPick = (): number => r.weighted<number>([[r.range(7, 10), 2], [r.range(11, 13), 3], [r.range(19, 21), 4], [r.range(14, 18), 1], [r.range(22, 23), 1]])!;
     const pref = hourPick();
@@ -687,12 +699,6 @@ class Sim {
     this.sampleNpcs();
   }
 
-  /** 探针居民盯的 NPC 编号：编号 0 盯掌柜，编号 1 盯闲逛者；人数不足 8 时没有探针。 */
-  private probeNpc(ag: Ag): string | null {
-    if (this.ags.length < 8) return null;
-    return ag.p.idx === 0 ? 'npc:teahouse_keeper' : ag.p.idx === 1 ? 'npc:plaza_stroller' : null;
-  }
-
   /** 闲逛者此刻停留任务的到期时间和已延长量（覆盖断言用）；正在走路或没有待办返回 null。 */
   private npcStay(npcId: string): { due: number; extended: number } | null {
     const job = this.w.db.get("SELECT due_at, payload FROM scheduled_jobs WHERE dedupe_key = ? AND status = 'pending'", `npc_step:${npcId}`);
@@ -1032,6 +1038,17 @@ class Sim {
       }
     }
 
+    // 剧本居民：演剧本期间不掉线、不接管、不发错请求；走路中照常走完，小游戏里照常出牌
+    if (ag.script) {
+      if (v.game) return this.gameTurn(ag, conn, v);
+      const nav0 = v.location.navigation;
+      if (nav0) return this.walkingTurn(ag, conn, v, nav0);
+      ag.nav = null;
+      ag.walkPlan = null;
+      const d = this.scriptTurn(ag, conn, v);
+      if (d !== null) return d;
+      ag.script = null;
+    }
     // 掉线（不发心跳）
     if (ag.rnd.chance(0.01)) {
       ag.dropUntil = now + ag.rnd.range(10, 150) * 1000;
@@ -1054,6 +1071,145 @@ class Sim {
     ag.nav = null;
     ag.walkPlan = null;
     return this.idleDecision(ag, conn, v);
+  }
+
+  // ───── 剧本居民 ─────
+
+  /** 凑桌剧本是否已经演成（开局返回的 dropped 非空，且正好是走开的那位）。 */
+  private crewDone = false;
+  /** 搭话闲逛者剧本：成功搭话的次数、停留确实被延长的次数。 */
+  private readonly npcPlan = { strollerAsks: 0, extended: 0, keeperAsks: 0, buys: 0 };
+
+  private crewOf(role: 'host' | 'stay' | 'walk'): Ag {
+    return this.ags[N + (role === 'host' ? 0 : role === 'stay' ? 1 : 2)]!;
+  }
+
+  /**
+   * 剧本的一步。返回下次决策的延迟；返回 null 表示这个居民的剧本已经演完（之后随机活动）。
+   * 每一步都只看当下的视图重新决定，所以停机重启、桌被别人占了、牌桌邀约过期之后都能接着往下演。
+   */
+  private scriptTurn(ag: Ag, conn: Conn, v: MeView): number | null {
+    if (ag.script === 'npc') return this.npcScript(ag, conn, v);
+    if (this.crewDone) return null;
+    const now = this.clock.t;
+    const me = v.me.id;
+    const here = v.here;
+    const host = this.crewOf('host');
+    const walker = this.crewOf('walk');
+    if (v.location.space !== 'arcade' || !here || here.tables.length === 0) return this.moveTo(ag, conn, 'arcade') ?? 5000;
+    const game = here.games.find((g) => g.type !== 'sealed_auction' && g.min <= 2 && g.max >= 3);
+    if (!game) return 10_000;
+    const mine = here.activities.find((a) => a.status === 'forming' && a.players.some((p) => p.id === me));
+    if (ag.script === 'host') {
+      if (!mine) {
+        // 挑一张空桌凑桌（先看脚边的）
+        const free = here.tables.filter((t) => !t.activityId);
+        if (free.length === 0) return 10_000;
+        const table = free.find((t) => t.near) ?? free[0]!;
+        if (!table.near) return this.moveTo(ag, conn, table.id) ?? 5000;
+        const out = this.exec(ag, conn, 'propose_game', { game: game.type, objectId: table.id });
+        if (out.ok) this.bump('script_table_proposed');
+        return 5000;
+      }
+      const tbl = here.tables.find((t) => t.id === mine.tableId);
+      const ids = new Set(mine.players.map((p) => p.id));
+      // 等三个人都坐下，并且走开的那位此刻（独立重算）确实不在桌边
+      if (!ids.has(this.crewOf('stay').p.residentId) || !ids.has(walker.p.residentId)) return 4000;
+      if (this.atTableIndependent(walker.p.residentId, mine.tableId!).ok) return 3000;
+      if (tbl && !tbl.near) return this.moveTo(ag, conn, tbl.id) ?? 5000;
+      const expectKeep = mine.players.filter((p) => p.id === me || this.atTableIndependent(p.id, mine.tableId!).ok).map((p) => p.id).sort();
+      const expectDrop = mine.players.length - expectKeep.length;
+      const out = this.exec(ag, conn, 'start_game', { activityId: mine.id });
+      if (!out.ok) return 4000;
+      this.bump('table_start');
+      const dropped = (out.out as { dropped?: string[] }).dropped;
+      if (dropped?.length) this.bump('table_start_dropped');
+      this.checkStartMembers(mine.id, mine.tableId!, expectKeep, expectDrop, dropped?.length ?? 0);
+      // 被剔除的必须正好是走开的那位（报告里是名字）
+      if (dropped?.includes(walker.p.name)) {
+        this.bump('script_table_dropped_walker');
+        this.crewDone = true;
+      } else this.failStart(`剧本开局：被剔除的 ${JSON.stringify(dropped ?? [])} 里没有走开的 ${walker.p.name}（独立重算时他不在桌边）`, { activity: mine.id });
+      return 5000;
+    }
+    // 另两位：加入发起人的桌；走开的那位等人齐了就走开
+    if (!mine) {
+      const open = here.activities.find((a) => a.status === 'forming' && a.host.id === host.p.residentId && a.tableId && a.players.length < a.max);
+      if (!open) return 4000;
+      const tbl = here.tables.find((t) => t.id === open.tableId);
+      if (tbl && !tbl.near) return this.moveTo(ag, conn, tbl.id) ?? 5000;
+      const out = this.exec(ag, conn, 'join_game', { activityId: open.id });
+      if (out.ok) this.checkTableMember('join_game', ag.p.residentId, ag.p.name, open.tableId!);
+      return 3000;
+    }
+    const tbl = here.tables.find((t) => t.id === mine.tableId);
+    if (ag.script === 'walk') {
+      const ids = new Set(mine.players.map((p) => p.id));
+      if (tbl?.near && ids.has(this.crewOf('stay').p.residentId) && ids.has(host.p.residentId)) {
+        // 走到另一张桌子旁（走去「游戏馆」本身等于没动：人已经在馆里）
+        const other = here.tables.find((t) => t.id !== mine.tableId);
+        if (!other) return 10_000;
+        this.bump('table_member_walkoff');
+        return this.moveTo(ag, conn, other.id) ?? 5000;
+      }
+      return 4000;
+    }
+    // 留下的那位守着桌子
+    if (tbl && !tbl.near) return this.moveTo(ag, conn, tbl.id) ?? 5000;
+    return 4000;
+  }
+
+  /** 闲逛者：停下之后、快要出发时搭话，必须看到停留任务的到期时间确实变晚；掌柜：问两次、买两次。 */
+  private npcScript(ag: Ag, conn: Conn, v: MeView): number | null {
+    const plan = this.npcPlan;
+    const now = this.clock.t;
+    const stroller = 'npc:plaza_stroller';
+    const keeperId = 'npc:teahouse_keeper';
+    const wantStroller = plan.strollerAsks < 2 || plan.extended < 1;
+    const target = wantStroller ? stroller : keeperId;
+    if (!wantStroller && plan.keeperAsks >= 2 && plan.buys >= 2) return null;
+    const npc = (v.here?.npcs ?? []).find((n) => n.id === target);
+    if (!npc) return this.moveTo(ag, conn, target, 'approach') ?? 5000;
+    if (!npc.near) return this.moveTo(ag, conn, npc.id, 'approach') ?? 5000;
+    if (wantStroller) {
+      const stay = this.npcStay(npc.id);
+      if (!stay) return 4000; // 正在路上：问了也不会延长，等它停下
+      // 停留还久的话先等；离出发只剩几秒再问，延长才看得出来
+      if (stay.due - now > this.w.params.npcTalkHoldMs + 4000) return stay.due - now - 3000;
+      const o = this.exec(ag, conn, 'ask_npc', { npcId: npc.id, topic: npc.topics[0]!.id });
+      if (!o.ok) return 4000;
+      plan.strollerAsks++;
+      this.bump(`npc_ask:${npc.id}`);
+      if ((o.out as { spoken?: boolean }).spoken) this.bump('npc_spoke');
+      const after = this.npcStay(npc.id);
+      if (after && after.due > stay.due && after.extended > stay.extended) {
+        plan.extended++;
+        this.bump('npc_hold_extended');
+      }
+      return 5000;
+    }
+    if (plan.keeperAsks < 2) {
+      const topic = npc.topics[plan.keeperAsks % npc.topics.length]!.id;
+      const o = this.exec(ag, conn, 'ask_npc', { npcId: npc.id, topic });
+      if (o.ok) {
+        plan.keeperAsks++;
+        this.bump(`npc_ask:${npc.id}`);
+        if ((o.out as { spoken?: boolean }).spoken) this.bump('npc_spoke');
+      }
+      return 8000;
+    }
+    // 买茶：钱不够就等（随机居民的买卖照常给账本不变量检查）
+    if (v.inventory.coins.available < 2 || !npc.shop) return 30_000;
+    const o = this.exec(ag, conn, 'buy', { shop: npc.shop, sku: 'tea_leaves', qty: 1 });
+    if (o.ok) {
+      plan.buys++;
+      this.bump('npc_buy');
+      const key = `${npc.shop}|tea_leaves|${this.w.today(now)}`;
+      const total = (this.buyPerDay.get(key) ?? 0) + 1;
+      this.buyPerDay.set(key, total);
+      if (total > DAILY_STOCK.tea_leaves!) this.inv.fail('stock_cap', `tea_leaves 当天售出 ${total} 件，超过日库存 ${DAILY_STOCK.tea_leaves}`, { day: this.w.today(now) }, now);
+    }
+    return 6000;
   }
 
   private recordViewSizes(conn: Conn, v: MeView): void {
@@ -1230,9 +1386,7 @@ class Sim {
     intents.push(['ask', residentsHere.length > 0 ? 1.5 : 0]);
     intents.push(['buy', here && here.shops.some((s) => shopReachable(here, s.id)) ? 3 : 0]);
     // 和 NPC 打交道：够不着就先走到它身边（掌柜卖茶、问话、搭话闲逛者）
-    // 探针居民（编号 0、1，人数够多时）：确定性地覆盖「问掌柜」和「搭话闲逛者并延长停留」，不靠随机碰上
-    const probe = this.probeNpc(ag);
-    intents.push(['npc', probe ? 14 : here && here.npcs.length > 0 ? 2.5 : 0]);
+    intents.push(['npc', here && here.npcs.length > 0 ? 2.5 : 0]);
     intents.push(['use', energy < 75 && (avail('soup') > 0 || avail('cookie') > 0) ? 2.5 : 0]);
     intents.push(['decor', atHome ? 3 : 0]);
     intents.push(['offer', residentsHere.length > 0 ? 2.5 : 0]);
@@ -1456,17 +1610,11 @@ class Sim {
         return short();
       }
       case 'npc': {
-        const npcs = here?.npcs ?? [];
-        const probe = this.probeNpc(ag);
-        if (npcs.length === 0 && !probe) return null;
-        // 探针居民：不在同一场景就先走过去（approach 编号）
-        if (probe && !npcs.some((n) => n.id === probe)) {
-          this.bump('npc_walk');
-          return this.moveTo(ag, conn, probe, 'approach');
-        }
+        const npcs = here!.npcs;
+        if (npcs.length === 0) return null;
         // 有钱就偏向掌柜（买茶），否则找闲逛者搭话
         const keeper = npcs.find((n) => n.shop);
-        const forced = (forceNpc ? npcs.find((n) => n.id === forceNpc) : undefined) ?? (probe ? npcs.find((n) => n.id === probe) : undefined);
+        const forced = forceNpc ? npcs.find((n) => n.id === forceNpc) : undefined;
         const pick = forced ?? (keeper && inv.coins.available >= 2 && rnd.chance(0.55) ? keeper : rnd.pick(npcs));
         if (!pick.near) {
           this.bump('npc_walk');
@@ -1475,12 +1623,11 @@ class Sim {
         const stay = pick.shop ? null : this.npcStay(pick.id);
         // 有的居民会等闲逛者快要出发再搭话（停留任务的到期时间是公开的程序状态，这里读它只是模拟居民的「看时间」）：
         // 先等到离出发只剩 3 秒，下一次决策直接去问，这样「被搭话延长停留」每天都稳定发生，不靠随机碰上最后几秒
-        if (probe && !pick.shop && !stay) return 4000; // 探针等闲逛者停下再搭话（正在路上问不会延长）
-        if ((!forced || probe) && stay && !pick.shop && stay.due - now > this.w.params.npcTalkHoldMs + 4000 && (probe || rnd.chance(0.5))) {
+        if (!forced && stay && !pick.shop && stay.due - now > this.w.params.npcTalkHoldMs + 4000 && rnd.chance(0.5)) {
           this.lingerAsk.set(me, pick.id);
           return stay.due - now - 3000;
         }
-        if (pick.shop && inv.coins.available >= 2 && rnd.chance(probe ? 0.3 : 0.6)) {
+        if (pick.shop && inv.coins.available >= 2 && rnd.chance(0.6)) {
           const o = this.exec(ag, conn, 'buy', { shop: pick.shop, sku: 'tea_leaves', qty: 1 });
           if (o.ok) {
             this.bump('npc_buy');
@@ -2312,7 +2459,7 @@ const digest = sha(digestSrc).slice(0, 16);
 
 console.log('\n================ 栖灯镇逻辑模拟报告 ================');
 console.log(`逻辑时长：${fmtDuration(logical)}（${(logical / DAY).toFixed(2)} 天）；实际耗时 ${fmtDuration(wallMs)}（加速 ${(logical / wallMs).toFixed(0)}×）；模拟循环 ${sim.steps} 步`);
-console.log(`居民：${N}（会话 ${sim.counters.get('sessions') ?? 0} 次；峰值同时在场 ${sim.presentMax}；上限 ${LIMIT}；world_full 拒绝 ${sim.counters.get('world_full') ?? 0} 次）`);
+console.log(`居民：${N}${SCRIPTED ? `（另加剧本居民 ${SCRIPTED}）` : ''}（会话 ${sim.counters.get('sessions') ?? 0} 次；峰值同时在场 ${sim.presentMax}；上限 ${LIMIT}；world_full 拒绝 ${sim.counters.get('world_full') ?? 0} 次）`);
 
 console.log('\n── 前置场景 ──');
 for (const s of scenarios) console.log(`${s.ok ? '通过' : '失败'}  ${s.name}：${s.note}`);
