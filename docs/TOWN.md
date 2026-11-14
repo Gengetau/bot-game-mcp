@@ -28,6 +28,7 @@
 - 正式环境里真人通过代码裁判私聊拿到的一次性登录链接进入（见「身份」）。
 - 页面在 `/town/`。没登录也能看公开的小镇地图。
 - `clientDir`（可选）：三维网页客户端的导出目录（Godot 网页导出产物），引擎把它挂在 `/town/3d/` 下，规则见「三维客户端的托管」。不填或目录不存在时 `/town/3d/` 返回 404。相对路径按**进程当前目录**解析（引擎不做别的处理）；用 `npm -w bot-game-mcp …` 启动时当前目录是 `packages/engine`，写 `./client/…` 会指错地方，所以建议写绝对路径（环境变量 `BOTGAME_TOWN_CLIENT_DIR` 同理）。
+- `params` 里有两个只给测试用的开服配置（改它们只影响之后新开的事项，没有任何 HTTP / MCP / WebSocket 入口能改）：`interactionTimeScale`（共同活动时长的缩放，默认 1，范围 0.01 到 1，只能缩短；结束时刻、定时任务和 `cost` 文字里的「十分钟」「五分钟」都按缩放后的实际秒数，默认值下一切不变）；`activityLobbyTtlMs`（小游戏和共同活动报名阶段最长保留，默认 10 分钟，早就是参数）。信件延迟 `letterDeliveryDelayMs` 同理可缩短。
 - 部署、密钥和服务器配置不在开发范围内。
 
 本机试一下：
@@ -158,7 +159,7 @@ packages/engine/town/             旧的网页前端（静态文件；会被 God
 
 | 方法与路径 | 说明 |
 |---|---|
-| `GET /config` | 世界名、时区、可选的个性与兴趣、是否开放开发登录、字数上限、心跳间隔 |
+| `GET /config` | 世界名、时区、可选的个性与兴趣、是否开放开发登录、字数上限（`limits`：`traits`、`interests`、`chatMaxChars`、`letterMaxChars`，以及当面互动的距离门槛 `personReach`，米，公开的规则参数）、心跳间隔。听力距离 `hearDistance` 不在这里，在 `/map` 的 `source` 里 |
 | `GET /public` | 公开的小镇概况（`PublicView`）：每个区域里有谁，没有坐标 |
 | `GET /map` | 地图清单：地图源、每个场景栅格化后的可行走网格和区域、`mapVersion`、`checksum`。公开、可缓存（`ETag` 是校验值） |
 | `GET /public/events?cursor=` | SSE：公开事件流 |
@@ -328,7 +329,7 @@ packages/engine/town/             旧的网页前端（静态文件；会被 God
 | `offer` | `{offer}` | 报价的创建和状态变化 |
 | `mail` | `{unread, total, text}` | 有新信（不含寄信人和内容） |
 | `invite` | `{invite, text}` | 收到当面邀请 |
-| `interaction` | `{interaction, reason?}` | 身边的共同活动有变化 |
+| `interaction` | `{interaction, reason?}` | 身边的共同活动有变化。`interaction` 带 `startedAt`（开始时刻，服务器毫秒，和 `endsAt` 同一口径、同一批看得到的人；还没开始为 `null`）。观察者和 `here.objects[].active` 的可见范围不变 |
 | `interaction_done` | `{interactionId, name, text}` | 我参与的活动完成了，`text` 是我的收获 |
 | `goal` | `{goal, completed?, reward?, title?}` | 愿望进度 / 完成 |
 | `activity` | `{activity, reason?, ended?, dropped?}` | 身边凑桌的变化。`activity.tableId` 是占着的游戏桌；开局时有人不在桌边被剔除，`dropped` 是被剔除者的居民编号 |

@@ -32,12 +32,14 @@ export async function openTown(page) {
   await openDock(page);
   const sel = await page.getAttribute('#dock [data-tab="town"]', 'aria-selected');
   if (sel !== 'true') {
-    // 手机抽屉里 #dockGrip（把手，高 44px、盖住整条页签）会拦截对页签的点击：Playwright 的真实点击会一直等到超时。
-    // 这是 C1a 骨架（dock.css）的问题，C1b 不改它；这里在抽屉布局下直接给页签派发 click，并在汇报里单列。
-    if ((await dockState(page))?.layout === 'drawer') await page.dispatchEvent('#dock [data-tab="town"]', 'click');
-    else await page.click('#dock [data-tab="town"]');
+    // 一律真实点击（Playwright 会核对点击点上的元素确实是页签）。手机抽屉里把手（#dockGrip）曾经整条盖在页签条上，
+    // 点页签会点到把手、把面板收起；S0 之后页签压在把手之上。这里不许再用 dispatchEvent 绕过命中测试。
+    await page.click('#dock [data-tab="town"]', { timeout: 8000 });
   }
   await poll(async () => (await page.getAttribute('#dock [data-tab="town"]', 'aria-selected')) === 'true' && (await dockState(page))?.tab === 'town', 5000, '「全镇」页签被选中');
+  // 点页签不能把面板收起来（点到把手就会收起）：选中之后面板必须还开着、「全镇」的内容区可见
+  const st = await dockState(page);
+  if (!st?.open || !(await page.isVisible(TOWN))) throw new Error(`点「全镇」页签之后面板应仍开着且内容区可见：${JSON.stringify({ open: st?.open, layout: st?.layout, tab: st?.tab })}`);
 }
 
 /** 页签顺序（data-tab）。 */

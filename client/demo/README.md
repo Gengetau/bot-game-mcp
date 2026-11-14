@@ -15,7 +15,7 @@
 | 桌面上下文 | 1440x900，deviceScaleFactor 1，鼠标 |
 | 手机上下文 | 390x844，deviceScaleFactor 2，`isMobile` + `hasTouch`，触摸 |
 
-跑法：`npm run client:export`（完整导出（含 brotli 11）约 1.8 分钟（实测 108 秒）），然后 `npm run client:e2e`（完整一遍约 17 分钟，其中步骤 15「声音」约 6 分钟、附近聊天的 20 号步骤文件约 6 分钟，不进 CI）。脚本是 `scripts/client-e2e.mjs`。
+跑法：`npm run client:export`（完整导出（含 brotli 11）约 1.8 分钟（实测 108 秒）），然后 `npm run client:e2e`（完整一遍约 31 分钟，其中声音两步约 11 分钟、附近聊天的 20 号步骤文件约 5 分钟、全镇公屏与气泡的 30 号步骤文件约 9 分钟，不进 CI）。脚本是 `scripts/client-e2e.mjs`。
 只有全部步骤通过的完整运行才会把结果写进 `client/demo/results.json`、把截图换进本目录；失败的运行只写 `results.failed.json`（已 gitignore），截图先写在临时目录。
 
 桌面用 dsf 1 而不是 2 的原因：桌面 dsf 2 是 2880x1800（520 万像素），SwiftShader 只剩 1 到 2 帧每秒，

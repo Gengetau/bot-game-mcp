@@ -148,7 +148,33 @@ func navigate_to_place(place_id: String) -> void:
 # ─────────────────────────────────────────────────────────────────────────
 
 
-# ───────────────────────── C4 分区（预留，空）─────────────────────────
+# ───────────────────────── C4 分区 ─────────────────────────
+## 走过去 / 进门 / 出门：只是对 main._do_navigate 的转发（它自己做 _can_control、续租、序号栅栏和错误 toast）。
+## 协程不 await：调用方不等它走完。to 形如 {"to": "home:<居民编号>"}、{"to": "home"}、{"to": "residential"}。
+## 返回 false 表示被拦下没有发出（走开确认、只读等，提示 main 已弹）；true 只表示请求发出了，服务器是否接受要等 you_arrived / 提示。
+func c4_go(to: Dictionary, label: String = "") -> bool:
+	if not m._can_control():
+		return false
+	m._do_navigate(to, label)
+	return true
+
+
+## 走到某个居民身边（和 main._on_tap 里点人的调用一致）
+## 返回值同 c4_go：没发出（对方不在场景里、被拦下）为 false
+func c4_approach(actor_id: String) -> bool:
+	var a = m.actors.get(actor_id)
+	if a == null or not m._can_control():
+		return false
+	m._do_navigate({"approach": actor_id}, (a as TActor).actor_name, Vector3((a as TActor).disp.x, 0.0, (a as TActor).disp.y))
+	return true
+
+
+## 人和人当面互动的够得着距离（米）：读 /config 的 limits.personReach，服务端没给就用 3.0
+func c4_person_reach() -> float:
+	var lim = m.server_cfg.get("limits")
+	if lim is Dictionary and lim.has("personReach"):
+		return float(lim["personReach"])
+	return 3.0
 # ─────────────────────────────────────────────────────────────────────────
 
 

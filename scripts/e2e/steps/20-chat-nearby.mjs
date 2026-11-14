@@ -297,24 +297,57 @@ export default async function run(h) {
   });
 
   // ───────────────────────── 20.455 面板开着时 Esc 同时停步 ─────────────────────────
-  await step(20.455, 'Esc：面板开着、角色在走时按一下 Esc，面板关闭并且角色停下（键位提示「Esc 停下」始终成立）', async () => {
-    await closeDock(A.page);
-    await walkTo(A, 36, 27.5, 1.5);
-    await openDock(A.page);
+  await step(20.455, 'Esc：面板开着、角色在走时按一下 Esc，面板关闭并且角色停下（键位提示「Esc 停下」始终成立）；刚点完地马上按（页面还没从快照里看到自己在走）也一样停', async () => {
+    const start = { x: 36, z: 27.5 };
     const to = { x: 25, z: 27.5 };
-    await h.clickWorld(A, to.x, to.z, { avoidDock: true });
-    await until(async () => !!(await sceneOf(A)).nav, 8000, '点地后在走', 250);
-    await A.page.evaluate(() => document.activeElement?.blur());
-    const p0 = await sceneOf(A);
-    check(!!p0.nav && (await dockState(A.page)).open, 'Esc 之前：角色在走、面板开着');
-    await A.page.keyboard.press('Escape');
-    await until(async () => !(await dockState(A.page)).open, 5000, 'Esc 后面板关闭');
-    await until(async () => !(await sceneOf(A)).nav, 4000, '同一下 Esc 之后角色停下（不必再按一次）', 250);
-    const me = await sceneOf(A);
-    check(Math.hypot(me.x - to.x, me.z - to.z) > 2, `角色应是被中途停下而不是走到了终点：${JSON.stringify({ x: me.x, z: me.z })}`);
-    // 回到本步之前的位置：后面的步骤（20.5 的 B 走远）以 A 在花园一带为前提
-    await apiAct(A, { type: 'navigate', to: { x: 58, z: 28 } });
-    await waitIdle(A);
+    const pt = (q) => `(${q.x.toFixed(2)},${q.z.toFixed(2)})`;
+    const selfMoving = () => A.page.evaluate(() => { const t = window.__town; return !!t.actors.find((a) => a.id === t.self)?.moving; });
+    try {
+      // ① 走到一半按：等页面自己也看到「在走」之后再按
+      await closeDock(A.page);
+      await walkTo(A, start.x, start.z, 1.5);
+      await openDock(A.page);
+      await A.page.evaluate(() => document.activeElement?.blur());
+      const s1 = await sceneOf(A);
+      const tgt1 = await h.clickWorld(A, to.x, to.z, { avoidDock: true });
+      check(dist(s1, tgt1) > 6, `落点应离起点 6 米以上（路够长才分得清「中途停下」和「走到了」）：${dist(s1, tgt1).toFixed(1)}`);
+      await until(selfMoving, 8000, '页面里的自己开始走', 100);
+      check((await dockState(A.page)).open, 'Esc 之前面板开着');
+      const stop1 = actionsOf(A, 'stop_navigation').length;
+      await A.page.keyboard.press('Escape');
+      await until(async () => !(await dockState(A.page)).open, 5000, 'Esc 后面板关闭');
+      await until(() => actionsOf(A, 'stop_navigation').length > stop1, 5000, '同一下 Esc 发出了停步（不必再按一次）', 100);
+      await waitIdle(A);
+      const m1 = await sceneOf(A);
+      check(dist(m1, tgt1) > 2, `角色应是被中途停下而不是走到了终点：停在 ${pt(m1)}，落点 ${pt(tgt1)}`);
+
+      // ② 刚点完马上按：点地的请求还在路上、或服务器刚答应而快照还没到，这一下 Esc 也得停住（手滑点错马上按 Esc 就是这种情况）
+      await walkTo(A, start.x, start.z, 1.5);
+      await openDock(A.page);
+      await A.page.evaluate(() => document.activeElement?.blur());
+      const s2 = await sceneOf(A);
+      const nav2 = actionsOf(A, 'navigate').length;
+      const stop2 = actionsOf(A, 'stop_navigation').length;
+      const tgt2 = await h.clickWorld(A, to.x, to.z, { avoidDock: true });
+      const seen = await selfMoving(); // 只记下来：按键那一刻页面知不知道自己在走
+      await A.page.keyboard.press('Escape');
+      await until(async () => !(await dockState(A.page)).open, 5000, '第二次：Esc 后面板关闭');
+      // 屏障：点地的 navigate 有了回答（服务器确实让角色走起来了），之后这一下 Esc 的停步也发出并成功
+      const navRec = await until(() => actionsOf(A, 'navigate')[nav2] ?? null, 8000, '第二次：点地的 navigate 有了回答', 100);
+      check(navRec.status === 200, `第二次：点地应被接受：${JSON.stringify(navRec)}`);
+      const stopRec = await until(() => actionsOf(A, 'stop_navigation')[stop2] ?? null, 8000, '第二次：紧跟着的 Esc 也发出了停步（旧写法这里等不到：页面以为自己没在走）', 100);
+      check(stopRec.status === 200 && stopRec.t >= navRec.t, `第二次：停步应成功，并且在导航有了回答之后才发：${JSON.stringify({ navRec, stopRec })}`);
+      await waitIdle(A);
+      const m2 = await sceneOf(A);
+      check(dist(m2, tgt2) > 2, `第二次：角色应被停下而不是走到了终点：停在 ${pt(m2)}，落点 ${pt(tgt2)}`);
+      check(actionsOf(A, 'stop_navigation').length === stop2 + 1, `第二次：只应发一次停步：${actionsOf(A, 'stop_navigation').length - stop2}`);
+      note(`① 起点 ${pt(s1)} 落点 ${pt(tgt1)} 停在 ${pt(m1)}；② 起点 ${pt(s2)} 落点 ${pt(tgt2)} 停在 ${pt(m2)}（按键那一刻页面${seen ? '已经' : '还没'}看到自己在走；导航回答到停步回答 ${stopRec.t - navRec.t} 毫秒）`);
+    } finally {
+      // 回到本步之前的位置：后面的步骤（20.5 的 B 走远）以 A 在花园一带为前提；本步失败也要复位，免得连带后面变红
+      await closeDock(A.page).catch(() => {});
+      await apiAct(A, { type: 'navigate', to: { x: 58, z: 28 } });
+      await waitIdle(A);
+    }
   });
 
   // ───────────────────────── 20.46 隔离房间收不到 ─────────────────────────
@@ -731,6 +764,9 @@ export default async function run(h) {
  *  - 本文件自己的前置条件：B 不走远（20.4：B 应在 9 米以外）、两人目的地改成相距很近（20.45：说话时两人应都还在走）、B 不进私宅（20.46：B 在私宅里不应听到门外的话）。
  *  - 把构建产物里的 textContent 改成 innerHTML（只改产物）：20.8（A 的列表里出现这句的文字与服务端不同 / 注入的元素）。
  *  - hud.js 的 Esc 里不再发 esc（面板开着只关面板）：20.455（同一下 Esc 之后角色没停，走到了终点）。
+ *  - main.gd 的 _do_esc 只看快照里的 has_nav（11-14 之前的写法）：20.455 的第二次（刚点完马上按）等不到停步。
+ *    实测过（11-14，把 `just_started` 固定成 false 再导出）：20.455 红，「等待超时（8 秒）：第二次：紧跟着的 Esc 也发出了停步」；第一次（看到自己在走再按）照常通过。
+ *    更早的依据是 C4 并入后原写法连红两次（d12625f，按键在点地后约 0.4 秒，页面还没看到自己在走，角色走到了终点）。
  *  - 00-chatkit.js 的 startCooldown 里恢复 `cool++`：20.3（倒计时第一拍多 1）。
  *  - dock.js 去掉「说」按钮的 mousedown preventDefault：20.85（点「说」之后输入框失焦）。
  *  - dock.css 去掉 side + data-kb 的规则：20.85（横屏软键盘下侧栏盖住输入栏）。

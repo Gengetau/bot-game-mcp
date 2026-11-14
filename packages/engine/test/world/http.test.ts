@@ -295,7 +295,7 @@ describe('HTTP：未登录', () => {
     expect(cfg.json).toMatchObject({ world: { id: 'town', name: '栖灯镇', timezone: 'Asia/Tokyo' }, devLogin: true, heartbeatMs: 20_000 });
     expect(cfg.json.traits.length).toBeGreaterThan(0);
     expect(cfg.json.interests[0]).toHaveProperty('id');
-    expect(cfg.json.limits).toMatchObject({ chatMaxChars: 120, letterMaxChars: 1000 });
+    expect(cfg.json.limits).toMatchObject({ chatMaxChars: 120, letterMaxChars: 1000, personReach: 3 });
     expect(cfg.headers.get('cache-control')).toBe('no-store');
     expect(cfg.headers.get('content-security-policy')).toContain("default-src 'none'");
     expect(cfg.headers.get('x-content-type-options')).toBe('nosniff');

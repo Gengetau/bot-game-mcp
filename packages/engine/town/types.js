@@ -15,7 +15,7 @@ export {};
 /** @typedef {Card & { bio: string, traits: string[], titles: string[], mood?: string }} Neighbor */
 /** @typedef {{ coins: number, items: { type: string, qty: number, itemId?: string, label?: string }[] }} Bundle */
 /** @typedef {{ id: string, kind: 'gift' | 'trade' | 'loan', from: Card, to: Card, give: Bundle, want: Bundle, text: string, status: string, expiresAt: number, reason?: string }} Offer */
-/** @typedef {{ id: string, def: string, name: string, status: string, objectId: string, initiator: Card, participants: Card[], min: number, max: number, endsAt: number | null, lobbyExpiresAt: number, cost: string }} Interaction */
+/** @typedef {{ id: string, def: string, name: string, status: string, objectId: string, initiator: Card, participants: Card[], min: number, max: number, startedAt: number | null, endsAt: number | null, lobbyExpiresAt: number, cost: string }} Interaction */
 /** @typedef {{ id: string, type: string, label: string, near: boolean, action: { def: string, name: string, cost: string, min: number, max: number } | null, active: Interaction | null }} PlaceObject */
 /** @typedef {{ id: string, name: string, goods: { sku: string, name: string, price: number, stock: number, note?: string }[] }} Shop */
 /** @typedef {{ id: string, game: string, name: string, venue: string, status: string, host: Card, players: Card[], min: number, max: number, lobbyExpiresAt: number, gameId: string | null, tableId: string | null }} Lobby */

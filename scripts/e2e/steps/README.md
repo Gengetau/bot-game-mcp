@@ -32,7 +32,9 @@ export default async function run(h) {
 }
 ```
 
-`h` 是 `client-e2e.mjs` 转发出来的工具集：`step until sleep check note shot allowFailure newPlayer login serverScene snap clickWorld walkTo rnd browsers selfActor dist project viewport seen clearSpot assertClock polyAt normPts BASE NO_SHOTS pair release`。
+`h` 是 `client-e2e.mjs` 转发出来的工具集：`step until sleep check note shot allowFailure newPlayer login serverScene snap clickWorld walkTo rnd browsers selfActor dist project viewport seen clearSpot assertClock polyAt normPts BASE NO_SHOTS townParams pair release`。
+
+`h.townParams` 是端到端起引擎时传给 `town.params` 的开服参数（冻结对象，表和理由在 `client-e2e.mjs` 的 `TOWN_PARAMS` 上面）：`interactionTimeScale`（共同活动时长缩放，0.075：十分钟的活动约 45 秒、五分钟的约 23 秒）、`letterDeliveryDelayMs`（信件送达延迟 4 秒）、`activityLobbyTtlMs`（报名阶段最长保留 25 秒）。步骤按它算等待：例如共同活动结束前最多等 `600 * 1000 * h.townParams.interactionTimeScale` 毫秒再加余量；「到时自动散」最多等 `h.townParams.activityLobbyTtlMs` 加余量；断言「还没到」时要先算好离到期还剩多少、别写死秒数。凑桌类步骤必须在 `activityLobbyTtlMs` 内完成「开桌 + 加入」。
 
 - 公共小工具在 `scripts/e2e/lib/`：`ui.mjs`（面板开关与状态、Enter 打开、命中测试）、`chat.mjs`（发话、读列表、未读、用 API 代发、声明被拒绝的请求）。新增的通用小工具放这里，不要塞进 `client-e2e.mjs`。
 - `login(p, name, { query })` 可以在地址后追加参数，例如 `&hour=19.5` 固定傍晚。
@@ -46,7 +48,7 @@ npx tsx scripts/client-e2e.mjs --only=chat-nearby --no-shots           # 按 id 
 npx tsx scripts/client-e2e.mjs --only=20 --no-shots                    # 按号段单跑（命中 n 到 n+10）
 ```
 
-命中后整个文件的所有子步骤都运行（文件内的子步骤互相依赖，不支持单跑 `20.3`）。带 `--only` 不会写 `client/demo/`。用 `flock /tmp/town-heavy.lock` 包起来，机器上同一时间只能跑一份软件渲染的 e2e。
+命中后整个文件的所有子步骤都运行（文件内的子步骤互相依赖，不支持单跑 `20.3`）。带 `--only` 不会写 `client/demo/`。`--until=60.17` 让编号大于它的步骤都跳过（只想看到某一步为止的结果时用，比如反向验证；同样不写 `client/demo/`）。用 `flock /tmp/town-heavy.lock` 包起来，机器上同一时间只能跑一份软件渲染的 e2e。
 
 ## 写法约定
 

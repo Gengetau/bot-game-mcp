@@ -47,6 +47,8 @@ export const townParamsSchema = z.object({
   /** 闲逛者停留时被搭话：这次停留至少延到「现在 + 这个」；一次停留被延长的总量不超过 npcTalkHoldMaxMs */
   npcTalkHoldMs: ms(8_000, 0),
   npcTalkHoldMaxMs: ms(60_000, 0),
+  /** 共同活动时长的缩放（开服配置，只给测试缩短用：默认 1，只能缩短）。结束时刻、定时任务和文字里的时长都乘它；没有任何运行时入口能改 */
+  interactionTimeScale: z.number().min(0.01).max(1).default(1),
   /** 信件从寄出到进信箱 */
   letterDeliveryDelayMs: ms(60_000),
   /** 住宅邀请有效期 */

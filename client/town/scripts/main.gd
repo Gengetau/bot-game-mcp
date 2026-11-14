@@ -99,6 +99,11 @@ var pending: int = 0
 var selected_obj: String = ""
 var near_valid: bool = false
 var nav_generation: int = 0
+## 自己发出的 navigate 还有几个没等到回答；以及最近一次「服务器答应开始走」的时刻。
+## 快照里的 has_nav 要晚一两帧才跟上：这段空档里按 Esc / 点「停下」也得算「正在走」，否则刚点错地方马上按 Esc 会没反应
+var nav_inflight: int = 0
+var nav_acked_ms: float = -1.0e9
+const NAV_ACK_GRACE_MS := 1500.0
 var req_counter: int = 0
 var _was_moving: bool = false
 var step_timer: float = 0.0
@@ -234,7 +239,11 @@ func _on_ui(ev: String, arg: String) -> void:
 		"keys":
 			_on_keys(arg)
 		"interact":
-			_do_interact()
+			# arg 是来源：键盘 E 不带参数（"key"）；将来手机的「互动」按钮发 emit('interact', 'button')，走同一个入口
+			_do_interact(arg if arg != "" else "key")
+		"debug_pick_stub":
+			if bridge.debug:
+				features.set_pick_stub(arg)
 		"esc":
 			_do_esc()
 		"claim":
@@ -1007,7 +1016,11 @@ func _do_navigate(to: Dictionary, label: String, mark = null) -> void:
 	near_valid = false
 	if mark is Vector3:
 		_show_marker(mark, false)
+	nav_inflight += 1
 	var r: Dictionary = await _act({"type": "navigate"}.merged(to).merged(_dir_fence()))
+	nav_inflight -= 1
+	if r["ok"] and r["data"] is Dictionary and r["data"].get("navigation") is Dictionary:
+		nav_acked_ms = clock.ticks_ms()  # 服务器已经让角色走起来了（不管这个回答还代不代表现状）
 	if gen != nav_generation:
 		# 之后又点了别处或又按了方向键，这个回答不再代表现状，不画标记；但服务器的现状照记：谁生效由服务器的序号栅栏决定
 		if r["ok"] and r["data"] is Dictionary and r["data"].get("navigation") is Dictionary:
@@ -1043,6 +1056,15 @@ func _do_stop() -> void:
 		return
 	_dir_cancel()
 	nav_generation += 1
+	var gen: int = nav_generation
+	# 点地的请求还在路上：等它有了回答再发停步。两个请求各走各的连接，停步先到、导航后到的话角色会照走不误
+	var guard: int = 0
+	while nav_inflight > 0 and guard < 240:
+		await get_tree().process_frame
+		guard += 1
+	if gen != nav_generation or phase != Phase.PLAYING:
+		return  # 等的时候又点了别处 / 又按了方向键 / 已经离开：以后来的为准
+	nav_acked_ms = -1.0e9
 	var r: Dictionary = await _act({"type": "stop_navigation"}.merged(_dir_fence()))
 	_hide_marker()
 	if r["ok"]:
@@ -1193,7 +1215,9 @@ func _do_esc() -> void:
 	if phase != Phase.PLAYING or not control_mine:
 		return
 	var sa: TActor = actors.get(self_id)
-	if dir_active or (sa != null and sa.has_nav):
+	# 「正在走」不只看快照：自己刚点的地方，请求还在路上、或服务器刚答应而快照还没跟上，也算
+	var just_started: bool = nav_inflight > 0 or clock.ticks_ms() - nav_acked_ms < NAV_ACK_GRACE_MS
+	if dir_active or (sa != null and sa.has_nav) or just_started:
 		_do_stop()
 	elif _key_vec() != Vector2.ZERO:
 		dir_suppressed = true  # 没在走但键按着：Esc 也让这次按住作废
@@ -1222,7 +1246,7 @@ func _dir_hint(msg: String) -> void:
 
 
 ## E：和最近的可互动物件或人互动。复用点击的入口：够得着的物件直接开始动作，远的先走过去，人就走到身边。
-func _do_interact() -> void:
+func _do_interact(src: String = "key") -> void:
 	if phase != Phase.PLAYING or not _can_control():
 		return
 	var sa: TActor = actors.get(self_id)
@@ -1259,6 +1283,9 @@ func _do_interact() -> void:
 			best_id = id
 	if best_kind == "":
 		_toast("附近没有可以互动的东西。", "info")
+		return
+	# 先问功能模块：和点击一样，有功能接管就由它处理（居民卡、入座、一起喝茶），不再走下面的旧逻辑
+	if features.on_pick(best_kind, best_id, src):
 		return
 	if best_kind == "actor":
 		selected_obj = ""
@@ -1386,7 +1413,7 @@ func _on_tap(p: Vector2) -> void:
 				best_t = t2
 				best_kind = "obj"
 				best_id = str(ob["id"])
-	if best_kind != "" and features.on_pick(best_kind, best_id):
+	if best_kind != "" and features.on_pick(best_kind, best_id, "tap"):
 		return
 	if best_kind == "actor":
 		selected_obj = ""

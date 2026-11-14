@@ -72,9 +72,23 @@ export interface InteractionView {
   participants: ReturnType<typeof card>[];
   min: number;
   max: number;
+  /** 开始时刻（服务器毫秒，和 endsAt 同一口径；还没开始为 null）。看得到结束时刻的人本来就推得出它 */
+  startedAt: number | null;
   endsAt: number | null;
   lobbyExpiresAt: number;
   cost: string;
+}
+
+/** 共同活动的实际时长（秒）：定义里的时长乘开服参数 interactionTimeScale（默认 1，只能缩短，测试用）。结束时刻、定时任务、给人看的文字都用它。 */
+export function actualDurationSeconds(w: WorldService, def: { durationSeconds: number }): number {
+  const scale = w.params.interactionTimeScale;
+  return scale === 1 ? def.durationSeconds : Math.max(1, Math.round(def.durationSeconds * scale));
+}
+
+/** 给人看的投入与产出说明。缩放时长时，文字里的「十分钟」「五分钟」换成实际秒数，不让文字和实际对不上。 */
+function costTextOf(w: WorldService, def: { durationSeconds: number; costText: string }): string {
+  if (w.params.interactionTimeScale === 1) return def.costText;
+  return def.costText.replace(/[十五]分钟/, `约 ${actualDurationSeconds(w, def)} 秒`);
 }
 
 function participantsOf(w: WorldService, interactionId: string): ResidentRow[] {
@@ -95,9 +109,10 @@ export function interactionView(w: WorldService, row: Row): InteractionView {
     participants: participantsOf(w, row.interaction_id).map(card),
     min: def.participants.min,
     max: def.participants.max,
+    startedAt: row.started_at === null || row.started_at === undefined ? null : Number(row.started_at),
     endsAt: row.ends_at === null ? null : Number(row.ends_at),
     lobbyExpiresAt: Number(row.lobby_expires_at),
-    cost: def.costText,
+    cost: costTextOf(w, def),
   };
 }
 
@@ -118,7 +133,7 @@ export function objectsIn(w: WorldService, spaceId: string): ObjectView[] {
       id: String(o.object_id),
       type: String(o.type),
       label: String(o.label),
-      action: def ? { def: def.id, name: def.name, cost: def.costText, min: def.participants.min, max: def.participants.max } : null,
+      action: def ? { def: def.id, name: def.name, cost: costTextOf(w, def), min: def.participants.min, max: def.participants.max } : null,
       active: active ? interactionView(w, active) : null,
     };
   });
@@ -243,7 +258,7 @@ export function installInteract(w: WorldService): void {
     const def = parseJson<StoredDef>(row.def_json, {} as StoredDef);
     release(w, 'interaction', row.interaction_id);
     if (row.free_inputs !== 1) for (const input of def.inputs) takeStack(w, row.initiator_id, input.type, input.qty);
-    const endsAt = now + def.durationSeconds * 1000;
+    const endsAt = now + actualDurationSeconds(w, def) * 1000;
     w.db.run("UPDATE interactions SET status = 'running', started_at = ?, ends_at = ? WHERE interaction_id = ?", now, endsAt, row.interaction_id);
     w.cancelJob(`ixl:${row.interaction_id}`);
     w.schedule('interaction_finish', `ix:${row.interaction_id}`, endsAt, { interactionId: row.interaction_id });

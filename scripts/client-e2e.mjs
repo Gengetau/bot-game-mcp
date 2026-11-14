@@ -7,7 +7,8 @@
  *
  * 选项：--no-shots 不写截图；--only=3,4 只跑指定步骤（步骤之间有先后依赖，只用于调试）；--keep-engine-log 失败时不删临时目录。
  * 新步骤文件在 scripts/e2e/steps/（写法和号段见那里的 README.md）：--only=chat-nearby（meta.id）或 --only=20（落在 [n, n+10) 的数字）只跑这个文件，
- * 命中后整个文件的所有子步骤都运行；--list 列出全部新步骤后退出。
+ * 命中后整个文件的所有子步骤都运行；--list 列出全部新步骤后退出。--until=60.17 编号大于它的步骤都跳过（调试、反向验证用：
+ * 只想看到某一步为止的结果时，不必把这个文件后面的步骤连同它们的超时都等完；和 --only 一样，这样的一遍不算验收记录）。
  * 反向验证：E2E_AI_NO_RENEW=1 npx tsx scripts/client-e2e.mjs --only=1,8 --no-shots（步骤 8 里让 AI 的端口没有续租方法，运行器不续租，这一步应当失败）。
  * 退出码：全部通过为 0；任何步骤失败、控制台错误、页面错误、CSP 违规、请求失败都算失败（非零）。
  * 结果写到 client/demo/results.json，截图写到 client/demo/NN-说明.jpg（手机 deviceScaleFactor 2，桌面 1）。
@@ -40,6 +41,7 @@ const AI_NO_RENEW = process.env.E2E_AI_NO_RENEW === '1'; // 反向验证用：�
 const ONLY_RAW = (ARGS.find((a) => a.startsWith('--only=')) ?? '').slice(7).split(',').filter(Boolean);
 const ONLY = ONLY_RAW.map(Number); // 非数字变 NaN：ONLY.length 仍为真，所以旧步骤全部跳过（保持原行为）
 const ONLY_IDS = ONLY_RAW.filter((x) => Number.isNaN(Number(x))); // 新步骤文件的 meta.id（如 chat-nearby）
+const UNTIL = Number((ARGS.find((a) => a.startsWith('--until=')) ?? '').slice(8) || NaN); // 编号大于它的步骤都跳过；没给就是 NaN
 const LIST = ARGS.includes('--list');
 const T_POS = 0.6; // 页面里的位置 与 服务器折线现算位置 的容差（米）
 // 页面的服务器时间估计与服务器真实时间的容差（毫秒）。页面的 serverNow 一秒内只在 Godot 帧里写进 __town（软件渲染约 3~7 帧每秒，
@@ -112,6 +114,14 @@ const browsers = [];
 const TMP = mkdtempSync(join(tmpdir(), 'town-client-e2e-'));
 const SHOT_TMP = join(TMP, 'shots'); // 截图先写这里，全部通过后才搬进 client/demo/
 const AI_KEY = `bgk_e2e_${rnd()}${rnd()}${rnd()}`;
+/**
+ * 引擎的小镇参数（开服配置）。浏览器端到端不能真等十分钟，所以把几个「等」缩短；步骤文件通过 h.townParams 读它，按参数算等待，不写死秒数。
+ *  - interactionTimeScale 0.075：600 秒的共同活动约 45 秒、300 秒的约 23 秒。再短，软件渲染下（一帧可能 0.3 到 1 秒）来不及断言「进行中」的界面；再长，拖慢整遍。
+ *  - letterDeliveryDelayMs 4000：信 4 秒进信箱（默认 60 秒）。
+ *  - activityLobbyTtlMs 25000：小游戏 / 共同活动开了桌没人来，25 秒后自动散（默认 10 分钟）。旧步骤不凑桌；凑人的步骤要在 25 秒内完成「开桌 + 加入」。
+ * 旧的 1 到 15 步里只有步骤 6 开了一次读书（马上点「停下」），不依赖时长；其余步骤不涉及信件和报名。
+ */
+const TOWN_PARAMS = Object.freeze({ interactionTimeScale: 0.075, letterDeliveryDelayMs: 4000, activityLobbyTtlMs: 25_000 });
 let engine = null;
 const engineTail = [];
 let BASE = '';
@@ -126,7 +136,7 @@ async function startEngine() {
     stateFile: null,
     seed: 'client-e2e',
     auth: { mode: 'keys', adminKeys: [], agents: [{ key: AI_KEY, id: '9001', name: '灯灯' }] },
-    town: { enabled: true, dbFile: join(TMP, 'town.db'), devLogin: true, clientDir: CLIENT_DIR },
+    town: { enabled: true, dbFile: join(TMP, 'town.db'), devLogin: true, clientDir: CLIENT_DIR, params: { ...TOWN_PARAMS } },
   };
   const cfgFile = join(TMP, 'engine.json');
   writeFileSync(cfgFile, JSON.stringify(cfg));
@@ -243,6 +253,7 @@ async function noteFrameStats() {
 let fileSelected = false; // 正在跑的新步骤文件被 --only 选中：它的所有子步骤都运行
 async function step(n, title, fn) {
   if (ONLY.length && !ONLY.includes(n) && !fileSelected) return;
+  if (Number.isFinite(UNTIL) && n > UNTIL) return;
   current = { n, title, ok: false, ms: 0, notes: [] };
   notes.length = 0;
   const t0 = Date.now();
@@ -704,6 +715,7 @@ const h = {
   get NO_SHOTS() {
     return NO_SHOTS;
   },
+  townParams: TOWN_PARAMS,
   pair, release,
 };
 
@@ -2034,8 +2046,8 @@ try {
   } else console.log(`\n全部 ${results.length} 项通过。`);
   const report = { date: new Date().toISOString().slice(0, 10), versions: metrics.versions, bundle: metrics.bundle, load: metrics.load, audio: metrics.audio, aiRunner: metrics.aiRunner, steps: results, shots };
   try {
-    // 只有完整的一遍（没有 --only、没有 --no-shots）才算验收记录：否则 results.json 会和已提交的截图对不上
-    if (!ONLY.length && !NO_SHOTS && !interrupted) {
+    // 只有完整的一遍（没有 --only、没有 --until、没有 --no-shots）才算验收记录：否则 results.json 会和已提交的截图对不上
+    if (!ONLY.length && !Number.isFinite(UNTIL) && !NO_SHOTS && !interrupted) {
       mkdirSync(DEMO_DIR, { recursive: true });
       if (exitCode === 0) {
         // 全部通过：截图和 results.json 一起换成这一遍的（截图是先写在临时目录里的）
