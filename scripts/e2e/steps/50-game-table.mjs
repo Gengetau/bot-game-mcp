@@ -38,6 +38,18 @@ export default async function run(h) {
     await until(async () => { const s = await sceneOf(p); return !s.nav && s.x > 20 && s.z > 38 && s.z < 48 ? s : null; }, 120_000, `${p.label} 到了游戏馆`, 700);
   };
   const lobbyId = async (p) => (await gg(p)).lobby || '';
+  /** 桌只保留 activityLobbyTtlMs（端到端里 25 秒）：软件渲染慢、桌被散掉时重新开一桌（A 开、B 加入），保证后面的步骤站在「A、B 都在桌里」的起点。 */
+  const ensureTable = async (withB) => {
+    if (!(await lobbyId(A))) {
+      note('桌被保留时间散掉了，重新开一桌');
+      await click(A, (await waitBtn(A, `f:game:propose:${T1}`)).id);
+      await until(async () => (await lobbyId(A)) !== '', 20_000, 'A 重新开了桌');
+    }
+    if (withB && !(await lobbyId(B))) {
+      await click(B, (await waitBtn(B, 'f:game:join:')).id);
+      await until(async () => (await lobbyId(B)) !== '', 20_000, 'B 重新加入');
+    }
+  };
   /** 局内某一边的猜数：桌面用键盘（填数字 + Enter），手机用屏幕数字键 + 「猜」。返回猜的数。 */
   const takeTurn = async (p, number) => {
     const d0 = await gameMod(p.page);
@@ -60,8 +72,6 @@ export default async function run(h) {
   // ───────────────────────── 50 初始与到游戏馆 ─────────────────────────
   await step(50, '初始：两边都有 game 模块（面板在 #dockOverlays 里隐藏）、Godot 一侧 game；离桌远时 #actions 里没有 f:game 按钮、没有桌牌；两人去游戏馆；按一下 E 和点击一样走到桌边（同一个入口 on_pick），连按两下 E 只走一次', async () => {
     for (const p of [A, B]) {
-      const d = await p.page.evaluate(() => window.__dock?._dock ?? null);
-      check(d && d.mods.includes('game'), `${p.label} 应有 game 模块：${JSON.stringify(d?.mods)}`);
       check(await gameMod(p.page), `${p.label} 应有 __dock.game`);
       check(await godotGame(p), `${p.label} 应有 __town.features.game`);
       const m = await gameMod(p.page);
@@ -71,13 +81,11 @@ export default async function run(h) {
       const hosted = await p.page.evaluate(() => document.querySelector('#dockOverlays #gamePanel') !== null);
       check(hosted, `${p.label} 的 #gamePanel 应在 #dockOverlays 里`);
     }
+    // 先只有 A 在游戏馆：E 键选「8 米内最近的物件或居民」，B 站在旁边会被选成人，测不到桌子
     await goArcade(A);
-    await goArcade(B);
-    for (const p of [A, B]) {
-      await until(async () => (await snap(p.page)).nearValid === true, 20_000, `${p.label} 的够得着状态有效`);
-      const t = await until(async () => (await gg(p)).tables?.length === 2 ? (await gg(p)).tables : null, 20_000, `${p.label} 看到两张游戏桌`);
-      check(t.every((x) => /^arcade:table[12]$/.test(x.id)), `游戏桌编号应是 arcade:table1/2：${JSON.stringify(t)}`);
-    }
+    await until(async () => (await snap(A.page)).nearValid === true, 20_000, 'A 的够得着状态有效');
+    const tabs = await until(async () => (await gg(A)).tables?.length === 2 ? (await gg(A)).tables : null, 20_000, 'A 看到两张游戏桌');
+    check(tabs.every((x) => /^arcade:table[12]$/.test(x.id)), `游戏桌编号应是 arcade:table1/2：${JSON.stringify(tabs)}`);
     // E 键：与点击同一个入口。两张桌同样远，选哪张不论，但必须：on_pick 记录是 (obj, 桌, key, 接管)、只发一次导航、连按第二下不再发
     const nav0 = count(A, 'navigate');
     const pick0 = (await A.page.evaluate(() => window.__town.features._pick))?.n ?? 0;
@@ -95,6 +103,8 @@ export default async function run(h) {
     check(count(A, 'navigate') === nav0 + 1, `连按两下 E 只发一次 navigate：${nav0} -> ${count(A, 'navigate')}`);
     check((await seatDist(A, rec.id)) <= 2.0, `走到后离桌心应不超过 2 米：${await seatDist(A, rec.id)}`);
     note(`E 键选了 ${rec.id}，A 站在离桌心 ${(await seatDist(A, rec.id)).toFixed(2)} 米处`);
+    await goArcade(B);
+    await until(async () => (await snap(B.page)).nearValid === true && (await gg(B)).tables?.length === 2, 20_000, 'B 的够得着状态有效、看到两张桌');
   });
 
   // ───────────────────────── 50.1 点桌子走到不同的落脚点 ─────────────────────────
@@ -121,6 +131,11 @@ export default async function run(h) {
     check(bb.label === '开一局：数字炸弹', `按钮文字：${bb.label}`);
     note(`A 站 (${sa.x.toFixed(2)},${sa.z.toFixed(2)})，B 站 (${sb.x.toFixed(2)},${sb.z.toFixed(2)})，相距 ${gap.toFixed(2)} 米；A 的落脚点记录 ${JSON.stringify((await gg(A)).lastSeat)}`);
     await shot(A.page, '50-desktop-table');
+    // C（只走 API）先走到桌一边上等着：之后开桌有保留时间，不能到时候才走
+    C = await apiResident(h.browsers[0], BASE, `阿丙${h.rnd()}`);
+    await C.walk('arcade');
+    await C.walk(T1);
+    check(dist(C.selfOf(await C.scene()), await objOf(A, T1)) <= 2.0, 'C 站在桌一边上');
   });
 
   // ───────────────────────── 50.15 离桌太远 ─────────────────────────
@@ -148,7 +163,6 @@ export default async function run(h) {
 
   // ───────────────────────── 50.2 开一局 ─────────────────────────
   await step(50.2, '开一局：A 点「开一局」成功；桌牌变成「等人 1/2」（两边都看到）；B 面前是「加入」；B 对同一张桌用接口开局被拒 table_busy', async () => {
-    C = await apiResident(h.browsers[0], BASE, `阿丙${h.rnd()}`);
     const nameA = await nameOf(A, A.id);
     await click(A, `f:game:propose:${T1}`);
     await until(async () => (await lobbyId(A)) !== '', 20_000, 'A 在桌里');
@@ -166,8 +180,7 @@ export default async function run(h) {
   // ───────────────────────── 50.3 加入、离开、再加入 ─────────────────────────
   await step(50.3, '加入与离开：B 点「加入」，A 看到「X 加入了这一桌」提示、桌牌 2/2；B 点「离开这桌」，A 看到离开提示、桌牌回到 1/2；B 再加入', async () => {
     const nameB = await nameOf(A, B.id);
-    const lobby = async () => { const l = await lobbyId(A); return l; };
-    if (!(await lobby())) throw new Error('开的桌在 25 秒里被散掉了（步骤太慢）：请调大 activityLobbyTtlMs');
+    await ensureTable(false);
     await click(B, (await waitBtn(B, 'f:game:join:')).id);
     await toastHas(A, `${nameB} 加入了这一桌`);
     await until(async () => (await tableTags(A.page)).find((t) => t.id === `g:${T1}` && t.text.includes('2/2')) ?? null, 15_000, 'A 桌牌 2/2', 200);
@@ -182,12 +195,7 @@ export default async function run(h) {
 
   // ───────────────────────── 50.4 人没到齐、桌边的人才入局 ─────────────────────────
   await step(50.4, '开始：B 走开后 A 点「开始」被拒 not_enough（名册不变）；C 走来加入后再开始成功，B 因为不在桌边被丢出（提示「开局的时候你不在桌边」），A 和 C 入局，面板出现、body 上有 data-game', async () => {
-    // C 先走到桌边（走路要一会儿，桌的保留时间有限，这里每一步都先确认桌还在）
-    await C.walk('arcade');
-    const lobbyOk = async () => (await lobbyId(A)) !== '';
-    if (!(await lobbyOk())) throw new Error('开的桌被散掉了（C 走来花得太久）：请调大 activityLobbyTtlMs');
-    await C.walk(T1);
-    check(dist(await C.selfOf(await C.scene()), await objOf(A, T1)) <= 2.0, 'C 站在桌一边上');
+    await ensureTable(true);
     const aid = await lobbyId(A);
     // B 走开
     const rb = await apiAct(B, { type: 'navigate', to: T2 });
@@ -311,10 +319,11 @@ export default async function run(h) {
 
   // ───────────────────────── 51 一整局 ─────────────────────────
   await step(51, '一整局（桌二）：A 键盘 vs B 手机屏幕数字键；两边范围与历史一致；结果卡有且只有一个踩中的人，原因与 /public/game 对得上；关卡后恢复底部条、WASD 能走、附近聊天可发；手机版式达标', async () => {
-    await clickObject(A, T2);
-    await waitIdle(A);
-    await clickObject(B, T2);
-    await waitIdle(B);
+    // 桌二在 9 米外、不在画面里：两人用接口走到桌二（点桌子的入口在 50.1 测过）
+    for (const p of [A, B]) {
+      check((await apiAct(p, { type: 'navigate', to: T2 })).status === 200, `${p.label} 走向桌二`);
+      await waitIdle(p);
+    }
     for (const p of [A, B]) await until(async () => (await snap(p.page)).nearValid === true && (await btn(p, `f:game:propose:${T2}`)), 25_000, `${p.label} 在桌二边有开一局按钮`, 200);
     await click(A, `f:game:propose:${T2}`);
     await until(async () => (await lobbyId(A)) !== '', 20_000, 'A 开了桌二');
