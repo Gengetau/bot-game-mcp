@@ -1154,3 +1154,99 @@ export function dbFootprint(w: WorldService): { bytes: number; free: number; tab
   }
   return { bytes: pages * size, free: freelist * size, tables };
 }
+
+// ───────────────────────── 附近聊天的叫醒额度与补叫（O1/T2）的不变量 ─────────────────────────
+
+export interface WakeStats {
+  /** AI 对 AI 的附近聊天里，没有当场事件的（被压下的）受众行数 */
+  suppressed: number;
+  /** 补叫真的发出：事件发出的时刻晚于那句话说出的时刻 */
+  late: number;
+  /** 当场发出的 */
+  live: number;
+}
+
+/**
+ * 两条不变量，独立重算（只读表和参数数字，不调引擎里的任何判断函数）：
+ *  - 上限：任何一位 AI 听者，在任意一小时里，因别的 AI 的附近聊天收到的 chat 事件不超过 nearbyWakeBurst + nearbyWakePerHour，
+ *    其中来自同一位发言者的不超过 nearbyWakePairBurst + nearbyWakePairPerHour（当场的和补叫的都算）；
+ *  - 不丢：AI 对 AI 的一句话如果没有当场事件，三者必居其一：后来有一条附近聊天事件发给了听者（messageId 更大）；
+ *    听者名下有待办的补叫任务；听者已经不在场 / 进过对局 / 离开又回来（它回来时自己会读视图），或者那句话已经过了视图的 30 分钟窗口。
+ *    私宅里说的话只算上限，不核对「不丢」（走出又走进同一间屋的听者没法只凭表判断）。
+ * sinceSentAt：只核对这个时刻之后说的话的「不丢」（周期检查只看最近一段，收尾检查看全部）。
+ */
+export function nearbyWakeCheck(w: WorldService, inv: Invariants, now: number, sinceSentAt: number): WakeStats {
+  const stats: WakeStats = { suppressed: 0, late: 0, live: 0 };
+  const P = w.params;
+  const passed = (name: string) => {
+    const r = inv.runs.get(name) ?? { checks: 0, fails: 0 };
+    r.checks++;
+    inv.runs.set(name, r);
+  };
+  const kindOf = new Map<string, string>(w.db.all('SELECT resident_id, kind FROM residents').map((r) => [String(r.resident_id), String(r.kind)]));
+  const maxInWindow = (times: number[]): number => {
+    let best = 0;
+    for (let i = 0, j = 0; i < times.length; i++) {
+      while (times[i]! - times[j]! >= HOUR) j++;
+      best = Math.max(best, i - j + 1);
+    }
+    return best;
+  };
+  for (const [L, kind] of kindOf) {
+    if (kind !== 'agent') continue;
+    const evs = w.db
+      .all("SELECT occurred_at AS at, projection FROM recipient_events WHERE resident_id = ? AND type = 'chat' ORDER BY cursor", L)
+      .map((r) => {
+        const p = JSON.parse(String(r.projection)) as { from: { id: string }; messageId: number };
+        return { at: Number(r.at), from: p.from.id, seq: p.messageId };
+      });
+    // 上限
+    const fromAgents = evs.filter((e) => e.from !== L && kindOf.get(e.from) === 'agent').sort((a, b) => a.at - b.at);
+    const total = maxInWindow(fromAgents.map((e) => e.at));
+    if (total > P.nearbyWakeBurst + P.nearbyWakePerHour) inv.fail('nearby_wake_cap', `一小时内收到别的 AI 的附近聊天事件 ${total} 条，超过 ${P.nearbyWakeBurst + P.nearbyWakePerHour}`, { listener: L }, now);
+    else passed('nearby_wake_cap');
+    const bySender = new Map<string, number[]>();
+    for (const e of fromAgents) (bySender.get(e.from) ?? bySender.set(e.from, []).get(e.from)!).push(e.at);
+    for (const [from, times] of bySender) {
+      const n = maxInWindow(times);
+      if (n > P.nearbyWakePairBurst + P.nearbyWakePairPerHour) inv.fail('nearby_wake_cap', `同一位发言者一小时内对同一位听者的事件 ${n} 条，超过 ${P.nearbyWakePairBurst + P.nearbyWakePairPerHour}`, { listener: L, from }, now);
+    }
+    // 不丢
+    const rows = w.db.all('SELECT a.message_id, m.sender_id, m.sent_at, m.space_id FROM chat_audience a JOIN chat_messages m ON m.message_id = a.message_id WHERE a.resident_id = ? ORDER BY a.message_id', L);
+    const delivered = new Map<number, number>(evs.map((e) => [e.seq, e.at]));
+    const maxEvSeq = evs.reduce((m, e) => Math.max(m, e.seq), 0);
+    const me = w.db.get('SELECT present_since, activity_id FROM residents WHERE resident_id = ?', L)!;
+    const hasJob = !!w.db.get("SELECT 1 AS x FROM scheduled_jobs WHERE dedupe_key = ? AND status = 'pending'", `nearby_wake:${L}`);
+    // 听者自己的序号 = 水位 - 比它更新的受众行数（和引擎的 chatSeqOf 同一个定义，但这里独立算）；
+    // 受众行被保留期清理掉之后，下标不再等于序号，所以不能用 i + 1
+    const high = Number(w.db.scalar('SELECT high_water FROM stream_heads WHERE stream_key = ?', `chat:${L}`) ?? 0);
+    rows.forEach((row, i) => {
+      const seq = high - (rows.length - 1 - i);
+      const S = String(row.sender_id);
+      if (S === L || kindOf.get(S) !== 'agent') return;
+      const sentAt = Number(row.sent_at);
+      const at = delivered.get(seq);
+      if (at !== undefined) {
+        stats.live++;
+        if (at > sentAt) {
+          stats.live--;
+          stats.late++;
+        }
+        return;
+      }
+      // 事件已经过了回放保留期被清掉：查不到事件不等于没发过，不算压下也不核对
+      if (sentAt < now - P.eventReplayRetentionMs) return;
+      stats.suppressed++;
+      if (sentAt < sinceSentAt || String(row.space_id).startsWith('home:')) return;
+      const away =
+        me.present_since === null ||
+        me.activity_id !== null ||
+        Number(me.present_since) > sentAt ||
+        now - sentAt >= 30 * MIN ||
+        !!w.db.get('SELECT 1 AS x FROM activity_participants WHERE resident_id = ? AND joined_at > ?', L, sentAt);
+      if (maxEvSeq > seq || hasJob || away) passed('nearby_wake_lost');
+      else inv.fail('nearby_wake_lost', '被压下的附近聊天既没有后来的事件、也没有待办的补叫，听者也没有离开过', { listener: L, from: S, messageSeq: seq, sentAt }, now);
+    });
+  }
+  return stats;
+}

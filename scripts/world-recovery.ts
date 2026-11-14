@@ -847,6 +847,109 @@ function navFaultScenarios(): { name: string; checks: number }[] {
     });
   }
 
+  // B3. 附近聊天的叫醒额度与补叫：说一句话、nearby_wake 任务在提交前 / 提交后崩溃；被杀重启
+  const wakeSetup = (c: ScenarioCtx) => {
+    const [a, b] = c.who as [Who, Who];
+    let seq = 0;
+    const say = (text: string, requestId?: string) => {
+      const r = c.w.mustResident(a.residentId);
+      try {
+        return c.w.command({ principalId: a.principalId, clientId: a.clientId }, { requestId: requestId ?? `wake-${c.n}-${++seq}`, actionWindow: c.w.issueActionWindow(a.residentId), expected: { contextVersion: r.context_version, controlEpoch: r.control_epoch, activityId: r.activity_id }, action: { type: 'say_nearby', text } }) as Record<string, any>;
+      } finally {
+        // 场景只看乙一位听者：同场的其他听者也会被压下、也会排补叫，它们和故障注入点抢同一个 tick，这里撤掉
+        for (const x of c.who) if (x !== a && x !== b) c.w.cancelJob(`nearby_wake:${x.residentId}`);
+      }
+    };
+    const chatTo = (x: Who) => Number(c.w.db.scalar("SELECT COUNT(*) FROM recipient_events WHERE resident_id = ? AND type = 'chat'", x.residentId));
+    const tokens = (name: string) => {
+      const row = c.w.db.get('SELECT tokens FROM rate_buckets WHERE resident_id = ? AND bucket = ?', b.residentId, name);
+      return row ? Number(row.tokens) : null;
+    };
+    const jobs = () => c.w.db.all("SELECT job_id, due_at, attempts FROM scheduled_jobs WHERE kind = 'nearby_wake' AND status = 'pending'");
+    // 五句当场（说话自己的限速每分钟 6 条、突发 3 条，所以分两批）
+    for (let i = 1; i <= 3; i++) say(`第${i}句`);
+    c.advanceTo(clock.t + 30 * SEC);
+    for (let i = 4; i <= 5; i++) say(`第${i}句`);
+    check(1000 + c.n, chatTo(b) === 5 && jobs().length === 0, () => `前五句应当场叫醒乙：事件 ${chatTo(b)}，补叫 ${jobs().length}`);
+    return { a, b, say, chatTo, tokens, jobs };
+  };
+  for (const point of ['before_commit', 'after_commit'] as const) {
+    run(`说一句话 ${point} 失败（叫醒额度与补叫）`, (c) => {
+      const { say, chatTo, tokens, jobs, b } = wakeSetup(c);
+      const msgs = () => Number(c.w.db.scalar('SELECT COUNT(*) FROM chat_messages'));
+      const total0 = tokens('nearby_wake')!;
+      const m0 = msgs();
+      let fired = false;
+      c.w.db.failpoint = (pt) => {
+        if (!fired && pt === point) {
+          fired = true;
+          throw new Error(`注入的崩溃：${pt}`);
+        }
+      };
+      try {
+        say('第6句', 'wake-sixth-0001');
+      } catch {
+        /* 注入的失败 */
+      }
+      c.w.db.failpoint = null;
+      check(1000 + c.n, fired, '说话的注入点没有触发');
+      if (point === 'before_commit') {
+        check(1000 + c.n, msgs() === m0 && chatTo(b) === 5 && jobs().length === 0 && tokens('nearby_wake') === total0, () => `提交前失败应整体回滚：消息 ${msgs() - m0}、事件 ${chatTo(b)}、补叫 ${jobs().length}、总桶 ${total0}→${tokens('nearby_wake')}`);
+      } else {
+        check(1000 + c.n, msgs() === m0 + 1 && chatTo(b) === 5 && jobs().length === 1, () => `提交后失败：这句应已生效且被压下：消息 ${msgs() - m0}、事件 ${chatTo(b)}、补叫 ${jobs().length}`);
+      }
+      // 用原来的请求号重试：提交前失败是全新执行，提交后失败是回放；两种之后都恰好一条消息、一条待办补叫、总桶没有多扣
+      const retry = say('第6句', 'wake-sixth-0001');
+      check(1000 + c.n, point === 'after_commit' ? retry.replayed === true : !retry.replayed, () => `重试的回放标记不对：${JSON.stringify(retry)}`);
+      check(1000 + c.n, msgs() === m0 + 1 && chatTo(b) === 5 && jobs().length === 1 && tokens('nearby_wake') === total0, () => `重试后：消息 ${msgs() - m0}、事件 ${chatTo(b)}、补叫 ${jobs().length}、总桶 ${total0}→${tokens('nearby_wake')}`);
+      c.snap('说话重试后');
+    });
+  }
+  for (const point of ['before_commit', 'after_commit'] as const) {
+    run(`nearby_wake ${point} 失败`, (c) => {
+      const { say, chatTo, jobs, b } = wakeSetup(c);
+      say('第6句');
+      check(1000 + c.n, jobs().length === 1, '第六句应被压下并排上补叫');
+      const due = Number(jobs()[0]!.due_at);
+      c.advanceTo(due - 500);
+      check(1000 + c.n, chatTo(b) === 5, '到期之前不该有补叫事件');
+      clock.t = due + 50;
+      let fired = false;
+      c.w.db.failpoint = (pt) => {
+        if (!fired && pt === point) {
+          fired = true;
+          throw new Error(`注入的崩溃：${pt}`);
+        }
+      };
+      c.w.tick();
+      c.w.db.failpoint = null;
+      check(1000 + c.n, fired, 'nearby_wake 的注入点没有触发');
+      if (point === 'before_commit') check(1000 + c.n, chatTo(b) === 5 && jobs().length === 1 && Number(jobs()[0]!.attempts) === 1, () => `提交前失败后事件 ${chatTo(b)}、补叫 ${jobs().length}（应保留待重试）`);
+      else check(1000 + c.n, chatTo(b) === 6 && jobs().length === 0, () => `提交后失败：补叫应已发出一次：事件 ${chatTo(b)}、待办 ${jobs().length}`);
+      c.w.tick(); // 重试
+      c.advanceTo(clock.t + 10 * MIN);
+      check(1000 + c.n, chatTo(b) === 6 && jobs().length === 0, () => `重试后应恰好多一条补叫事件：事件 ${chatTo(b)}、待办 ${jobs().length}`);
+      c.snap('补叫重试后');
+    });
+  }
+  run('补叫待办时进程被杀重启', (c) => {
+    const { say, chatTo, tokens, jobs, b } = wakeSetup(c);
+    say('第6句');
+    const due = Number(jobs()[0]!.due_at);
+    const t0 = tokens('nearby_wake')!;
+    c.reopen(true, 20 * SEC);
+    const j2 = c.w.db.all("SELECT due_at FROM scheduled_jobs WHERE kind = 'nearby_wake' AND status = 'pending'");
+    const t1 = c.w.db.get('SELECT tokens FROM rate_buckets WHERE resident_id = ? AND bucket = ?', b.residentId, 'nearby_wake');
+    check(1000 + c.n, j2.length === 1 && Number(j2[0]!.due_at) === due, () => `被杀重启后补叫待办应还在、到期时刻不变：${JSON.stringify(j2)}`);
+    check(1000 + c.n, t1 !== undefined && Math.abs(Number(t1.tokens) - t0) < 1e-9, () => `被杀重启后额度不该回满：${t0}→${t1?.tokens}`);
+    c.advanceTo(due + 100);
+    const evs = Number(c.w.db.scalar("SELECT COUNT(*) FROM recipient_events WHERE resident_id = ? AND type = 'chat'", b.residentId));
+    check(1000 + c.n, evs === 6, () => `补叫到期后应恰好多一条：事件 ${evs}（重启前 ${chatTo(b)}）`);
+    c.advanceTo(clock.t + 10 * MIN);
+    check(1000 + c.n, Number(c.w.db.scalar("SELECT COUNT(*) FROM recipient_events WHERE resident_id = ? AND type = 'chat'", b.residentId)) === 6, '补叫不该发第二次');
+    c.snap('重启补叫后');
+  });
+
   // C. 跨区域那一刻崩溃
   for (const point of ['after_commit', 'before_commit'] as const) {
     run(`跨区域时崩溃（${point}）`, (c) => {

@@ -256,6 +256,14 @@ export interface ResidentTuning {
   classify: (ev: TownEvent, c: ClassifyContext) => EventClass;
 }
 
+/**
+ * 进镇被明确拒绝，重试没有用：引擎没开小镇、请求本身有错，或者 FORBIDDEN（比如「不在进镇名单里」）。
+ * 运行器遇到它就停下来，done 以这个错误结束（和进入时的其它致命错误一样），由调用方告诉主人。
+ */
+function isFatalEnter(e: unknown): boolean {
+  return e instanceof TownError && (e.code === 'town_disabled' || e.code === 'bad_request' || e.code === 'forbidden');
+}
+
 export const DEFAULT_TUNING: ResidentTuning = {
   budgetPerHour: 30,
   minIntervalMs: 8_000,
@@ -632,7 +640,7 @@ class Resident implements ResidentHandle {
         break;
       } catch (e) {
         if (this.stopped || isAbort(e)) return;
-        if (e instanceof TownError && (e.code === 'town_disabled' || e.code === 'bad_request' || e.code === 'forbidden')) throw e;
+        if (isFatalEnter(e)) throw e;
         this.stats.reconnects++;
         const wait = Math.min(this.t.reconnectMaxMs, this.t.reconnectBaseMs * 2 ** Math.min(attempt, 16));
         this.log(`进入小镇失败（${errText(e)}），${wait} 毫秒后重试`);
@@ -961,6 +969,7 @@ class Resident implements ResidentHandle {
             const r = await this.town.enter(this.spec.profile);
             this.adopt(r);
           } catch (e2) {
+            if (isFatalEnter(e2)) throw e2;
             if (!isAbort(e2)) await this.backoff(e2);
           }
           return;
@@ -984,6 +993,7 @@ class Resident implements ResidentHandle {
         this.adopt(await this.town.enter(this.spec.profile));
         return;
       } catch (e2) {
+        if (isFatalEnter(e2)) throw e2;
         if (this.stopped || isAbort(e2)) return;
         this.log(`重新连接失败：${errText(e2)}`);
         return;
@@ -1000,7 +1010,8 @@ class Resident implements ResidentHandle {
       if (t3 instanceof TownError && t3.code === 'unauthenticated') {
         try {
           this.adopt(await this.town.enter(this.spec.profile));
-        } catch {
+        } catch (e4) {
+          if (isFatalEnter(e4)) throw e4;
           /* 下一轮再试 */
         }
       }

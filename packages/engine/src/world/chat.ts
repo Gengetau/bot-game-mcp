@@ -86,6 +86,80 @@ function tryToken(w: WorldService, residentId: string, bucket: string, capacity:
   return true;
 }
 
+// ───────────────────────── 附近聊天的叫醒额度与补叫 ─────────────────────────
+
+const WAKE_JOB = 'nearby_wake';
+const wakeJobKey = (listenerId: string): string => `${WAKE_JOB}:${listenerId}`;
+
+interface WakeBucket {
+  name: string;
+  capacity: number;
+  perMinute: number;
+}
+
+/** 听者的两个桶：这位发言者对我的成对桶，和我的总桶。 */
+function wakeBuckets(w: WorldService, speakerId: string): [WakeBucket, WakeBucket] {
+  return [
+    { name: `nearby_wake_from:${speakerId}`, capacity: w.params.nearbyWakePairBurst, perMinute: w.params.nearbyWakePairPerHour / 60 },
+    { name: 'nearby_wake', capacity: w.params.nearbyWakeBurst, perMinute: w.params.nearbyWakePerHour / 60 },
+  ];
+}
+
+/** 桶里 now 这一刻有多少令牌（没有这一行 = 满的）。扣额度和算补叫时刻都用它，所以两边永远一致。 */
+function tokensAt(row: { [k: string]: unknown } | undefined, b: WakeBucket, now: number): number {
+  if (!row) return b.capacity;
+  return Math.min(b.capacity, Number(row.tokens) + (Math.max(0, now - Number(row.updated_at)) / 60_000) * b.perMinute);
+}
+
+function bucketRow(w: WorldService, residentId: string, bucket: string) {
+  return w.db.get('SELECT tokens, updated_at FROM rate_buckets WHERE resident_id = ? AND bucket = ?', residentId, bucket);
+}
+
+/** 两个桶都够一个令牌才一起扣并返回 true；任何一个不够就都不扣。 */
+function takeWakeBoth(w: WorldService, listenerId: string, speakerId: string, now: number): boolean {
+  const buckets = wakeBuckets(w, speakerId);
+  const rows = buckets.map((b) => bucketRow(w, listenerId, b.name));
+  const have = buckets.map((b, i) => tokensAt(rows[i], b, now));
+  if (have.some((t) => t < 1)) return false;
+  buckets.forEach((b, i) => {
+    w.db.run(
+      `INSERT INTO rate_buckets(resident_id, bucket, tokens, updated_at) VALUES (?,?,?,?)
+       ON CONFLICT(resident_id, bucket) DO UPDATE SET tokens = excluded.tokens, updated_at = excluded.updated_at`,
+      listenerId,
+      b.name,
+      have[i]! - 1,
+      now,
+    );
+  });
+  return true;
+}
+
+/**
+ * 两个桶都至少有一个令牌的最早时刻（毫秒，整数）。按桶里存的 tokens、updated_at 和恢复速度算：
+ * 先按公式估出时刻，再用 tokensAt（和扣额度同一个函数）核对，不够就往后一毫秒一毫秒补，
+ * 所以到点时一次就够，不会因为浮点误差差一点点而反复重排。
+ */
+function wakeReadyAt(w: WorldService, listenerId: string, speakerId: string, now: number): number {
+  let at = now;
+  for (const b of wakeBuckets(w, speakerId)) {
+    const row = bucketRow(w, listenerId, b.name);
+    if (tokensAt(row, b, now) >= 1) continue;
+    let t = Math.ceil(Number(row!.updated_at) + ((1 - Number(row!.tokens)) / b.perMinute) * 60_000);
+    // 公式的误差只会在最后几毫秒，循环有界；兜底每次多补 1 毫秒
+    for (let i = 0; i < 1000 && tokensAt(row, b, t) < 1; i++) t += 1;
+    at = Math.max(at, t);
+  }
+  return at;
+}
+
+/** 一句话对听者被压下：没有待办的补叫就安排一条（到期时刻 = 两个桶都有令牌的最早时刻）；已经有就不动它。 */
+function ensureWake(w: WorldService, listenerId: string, speakerId: string, now: number): void {
+  const key = wakeJobKey(listenerId);
+  if (w.db.get("SELECT 1 AS x FROM scheduled_jobs WHERE dedupe_key = ? AND status = 'pending'", key)) return;
+  // schedule 遇到同键的旧任务（哪怕已经做完）什么都不做，所以用 reschedule：它会把旧行改成新的待办
+  w.reschedule(WAKE_JOB, key, wakeReadyAt(w, listenerId, speakerId, now), { residentId: listenerId });
+}
+
 // ───────────────────────── 附近聊天 ─────────────────────────
 
 /** 对外的现场发言编号：每位居民自己连续的序号（stream_heads 的 chat:<id>）。内部 message_id 是全世界共用的，不外露。 */
@@ -164,21 +238,27 @@ export function nearbyHistory(
  * 唯一的例外是私宅里说的话：它只在同一间屋里的现场视图出现（被请出门后历史里仍有，现场视图里没有）。
  */
 export function recentHeard(w: WorldService, residentId: string, space: string, now: number): { messageId: number; from: ReturnType<typeof speakerCard>; text: string; at: number }[] {
-  const cut = now - 30 * 60_000;
-  // message_id 随时间递增：给受众表的主键扫描加下界（30 分钟窗口内最早的消息），查询量与历史长度无关
-  const rows = w.db.all(
-    `SELECT m.message_id, m.sender_id, m.body, m.sent_at FROM chat_audience a JOIN chat_messages m ON m.message_id = a.message_id
-     WHERE a.resident_id = ? AND a.message_id >= (SELECT COALESCE(MIN(message_id), 9223372036854775807) FROM chat_messages WHERE sent_at > ?)
-       AND (m.space_id NOT LIKE 'home:%' OR m.space_id = ?) AND m.sent_at > ? ORDER BY a.message_id DESC LIMIT 20`,
-    residentId,
-    cut,
-    space,
-    cut,
-  );
+  const rows = heardRows(w, residentId, space, now, 20, false);
   const high = chatHigh(w, residentId);
   return rows
     .reverse()
     .map((m) => ({ messageId: chatSeqOf(w, residentId, high, Number(m.message_id)), from: speakerCard(w, String(m.sender_id)), text: String(m.body), at: Number(m.sent_at) }));
+}
+
+/** recentHeard 的可见规则（受众表 + 30 分钟窗口 + 私宅只在同一间屋里可见），新的在前。补叫用同一套规则找「最新的别人的话」。 */
+function heardRows(w: WorldService, residentId: string, space: string, now: number, limit: number, othersOnly: boolean): Record<string, any>[] {
+  const cut = now - 30 * 60_000;
+  // message_id 随时间递增：给受众表的主键扫描加下界（30 分钟窗口内最早的消息），查询量与历史长度无关
+  return w.db.all(
+    `SELECT m.message_id, m.space_id, m.sender_id, m.body, m.sent_at FROM chat_audience a JOIN chat_messages m ON m.message_id = a.message_id
+     WHERE a.resident_id = ? AND a.message_id >= (SELECT COALESCE(MIN(message_id), 9223372036854775807) FROM chat_messages WHERE sent_at > ?)
+       AND (m.space_id NOT LIKE 'home:%' OR m.space_id = ?) AND m.sent_at > ?${othersOnly ? ' AND m.sender_id <> a.resident_id' : ''} ORDER BY a.message_id DESC LIMIT ?`,
+    residentId,
+    cut,
+    space,
+    cut,
+    limit,
+  );
 }
 
 // ───────────────────────── 全镇公屏 ─────────────────────────
@@ -491,7 +571,21 @@ export function installChat(w: WorldService): void {
       const seq = Number(w.db.scalar('SELECT high_water FROM stream_heads WHERE stream_key = ?', key) ?? 0) + 1;
       w.db.run('INSERT INTO stream_heads(stream_key, high_water, retained_from) VALUES (?,?,1) ON CONFLICT(stream_key) DO UPDATE SET high_water = excluded.high_water', key, seq);
       seqOf.set(a.resident_id, seq);
-      w.emitTo([a.resident_id], 'chat', { scope: 'nearby', space, from: card(r), text, messageId: seq }, now);
+      if (a.resident_id === r.resident_id) {
+        // 自己的回显：真人发言者照旧收到（网页靠它显示自己的话）；AI 发言者不给自己发（回执里有 messageId），
+        // 免得自己的话叫醒自己挂着的 world_wait。回显不走额度、不取消补叫。
+        if (r.kind === 'human') w.emitTo([a.resident_id], 'chat', { scope: 'nearby', space, from: card(r), text, messageId: seq }, now);
+        continue;
+      }
+      // 叫醒额度只管「AI 说、AI 听」：真人听者、真人发言者都照旧当场发，真人的话也不消耗听者的额度。
+      // 两个桶都够才发（一起扣）；不够就压下来，话已经在受众表里，额度恢复后补叫一次。
+      if (a.kind === 'human' || r.kind === 'human' || takeWakeBoth(w, a.resident_id, r.resident_id, now)) {
+        w.emitTo([a.resident_id], 'chat', { scope: 'nearby', space, from: card(r), text, messageId: seq }, now);
+        // 听者这次醒来，here.chat 里有之前被压下的全部的话：不用再补叫
+        w.cancelJob(wakeJobKey(a.resident_id));
+      } else {
+        ensureWake(w, a.resident_id, r.resident_id, now);
+      }
     }
     // 有来有往才算一次交谈：对方在我上一句之后（五分钟内）说过话，而且我当时听到了。
     // 自己连着说几句、对方没有新话，后面的不算。
@@ -516,6 +610,26 @@ export function installChat(w: WorldService): void {
   w.handlers.set('say_nearby', sayNearby(false));
   // 旧名：永远只是附近聊天，不会因为走远或换场景变成全镇消息；超长按旧行为截断（新动作名一律明确报错）
   w.handlers.set('speak', sayNearby(true));
+
+  // ── 附近聊天的补叫（定时任务）：被压下的话在额度恢复后给听者补发一条 chat 事件（最新的那句别人的话） ──
+  w.jobHandlers.set(WAKE_JOB, (payload, _job, now) => {
+    const listenerId = String(payload.residentId ?? '');
+    const l = w.resident(listenerId);
+    // 不在场或正在小游戏里：不发、不重排；它回来时自己会读视图
+    if (!l || !w.interactive(l)) return;
+    const space = w.spaceOf(l);
+    const m = heardRows(w, listenerId, space, now, 1, true)[0];
+    if (!m) return;
+    const speaker = w.resident(String(m.sender_id));
+    // 真人的话当场就发了事件（也就取消了补叫），正常不会走到这里
+    if (!speaker || speaker.kind === 'human') return;
+    if (!takeWakeBoth(w, listenerId, speaker.resident_id, now)) {
+      w.reschedule(WAKE_JOB, wakeJobKey(listenerId), wakeReadyAt(w, listenerId, speaker.resident_id, now), { residentId: listenerId });
+      return;
+    }
+    const seq = chatSeqOf(w, listenerId, chatHigh(w, listenerId), Number(m.message_id));
+    w.emitTo([listenerId], 'chat', { scope: 'nearby', space: String(m.space_id), from: card(speaker), text: String(m.body), messageId: seq }, now);
+  });
 
   // ── 全镇公屏 ──
   w.handlers.set('say_town', ({ r, action, now }) => {

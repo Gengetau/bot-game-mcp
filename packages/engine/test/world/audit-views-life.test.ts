@@ -60,7 +60,8 @@ describe('审计 20：messageId 是每位居民自己连续的序号', () => {
     a.act('speak', { text: '二' });
     expect(chatIds(b)).toEqual([1, 2]);
     expect(chatIds(a)).toEqual([1, 2]);
-    expect(chatEventIds(b)).toEqual([1, 2]);
+    // AI 发言者不收自己那句的回显（一，编号 1），只收别人说的（二，编号 2）
+    expect(chatEventIds(b)).toEqual([2]);
     const h = chatHistory(t.w, b.residentId, null, 10).messages;
     expect(h.map((m) => m.messageId)).toEqual([2, 1]);
   });
