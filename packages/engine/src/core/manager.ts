@@ -1397,7 +1397,9 @@ export class GameManager {
   ) {
     const rec = this.resolveGame(actor, gameId, 'any');
     if (waitMs > 0) {
-      const startLog = rec.logSeq;
+      // any 唤醒只看「这个观察者看得见的」事件数：别人的私有日志（例如真人在保密环节里私聊提交了行动的回执）
+      // 会让全局 logSeq 变化，拿它唤醒等于告诉旁人「有人刚刚私下答了」。
+      const startVisible = opts.wakeOn === 'any' ? this.visibleEvents(rec, actor, this.agentSeatOf(rec, actor.id)).length : 0;
       const cond = () => {
         if (rec.status !== 'running') return true;
         const seat = this.agentSeatOf(rec, actor.id);
@@ -1406,7 +1408,7 @@ export class GameManager {
           const now = this.now();
           if (rec.outbox.some((d) => d.seq > rec.referee!.cursor && d.notBefore <= now)) return true;
         }
-        if (opts.wakeOn === 'any' && rec.logSeq !== startLog) return true;
+        if (opts.wakeOn === 'any' && this.visibleEvents(rec, actor, seat).length !== startVisible) return true;
         return false;
       };
       await this.waitUntil(rec.id, cond, waitMs, signal);
@@ -1734,7 +1736,7 @@ export class GameManager {
     }
     try {
       const phaseBefore = rec.phase ? `${rec.phase.key}@${rec.phase.openedAt}` : '';
-      const fb = inst.onAction(player.seat, input, { via: 'relay', channel });
+      const fb = inst.onAction(player.seat, input, { via: 'relay', channel, ...(fromWeb ? { fromWeb: true } : {}) });
       // 只结束同一个阶段里自己的发言（一句话就自动轮到下一阶段的游戏，不能误结束下一轮）
       const samePhase = rec.phase ? `${rec.phase.key}@${rec.phase.openedAt}` === phaseBefore : false;
       if (endAfter && samePhase && rec.status === 'running') {

@@ -1,6 +1,12 @@
+import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import type { GameRecord, Identity, ActionInput } from '../../src/core/types.js';
-import { REF, bot, human, identityOf, pendingSeats, playToEnd, setup, startGame } from '../helpers.js';
+import { GameManager } from '../../src/core/manager.js';
+import { SeededRng } from '../../src/core/rng.js';
+import { phaseHeaderOf, pumpGame } from '../../src/core/runner.js';
+import { MemoryStateStore } from '../../src/core/store.js';
+import { createRegistry } from '../../src/games/index.js';
+import { FakeClock, REF, bot, human, identityOf, pendingSeats, playToEnd, setup, startGame } from '../helpers.js';
 
 type Roles = Partial<Record<'werewolf' | 'wolf_king' | 'villager' | 'seer' | 'witch' | 'hunter' | 'guard' | 'idiot', number>>;
 const sum = (r: Roles) => Object.values(r).reduce((a, b) => a + (b ?? 0), 0);
@@ -27,7 +33,7 @@ function make(roles: Roles, extra: Record<string, unknown> = {}, seed: string | 
   const DEFAULT = (k: string): ActionInput =>
     k === 'sheriff_order'
       ? { action: 'forward' }
-      : ['vote', 'pk_vote', 'sheriff_vote', 'night', 'witch', 'hunter', 'claim', 'sheriff_signup', 'badge'].includes(k)
+      : ['vote', 'pk_vote', 'sheriff_vote', 'night', 'witch', 'final', 'claim', 'sheriff_signup', 'badge'].includes(k)
       ? { action: 'skip' }
       : { action: 'speech', text: '过' };
   /** 按阶段 key 覆盖行为，直到 until() 为真。 */
@@ -158,7 +164,7 @@ describe('night', () => {
   });
 
   it('witch poison kills, poisoned hunter cannot shoot; wolf-killed hunter can', () => {
-    const g = make({ werewolf: 2, hunter: 1, witch: 1, villager: 2 });
+    const g = make({ werewolf: 2, hunter: 1, witch: 1, villager: 2 }, { night_min_s: 5 });
     const h = g.seatsOf('hunter')[0]!;
     const w = g.seatsOf('witch')[0]!;
     g.drive(
@@ -169,6 +175,8 @@ describe('night', () => {
       () => g.key() === 'speech',
     );
     expect(g.alive(h)).toBe(false);
+    // 毒死的猎人：临终环节照样出现（出现与否不看死因），但他没有待办、不能开枪
+    expect(g.trace).toContain('final');
     expect(g.trace).not.toContain('hunter');
 
     const g2 = make({ werewolf: 2, hunter: 1, witch: 1, villager: 2 });
@@ -177,12 +185,12 @@ describe('night', () => {
     g2.drive(
       {
         night: (s) => (g2.roleOf(s) === 'werewolf' ? { action: 'kill', target: h2 } : { action: 'skip' }),
-        hunter: () => ({ action: 'shoot', target }),
+        final: () => ({ action: 'shoot', target }),
       },
       () => g2.key() === 'speech',
     );
     expect(g2.trace).toContain('last_words');
-    expect(g2.trace.indexOf('hunter')).toBeGreaterThan(g2.trace.indexOf('last_words'));
+    expect(g2.trace.indexOf('final')).toBeGreaterThan(g2.trace.indexOf('last_words'));
     expect(g2.alive(h2)).toBe(false);
     expect(g2.alive(target)).toBe(false);
   });
@@ -191,14 +199,14 @@ describe('night', () => {
     for (const choose of [false, true]) {
       const g = make({ werewolf: 2, hunter: 1, witch: 1, villager: 2 }, { witch_self_save: 'never' });
       const h = g.seatsOf('hunter')[0]!;
-      g.drive({ night: (s) => (g.roleOf(s) === 'werewolf' ? { action: 'kill', target: h } : { action: 'skip' }) }, () => g.key() === 'hunter');
+      g.drive({ night: (s) => (g.roleOf(s) === 'werewolf' ? { action: 'kill', target: h } : { action: 'skip' }) }, () => g.key() === 'final');
       if (choose) g.act(h, { action: 'skip' });
       else {
         g.clock.advance(g.rec.phase!.timeoutMs + 1000);
         g.manager.tick();
       }
       const said = g.rec.log.filter((e) => e.text.startsWith('🔫') && e.text.includes('开枪。')).map((e) => e.text);
-      expect(said).toEqual([choose ? `🔫 ${h}号 ${g.rec.players.find((p) => p.seat === h)!.name} 选择不开枪。` : expect.stringContaining('超时未开枪')]);
+      expect(said).toEqual([choose ? `🔫 ${h}号 ${g.rec.players.find((p) => p.seat === h)!.name} 是猎人，选择不开枪。` : expect.stringContaining('是猎人，超时未开枪。')]);
     }
   });
 
@@ -210,12 +218,12 @@ describe('night', () => {
     const out = 3;
     g.drive({ vote: (s) => (s === out ? { action: 'skip' } : { action: 'vote', target: out }) }, () => g.rec.round === 2 && g.key() === 'night');
     expect(g.alive(out)).toBe(false);
-    g.drive({ night: (s) => (g.roleOf(s) === 'werewolf' ? { action: 'kill', target: h } : { action: 'skip' }) }, () => g.key() === 'hunter');
-    const ann = g.rec.log.filter((e) => e.text.includes('是猎人')).pop()!.text;
-    const n = Number(ann.match(/「开枪(\d+)」/)![1]);
-    expect(g.alive(n)).toBe(true);
+    g.drive({ night: (s) => (g.roleOf(s) === 'werewolf' ? { action: 'kill', target: h } : { action: 'skip' }) }, () => g.key() === 'final');
     const req = g.rec.phase!.pending[String(h)]!;
-    expect(req.actions.find((a) => a.action === 'shoot')!.command).toBe(`开枪${n}`);
+    const cmd = req.actions.find((a) => a.action === 'shoot')!.command!;
+    const n = Number(cmd.match(/^开枪(\d+)$/)![1]);
+    expect(g.alive(n)).toBe(true);
+    expect(n).not.toBe(out);
   });
 
   it('witch self-save rules', () => {
@@ -405,12 +413,12 @@ describe('day', () => {
     const g = make({ werewolf: 2, hunter: 1, seer: 1, villager: 3 });
     const h = g.seatsOf('hunter')[0]!;
     const wolf = g.seatsOf('werewolf')[0]!;
-    g.drive({ ...voteAll((s) => (s === h ? wolf : h)), hunter: () => ({ action: 'shoot', target: wolf }) }, () => g.key() === 'night' && g.rec.round === 2);
+    g.drive({ ...voteAll((s) => (s === h ? wolf : h)), final: () => ({ action: 'shoot', target: wolf }) }, () => g.key() === 'night' && g.rec.round === 2);
     expect(g.alive(h)).toBe(false);
     expect(g.alive(wolf)).toBe(false);
-    const i = g.trace.indexOf('hunter');
+    const i = g.trace.indexOf('final');
     expect(i).toBeGreaterThan(0);
-    expect(g.trace.slice(i, i + 3)).toEqual(['hunter', 'last_words']);
+    expect(g.trace.slice(i, i + 3)).toEqual(['final', 'last_words']);
 
     const g2 = make({ werewolf: 2, idiot: 1, villager: 3 });
     const idiot = g2.seatsOf('idiot')[0]!;
@@ -572,10 +580,10 @@ describe('win conditions', () => {
     // 夜晚：猎人是最后一个神职，被刀死后神职全灭 → 立即结束，无遗言、无开枪
     const g = make({ werewolf: 2, hunter: 1, villager: 3 });
     const h = g.seatsOf('hunter')[0]!;
-    g.drive({ night: (s) => (g.roleOf(s) === 'werewolf' ? { action: 'kill', target: h } : { action: 'skip' }), hunter: () => ({ action: 'shoot', target: g.seatsOf('werewolf')[0]! }) });
+    g.drive({ night: (s) => (g.roleOf(s) === 'werewolf' ? { action: 'kill', target: h } : { action: 'skip' }), final: () => ({ action: 'shoot', target: g.seatsOf('werewolf')[0]! }) });
     expect(g.rec.status).toBe('ended');
     expect(g.rec.result?.winnerTeam).toBe('狼人阵营');
-    expect(g.trace).not.toContain('hunter');
+    expect(g.trace).not.toContain('final');
     expect(g.trace).not.toContain('last_words');
     expect(g.rec.state.agenda).toEqual([]);
 
@@ -586,7 +594,7 @@ describe('win conditions', () => {
     expect(g2.rec.status).toBe('ended');
     expect(g2.rec.result?.winnerTeam).toBe('狼人阵营');
     expect(g2.trace).toContain('vote');
-    expect(g2.trace).not.toContain('hunter');
+    expect(g2.trace).not.toContain('final');
     expect(g2.trace).not.toContain('last_words');
   });
 
@@ -671,10 +679,13 @@ describe('human commands', () => {
     expect(p(h, '私聊遗言', 'private')).toBeNull();
     const other = g.seatsOf('villager')[0]!;
     expect(p(other, '我也说两句')).toBeNull();
-    g.drive({}, () => g.key() === 'hunter');
-    expect(p(h, '开枪3')).toEqual({ action: 'shoot', target: 3 });
-    expect(p(h, '带走三号')).toEqual({ action: 'shoot', target: 3 });
-    expect(p(h, '不开枪')).toEqual({ action: 'skip' });
+    g.drive({}, () => g.key() === 'final');
+    for (const ch of ['group', 'private'] as const) {
+      expect(p(h, '开枪3', ch)).toEqual({ action: 'shoot', target: 3 });
+      expect(p(h, '带走三号', ch)).toEqual({ action: 'shoot', target: 3 });
+      expect(p(h, '不开枪', ch)).toEqual({ action: 'skip' });
+    }
+    expect(p(g.seatsOf('villager')[0]!, '开枪3')).toBeNull();
     g.act(h, { action: 'skip' });
     g.drive({}, () => g.key() === 'vote');
     const voter = pendingSeats(g.rec)[0]!;
@@ -1079,14 +1090,16 @@ describe('self-explode (自爆) & wolf king (狼王)', () => {
     expect(g.alive(vil)).toBe(false);
     expect(g.rec.log.some((e) => e.text.includes(`查验结果：${king}号`) && e.text.includes('【狼人】'))).toBe(true);
     // 放逐狼王 → 狼王开枪
-    g.drive({ vote: (s) => (s === king ? { action: 'skip' } : { action: 'vote', target: king }) }, () => g.key() === 'hunter' || g.rec.status !== 'running');
+    g.drive({ vote: (s) => (s === king ? { action: 'skip' } : { action: 'vote', target: king }) }, () => g.key() === 'final' || g.rec.status !== 'running');
     expect(g.rec.status).toBe('running');
     expect(pendingSeats(g.rec)).toEqual([king]);
-    expect(g.rec.phase!.title).toContain('狼王开枪');
-    expect(g.rec.log.some((e) => e.text.includes(`是狼王`))).toBe(true);
+    expect(g.rec.phase!.title).toBe('第1天·临终');
+    // 环节开放期间身份还没公开
+    expect(g.rec.log.some((e) => e.text.includes(`是狼王`))).toBe(false);
     g.act(king, { action: 'shoot', target: seer });
-    g.drive({}, () => g.key() !== 'hunter');
+    g.drive({}, () => g.key() !== 'final');
     expect(g.alive(seer)).toBe(false);
+    expect(g.rec.log.some((e) => e.text === `🔫 ${king}号 ${g.rec.players.find((x) => x.seat === king)!.name} 是狼王，开枪带走了 ${seer}号 ${g.rec.players.find((x) => x.seat === seer)!.name}。`)).toBe(true);
   });
 
   it('wolf king cannot shoot after exploding or being poisoned', () => {
@@ -1098,8 +1111,10 @@ describe('self-explode (自爆) & wolf king (狼王)', () => {
     expect(g.rec.log.some((e) => e.text.includes('【狼王】'))).toBe(true);
     g.drive({}, () => g.key() === 'night');
     expect(g.trace).not.toContain('hunter');
+    expect(g.trace).not.toContain('final');
+    expect(g.rec.state.revealed).toContain(king);
 
-    const g2 = make({ werewolf: 1, wolf_king: 1, seer: 1, witch: 1, villager: 3 });
+    const g2 = make({ werewolf: 1, wolf_king: 1, seer: 1, witch: 1, villager: 3 }, { night_min_s: 5 });
     const king2 = g2.seatsOf('wolf_king')[0]!;
     const witch = g2.seatsOf('witch')[0]!;
     g2.drive(
@@ -1108,6 +1123,8 @@ describe('self-explode (自爆) & wolf king (狼王)', () => {
     );
     expect(g2.alive(king2)).toBe(false);
     expect(g2.trace).not.toContain('hunter');
+    expect(g2.trace).toContain('final');
+    expect(g2.rec.state.revealed ?? []).not.toContain(king2);
   });
 });
 
@@ -1182,4 +1199,699 @@ describe('human self-explode via the referee', () => {
     expect(rec.phase?.key).toBe('night');
     expect(rec.log.some((e) => e.audience.type === 'public' && e.text.includes(`${wolfSeat}号`) && e.text.includes('自爆了'))).toBe(true);
   });
+});
+
+
+describe('final phase: hunter / wolf king shoot in private', () => {
+  const BOARD = { werewolf: 2, hunter: 1, seer: 1, villager: 3 };
+  type G = ReturnType<typeof make>;
+  const nameOf = (g: G, seat: number) => g.rec.players.find((p) => p.seat === seat)!.name;
+  const lab = (g: G, seat: number) => `${seat}号 ${nameOf(g, seat)}`;
+  const killNight = (g: G, victim: number) => (s: number): ActionInput => (g.roleOf(s) === 'werewolf' ? { action: 'kill', target: victim } : { action: 'skip' });
+  const exileDay = (victim: number) => (s: number): ActionInput => (s === victim ? { action: 'skip' } : { action: 'vote', target: victim });
+  const atFinal = (g: G) => () => g.key() === 'final';
+  const villagerOf = (g: G) => g.seatsOf('villager')[0]!;
+  /** 第 1 天放逐 victim，推进到临终环节开放 */
+  const exileTo = (g: G, victim: number, over: Record<string, (s: number) => ActionInput> = {}) => {
+    g.drive({ vote: exileDay(victim), ...over }, atFinal(g));
+    return g;
+  };
+  const SHAPE = (g: G) => ({ key: g.key(), title: g.rec.phase!.title, secret: g.rec.phase!.secret, timeout: g.rec.phase!.timeoutMs, min: g.rec.phase!.minDurationMs });
+
+  /** 全真人局（裁判转发），推进到第 1 天放逐 victimOf(rec) 之后的临终环节开放。 */
+  async function humanFinal(extra: Record<string, unknown> = {}, who: 'hunter' | 'villager' = 'hunter') {
+    const humans = [human(1), human(2), human(3), human(4), human(5), human(6), human(7)];
+    const { manager, clock } = setup(1);
+    const { gameId, rec } = startGame(manager, 'werewolf', { players: [], humans, referee: REF, options: { roles: BOARD, night_min_s: 5, ...LEGACY, ...extra } });
+    const seatWith = (r: string) => Number(Object.entries(rec.state.roles).find(([, x]) => x === r)![0]);
+    const hunter = seatWith('hunter');
+    const victim = seatWith(who);
+    const idOf = (seat: number) => rec.players.find((p) => p.seat === seat)!.id;
+    for (let i = 0; i < 400 && rec.phase?.key !== 'final'; i++) {
+      await manager.refereeStep(REF, gameId);
+      if (rec.phase?.key === 'final') break;
+      for (const seat of pendingSeats(rec)) {
+        const k = rec.phase!.key;
+        const req = rec.phase!.pending[String(seat)]!;
+        const input: ActionInput = k === 'vote' ? (seat === victim ? { action: 'skip' } : { action: 'vote', target: victim }) : { action: 'skip' };
+        manager.relayHumanMessage(REF, gameId, { userId: idOf(seat), text: '', channel: req.channel, action: input });
+        if (rec.phase?.key !== k) break;
+      }
+      clock.advance(5000);
+    }
+    for (let i = 0; i < 3; i++) {
+      await manager.refereeStep(REF, gameId);
+      clock.advance(3000);
+    }
+    expect(rec.phase!.key).toBe('final');
+    return { manager, clock, gameId, rec, hunter, victim, idOf };
+  }
+
+  /** 5 AI + 2 真人，真人是猎人（换种子直到猎人落在真人座位），推进到第 1 天放逐猎人之后的临终环节开放。 */
+  async function mixedFinal() {
+    for (let n = 0; n < 80; n++) {
+      const { manager, clock } = setup(`mix${n}`);
+      const { gameId, rec } = startGame(manager, 'werewolf', {
+        players: [1, 2, 3, 4, 5].map((i) => bot(i)),
+        humans: [human(1), human(2)],
+        referee: REF,
+        options: { roles: BOARD, night_min_s: 5, ...LEGACY },
+      });
+      const hunter = Number(Object.entries(rec.state.roles).find(([, r]) => r === 'hunter')![0]);
+      const hp = rec.players.find((p) => p.seat === hunter)!;
+      if (hp.kind !== 'human') continue;
+      for (let i = 0; i < 400 && rec.phase?.key !== 'final'; i++) {
+        await manager.refereeStep(REF, gameId);
+        if (rec.phase?.key === 'final') break;
+        for (const seat of pendingSeats(rec)) {
+          const k = rec.phase!.key;
+          const req = rec.phase!.pending[String(seat)];
+          if (!req || req.done) continue;
+          const p = rec.players.find((x) => x.seat === seat)!;
+          const input: ActionInput | null = k === 'vote' ? (seat === hunter ? { action: 'skip' } : { action: 'vote', target: hunter }) : k === 'night' || k === 'witch' ? { action: 'skip' } : manager.randomActionFor(gameId, seat);
+          if (!input) continue;
+          if (p.kind === 'agent') manager.act({ id: p.id, name: p.name }, gameId, input);
+          else manager.relayHumanMessage(REF, gameId, { userId: p.id, text: '', channel: req.channel, action: input });
+          if (rec.phase?.key !== k) break;
+        }
+        clock.advance(5000);
+      }
+      for (let i = 0; i < 3; i++) {
+        await manager.refereeStep(REF, gameId);
+        clock.advance(1000);
+      }
+      expect(rec.phase!.key).toBe('final');
+      expect(pendingSeats(rec)).toEqual([hunter]);
+      return { manager, clock, gameId, rec, hunter, hp };
+    }
+    throw new Error('没有找到猎人是真人的种子');
+  }
+
+  it('T1: appears from public info only; same key/title/timing whoever died', () => {
+    const opts = { night_min_s: 5 };
+    const a = make(BOARD, opts, 1);
+    exileTo(a, villagerOf(a));
+    expect(a.trace).not.toContain('hunter');
+    expect(SHAPE(a)).toEqual({ key: 'final', title: '第1天·临终', secret: true, timeout: 30_000, min: 30_000 });
+    expect(pendingSeats(a.rec)).toEqual([]);
+
+    const b = make(BOARD, opts, 1);
+    const hb = b.seatsOf('hunter')[0]!;
+    exileTo(b, hb);
+    expect(SHAPE(b)).toEqual(SHAPE(a));
+    expect(pendingSeats(b.rec)).toEqual([hb]);
+    expect(b.rec.phase!.pending[String(hb)]!.channel).toBe('private');
+
+    const c = make(BOARD, opts, 1);
+    const hc = c.seatsOf('hunter')[0]!;
+    c.drive({ night: killNight(c, hc) }, atFinal(c));
+    expect(SHAPE(c)).toEqual(SHAPE(a));
+    expect(pendingSeats(c.rec)).toEqual([hc]);
+
+    // 毒死的猎人：同样出现，没有待办
+    const d = make({ werewolf: 2, hunter: 1, witch: 1, villager: 2 }, opts, 1);
+    const hd = d.seatsOf('hunter')[0]!;
+    const w = d.seatsOf('witch')[0]!;
+    d.drive({ witch: (s) => (s === w ? { action: 'poison', target: hd } : { action: 'skip' }) }, atFinal(d));
+    expect(d.alive(hd)).toBe(false);
+    expect(SHAPE(d)).toEqual(SHAPE(a));
+    expect(pendingSeats(d.rec)).toEqual([]);
+
+    // 没有猎人也没有狼王：整局没有临终环节
+    const e = make({ werewolf: 2, seer: 1, villager: 3 }, { night_min_s: 0 }, 1);
+    e.drive({ vote: exileDay(e.seatsOf('villager')[0]!) }, () => e.rec.round === 2 || e.rec.status !== 'running');
+    expect(e.rec.log.some((x) => x.text.startsWith('⏳'))).toBe(false);
+    expect(e.trace).not.toContain('final');
+  });
+
+  it('T2: public surface is equal across villager / hunter / wolf king / poisoned hunter', () => {
+    const board = { werewolf: 1, wolf_king: 1, hunter: 1, seer: 1, witch: 1, villager: 3 };
+    const snap = (kind: 'villager' | 'hunter' | 'king' | 'poisoned') => {
+      const g = make(board, { night_min_s: 20, nudge_ai: true }, 3);
+      const w = g.seatsOf('witch')[0]!;
+      const pick = kind === 'villager' ? g.seatsOf('villager')[0]! : kind === 'king' ? g.seatsOf('wolf_king')[0]! : g.seatsOf('hunter')[0]!;
+      if (kind === 'poisoned') g.drive({ witch: (s) => (s === w ? { action: 'poison', target: pick } : { action: 'skip' }) }, atFinal(g));
+      else exileTo(g, pick);
+      const rec = g.rec;
+      const other = rec.players.find((p) => p.seat !== pick && p.seat !== w && g.alive(p.seat))!;
+      const view: any = g.manager.getView(identityOf(rec, other.seat), g.gameId);
+      const ph: any = (g.manager.webView(rec) as any).phase;
+      const mark = rec.log.findIndex((e) => e.text.startsWith('⏳'));
+      const firstOutbox = (r: GameRecord) => r.outbox.find((d) => d.text.startsWith('⏳'))!.seq;
+      return {
+        phase: { ...ph, opened: 0, deadline: ph.deadline - ph.opened },
+        stage: g.inst().publicView().stage,
+        announce: rec.log.slice(mark).map((e) => e.text),
+        otherPhase: view.game?.phase ?? null,
+        todo: view.todo ?? null,
+        yourTurn: view.your_turn,
+        hint: view.hint ?? null,
+        nudges: rec.outbox.filter((d) => d.text.includes('【第1天·临终】')).map((d) => d.mentions.map((m) => m.id).sort()),
+        header: phaseHeaderOf(rec, g.clock.now()),
+        // 从开场公告起的整段公开事件序列（不再只看带 🔫 的）
+        publicEvents: (() => {
+          const evs: any[] = (g.manager.getLog(identityOf(rec, other.seat), g.gameId) as any).events ?? [];
+          return evs.slice(evs.findIndex((e) => String(e.text).startsWith('⏳'))).map((e) => [e.kind, e.text]);
+        })(),
+        publicOutbox: rec.outbox.filter((d) => d.target.type === 'group' && d.seq >= firstOutbox(rec)).map((d) => d.text),
+      };
+    };
+    const base = snap('villager');
+    expect(base.announce).toEqual(['⏳ 第1天·临终环节（限时 30 秒）：本局还有猎人、狼王没有亮明身份，所以每次有人出局之后都会有这个环节，不论出局的是谁。需要行动的人会私下收到提示，结果在环节结束后才公布；其余人请安静等候，不要发言。']);
+    expect(base.todo).toBeNull();
+    expect(base.publicEvents).toHaveLength(1); // 开场公告之外，环节里没有任何别的公开事件
+    expect(base.publicOutbox[0]).toMatch(/^⏳/); // 群里的第一条就是固定的开场公告
+    for (const k of ['hunter', 'king', 'poisoned'] as const) {
+      const x = snap(k);
+      expect(x).toEqual(base);
+    }
+  });
+
+  it('T2b: with a HUMAN hunter the public surface still equals the villager game (view, header, events, outbox, seat page)', async () => {
+    const snap = async (who: 'hunter' | 'villager') => {
+      const { manager, rec, hunter } = await humanFinal({}, who);
+      const seer = Number(Object.entries(rec.state.roles).find(([, r]) => r === 'seer')![0]);
+      const ph: any = (manager.webView(rec) as any).phase;
+      const { seconds_left: _s, ...header } = phaseHeaderOf(rec, 0)!;
+      const mark = rec.log.findIndex((e) => e.text.startsWith('⏳'));
+      const wv: any = manager.webView(rec);
+      const sv: any = manager.webSeatView(rec, seer);
+      return {
+        phase: { ...ph, deadline: ph.deadline - rec.phase!.openedAt! },
+        header,
+        publicLog: rec.log.slice(mark).filter((e) => e.audience.type === 'public').map((e) => [e.kind, e.text]),
+        webEvents: wv.events.filter((e: any) => e.seq > wv.events.findIndex((x: any) => String(x.text).startsWith('⏳')) + 0).map((e: any) => e.text),
+        groupOutbox: rec.outbox.filter((d) => d.target.type === 'group' && d.seq >= rec.outbox.find((x) => x.text.startsWith('⏳'))!.seq).map((d) => d.text),
+        seerSeatPhase: sv.phase,
+        seerTodo: sv.me.todo,
+        pendingChannelHunter: who === 'hunter' ? rec.phase!.pending[String(hunter)]!.channel : 'private',
+      };
+    };
+    const base = await snap('villager');
+    expect(base.groupOutbox).toHaveLength(1);
+    expect(await snap('hunter')).toEqual(base);
+  });
+
+  it('T3: nothing is revealed before the phase ends; the result names the role', () => {
+    const g = make(BOARD, { night_min_s: 5 }, 1);
+    const h = g.seatsOf('hunter')[0]!;
+    exileTo(g, h);
+    const target = g.seatsOf('seer')[0]!;
+    g.act(h, { action: 'shoot', target });
+    const resultLine = `🔫 ${lab(g, h)} 是猎人，开枪带走了 ${lab(g, target)}。`;
+    expect(g.rec.log.some((e) => e.text.includes('🔫'))).toBe(false);
+    expect(g.alive(target)).toBe(true);
+    expect(Object.values(g.rec.state.deaths).some((d) => String(d).includes('带走'))).toBe(false);
+    g.clock.advance(29_999);
+    g.manager.tick();
+    expect(g.key()).toBe('final');
+    g.clock.advance(1);
+    g.manager.tick();
+    expect(g.key()).not.toBe('final');
+    expect(g.rec.log.some((e) => e.text === resultLine)).toBe(true);
+    expect(g.rec.state.deaths[String(target)]).toBe('第1天被猎人带走');
+    expect(g.rec.state.revealed).toContain(h);
+  });
+
+  it('T4: fixed duration for idle / instant shot / timeout', () => {
+    for (const mode of ['idle', 'shoot', 'timeout'] as const) {
+      const g = make(BOARD, { night_min_s: 20, hunter_timeout_s: 30 }, 1);
+      const v = mode === 'idle' ? villagerOf(g) : g.seatsOf('hunter')[0]!;
+      exileTo(g, v);
+      expect(g.rec.phase!.deadline! - g.rec.phase!.openedAt!).toBe(30_000);
+      if (mode === 'shoot') g.act(v, { action: 'shoot', target: g.seatsOf('seer')[0]! });
+      g.clock.advance(29_999);
+      g.manager.tick();
+      expect(g.key(), mode).toBe('final');
+      g.clock.advance(1);
+      g.manager.tick();
+      expect(g.key(), mode).not.toBe('final');
+    }
+  });
+
+  it('T4b: a forfeited (away) shooter seat is auto-settled at once but the phase still lasts the full 30 s', () => {
+    const g = make(BOARD, { night_min_s: 20, hunter_timeout_s: 30 }, 1);
+    const h = g.seatsOf('hunter')[0]!;
+    exileTo(g, h);
+    const t0 = g.rec.phase!.openedAt!;
+    const pump = () => pumpGame(g.rec, g.inst(), g.clock.now, true, new Set([h]));
+    pump();
+    expect(pendingSeats(g.rec)).toEqual([]); // 托管：待办立刻被标完成
+    expect(g.key()).toBe('final');
+    g.clock.advance(t0 + 29_999 - g.clock.now());
+    pump();
+    expect(g.key()).toBe('final');
+    expect(g.rec.log.some((e) => e.text.includes('🔫'))).toBe(false);
+    g.clock.advance(1);
+    pump();
+    expect(g.key()).not.toBe('final');
+    expect(g.rec.log.some((e) => e.text === `🔫 ${lab(g, h)} 是猎人，超时未开枪。`)).toBe(true);
+    expect(g.rec.state.revealed).toEqual([h]);
+  });
+
+  it('T5: night_min_s 0 has no floor', () => {
+    // 空转环节没有时长下限：不用推进时钟，同一次推进里就过去了
+    const g = make(BOARD, { night_min_s: 0 }, 1);
+    g.drive({ vote: exileDay(villagerOf(g)) }, () => g.key() === 'last_words');
+    expect(g.rec.log.filter((e) => e.text.startsWith('⏳'))).toHaveLength(0);
+    // 遗言一结束，临终环节开放并在同一次推进里（没有任何 tick、没有时钟推进）过去
+    g.act(pendingSeats(g.rec)[0]!, { action: 'end_speech' });
+    expect(g.rec.log.filter((e) => e.text.startsWith('⏳'))).toHaveLength(1);
+    expect(g.key()).toBe('night');
+    const g2 = make(BOARD, { night_min_s: 0 }, 1);
+    const h = g2.seatsOf('hunter')[0]!;
+    exileTo(g2, h);
+    expect(g2.rec.phase!.minDurationMs).toBe(0);
+    expect(g2.rec.phase!.timeoutMs).toBe(30_000);
+    g2.act(h, { action: 'skip' });
+    expect(g2.key()).not.toBe('final');
+    // 空转环节也是：一次 tick 之内结束
+    const g3 = make(BOARD, { night_min_s: 0 }, 1);
+    g3.drive({ vote: exileDay(villagerOf(g3)) }, () => g3.key() === 'last_words');
+    g3.manager.tick();
+    expect(g3.key()).toBe('last_words');
+    g3.act(pendingSeats(g3.rec)[0]!, { action: 'end_speech' });
+    g3.manager.tick();
+    expect(g3.key()).toBe('night');
+  });
+
+  it('T6: skip and timeout both reveal; later batches stop once everyone is revealed', () => {
+    for (const how of ['skip', 'timeout'] as const) {
+      const g = make(BOARD, { night_min_s: 0 }, 1);
+      const h = g.seatsOf('hunter')[0]!;
+      exileTo(g, h);
+      if (how === 'skip') g.act(h, { action: 'skip' });
+      else {
+        g.clock.advance(31_000);
+        g.manager.tick();
+      }
+      const line = how === 'skip' ? `🔫 ${lab(g, h)} 是猎人，选择不开枪。` : `🔫 ${lab(g, h)} 是猎人，超时未开枪。`;
+      expect(g.rec.log.some((e) => e.text === line)).toBe(true);
+      expect(g.rec.state.revealed).toEqual([h]);
+      g.drive({}, () => g.rec.round === 3 || g.rec.status !== 'running');
+      expect(g.rec.log.filter((e) => e.text.startsWith('⏳'))).toHaveLength(1);
+    }
+    // 猎人 + 狼王：猎人亮明之后下一批仍有临终环节，公告里只剩狼王；狼王也亮明之后不再有
+    const g = make({ werewolf: 1, wolf_king: 1, hunter: 1, seer: 1, villager: 3 }, { night_min_s: 5 }, 1);
+    const h = g.seatsOf('hunter')[0]!;
+    const k = g.seatsOf('wolf_king')[0]!;
+    exileTo(g, h);
+    g.act(h, { action: 'skip' });
+    g.drive({}, () => g.key() === 'night' && g.rec.round === 2);
+    const mark = g.rec.log.length;
+    const vil = g.seatsOf('villager').find((x) => g.alive(x))!;
+    const wolvesKill = (s: number): ActionInput => (g.roleOf(s) === 'werewolf' || g.roleOf(s) === 'wolf_king' ? { action: 'kill', target: vil } : { action: 'skip' });
+    g.drive({ night: wolvesKill }, atFinal(g));
+    const after = g.rec.log.slice(mark).map((e) => e.text);
+    expect(after.some((t) => t.includes('还有狼王没有亮明身份'))).toBe(true);
+    expect(after.some((t) => t.includes('猎人、狼王'))).toBe(false);
+    g.drive({}, () => g.key() !== 'final');
+    // 第 2 天放逐狼王，他不开枪：两个都亮明了
+    g.drive({ vote: exileDay(k) }, atFinal(g));
+    expect(pendingSeats(g.rec)).toEqual([k]);
+    g.act(k, { action: 'skip' });
+    g.drive({}, () => g.key() !== 'final');
+    expect(g.rec.state.revealed).toEqual([h, k]);
+    const announced = () => g.rec.log.filter((e) => e.text.startsWith('⏳') && e.text.includes('临终环节')).length;
+    const before = announced();
+    // 再来一批出局（夜里刀一个村民），走完天亮的所有步骤到白天投票：不会再有 final
+    const vil2 = g.seatsOf('villager').find((x) => g.alive(x))!;
+    const deaths = Object.keys(g.rec.state.deaths).length;
+    g.drive({ night: (s) => (g.roleOf(s) === 'werewolf' ? { action: 'kill', target: vil2 } : { action: 'skip' }) }, () => g.key() === 'vote' && Object.keys(g.rec.state.deaths).length > deaths);
+    expect(g.alive(vil2)).toBe(false);
+    expect(announced()).toBe(before);
+  });
+
+  it('T7: poisoned shooter cannot act and stays unrevealed; exploding king is revealed with no final', () => {
+    const g = make({ werewolf: 1, wolf_king: 1, hunter: 1, seer: 1, witch: 1, villager: 2 }, { night_min_s: 5 }, 2);
+    const h = g.seatsOf('hunter')[0]!;
+    const w = g.seatsOf('witch')[0]!;
+    g.drive({ witch: (s) => (s === w ? { action: 'poison', target: h } : { action: 'skip' }) }, atFinal(g));
+    expect(pendingSeats(g.rec)).toEqual([]);
+    expect(() => g.act(h, { action: 'shoot', target: w })).toThrow(/第1天·临终/);
+    g.drive({}, () => g.key() !== 'final');
+    expect(g.rec.state.revealed ?? []).not.toContain(h);
+    expect(g.rec.log.some((e) => e.text.includes('是猎人'))).toBe(false);
+    // 毒死的人没有亮明：之后的出局批（第 1 天放逐一个村民）仍然有 final，同一个 key、标题、时长
+    const v = g.seatsOf('villager').find((x) => g.alive(x))!;
+    g.drive({ vote: exileDay(v) }, atFinal(g));
+    expect(g.alive(v)).toBe(false);
+    expect(SHAPE(g)).toEqual({ key: 'final', title: '第1天·临终', secret: true, timeout: 30_000, min: 30_000 });
+    expect(pendingSeats(g.rec)).toEqual([]);
+  });
+
+  it('T7b: an exploding wolf king is revealed and leaves no final in the agenda', () => {
+    const g = make({ werewolf: 1, wolf_king: 1, hunter: 1, seer: 1, villager: 3 }, { night_min_s: 5 }, 1);
+    const king = g.seatsOf('wolf_king')[0]!;
+    g.drive({ night: () => ({ action: 'skip' }) }, () => g.key() === 'speech');
+    expect((g.rec.state.agenda as any[]).some((s) => s.t === 'final')).toBe(false);
+    g.act(king, { action: 'explode' });
+    expect(g.alive(king)).toBe(false);
+    expect(g.rec.state.revealed).toEqual([king]);
+    expect(g.key()).toBe('night');
+    expect((g.rec.state.agenda as any[]).some((s) => s.t === 'final' || s.t === 'hunter')).toBe(false);
+    expect(g.rec.log.some((e) => e.text.includes('⏳'))).toBe(false);
+  });
+
+  it('T8: at most one shooter per batch; seat 0 when none; guard throws', () => {
+    const g = make({ werewolf: 1, wolf_king: 1, hunter: 1, witch: 1, villager: 3 }, { night_min_s: 0 }, 1);
+    const h = g.seatsOf('hunter')[0]!;
+    const k = g.seatsOf('wolf_king')[0]!;
+    const v = g.seatsOf('villager')[0]!;
+    const finals = () => (g.rec.state.agenda as any[]).filter((s) => s.t === 'final');
+    g.rec.state.agenda = [];
+    g.inst().afterDeaths([{ seat: h, cause: 'wolf' }, { seat: v, cause: 'poison' }], false);
+    expect(finals()).toEqual([{ t: 'final', seat: h }]);
+    g.rec.state.agenda = [];
+    g.inst().afterDeaths([{ seat: k, cause: 'poison' }, { seat: h, cause: 'wolf' }], false);
+    expect(finals()).toEqual([{ t: 'final', seat: h }]);
+    g.rec.state.agenda = [];
+    g.inst().afterDeaths([{ seat: k, cause: 'poison' }, { seat: h, cause: 'poison' }], false);
+    expect(finals()).toEqual([{ t: 'final', seat: 0 }]);
+    expect(() => g.inst().afterDeaths([{ seat: k, cause: 'wolf' }, { seat: h, cause: 'wolf' }], false)).toThrow(/多个可开枪者/);
+  });
+
+  it('T9: win check beats the final phase', () => {
+    const g = make({ werewolf: 2, hunter: 1, villager: 3 }, { night_min_s: 0 }, 1);
+    const h = g.seatsOf('hunter')[0]!;
+    g.drive({ night: killNight(g, h) });
+    expect(g.rec.status).toBe('ended');
+    expect(g.trace).not.toContain('final');
+    const g2 = make({ wolf_king: 1, villager: 4, seer: 1 }, { night_min_s: 0 }, 1);
+    const k = g2.seatsOf('wolf_king')[0]!;
+    g2.drive({ vote: exileDay(k) });
+    expect(g2.rec.status).toBe('ended');
+    expect(g2.rec.result?.winnerTeam).toBe('好人阵营');
+    expect(g2.trace).not.toContain('final');
+  });
+
+  it('T9b: a shot that takes the last god ends the game right after the result line (no last words, no second final)', () => {
+    const g = make({ werewolf: 2, hunter: 1, seer: 1, villager: 3 }, { night_min_s: 0 }, 1);
+    const h = g.seatsOf('hunter')[0]!;
+    const seer = g.seatsOf('seer')[0]!;
+    g.drive({ vote: exileDay(h), final: (s) => (s === h ? { action: 'shoot', target: seer } : { action: 'skip' }) });
+    expect(g.rec.status).toBe('ended');
+    expect(g.rec.result?.winnerTeam).toBe('狼人阵营');
+    expect(g.rec.log.some((e) => e.text === `🔫 ${lab(g, h)} 是猎人，开枪带走了 ${lab(g, seer)}。`)).toBe(true);
+    expect(g.alive(seer)).toBe(false);
+    expect(g.trace[g.trace.length - 1]).toBe('final');
+    expect(g.trace.filter((x) => x === 'final')).toHaveLength(1);
+    const i = g.trace.indexOf('final');
+    expect(g.trace.slice(i + 1)).toEqual([]);
+    // 结果公告之后没有任何带走者的遗言记录
+    const resultAt = g.rec.log.findIndex((e) => e.text.startsWith('🔫'));
+    expect(g.rec.log.slice(resultAt + 1).some((e) => e.kind === 'speech' || String(e.text).includes('遗言'))).toBe(false);
+  });
+
+  it('T10: chain order, and no final without deaths', () => {
+    const g = make({ werewolf: 1, wolf_king: 1, hunter: 1, seer: 1, villager: 3 }, { night_min_s: 0 }, 1);
+    const h = g.seatsOf('hunter')[0]!;
+    const k = g.seatsOf('wolf_king')[0]!;
+    g.drive({ vote: exileDay(h), final: (s) => (s === h ? { action: 'shoot', target: k } : { action: 'skip' }) }, () => g.key() === 'night' && g.rec.round === 2);
+    const i = g.trace.indexOf('vote');
+    expect(g.trace.slice(i, i + 5)).toEqual(['vote', 'last_words', 'final', 'last_words', 'final']);
+    expect(g.rec.log.some((e) => e.text.includes('是狼王，选择不开枪'))).toBe(true);
+    // 平安夜、全员弃票：没有死人 → 没有临终环节
+    const g2 = make(BOARD, { night_min_s: 0 }, 1);
+    g2.drive({}, () => g2.key() === 'night' && g2.rec.round === 3);
+    expect(g2.trace.filter((x) => x === 'final')).toHaveLength(0);
+  });
+
+  it('T10b: wolf king shoots the hunter — last_words, then a new final', () => {
+    const g = make({ werewolf: 1, wolf_king: 1, hunter: 1, seer: 1, villager: 3 }, { night_min_s: 0 }, 1);
+    const h = g.seatsOf('hunter')[0]!;
+    const k = g.seatsOf('wolf_king')[0]!;
+    g.drive({ vote: exileDay(k), final: (s) => (s === k ? { action: 'shoot', target: h } : { action: 'skip' }) }, () => g.key() === 'night' && g.rec.round === 2);
+    const i = g.trace.indexOf('vote');
+    expect(g.trace.slice(i, i + 5)).toEqual(['vote', 'last_words', 'final', 'last_words', 'final']);
+    expect(g.rec.log.some((e) => e.text.includes('是猎人，选择不开枪'))).toBe(true);
+    expect(g.rec.state.revealed).toEqual([k, h]);
+  });
+
+  it('T10c/d: the badge is passed BEFORE the final; the sheriff shot by the hunter chains last_words, badge, final', () => {
+    const sheriffGame = (sheriff: 'hunter' | 'villager') => {
+      const g = make({ werewolf: 1, wolf_king: 1, hunter: 1, seer: 1, villager: 3 }, { night_min_s: 5, sheriff: true }, 1);
+      const h = g.seatsOf('hunter')[0]!;
+      const v = g.seatsOf('villager')[0]!;
+      g.rec.state.sheriff = sheriff === 'hunter' ? h : v;
+      g.rec.state.sheriffElected = true;
+      return { g, h, v };
+    };
+    // ④ 猎人本人是警长，被放逐：遗言、警徽、临终
+    const a = sheriffGame('hunter');
+    a.g.drive({ vote: exileDay(a.h) }, () => a.g.key() === 'night' && a.g.rec.round === 2);
+    const i = a.g.trace.indexOf('vote');
+    expect(a.g.trace.slice(i, i + 4)).toEqual(['vote', 'last_words', 'badge', 'final']);
+    // ③ 被带走的是警长：外层 final，然后被带走者的 last_words、badge、新批的 final
+    const b = sheriffGame('villager');
+    b.g.drive({ vote: exileDay(b.h), final: (s) => (s === b.h ? { action: 'shoot', target: b.v } : { action: 'skip' }) }, () => b.g.key() === 'night' && b.g.rec.round === 2);
+    const j = b.g.trace.indexOf('vote');
+    expect(b.g.trace.slice(j, j + 6)).toEqual(['vote', 'last_words', 'final', 'last_words', 'badge', 'final']);
+  });
+
+  it('T10e: an idiot flipped on first exile (nobody dies) has no final', () => {
+    const g = make({ werewolf: 1, wolf_king: 1, hunter: 1, idiot: 1, villager: 3 }, { night_min_s: 0 }, 1);
+    const idiot = g.seatsOf('idiot')[0]!;
+    g.drive({ vote: exileDay(idiot) }, () => g.trace.includes('vote') && g.key() === 'night');
+    expect(g.alive(idiot)).toBe(true);
+    expect(g.trace).not.toContain('final');
+    expect(g.rec.log.some((e) => e.text.includes('⏳'))).toBe(false);
+  });
+
+  it('T11: non-pending players get the same private reply; group text from them is ignored', async () => {
+    const { manager, gameId, rec, hunter, idOf } = await humanFinal({}, 'villager');
+    const inst = (manager as any).inst(rec);
+    expect(pendingSeats(rec)).toEqual([]);
+    const other = [1, 2, 3, 4, 5, 6, 7].find((s) => s !== hunter && rec.players.find((p) => p.seat === s)!.alive)!;
+    expect(inst.parseCommand(hunter, '开枪3', 'private')).toBeNull();
+    expect(inst.parseCommand(other, '开枪3', 'group')).toBeNull();
+    const send = (seat: number, text: string, channel: 'group' | 'private') => {
+      const mark = rec.outboxSeq;
+      const r = manager.relayHumanMessage(REF, gameId, { userId: idOf(seat), text, channel });
+      return { r, out: rec.outbox.filter((d) => d.seq > mark) };
+    };
+    const expected = '⚠️ 现在不是你的私聊行动时间（当前阶段：第1天·临终），这条指令没有生效。';
+    for (const s of [hunter, other]) {
+      const x = send(s, '开枪3', 'private');
+      expect(x.out).toHaveLength(1);
+      expect(x.out[0]!.text).toBe(expected);
+      expect(x.out[0]!.target.type).toBe('private');
+    }
+    const c = send(other, '开枪3', 'group');
+    expect(c.r.recognized).toBe(false);
+    expect(c.out).toHaveLength(0);
+    const d = manager.webSeatAct(rec, other, { text: '开枪3', mode: 'command' });
+    const e = manager.webSeatAct(rec, hunter, { text: '开枪3', mode: 'command' });
+    expect(d).toEqual(e);
+    expect(d.accepted).toBe(false);
+    expect(d.message).toContain('第1天·临终');
+  });
+
+  it('T11b/T13: pending human shooter — private ok, group accepted with a private nudge only; seat page shows todo', async () => {
+    for (const channel of ['private', 'group'] as const) {
+      const { manager, gameId, rec, hunter, idOf } = await humanFinal();
+      expect(pendingSeats(rec)).toEqual([hunter]);
+      const sv: any = manager.webSeatView(rec, hunter);
+      expect(sv.me.todo.channel).toBe('private');
+      expect(sv.me.todo.actions.find((a: any) => a.action === 'shoot').command).toMatch(/^开枪\d+$/);
+      const other = [1, 2, 3, 4, 5, 6, 7].find((s) => s !== hunter)!;
+      expect((manager.webSeatView(rec, other) as any).me.todo).toBeNull();
+      const mark = rec.outboxSeq;
+      const r = manager.relayHumanMessage(REF, gameId, { userId: idOf(hunter), text: `开枪${other}`, channel });
+      expect(r.accepted).toBe(true);
+      const out = rec.outbox.filter((d) => d.seq > mark);
+      expect(out.every((d) => d.target.type === 'private')).toBe(true);
+      expect(out.some((d) => d.text.includes('在群里发了开枪指令'))).toBe(channel === 'group');
+      expect(rec.phase!.pending[String(hunter)]!.done).toBe(true);
+    }
+    // 座位网页提交
+    const { manager, rec, hunter } = await humanFinal();
+    const other = [1, 2, 3, 4, 5, 6, 7].find((s) => s !== hunter)!;
+    expect(manager.webSeatAct(rec, hunter, { text: `开枪${other}`, mode: 'command' }).accepted).toBe(true);
+  });
+
+  it('T12: AI shooter view; other AIs see nothing', () => {
+    const g = make(BOARD, { night_min_s: 5 }, 1);
+    const h = g.seatsOf('hunter')[0]!;
+    exileTo(g, h);
+    const v: any = g.manager.getView(identityOf(g.rec, h), g.gameId);
+    expect(v.todo.actions.map((a: any) => a.action).sort()).toEqual(['shoot', 'skip']);
+    expect(v.you.can_shoot).toBe(true);
+    const o = g.rec.players.find((p) => p.seat !== h && p.alive)!;
+    const ov: any = g.manager.getView(identityOf(g.rec, o.seat), g.gameId);
+    expect(ov.todo ?? null).toBeNull();
+    expect(ov.your_turn).toBe(false);
+    expect(() => g.act(o.seat, { action: 'shoot', target: 1 })).toThrow(/第1天·临终/);
+    g.act(h, { action: 'skip' });
+    expect(() => g.act(h, { action: 'skip' })).toThrow(/已经行动/);
+  });
+
+  it('T14: nudge_ai mentions every AI seat, dead ones included, whoever died', () => {
+    const sets: string[][] = [];
+    for (const who of ['villager', 'hunter'] as const) {
+      const g = make(BOARD, { night_min_s: 5, nudge_ai: true }, 1);
+      const v = who === 'villager' ? villagerOf(g) : g.seatsOf('hunter')[0]!;
+      exileTo(g, v);
+      const n = g.rec.outbox.filter((d) => d.text.includes('【第1天·临终】'));
+      expect(n).toHaveLength(1);
+      sets.push(n[0]!.mentions.map((m) => m.id).sort());
+      expect(sets[sets.length - 1]).toHaveLength(g.rec.players.length);
+      expect(sets[sets.length - 1]).toContain(g.rec.players.find((p) => p.seat === v)!.id);
+    }
+    expect(sets[0]).toEqual(sets[1]);
+  });
+
+  it('T15: restart mid-phase restores and finishes on schedule (shooter submitted or not), to the millisecond', () => {
+    for (const submitted of [true, false]) {
+      const store = new MemoryStateStore();
+      const clock = new FakeClock();
+      const m1 = new GameManager({ registry: createRegistry(), now: clock.now, rng: new SeededRng(1), store });
+      const players = Array.from({ length: 7 }, (_, i) => bot(i + 1));
+      const { gameId, rec } = startGame(m1, 'werewolf', { players, autoReferee: true, options: { roles: BOARD, night_min_s: 5, ...LEGACY } });
+      const seatWith = (r: string) => Number(Object.entries(rec.state.roles).find(([, x]) => x === r)![0]);
+      const hunter = seatWith('hunter');
+      const vil = seatWith('villager');
+      for (let i = 0; i < 300 && rec.phase?.key !== 'final'; i++) {
+        const seats = pendingSeats(rec);
+        if (!seats.length) {
+          clock.advance(5000);
+          m1.tick();
+          continue;
+        }
+        for (const s of seats) {
+          const k = rec.phase!.key;
+          if (rec.phase?.key !== k || rec.phase!.pending[String(s)]!.done) continue;
+          m1.act(identityOf(rec, s), gameId, k === 'vote' ? (s === hunter ? { action: 'skip' } : { action: 'vote', target: hunter }) : k.includes('speech') || k === 'last_words' ? { action: 'end_speech' } : { action: 'skip' });
+        }
+      }
+      expect(rec.phase!.key).toBe('final');
+      if (submitted) m1.act(identityOf(rec, hunter), gameId, { action: 'shoot', target: vil });
+      store.flush();
+      const m2 = new GameManager({ registry: createRegistry(), now: clock.now, rng: new SeededRng(2), store });
+      const rec2 = m2.getRecord(gameId);
+      expect(JSON.parse(JSON.stringify(rec2.state))).toEqual(JSON.parse(JSON.stringify(rec.state)));
+      expect(rec2.phase!.key).toBe('final');
+      for (const f of ['openedAt', 'deadline', 'minDurationMs', 'timeoutMs', 'secret'] as const) expect(rec2.phase![f], f).toEqual(rec.phase![f]);
+      expect(rec2.phase!.data).toEqual(rec.phase!.data);
+      const t0 = rec2.phase!.openedAt!;
+      clock.advance(t0 + 29_999 - clock.now());
+      m2.tick();
+      expect(rec2.phase!.key, `submitted=${submitted}`).toBe('final');
+      expect(rec2.log.some((e) => e.text.includes('是猎人'))).toBe(false);
+      clock.advance(1);
+      m2.tick();
+      expect(rec2.phase?.key).not.toBe('final');
+      const line = rec2.log.find((e) => e.text.startsWith('🔫'))!;
+      expect(line.text).toBe(submitted ? `🔫 ${hunter}号 ${rec2.players.find((p) => p.seat === hunter)!.name} 是猎人，开枪带走了 ${vil}号 ${rec2.players.find((p) => p.seat === vil)!.name}。` : `🔫 ${hunter}号 ${rec2.players.find((p) => p.seat === hunter)!.name} 是猎人，超时未开枪。`);
+      expect(rec2.state.revealed).toEqual([hunter]);
+    }
+  });
+
+  it('T16: old saves — a queued hunter step and a stale hunter phase do not crash', () => {
+    const g = make(BOARD, { night_min_s: 5 }, 1);
+    const h = g.seatsOf('hunter')[0]!;
+    exileTo(g, villagerOf(g));
+    g.clock.advance(31_000);
+    g.manager.tick();
+    expect(g.key()).not.toBe('final');
+    g.rec.state.agenda.unshift({ t: 'hunter', seat: h });
+    g.rec.state.revealed = undefined;
+    g.inst().proceed();
+    expect(g.rec.phase!.key).toBe('final');
+    expect(g.rec.phase!.title).toContain('临终');
+    g.rec.phase!.key = 'hunter';
+    for (let i = 0; i < 3; i++) {
+      g.clock.advance(60_000);
+      g.manager.tick();
+    }
+    expect(g.rec.phase?.key).not.toBe('hunter');
+  });
+
+  it('T18: boards without hunter or wolf king are untouched — whole-game logs equal the pre-change baseline', async () => {
+    // 基线：在改动前的提交 2be7a9b 上，用同样的种子、6 个 AI、默认选项打整局，对 rec.log 每条的「受众|类别|文字」求 sha1 前 16 位，再加条数。
+    const BASELINE: Record<string, string> = {
+      'default6/1': '7cec83dac406e865:38',
+      'default6/2': '63e55054ca339829:37',
+      'default6/3': '3b197b2621a9812c:54',
+      'default6/4': '38a39d51cf75bc13:51',
+      'custom/1': 'e9f827bb8754d347:50',
+      'custom/2': 'c37cc3fb6ac639af:71',
+      'custom/3': '0f70b4928857b0e1:46',
+      'custom/4': '525257369d95c410:77',
+    };
+    const boards: Record<string, Record<string, unknown>> = { default6: {}, custom: { roles: { werewolf: 2, seer: 1, villager: 3 } } };
+    const got: Record<string, string> = {};
+    for (const [name, options] of Object.entries(boards)) {
+      for (const seed of [1, 2, 3, 4]) {
+        const { manager, clock } = setup(`base-${seed}`);
+        const players = Array.from({ length: 6 }, (_, i) => bot(i + 1));
+        const { gameId, rec } = startGame(manager, 'werewolf', { players, referee: REF, options });
+        await playToEnd(manager, gameId, { referee: REF, clock, maxSteps: 4000 });
+        expect(rec.log.some((e) => e.text.includes('临终'))).toBe(false);
+        got[`${name}/${seed}`] = createHash('sha1').update(rec.log.map((e) => `${e.audience.type}|${e.kind}|${e.text}`).join('\n')).digest('hex').slice(0, 16) + ':' + rec.log.length;
+      }
+    }
+    expect(got).toEqual(BASELINE);
+  });
+
+  it('W0: a wake_on=any long-poll is not woken by a private log line of someone else (the human shooter answering)', async () => {
+    const { manager, clock, gameId, rec, hunter, hp } = await mixedFinal();
+    const obs = rec.players.find((p) => p.kind === 'agent' && p.alive && p.seat !== hunter)!;
+    const who: Identity = { id: obs.id, name: obs.name };
+    manager.getView(who, gameId); // 先把已有事件读掉
+    const target = rec.players.find((p) => p.alive && p.seat !== hunter)!.seat;
+    const t0 = Date.now();
+    const waiting = manager.waitView(who, gameId, 700, { wakeOn: 'any' });
+    const r = manager.relayHumanMessage(REF, gameId, { userId: hp.id, text: `开枪${target}`, channel: 'private' });
+    expect(r.accepted).toBe(true);
+    expect(rec.log.some((e) => e.audience.type === 'seats' && e.text.includes('✅'))).toBe(true); // 私有日志确实写了
+    const v: any = await waiting;
+    expect(Date.now() - t0).toBeGreaterThanOrEqual(600); // 没有被提前叫醒：一直等到长轮询自己超时
+    expect(v.new_events).toEqual([]);
+    // 对照：公开的新事件（环节结束后的结果公告）照样会叫醒它
+    const t1 = Date.now();
+    const waiting2 = manager.waitView(who, gameId, 5000, { wakeOn: 'any' });
+    clock.advance(31_000);
+    await manager.refereeStep(REF, gameId); // 裁判驱动的局由裁判的一步来推进到点的阶段
+    const v2: any = await waiting2;
+    expect(Date.now() - t1).toBeLessThan(3000);
+    expect(v2.new_events.some((e: any) => String(e.text).includes('是猎人，开枪带走了'))).toBe(true);
+  });
+
+  it('W1: a shot typed into the seat page speech box does not trigger the "你在群里发了开枪指令" warning (nothing went to the group)', async () => {
+    const { manager, rec, hunter } = await humanFinal();
+    (rec as any).stage = 'web'; // 狼人杀没有网页舞台；这里只为走到 webSeatAct 的 speech 分支（channel 以 'group' 进入 humanInput）
+    const other = [1, 2, 3, 4, 5, 6, 7].find((s) => s !== hunter)!;
+    const mark = rec.outboxSeq;
+    const r = manager.webSeatAct(rec, hunter, { text: `开枪${other}`, mode: 'speech' });
+    expect(r.accepted).toBe(true);
+    expect(rec.phase!.pending[String(hunter)]!.done).toBe(true);
+    expect(rec.outbox.filter((d) => d.seq > mark).some((d) => d.text.includes('在群里发了开枪指令'))).toBe(false);
+  });
+
+  it('T17: random games with human shooters reach the final phase', async () => {
+    let finals = 0;
+    let shots = 0;
+    for (let seed = 0; seed < 80; seed++) {
+      const { manager, clock } = setup(`fin${seed}`);
+      const n = 7 + (seed % 6);
+      const humans = Array.from({ length: 2 }, (_, i) => human(i + 1));
+      const players = Array.from({ length: n - 2 }, (_, i) => bot(i + 1));
+      const { gameId, rec } = startGame(manager, 'werewolf', { players, humans, referee: REF, options: { wolf_king: seed % 2 === 0, night_min_s: 5 } });
+      await playToEnd(manager, gameId, {
+        referee: REF,
+        clock,
+        maxSteps: 4000,
+      });
+      expect(rec.status).toBe('ended');
+      for (const e of rec.log) {
+        const m = /^🔫 (\d+)号 .*是(猎人|狼王)，/.exec(e.text);
+        if (!m) continue;
+        if (rec.players.find((p) => p.seat === Number(m[1]))!.kind === 'human') finals++;
+        if (/开枪带走了/.test(e.text)) shots++;
+      }
+    }
+    expect(finals).toBeGreaterThan(0);
+    expect(shots).toBeGreaterThan(3);
+  }, 120_000);
 });

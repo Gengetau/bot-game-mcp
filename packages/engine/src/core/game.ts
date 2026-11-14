@@ -55,6 +55,8 @@ export interface OpenPhaseSpec {
   timeoutMs: number;
   secret?: boolean;
   minDurationMs?: number;
+  /** 保密阶段下，nudge_ai 的 @ 名单改为全部 AI 座位（含已出局的）。名单不随身份变化。不是保密阶段时无效。 */
+  nudgeAllAgents?: boolean;
   data?: Record<string, any>;
 }
 
@@ -473,7 +475,7 @@ export abstract class BaseGame<S = any, O = any> {
   private nudgeAgents(phase: PhaseState, spec: OpenPhaseSpec): void {
     const agents = (seats: Seat[]) => seats.filter((s) => this.player(s).kind === 'agent').sort((a, b) => a - b);
     const todo = Object.values(phase.pending).map((r) => r.seat);
-    const targets = phase.secret ? agents(this.aliveSeats()) : todo.length >= 2 ? agents(todo) : [];
+    const targets = phase.secret ? agents(spec.nudgeAllAgents ? this.allSeats() : this.aliveSeats()) : todo.length >= 2 ? agents(todo) : [];
     if (targets.length === 0) return;
     this.pushDelivery(
       { type: 'group', groupId: this.rec.groupId },
