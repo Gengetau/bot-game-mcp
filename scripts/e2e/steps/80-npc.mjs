@@ -578,3 +578,6 @@ export default async function run(h) {
 // 11. npc.gd 把回执迟到的 `_gen` 对账改成永远当「菜单还在」、`_sess` 对账去掉、`error` 与 `reason` 的判断顺序对调、场景换了不收起、居民卡接管 NPC：本文件没有对应步骤（迟到回执要在毫秒级对上，浏览器里造不稳），由单测的对应断言守着。【单测实测】
 // 12. 名牌让位（NPC 牌与居民牌重叠过半就不画）：本文件只检查样式与层级，没有构造「两牌重叠」的画面（站位由服务器出生点决定）；由 npc_logic_test 的 t_tags 守着。【推演：端到端没有造重叠，单测里改坏阈值会红】
 // 13. 手机 360 / 390 宽的溢出与点击区：86 红的办法是给 #npcMenu 加固定宽度（如 min-width: 420px）或把 .npc-step 的 min-width 改小到 20px。【推演：没有真的改过 CSS 重跑】
+// 14. （D1）main.gd 的 _nearest_pick 把物件的 anchors 传成空数组（只按中心算远近）：84.1 红，选中记录是 (actor, npc:plaza_stroller)，而不是书架。【实测，--only=1,80 --until=84.2】单测（pick_logic_test）同样红 3 项。
+// 15. （D2）main.gd 的 _on_scene 里让「隐藏」永远不成立（`[] if false else msg.get("npcs", [])`）：84.2 红，「默认页面里 __town.npcs 应为空」。【实测，同一遍】
+// 16. （D2）不带 ?debug=1 就认全局量（debug_flags.gd 的 hide_npcs 改成只看 flag）：单测「debug 关、全局量设了：无视」红；84.2 最后一段（页面 E）本该红，但那一遍没有单独做浏览器验证。【单测实测；浏览器一侧推演】

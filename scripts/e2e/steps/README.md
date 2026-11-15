@@ -32,6 +32,8 @@ export default async function run(h) {
 }
 ```
 
+页面默认不显示 NPC（页面全局量 `window.__townHideNpcs`，客户端只在 `?debug=1` 下认；旧步骤写的时候镇上没有 NPC）。要看见 NPC 的步骤传 `h.pair({ npcs: true })`，或 `h.newPlayer(…, { npcs: true })`（见 `client/docs/C6.md` 第 9 节）；页面里还能用 `__town.hideNpcs(true|false)` 运行时切。
+
 `h` 是 `client-e2e.mjs` 转发出来的工具集：`step until sleep check note shot allowFailure newPlayer login serverScene snap clickWorld walkTo rnd browsers selfActor dist project viewport seen clearSpot assertClock polyAt normPts BASE NO_SHOTS townParams pair release`。
 
 `h.townParams` 是端到端起引擎时传给 `town.params` 的开服参数（冻结对象，表和理由在 `client-e2e.mjs` 的 `TOWN_PARAMS` 上面）：`interactionTimeScale`（共同活动时长缩放，0.075：十分钟的活动约 45 秒、五分钟的约 23 秒）、`letterDeliveryDelayMs`（信件送达延迟 4 秒）、`activityLobbyTtlMs`（报名阶段最长保留 25 秒）。步骤按它算等待：例如共同活动结束前最多等 `600 * 1000 * h.townParams.interactionTimeScale` 毫秒再加余量；「到时自动散」最多等 `h.townParams.activityLobbyTtlMs` 加余量；断言「还没到」时要先算好离到期还剩多少、别写死秒数。凑桌类步骤必须在 `activityLobbyTtlMs` 内完成「开桌 + 加入」。
