@@ -6,7 +6,7 @@
  *   npm run client:e2e      # 起引擎（子进程、开发登录、临时库、随机端口）+ 两个浏览器上下文 + 一个 AI 居民
  *
  * 选项：--no-shots 不写截图；--only=3,4 只跑指定步骤（步骤之间有先后依赖，只用于调试）；--keep-engine-log 失败时不删临时目录。
- * 新步骤文件在 scripts/e2e/steps/（写法和号段见那里的 README.md）：--only=chat-nearby（meta.id）或 --only=20（落在 [n, n+10) 的数字）只跑这个文件，
+ * 新步骤文件在 scripts/e2e/steps/（写法和号段见那里的 README.md）：--only=chat-nearby（meta.id）或 --only=20（数字：选中 n 不大于它的最后一个文件，且在 n 到 n+10 之内）只跑这个文件，
  * 命中后整个文件的所有子步骤都运行；--list 列出全部新步骤后退出。--until=60.17 编号大于它的步骤都跳过（调试、反向验证用：
  * 只想看到某一步为止的结果时，不必把这个文件后面的步骤连同它们的超时都等完；和 --only 一样，这样的一遍不算验收记录）。
  * 反向验证：E2E_AI_NO_RENEW=1 npx tsx scripts/client-e2e.mjs --only=1,8 --no-shots（步骤 8 里让 AI 的端口没有续租方法，运行器不续租，这一步应当失败）。
@@ -686,7 +686,17 @@ async function release(p) {
 /** 新步骤文件的入口：在步骤 15 之后、全程检查之前执行。 */
 async function runStepFiles(hh) {
   const mods = await loadStepFiles();
-  const sel = mods.filter((m) => !ONLY.length || ONLY_IDS.includes(m.meta.id) || ONLY.some((x) => Number.isFinite(x) && x >= m.meta.n && x < m.meta.n + 10));
+  // 数字选文件：选中「n 不大于这个数的最后一个文件」，而且这个数还在它的号段里（小于 n + 10，也不是全程检查的 99）。
+  // 90 到 98 这一段里不止一个文件（C7a 90、C7b 93、V1 95）：--only=93 只该选中 93 号文件，不该连 90 号文件一起跑。
+  const byN = [...mods].sort((a, b) => a.meta.n - b.meta.n);
+  const fileOf = (x) => {
+    if (!Number.isFinite(x) || x >= 99) return null;
+    let hit = null;
+    for (const m of byN) if (m.meta.n <= x) hit = m;
+    return hit && x < hit.meta.n + 10 ? hit : null;
+  };
+  const picked = new Set(ONLY.map(fileOf).filter(Boolean));
+  const sel = mods.filter((m) => !ONLY.length || ONLY_IDS.includes(m.meta.id) || picked.has(m));
   if (!sel.length) return;
   // 清场：旧的页面和 AI 居民还在镇上，同出生点，会污染 heardBy 与「恰好一条」的断言
   for (const p of [A2, A3, ...extra, A, B].filter(Boolean)) await release(p);

@@ -548,13 +548,13 @@ export default async function run(h) {
     await B.page.setViewportSize({ width: 390, height: 844 });
     await sleep(500);
     const b0 = await bag(B);
-    if (b0.coins !== null && b0.coins >= 2) {
-      const k1 = await lastAckN(B);
-      await tapGoodButton(B, 'tea_leaves', 'buy');
-      const bAck = await ackAfter(until, B, 'buy', k1);
-      check(bAck.ok, `手机上真触摸点「买」应成功：${JSON.stringify(bAck)}`);
-      await until(async () => (await bag(B)).tea === b0.tea + 1, 15_000, 'B 的茶叶多了一份（服务器真值）');
-    } else note(`B 的硬币不够买一份（${b0.coins}），「买」的真触摸点按这一遍跳过`);
+    // B 在这个文件里没花过钱（新居民 20 枚，一份茶叶 2 枚）：钱不够说明前面出了别的事，不跳过，直接算失败
+    check(b0.coins !== null && b0.coins >= 2, `前提：B 的硬币够买一份茶叶：${JSON.stringify(b0)}`);
+    const k1 = await lastAckN(B);
+    await tapGoodButton(B, 'tea_leaves', 'buy');
+    const bAck = await ackAfter(until, B, 'buy', k1);
+    check(bAck.ok, `手机上真触摸点「买」应成功：${JSON.stringify(bAck)}`);
+    await until(async () => (await bag(B)).tea === b0.tea + 1, 15_000, 'B 的茶叶多了一份（服务器真值）');
     // 抽屉打开（聊天面板顶上来）：菜单挂在上半屏，下沿不能压到底栏（停下 / 回家 / 地点 / 聊天），底栏每个按钮真的点得到
     await openDock(B.page);
     for (const vw of [390, 360]) {
