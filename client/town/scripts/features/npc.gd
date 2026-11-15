@@ -30,6 +30,8 @@ var _local_shop: Variant = null  # 买成功后本地减了库存的货架：只
 var _far_note: bool = false  # too_far 之后：显示「走过去」
 var _walking: bool = false  # 点了「走过去」，正在走
 var _walk_gen: int = 0
+var _walk_t0: float = 0.0  # 点「走过去」的时刻（本地时钟）
+var _walk_limit: float = 0.0  # 最多等这么久；没有 you_arrived 也不会一直卡在「正在走」
 var _closed_shop: bool = false  # buy 回了 closed：货架置灰
 var _cool_until: float = 0.0  # 服务器毫秒；限流到什么时候（对居民而不是对菜单，所以关菜单不清）
 
@@ -168,6 +170,10 @@ func on_event(ev: Dictionary) -> void:
 				_push()
 		"you_arrived":
 			_arrivals += 1
+			if _walking and _open_id != "":
+				# 点了「走过去」之后的到达（无论目标是谁，路线已经结束）：等位置跟上，别一直卡在「正在走」
+				_want_id = _open_id
+				_want_until = _clock + WANT_WINDOW
 			var tg = data.get("target")
 			# 这次到达是不是在这里点出来的：每次到达都把记号用掉，不留给下一次
 			var mine: String = _far_id if _clock <= _far_until else ""
@@ -178,9 +184,9 @@ func on_event(ev: Dictionary) -> void:
 				if tid != "" and tid == mine and _is_npc(tid):
 					_want_id = tid
 					_want_until = _clock + WANT_WINDOW
-				else:
+				elif not _walking:
 					_want_id = ""
-			else:
+			elif not _walking:
 				_want_id = ""
 
 
@@ -285,10 +291,8 @@ func _walk() -> void:
 		return  # 被拦下（只读、走开确认）：main 已经提示
 	_walking = true
 	_walk_gen = ctx.nav_gen()
-	# 也是在这里发起的走近：到了（you_arrived）照旧确认一下，位置跟上了就把「走过去」收起来
-	_far_id = _open_id
-	_far_until = _clock + FAR_WINDOW
-	_far_armed = false
+	_walk_t0 = _clock
+	_walk_limit = L.walk_limit(_dist_to(_open_id))
 	_push()
 
 
@@ -494,6 +498,8 @@ func tick(dt: float, _now_ms: float) -> void:
 	# 到了：等位置跟上再开
 	if _want_id != "":
 		if _clock > _want_until or not _is_npc(_want_id):
+			if _walking and _want_id == _open_id:
+				_walking = false  # 到了但位置一直没跟上（目标走开了）：「走过去」可以再点
 			_want_id = ""
 		elif _dist_to(_want_id) <= reach + REACH_SLACK:
 			var wid: String = _want_id
@@ -513,6 +519,8 @@ func tick(dt: float, _now_ms: float) -> void:
 			if _walking:
 				if ctx.nav_gen() != _walk_gen:
 					_walking = false  # 走的路上点了别处
+				elif _clock - _walk_t0 > _walk_limit:
+					_walking = false  # 服务器拒了这次走近、或一直没有 you_arrived：别一直卡在「正在走」
 				elif d <= reach:
 					_walking = false
 					_far_note = false

@@ -34,7 +34,12 @@ body[data-dock="drawer"] #npcMenu { left: 50%; transform: translateX(-50%); widt
 @keyframes npcInM { from { opacity: 0; } }
 body[data-kb="1"] #npcMenu, body[data-game="1"] #npcMenu { display: none; }
 /* 手机抽屉开着：不再贴着底栏（会盖住名牌和脚环），挂在上半屏的空档里 */
-body[data-dock="drawer"][data-dock-open="1"] #npcMenu { bottom: auto; top: calc(150px + var(--safe-top)); max-height: 44vh; }
+/* 高度只用到「底栏上沿」：抽屉（--dock-h）把底栏（停下 / 回家 / 地点 / 聊天，加上可能的「互动」一行，约 112px）顶高了，菜单不能压到它们（#dockOverlays 在底栏之上，压住就点不到）。
+ * 放不下就在菜单里滚动（overflow-y: auto），宁可矮一点；最矮留 120px。 */
+body[data-dock="drawer"][data-dock-open="1"] #npcMenu {
+  bottom: auto; top: calc(150px + var(--safe-top));
+  max-height: max(120px, min(44vh, calc(var(--vvh, 100dvh) - 150px - var(--safe-top) - 14px - var(--dock-h, 0px) - var(--safe-bottom) - 120px)));
+}
 body[data-dock="drawer"][data-dock-open="1"] #npcMenu .npc-who { display: none; }
 
 #npcMenu .npc-head { display: flex; align-items: center; gap: 8px; padding-right: 40px; min-width: 0; }

@@ -24,8 +24,16 @@ func _init() -> void:
 	t_shop()
 	t_far()
 	t_chat_kind()
+	t_walk_limit()
 	print("%d 项检查，%d 项失败" % [_checks, _fails])
 	quit(1 if _fails > 0 else 0)
+
+
+func t_walk_limit() -> void:
+	check(L.walk_limit(0.0) >= 5.0, "距离为 0 也有基础等待")
+	check(L.walk_limit(10.0) > L.walk_limit(2.0), "越远等得越久")
+	check(L.walk_limit(INF) == L.walk_limit(0.0), "距离未知（INF）按 0 算，不会永远等")
+	check(L.walk_limit(-3.0) == L.walk_limit(0.0), "负数按 0 算")
 
 
 func t_tags() -> void:

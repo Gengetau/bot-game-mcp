@@ -6,6 +6,7 @@ enum Phase { BOOT, READY, BUSY, LOGIN, ERROR, PLAYING }
 
 const API := "/town/api"
 const PickLogic := preload("res://scripts/pick_logic.gd")
+const SceneLogic := preload("res://scripts/scene_logic.gd")
 const DebugFlags := preload("res://scripts/debug_flags.gd")
 const ActLogic := preload("res://scripts/features/activity_logic.gd")  # 只用里面的纯函数（谁算坐着）
 ## 点按判定的移动阈值，单位是 CSS 像素；实际比较时乘 devicePixelRatio 换成画布的物理像素
@@ -1713,10 +1714,7 @@ func _update_scenery(dt: float, now_s: float) -> void:
 	if daynight != null:
 		daynight.tick(now_s, clock.has_sync)
 		world.set_night(daynight.night)
-	var heads: Array = []
-	for id in actors:
-		var ha: TActor = actors[id]
-		heads.append(Vector3(ha.disp.x, 1.6, ha.disp.y))
+	var heads: Array = SceneLogic.occluder_heads(actors)  # 只放居民：NPC 站在楼里不该掀屋顶
 	world.update_view(rig.cam.global_position, heads, dt)
 
 

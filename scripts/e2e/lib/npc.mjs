@@ -87,6 +87,24 @@ export async function clickBuy(p, sku) {
   } else await p.page.click(sel);
 }
 
+/** 真触摸点货架某件商品上的一个按钮（role: dec / inc / buy）。点之前检查按钮中心最上面确实是这个按钮（不是被相邻元素或别的面板盖住）。 */
+export async function tapGoodButton(p, sku, role) {
+  const sel = `${MENU} .npc-good[data-sku="${sku}"] [data-role="${role}"]`;
+  const info = await p.page.evaluate((s) => {
+    const b = document.querySelector(s);
+    if (!b) return null;
+    const r = b.getBoundingClientRect();
+    const x = r.left + r.width / 2;
+    const y = r.top + r.height / 2;
+    const top = document.elementFromPoint(x, y);
+    return { x, y, ok: !!top && (top === b || b.contains(top)), top: top?.id || top?.className || top?.tagName || '', disabled: b.disabled };
+  }, sel);
+  if (!info) throw new Error(`没有商品 ${sku} 的 ${role} 按钮`);
+  if (!info.ok) throw new Error(`${sku} 的 ${role} 按钮中心 (${info.x.toFixed(0)},${info.y.toFixed(0)}) 最上面是 ${info.top}，真手指点不到`);
+  await p.page.touchscreen.tap(info.x, info.y);
+  return info;
+}
+
 /** 画布上的一点最上面的元素 id。 */
 export const topAt = (page, x, y) => page.evaluate(([px, py]) => document.elementFromPoint(px, py)?.id ?? '', [x, y]);
 

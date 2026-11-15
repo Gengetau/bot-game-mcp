@@ -185,6 +185,8 @@ func _run() -> void:
 	await t_buy_flow()
 	await t_buy_errors()
 	await t_too_far_walk()
+	await t_walk_arrival_not_close()
+	await t_walk_rejected_times_out()
 	t_stale_me_overrides_local()
 	t_auto_close()
 	t_card_exclusive()
@@ -452,6 +454,52 @@ func t_too_far_walk() -> void:
 	(c.acts[KEEPER] as TActor).disp = Vector2(0.5, 0)
 	f.tick(0.3, 0.0)
 	check(not f.debug()["walking"], "到了：不再显示正在走")
+
+
+## 评审：「走过去」之后 you_arrived 到了，但目标又走开、到达后还是够不着：不能一直卡在「正在走」（按钮一直禁用），要能再点
+func t_walk_arrival_not_close() -> void:
+	var p: Array = _make()
+	var f = p[0]
+	var c: FakeCtx = p[1]
+	f.on_pick("actor", KEEPER)
+	(c.acts[KEEPER] as TActor).disp = Vector2(3.9, 0)  # 超出 3 米，但还在收起余量之内（菜单不关）
+	c.act_queue.append(_err("too_far", {"data": {"navigateTo": KEEPER}}))
+	await f.on_ui("ask", "hello")
+	f.on_ui("walk", "")
+	check(f.debug()["walking"] == true, "正在走")
+	f.on_event({"type": "you_arrived", "data": {"target": {"kind": "npc", "id": KEEPER}}})
+	for i in range(14):  # 3.5 秒：越过「等位置跟上」的窗口
+		f.tick(0.3, 0.0)
+	check(f.debug()["open"], "菜单还开着（够不着但没走远）")
+	check(not f.debug()["walking"], "到达之后（目标走开了、仍够不着）不再卡在「正在走」")
+	check(f.debug()["farNote"] == true, "「走过去」还在，可以再点")
+	f.on_ui("walk", "")
+	check(c.approaches.size() == 2 and f.debug()["walking"] == true, "能再点一次「走过去」")
+	# 别的到达（走近别处）也会结束这次走近
+	f.on_event({"type": "you_arrived", "data": {"target": {"kind": "object", "id": "x"}}})
+	for i in range(14):
+		f.tick(0.3, 0.0)
+	check(not f.debug()["walking"], "路线已经结束（无论目标是谁）：不再正在走")
+
+
+## 评审：服务器拒了这次走近（main 只弹提示，导航代号不再变），没有 you_arrived，也没有 nav_stopped：到点放开
+func t_walk_rejected_times_out() -> void:
+	var p: Array = _make()
+	var f = p[0]
+	var c: FakeCtx = p[1]
+	f.on_pick("actor", KEEPER)
+	(c.acts[KEEPER] as TActor).disp = Vector2(3.9, 0)
+	c.act_queue.append(_err("too_far", {"data": {"navigateTo": KEEPER}}))
+	await f.on_ui("ask", "hello")
+	f.on_ui("walk", "")
+	check(f.debug()["walking"] == true, "点了「走过去」：正在走")
+	for i in range(20):  # 6 秒：还没到上限
+		f.tick(0.3, 0.0)
+	check(f.debug()["walking"] == true, "上限之前仍然是正在走")
+	for i in range(80):  # 再 24 秒
+		f.tick(0.3, 0.0)
+	check(not f.debug()["walking"], "一直没有到达：到点放开，不卡在「正在走」")
+	check(f.debug()["open"] and f.debug()["farNote"] == true, "菜单还开着，「走过去」可以再点")
 
 
 func t_stale_me_overrides_local() -> void:

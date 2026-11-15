@@ -192,3 +192,15 @@ static func far_step(far: bool, armed: bool, gen_at_pick: int, nav_gen: int, wai
 	if nav_gen != gen_at_pick:
 		return {"far": false, "armed": false, "gen": gen_at_pick}  # 走的路上点了别处 / 停下 / 方向键
 	return {"far": true, "armed": true, "gen": gen_at_pick}
+
+
+# ───────────────────────── 「走过去」的等待上限 ─────────────────────────
+
+const WALK_BASE_S := 8.0
+const WALK_PER_M_S := 1.5  # 居民走得比这快得多；留足余量，宁可晚一点放开按钮
+
+
+## 点了「走过去」之后最多等多少秒（按当时的距离算）：到点还没有 you_arrived、也没走到，就当这次走近落空了
+static func walk_limit(dist_m: float) -> float:
+	var d: float = dist_m if is_finite(dist_m) else 0.0
+	return WALK_BASE_S + maxf(0.0, d) * WALK_PER_M_S

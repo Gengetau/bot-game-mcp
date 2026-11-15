@@ -1,10 +1,10 @@
 // C6：NPC 的外观、名牌、点选与服务菜单（话题、买茶叶）。A 桌面 1440x900，B 手机 390x844 触摸。
 // 步骤号都是数字（80.1 就是「80 之后的一步」），文件内的子步骤按顺序互相依赖，只能整个文件一起跑。
 // 末尾有一段「怎么让它失败」，每条新断言都按那里写的做过反向验证（注明「实测」或「推演」）。
-import { poll, hitTest, godotFeature } from '../lib/ui.mjs';
+import { poll, hitTest, godotFeature, openDock, closeDock, frames } from '../lib/ui.mjs';
 import { apiAct, nearbyRows, expectReject } from '../lib/chat.mjs';
 import { peopleCard, clickActor, toastTexts, hit } from '../lib/people.mjs';
-import { menuState, godotNpc, bank, pageNpcs, serverNpcs, serverMe, bag, npcScreen, clickNpc, menuIs, menuClosed, ackAfter, lastAckN, clickTopic, clickBuy, MENU } from '../lib/npc.mjs';
+import { menuState, godotNpc, bank, pageNpcs, serverNpcs, serverMe, bag, npcScreen, clickNpc, menuIs, menuClosed, ackAfter, lastAckN, clickTopic, clickBuy, tapGoodButton, MENU } from '../lib/npc.mjs';
 
 export const meta = { id: 'npc', n: 80, title: 'NPC 外观、名牌与服务菜单' };
 
@@ -444,9 +444,14 @@ export default async function run(h) {
     await until(async () => (await A.page.evaluate(() => document.querySelectorAll('#tags .tag.npc').length)) === 0, 15_000, '切到隐藏后 NPC 的名牌消失');
     check((await A.page.evaluate(() => window.__townHideNpcs)) === true, '切换入口应同时写回页面全局量（刷新后还是隐藏）');
     check((await serverNpcs(A)).length === 2, '服务器上的 NPC 一个没少');
+    const opensBefore = (await godotNpc(A)).opens;
     await A.page.evaluate(() => window.__town.hideNpcs(false));
     await until(async () => (await pageNpcs(A.page)).length === 2, 15_000, '切回显示后 NPC 又出现');
+    // 屏障：NPC 回来之后，等画面又渲染 30 帧（Godot 每帧推状态），再断言菜单没有自己重开；
+    // 立刻断言的话，迟一两帧才错误重开就看不到。再用「开菜单的累计次数」佐证：期间没有任何一次开菜单。
+    await frames(A.page, 30);
     check(!(await menuState(A.page)).open, '切回显示后菜单不会自己重新打开');
+    check((await godotNpc(A)).opens === opensBefore, `切回显示后菜单没有被重开过（开菜单次数 ${opensBefore} -> ${(await godotNpc(A)).opens}）`);
     // 不带 ?debug=1 的页面：全局量设了也无视，NPC 照常显示（没有 __town，只能看名牌）
     const E = await h.newPlayer(h.browsers[0], 'N-E 无调试', { viewport: { width: 1440, height: 900 }, deviceScaleFactor: 1 }, { wsGate: false });
     try {
@@ -529,6 +534,51 @@ export default async function run(h) {
     const ack = await ackAfter(until, B, 'ask', k0);
     check(ack.ok, `手机上问话应成功：${JSON.stringify(ack)}`);
     check(m.shopOpen, '手机上也有货架');
+    // 数量加减和「买」也用真触摸点（命中测试：按钮中心最上面就是这个按钮，折行后没有被相邻元素盖住）
+    const qtyOf = async () => (await menuState(B.page)).goods.find((g) => g.sku === 'tea_leaves')?.qty;
+    for (const vw of [390, 360]) {
+      await B.page.setViewportSize({ width: vw, height: 844 });
+      await sleep(500);
+      await tapGoodButton(B, 'tea_leaves', 'inc');
+      await until(async () => (await qtyOf()) === '2', 5000, `${vw} 宽：点「加」之后数量是 2`);
+      await tapGoodButton(B, 'tea_leaves', 'dec');
+      await until(async () => (await qtyOf()) === '1', 5000, `${vw} 宽：点「减」之后数量回到 1`);
+    }
+    await B.page.setViewportSize({ width: 390, height: 844 });
+    await sleep(500);
+    const b0 = await bag(B);
+    if (b0.coins !== null && b0.coins >= 2) {
+      const k1 = await lastAckN(B);
+      await tapGoodButton(B, 'tea_leaves', 'buy');
+      const bAck = await ackAfter(until, B, 'buy', k1);
+      check(bAck.ok, `手机上真触摸点「买」应成功：${JSON.stringify(bAck)}`);
+      await until(async () => (await bag(B)).tea === b0.tea + 1, 15_000, 'B 的茶叶多了一份（服务器真值）');
+    } else note(`B 的硬币不够买一份（${b0.coins}），「买」的真触摸点按这一遍跳过`);
+    // 抽屉打开（聊天面板顶上来）：菜单挂在上半屏，下沿不能压到底栏（停下 / 回家 / 地点 / 聊天），底栏每个按钮真的点得到
+    await openDock(B.page);
+    for (const vw of [390, 360]) {
+      await B.page.setViewportSize({ width: vw, height: vw === 390 ? 844 : 740 });
+      await sleep(700);
+      const r = await B.page.evaluate(() => {
+        const q = document.querySelector('#npcMenu');
+        const rc = q.getBoundingClientRect().toJSON();
+        const bar = document.getElementById('bottombar');
+        const bb = bar.getBoundingClientRect().toJSON();
+        const btns = [...bar.querySelectorAll('button')].filter((b) => b.offsetParent !== null).map((b) => {
+          const x = b.getBoundingClientRect();
+          const top = document.elementFromPoint(x.left + x.width / 2, x.top + x.height / 2);
+          return { t: b.id || b.textContent.trim().slice(0, 6), covered: !(top === b || b.contains(top)), top: top?.id || top?.className || top?.tagName || '' };
+        });
+        return { rc, bb, btns, open: document.body.dataset.dockOpen, dock: document.body.dataset.dock };
+      });
+      check(r.open === '1' && r.dock === 'drawer', `${vw} 宽：前提，抽屉是打开的：${JSON.stringify([r.open, r.dock])}`);
+      check(r.btns.length >= 1, `${vw} 宽：抽屉打开时底栏应有可见按钮`);
+      check(!hit(r.rc, r.bb), `${vw} 宽抽屉打开时菜单不该压到底栏：菜单 ${JSON.stringify(r.rc)}，底栏 ${JSON.stringify(r.bb)}`);
+      check(r.btns.every((b) => !b.covered), `${vw} 宽抽屉打开时底栏按钮都点得到（不被菜单盖住）：${JSON.stringify(r.btns.filter((b) => b.covered))}`);
+    }
+    await shot(B.page, '80-mobile-menu-drawer');
+    await closeDock(B.page);
+    await B.page.setViewportSize({ width: 390, height: 844 });
     await closeMenu(B);
   });
 
