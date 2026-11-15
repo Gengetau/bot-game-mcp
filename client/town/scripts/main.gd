@@ -269,6 +269,9 @@ func _on_ui(ev: String, arg: String) -> void:
 		"debug_pick_stub":
 			if bridge.debug:
 				features.set_pick_stub(arg)
+		"debug_prop_state":
+			if bridge.debug:
+				_debug_prop_state(arg)
 		"esc":
 			_do_esc()
 		"claim":
@@ -520,6 +523,7 @@ func _apply_me(view: Dictionary) -> void:
 	here = h if h is Dictionary else {}
 	seat_people = ActLogic.seat_map(here.get("objects"))
 	my_exits = here.get("exits", []) if here.has("exits") else []
+	world.sync_object_states(cur_scene, here.get("objects"))  # 带状态的物件（外观表有 scene 的种类）按服务端数据切外观；没有这种物件时什么都不做
 	my_interaction = view.get("interaction")
 	var loc = view.get("location")
 	if loc is Dictionary:
@@ -1970,6 +1974,14 @@ func _push_debug() -> void:
 		"frameMaxMs": snappedf(_frame_max_ms, 0.1),
 		"slow": _slow,
 		"features": features.debug(),
+		"props": world.props_info(cur_scene),
 	}
 	_frame_max_ms = 0.0
 	bridge.hud_debug(JSON.stringify(d))
+
+
+## 调试钩子 window.__town.setPropState(物件编号, 状态名)（boot.js 在 ?debug=1 下挂上，发 debug_prop_state 事件）：强行指定带状态物件的外观；状态名为空解除。
+func _debug_prop_state(arg: String) -> void:
+	var parsed = JSON.parse_string(arg)
+	if parsed is Array and (parsed as Array).size() >= 2:
+		world.force_object_state(str(parsed[0]), str(parsed[1]))

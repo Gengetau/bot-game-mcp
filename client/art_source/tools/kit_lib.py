@@ -118,6 +118,16 @@ def cyl(name, base_pos, r_bot, r_top, h, color, seg=10, glow=0.0, **kw):
     for i in range(seg):
         a = 2 * math.pi * i / seg
         v.append((r_bot * math.cos(a), 0.0, r_bot * math.sin(a)))
+    if r_top < 1e-6:  # 圆锥：一个尖顶，没有顶面，不留退化的三角形
+        v.append((0.0, h, 0.0))
+        f = []
+        cols = []
+        for i in range(seg):
+            f.append((i, (i + 1) % seg, seg))
+            cols.append(_shade(color, 0.92 + 0.08 * (i % 2)))
+        f.append(tuple(range(seg - 1, -1, -1)))
+        cols.append(_shade(color, 0.7))
+        return mesh(name, v, f, cols, glow=glow, pos=base_pos, **kw)
     for i in range(seg):
         a = 2 * math.pi * i / seg
         v.append((r_top * math.cos(a), h, r_top * math.sin(a)))

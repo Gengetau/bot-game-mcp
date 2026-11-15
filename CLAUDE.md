@@ -16,6 +16,8 @@ npm run world:recovery                                         # 栖灯镇：故
 npm run client:lint && npm run client:unit                      # 三维客户端：网页层检查、Godot 无头单元测试（client/tests/，几秒钟；需要 Godot 4.7）
 npm run client:export && npm run client:e2e                    # 三维客户端：导出并跑浏览器端到端（需要 Godot 4.7，不在 CI 里；导出约 2 分钟，端到端完整一遍约 31 分钟，其中声音两步约 11 分钟；每并入一段客户端功能还会变长）
 npm run client:shots                                          # 三维客户端：固定镜头对照截图（真实 Chrome 有头、要先导出；3 种渲染设置 × 4 种镜头，数据进 results.json；不在 CI 里）
+npm run client:assets:build                                       # 三维客户端：重建资产套件（Blender 脚本 -> GLB -> 包装场景和清单 -> 校验；需要环境变量 BLENDER、GODOT，Blender 4.2 以上）
+npm run client:assets:check                                       # 三维客户端：只校验资产套件（需要 Godot 4.7，不需要 Blender，几秒钟）
 ```
 
 ## 必须遵守的不变量
@@ -68,7 +70,7 @@ npm run client:shots                                          # 三维客户端�
   - 测试：`test/helpers.ts` 提供 FakeClock、`startGame`、`playToEnd`。
 - `packages/referee-onebot`（`bot-game-mcp-referee-onebot`，命令 `bot-game-referee`）：代码裁判，OneBot v11 正向 WebSocket。只能通过 MCP 协议和引擎说话。
 - `packages/agent-kit`（`bot-game-mcp-agent-kit`）：接入端客户端、`waitForTurn`、提示词 `playerPrompt()`；`prompts/player-zh.md` 必须和代码一致（有测试）；`examples/` 是各 agent 框架的接入示例。
-- `client/`：栖灯镇的 Godot 4 网页客户端（不是 npm 工作区）。`client/town/` 是 Godot 工程（`scripts/` GDScript，`web/` 是网页外壳和 DOM 界面，文字全在 HTML 里），`client/tools/export.sh` 导出，`client/ASSETS.md` 是素材许可台账，说明见 `client/README.md`。客户端不做预测：只按服务器给的折线和服务器时间插值。
+- `client/`：栖灯镇的 Godot 4 网页客户端（不是 npm 工作区）。`client/town/` 是 Godot 工程（`scripts/` GDScript，`web/` 是网页外壳和 DOM 界面，文字全在 HTML 里），`client/tools/export.sh` 导出，`client/ASSETS.md` 是素材许可台账，说明见 `client/README.md`。客户端不做预测：只按服务器给的折线和服务器时间插值。资产套件（功能物件、建筑）的 Blender 源在 `client/art_source/kits/`，生成物在 `client/town/assets/kits/`，契约见 `client/docs/T02a.md`。
 - `scripts/e2e.ts`：黑盒端到端，跨三个包。`scripts/world-simulate.ts`、`world-load.ts`、`world-recovery.ts`：小镇的长时间模拟、压测、故障注入。
 
 裁判和接入端不得 import 引擎内部代码；它们的测试通过包名 `bot-game-mcp` 使用引擎（vitest 和 tsconfig 已映射到引擎源码）。

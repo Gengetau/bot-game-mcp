@@ -66,6 +66,7 @@ client/town/
                      其余每个功能一个文件（nearby.gd 已实现，其余是桩，由 C1b 到 C7 各自填）
   stream/    music/{day,night}.ogg：不进 pck，导出时拷到 build/web/music/
   assets/    素材（素材同事的范围，只读）；*.import 入库，.godot/ 不入库
+             assets/kits/  资产套件的生成物（GLB、包装场景、清单），由 art_source/kits/ 的 Blender 脚本生成
 client/tools/export.sh, assemble.mjs, lint-web.mjs, compress.mjs, web-only.sh   导出与网页层工具
 client/docs/   各段的实现说明与待办（C1a.md 先写；C1b 到 C7 各写各的 <段>.md）
 client/art_source/, client/ASSETS.md   素材来源与台账（audio/ 是音频再生成脚本）
@@ -205,7 +206,9 @@ client/art_source/, client/ASSETS.md   素材来源与台账（audio/ 是音频�
 - `town/assets/art_table.json`：物件种类（kind）到模型的对应表。每条可写 `model`（glb 路径）或 `proc`（`town_art.gd` 里程序生成的函数名）、`scale`、`yaw`、`offset`、`palette`、`fade`（挡镜头时淡出）、`glow`（夜里发光点，偏移用最终摆放空间）。
 - `town/scripts/art.gd`（`TArt`）读这张表；`town/scripts/town_layout.gd` 摆放非可走地面上的装饰（树、路灯、围栏、摊位、长椅……），`world.gd` 的 `put()` 会拿服务器地图校验脚印，压到可走格的装饰被拒绝，不会挡路。
 - **私有覆盖目录** `town/art_private/`（已在 `.gitignore`，不进仓库）：放 `art_table.json` 和模型文件，同名 kind 覆盖仓库里的条目，路径用 `res://art_private/...`。不是 CC0 的素材（例如 YumeForge）只能放这里。没有这个目录时用仓库里的 CC0 默认素材，导出照常成功。
+- **带状态的物件和资产套件（T02a）**：条目可以写 `scene`（包装场景，`assets/kits/<套件>/<资产编号>/<资产编号>.tscn`，根挂 `scripts/stateful_prop.gd`）。键：功能物件 `prop.<物件种类>`（如 `prop.stove`），建筑 `building.<区域编号>`（如 `building.kitchen`）。有 `scene` 的种类不再拍平进 MultiMesh，而是每个物件实例化一份，按服务端的 `here.objects[]` 切外观状态（idle / busy / done / fault，`scripts/prop_state.gd` 映射）；`art_private` 同名条目照样覆盖；没有 `scene` 条目时街景、灶台、建筑和以前完全一样。资产在 `art_source/kits/` 里用 Blender 脚本生成，两条命令：`npm run client:assets:build`（`build.py` -> GLB -> 包装场景和清单 -> 校验，要环境变量 `BLENDER`、`GODOT`）和 `npm run client:assets:check`（只校验）。契约、做法和调试钩子见 `docs/T02a.md`。
 - 居民外观：`actor.gd` 的 `appearance_for(id)`，按编号 hash 选 8 套服装之一；要换规则只改这个函数。
 - 画质：HUD 的「画质」按钮在 自动 → 高 → 低 之间循环（localStorage `town3d.quality` = `auto` / `high` / `low`，没存过是自动）。自动 = 动态分辨率（规则和常量见 `client/docs/T01.md`、`scripts/quality_logic.gd`），阴影触屏和软件渲染关；高 = 渲染比例取像素上限允许的最大值 + 平行光阴影；低 = 固定 0.6 + 脚底圆影。
 - 调试：`?debug=1&hour=19` 固定世界钟点（昼夜截图用）；`?debug=1&scale=0.75` 固定 3D 渲染比例（0.3～1.0，仍受 250 万像素上限约束）；`?debug=1&zoom=12` 固定镜头距离（米）。诊断读数：`__town.renderScale`、`renderSize`、`canvasSize`、`qualityMode`、`drsFloor`、`drsCeil`。
 - 固定镜头对照：`npm run client:shots`（先导出；真实 Chrome 有头，`--headless` 只做无显卡冒烟）把 3 种渲染设置 × 4 种镜头（默认、最近缩放、夜里、茶馆里）截成 PNG，数据汇总进 `client/docs/T01/shots/results.json`。选项见 `scripts/client-shots.mjs` 开头的注释。
+- 调试：`?debug=1&props=sample` 把灶台和公共厨房换成占位样件（`assets/kits/sample/`），`window.__town.props` 列出带状态的物件，`window.__town.setPropState(编号, 状态名)` 强行切状态（空串解除）。默认的外观表不指向样件；不带 `?debug=1` 无视 `props`。

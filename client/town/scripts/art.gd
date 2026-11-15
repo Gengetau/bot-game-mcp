@@ -12,7 +12,12 @@ extends RefCounted
 ##   fade    true：这类东西会在遮住角色时被淡出（树）
 ##   glow    [x, y, z]：夜里在这个位置（模型坐标）放一个光晕
 ##   fit     true：（建筑用）把模型整个拉伸到建筑外框，不再生成程序屋顶，也没有屋顶淡出
+##   scene   包装场景路径（assets/kits/<套件>/<资产编号>/<资产编号>.tscn，根节点挂 stateful_prop.gd）。有 scene 的种类不再走 parts() 拍平网格，
+##           而是每个物件实例化一份、按服务端状态切外观（world.gd 的 _build_interactables / _add_building）。scene 优先于 model / proc。
+##           可查的键：功能物件是 "prop.<物件种类>"（如 prop.stove），建筑是 "building.<区域编号>"（如 building.kitchen）。
+##           art_private 里同名条目同样覆盖。资产约定见 client/docs/T02a.md。
 
+const DebugFlags := preload("res://scripts/debug_flags.gd")
 const TABLE_PATH := "res://assets/art_table.json"
 const OVERRIDE_PATH := "res://art_private/art_table.json"
 
@@ -44,8 +49,29 @@ func _init() -> void:
 		palette_path = str(ov["palette"])
 
 
+## 调试开关最后叠（?debug=1&props=sample）。不能放在 _init 里：TWorld 在 main 的字段初始化时就建好了，那时 bridge.setup 还没读地址栏。
+## world.build() 开头调它；不带 debug 时 props_mode 一定是空的，什么都不做。
+func apply_debug() -> void:
+	for k in DebugFlags.apply_props(kinds, DebugFlags.props_mode):
+		if not (k in overridden):
+			overridden.append(k)
+		_parts.erase(k)
+
+
 func has(kind: String) -> bool:
 	return kinds.has(kind)
+
+
+## 这个种类的包装场景路径；没有 scene 条目、或文件不存在时返回空串（调用方走原来的路径）。
+func scene_path(kind: String) -> String:
+	var p: String = str(entry(kind).get("scene", ""))
+	if p != "" and ResourceLoader.exists(p):
+		return p
+	return ""
+
+
+func has_scene(kind: String) -> bool:
+	return scene_path(kind) != ""
 
 
 func entry(kind: String) -> Dictionary:
@@ -54,7 +80,7 @@ func entry(kind: String) -> Dictionary:
 
 func proc_name(kind: String) -> String:
 	var e: Dictionary = entry(kind)
-	if str(e.get("model", "")) != "":
+	if has_scene(kind) or str(e.get("model", "")) != "":
 		return ""
 	return str(e.get("proc", ""))
 
@@ -84,6 +110,9 @@ func parts(kind: String) -> Array:
 		return _parts[kind]
 	var out: Array = []
 	var e: Dictionary = entry(kind)
+	if has_scene(kind):
+		_parts[kind] = out  # 有 scene 的种类不拍平网格（world.gd 按物件实例化包装场景）
+		return out
 	var path: String = str(e.get("model", ""))
 	if path != "" and ResourceLoader.exists(path):
 		var res = load(path)
