@@ -234,7 +234,7 @@ func tick(dt: float, _now_ms: float) -> void:
 			if aid == ctx.self_id():
 				continue
 			var a: TActor = acts[aid]
-			if a.busy:
+			if a.busy or a.kind == "npc":  # NPC 不是听众，不算「附近有人」
 				continue
 			if (a.disp as Vector2).distance_to((sa as TActor).disp) <= hear:
 				alone = false

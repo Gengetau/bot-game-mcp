@@ -11,7 +11,7 @@
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import { BaseGame, type GameEnv } from './game.js';
-import { GameError, badRequest, forbidden, invalidState, notFound } from './errors.js';
+import { GameError, badRequest, forbidden, invalidAction, invalidState, notFound } from './errors.js';
 import type { AssetStore } from './assets.js';
 import type { GameRegistry, GameDefinition } from './registry.js';
 import { CryptoRng, pick, shortCode, shuffle, type Rng } from './rng.js';
@@ -41,6 +41,7 @@ import type {
   Player,
   RefereeDraw,
   Seat,
+  ViewSection,
 } from './types.js';
 
 export interface ManagerOptions {
@@ -1289,7 +1290,8 @@ export class GameManager {
     const cursor = this.viewCursors.get(cursorKey) ?? 0;
     const numbered = events.map((e, i) => ({ e, view: this.eventView(e, i + 1) }));
     const fresh = opts.fullLog ? numbered : numbered.filter((x) => x.e.seq > cursor);
-    const limited = (opts.fullLog ? fresh : fresh.slice(-60)).map((x) => x.view);
+    const limitedItems = opts.fullLog ? fresh : fresh.slice(-60);
+    const limited = limitedItems.map((x) => x.view);
     if (events.length > 0) this.viewCursors.set(cursorKey, events[events.length - 1]!.seq);
 
     const players = rec.players.map((p) => ({ seat: p.seat, name: p.name, qq: p.id, kind: p.kind, alive: p.alive }));
@@ -1307,14 +1309,22 @@ export class GameManager {
       const me = rec.players.find((p) => p.seat === seat)!;
       const todo = this.todoFor(rec, inst, seat);
       const upcoming = rec.phase && rec.phase.openedAt === null && rec.phase.pending[String(seat)] && !rec.phase.pending[String(seat)]!.done;
+      // 事件文字交给游戏整理（只改 text；own = 发给本座位的私密事件）。默认原样。
+      const shaped = limitedItems.map(({ e, view }) => {
+        const own = e.audience.type === 'seats' && e.audience.seats.includes(seat);
+        const text = inst.agentEventText(seat, { seq: view.seq, kind: e.kind, text: e.text, own, image: Boolean(e.data?.image) });
+        return text === view.text ? view : { ...view, text };
+      });
       return {
         ...base,
-        you: { seat, name: me.name, alive: me.alive, ...inst.privateView(seat) },
+        // AI 座位用有预算的视图；真人座位网页、观战、小镇嵌入局仍是 privateView / publicView
+        public: inst.agentPublicView(seat),
+        you: { seat, name: me.name, alive: me.alive, ...inst.agentView(seat) },
         your_turn: Boolean(todo),
         todo,
-        new_events: limited,
+        new_events: shaped,
         ...(fresh.length > limited.length ? { omitted_events: fresh.length - limited.length } : {}),
-        hint: this.playerHint(rec, me, todo, Boolean(upcoming)),
+        hint: (!todo && rec.status === 'running' ? inst.agentHint(seat) : null) ?? this.playerHint(rec, me, todo, Boolean(upcoming)),
       };
     }
     if (isRef) {
@@ -1360,6 +1370,29 @@ export class GameManager {
       hint: humanSeat
         ? '这个 QQ 号是本局的真人玩家：真人的身份与私密信息只由裁判私聊发给本人，MCP 会话里只能看到公开信息。'
         : '你不是本局玩家，只能看到公开信息。',
+    };
+  }
+
+  /**
+   * 按需取一段（get_my_view 的 section / page）。纯读：不 pump、不 touch、不推进事件游标、不写日志和出箱。
+   * 对局结束或中止后规则不变（不放宽也不收紧）。段不存在、看不到、格式不对是同一个拒绝。
+   */
+  getSection(actor: Identity, gameId: string | undefined, section: string, page = 1) {
+    const rec = this.resolveGame(actor, gameId, 'any');
+    if (rec.startedAt === null) throw invalidState('游戏还没开始。');
+    const seat = this.agentSeatOf(rec, actor.id);
+    if (seat === null) throw forbidden('你不是本局的玩家，没有这个视角。');
+    const inst = this.inst(rec);
+    if (!inst.hasViewSections()) throw invalidAction('这个游戏没有分段视图。');
+    const got: ViewSection | null = inst.viewSection(seat, section, page);
+    if (!got) throw invalidAction('没有这一段，或者你看不到它。可用的段见 get_my_view 的 you.sections。');
+    const { hits, ...rest } = got;
+    return {
+      ok: true,
+      game_id: rec.id,
+      ...rest,
+      ...(hits ? { hits } : {}),
+      ...(got.page < got.pages ? { next: { section: got.section, page: got.page + 1 } } : {}),
     };
   }
 

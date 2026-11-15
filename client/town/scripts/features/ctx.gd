@@ -179,10 +179,11 @@ func next_frame() -> void:
 	await m.get_tree().process_frame
 
 
-## 方向键现在按着时，是「这一次按下」的编号（main 的 key_edge，网页层每次新按下加一，松开再按才变）；没按着是 -1。
-## 走开拦截靠它认「新的一次按下」，不靠两次被问的时间间隔（按着不放时一帧卡顿就会被当成第二次尝试）。每帧可调，只读两个变量
+## 方向键现在按着时，是「这一次按住」的编号（main 的 key_gesture：从全部松开到按下加一，松开再按才变；
+## 按住期间加按、换按别的方向键不变，所以按着 W 再按 D 走斜线不会被当成新的一次尝试）；没按着是 -1。
+## 走开拦截靠它认「新的一次按住」，不靠两次被问的时间间隔（按着不放时一帧卡顿就会被当成第二次尝试）。每帧可调，只读两个变量
 func key_press_edge() -> int:
-	return m.key_edge if m._key_vec() != Vector2.ZERO else -1
+	return m.key_gesture if m._key_vec() != Vector2.ZERO else -1
 # ─────────────────────────────────────────────────────────────────────────
 
 
@@ -247,7 +248,19 @@ func c4_person_reach() -> float:
 # ─────────────────────────────────────────────────────────────────────────
 
 
-# ───────────────────────── C6 分区（预留，空）─────────────────────────
+# ───────────────────────── C6 分区 ─────────────────────────
+## 浮层卡一次只开一张（居民卡、NPC 菜单……）：功能开卡时 claim（上一张卡的主人会收到 on_card_yield 并自己收起），关卡时 release。
+func card_claim(fid: String) -> void:
+	m.features.claim_card(fid)
+
+
+func card_release(fid: String) -> void:
+	m.features.release_card(fid)
+
+
+## 走到某个 NPC 身边（和点它时 main 的调用一致：navigate {approach}）。返回 false 表示没发出（被拦下、对方不在场景里）
+func c6_approach(actor_id: String) -> bool:
+	return c4_approach(actor_id)
 # ─────────────────────────────────────────────────────────────────────────
 
 

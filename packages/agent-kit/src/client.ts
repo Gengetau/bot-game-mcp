@@ -140,6 +140,11 @@ export class BotGameClient {
     return this.call('start_game', { game_id: gameId });
   }
 
+  /** 取视图里的一段（剧本杀等有长篇材料的游戏）：纯读，不等待、不推进新事件。段名见视图 you.sections。 */
+  getMyViewSection(gameId: string, section: string, page?: number): Promise<Record<string, unknown>> {
+    return this.call<Record<string, unknown>>('get_my_view', { game_id: gameId, section, ...(page ? { page } : {}) });
+  }
+
   /** 我的视角。waitSeconds>0 时长轮询，轮到你（或游戏结束）才返回。 */
   getMyView(opts: { gameId?: string; waitSeconds?: number; wakeOn?: 'turn' | 'any'; fullLog?: boolean } = {}): Promise<PlayerView> {
     const wait = Math.max(0, Math.min(50, opts.waitSeconds ?? 0));

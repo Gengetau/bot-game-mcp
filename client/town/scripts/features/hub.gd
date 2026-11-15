@@ -18,6 +18,8 @@ var _last_pick: Dictionary = {}
 ## 等于 PICK_MUTE：一律算「没接管」（骨架的端到端用它核对「没有功能接管时旧行为照常」，不受已并入的真功能影响）
 const PICK_MUTE := "-"
 var _pick_stub: String = ""
+## 现在占着浮层卡的功能（居民卡、NPC 菜单……一次只开一张）：功能开卡时 claim，关卡时 release；换人时底座通知上一个主人收起
+var _card_owner: String = ""
 
 
 func setup(main_node) -> void:
@@ -47,6 +49,22 @@ func get_feature(fid: String):
 	return _by_id.get(fid)
 
 
+## 功能 fid 要开自己的浮层卡：先让上一张卡的主人收起（它的 on_card_yield），再记成自己的
+func claim_card(fid: String) -> void:
+	var prev: String = _card_owner
+	_card_owner = fid
+	if prev != "" and prev != fid:
+		var pf = _by_id.get(prev)
+		if pf != null:
+			(pf as TFeature).on_card_yield()
+
+
+## 功能自己关了卡：只有它还是主人时才清（被换掉之后它收起时再调是空操作）
+func release_card(fid: String) -> void:
+	if _card_owner == fid:
+		_card_owner = ""
+
+
 func on_enter() -> void:
 	# 兜底：上一次进入的是另一个人（共用设备换人登录而没经过 on_leave 的路径）
 	if _entered and _entered_self != ctx.self_id():
@@ -62,6 +80,7 @@ func on_leave() -> void:
 		return
 	_entered = false
 	_entered_self = ""
+	_card_owner = ""
 	for f in _features:
 		(f as TFeature).on_leave()
 
@@ -159,8 +178,12 @@ func set_pick_stub(pid: String) -> void:
 	_pick_stub = pid
 
 
-func blocks_input() -> String:
+## kind 非空：这一下已经知道选中的是什么（"obj" / "actor"，按 E 而附近什么都没有是 "none"）。
+## 哪个功能说「这一下不会让我离开」（pick_stays），就不问它的拦截；别的功能照问。kind 为空（点地面、方向键）：都问。
+func blocks_input(kind: String = "", pick_id: String = "") -> String:
 	for f in _features:
+		if kind != "" and (f as TFeature).pick_stays(kind, pick_id):
+			continue
 		var why: String = (f as TFeature).blocks_input()
 		if why != "":
 			return why

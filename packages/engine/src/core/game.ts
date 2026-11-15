@@ -32,6 +32,7 @@ import {
   type PhaseState,
   type Player,
   type Seat,
+  type ViewSection,
 } from './types.js';
 
 export interface GameEnv {
@@ -103,6 +104,38 @@ export abstract class BaseGame<S = any, O = any> {
   abstract advance(): void;
   abstract privateView(seat: Seat): Record<string, unknown>;
   abstract publicView(): Record<string, unknown>;
+
+  // 以下是 AI 座位 MCP 视图的可选钩子（默认实现保证别的游戏的返回形状不变）。真人座位网页、观战、小镇嵌入局仍用 privateView / publicView。
+
+  /** AI 座位的 MCP 视图（可以有长度预算）。默认就是 privateView。 */
+  agentView(seat: Seat): Record<string, unknown> {
+    return this.privateView(seat);
+  }
+
+  /** AI 座位 MCP 视图里的 public（DM 和玩家要的可以不同，所以带座位）。默认就是 publicView。 */
+  agentPublicView(_seat: Seat): Record<string, unknown> {
+    return this.publicView();
+  }
+
+  /** 这个游戏有没有分段视图（get_my_view 的 section 参数）。默认 false。 */
+  hasViewSections(): boolean {
+    return false;
+  }
+
+  /** 按需取的段（纯读，不得改 rec、不取随机数）。null = 没有这一段或这个座位看不到（不区分）。 */
+  viewSection(_seat: Seat, _section: string, _page: number): ViewSection | null {
+    return null;
+  }
+
+  /** AI 座位的事件文字整理：只改文字，不增删事件、不改编号、不改 kind。默认原样。image = 这条事件带图（announce / tell 带 image 时日志里记 data.image）。 */
+  agentEventText(_seat: Seat, ev: { seq: number; kind: string; text: string; own: boolean; image: boolean }): string {
+    return ev.text;
+  }
+
+  /** AI 座位没有待办（todo 为空）时的 hint；null = 用通用的 playerHint。 */
+  agentHint(_seat: Seat): string | null {
+    return null;
+  }
 
   /** 超时默认动作（托管）。默认什么都不做（视为放弃）。 */
   protected timeoutDefault(_seat: Seat, _req: PendingRequest): void {}
@@ -332,7 +365,9 @@ export abstract class BaseGame<S = any, O = any> {
 
   /** 公告：写公开日志 + 让裁判发到群里。文本中可用 this.at(seat) 产生 @。 */
   protected announce(text: string, opts: AnnounceOptions = {}): void {
-    this.addLog(opts.kind ?? 'announce', text, PUBLIC, opts.data ? { data: opts.data } : {});
+    // 带图的事件在日志里留一个 image 标记：agentEventText 的 ev.image 就是读它（图片事件的文字只是说明，游戏的视图整理不该动它）
+    const data = opts.image ? { ...(opts.data ?? {}), image: true } : opts.data;
+    this.addLog(opts.kind ?? 'announce', text, PUBLIC, data ? { data } : {});
     const group = { type: 'group' as const, groupId: this.rec.groupId };
     if (!this.webStage) {
       this.pushDelivery(group, text, opts.category ?? 'announce', opts.delayMs ?? 0, opts.image);
@@ -360,7 +395,8 @@ export abstract class BaseGame<S = any, O = any> {
   protected tellMany(seats: Seat[], text: string, opts: TellOptions = {}): void {
     if (seats.length === 0) return;
     // 身份牌类消息打上标记：真人私聊问「我身份呢」时可以补发
-    const data = opts.category === 'role' ? { ...(opts.data ?? {}), role: true } : opts.data;
+    const base = opts.image ? { ...(opts.data ?? {}), image: true } : opts.data;
+    const data = opts.category === 'role' ? { ...(base ?? {}), role: true } : base;
     this.addLog(opts.kind ?? 'private', text, { type: 'seats', seats: [...seats] }, data ? { data } : {});
     for (const seat of seats) {
       const p = this.player(seat);

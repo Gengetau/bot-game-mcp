@@ -3,12 +3,14 @@ extends Node3D
 ## 一个居民的三维形象。位置只由服务器给的折线 + 速度 + 出发时刻 + 服务器时间现算（没有客户端预测）；
 ## 服务器快照把位置纠正了，就把「显示位置 − 新的真值」记成偏差，让它指数衰减，画面平滑收敛。
 ## 外观：KayKit 的骨架（Rig_Medium）+ 8 套重新配色的衣服，按居民编号的哈希挑一套（见 appearance_for，换一套规则只改这一个函数）。
+## 镇上的 NPC（kind == "npc"）也是同一个 TActor：用专属的两套配色（8 掌柜、9 闲逛者，居民挑不到）加程序生成的配件（npc_look.gd），姿态 pose 来自服务器快照。
 ## 动作：idle / walk / sit_down / sit_idle / stand_up / wave / interact，朝向跟着移动方向。
 
 const SNAP_DISTANCE := 6.0
 const ERR_RATE := 6.0
-const BODY_BASES := ["rogue", "rogue", "ranger", "ranger", "mage", "mage", "knight", "knight"]
-const OUTFIT_COUNT := 8
+const BODY_BASES := ["rogue", "rogue", "ranger", "ranger", "mage", "mage", "knight", "knight", "rogue", "knight"]
+const OUTFIT_COUNT := 8  # 居民只在 0..7 里挑；8、9 留给 NPC
+const NPC_OUTFITS := {"service": 8, "ambient": 9}
 const CHAR_DIR := "res://assets/models/characters/"
 const TARGET_HEIGHT := 1.72  # 米：居民的身高（含头发），按模型实际高度折算缩放
 const SIT_HEIGHT := 0.0
@@ -17,6 +19,9 @@ const SIT_DIST := 0.5  # 离座位锚点多近算坐着
 var actor_id: String = ""
 var actor_name: String = ""
 var kind: String = ""
+## NPC 才有：service（掌柜）/ ambient（闲逛者），和姿态 stand / sit / read（服务器快照里的值；走路时服务器给的是 stand）
+var role: String = ""
+var pose: String = "stand"
 var is_self: bool = false
 var busy: bool = false
 var outfit: int = 0
@@ -53,6 +58,7 @@ var _sit_phase: int = 0  # 0 站着 1 坐下中 2 坐着 3 起身中
 var _flavor_t: float = 6.0
 var _once: bool = false
 var _age: float = 0.0
+var _book: Node3D = null  # NPC 看书姿态手里的书（npc_look.gd 生成）
 
 static var _lib: AnimationLibrary = null
 static var _scenes: Dictionary = {}
@@ -83,7 +89,7 @@ func setup(id: String, display_name: String, actor_kind: String, mine: bool) -> 
 	kind = actor_kind
 	is_self = mine
 	name = "actor_" + id
-	outfit = appearance_for(id, actor_kind)
+	outfit = int(NPC_OUTFITS.get(role, 8)) if actor_kind == "npc" else appearance_for(id, actor_kind)
 	_pivot = Node3D.new()
 	_pivot.name = "pivot"
 	add_child(_pivot)
@@ -119,6 +125,8 @@ func _build_model() -> void:
 				top = maxf(top, bb.position.y + bb.size.y)
 			if top > 0.2:
 				(inst as Node3D).scale = Vector3.ONE * (TARGET_HEIGHT / top)
+			if kind == "npc":
+				_book = TNpcLook.dress(inst as Node3D, role)
 			if _lib != null:
 				_anim = AnimationPlayer.new()
 				_anim.name = "anim"
@@ -269,6 +277,8 @@ func play_once(anim: String) -> void:
 func apply(a: Dictionary, now_ms: float) -> void:
 	actor_name = str(a.get("name", actor_name))
 	kind = str(a.get("kind", kind))
+	if kind == "npc":
+		pose = str(a.get("pose", pose))
 	busy = bool(a.get("busy", false))
 	var old_disp: Vector2 = disp
 	var was_init: bool = _initialized
@@ -379,9 +389,11 @@ func tick(dt: float, now_ms: float) -> void:
 	elif _sit_phase == 0 and not _once:
 		_play("idle")
 		_flavor_t -= dt
-		if _flavor_t <= 0.0:
+		if _flavor_t <= 0.0 and not (kind == "npc" and pose == "read"):
 			_flavor_t = 9.0 + float(absi(actor_id.hash() + int(_age)) % 120) * 0.1
 			play_once("wave" if int(_age) % 2 == 0 else "interact")
+	if _book != null:
+		_book.visible = pose == "read" and not moving and not sitting
 	if _marker != null:
 		_marker.position.y = 2.15 + 0.07 * sin(_age * 3.0)
 		_marker.rotation.y = _age * 1.6

@@ -74,6 +74,12 @@ func on_ui(_name: String, _arg: String) -> void:
 	pass
 
 
+## 底座记着现在是谁的浮层卡（见 hub.claim_card）：别的功能要开自己的卡时，上一个主人会收到这个通知，自己关卡（并推一次状态）。
+## 默认什么都不做；实现时别再调 ctx.card_claim，关卡里调 ctx.card_release 即可（此时主人已经换了人，release 是空操作）
+func on_card_yield() -> void:
+	pass
+
+
 ## 仅 wants_tick，仅 PLAYING，每帧；自己节流到 4Hz 以内
 func tick(_dt: float, _now_ms: float) -> void:
 	pass
@@ -100,6 +106,13 @@ func on_pick(_kind: String, _pick_id: String) -> bool:
 ## 非空串=现在不许点地/方向键，值是提示原因
 func blocks_input() -> String:
 	return ""
+
+
+## 这一下选中的东西不会让我离开本功能管着的事（kind / pick_id 同 on_pick；按 E 而附近什么都没有时 kind 是 "none"）。
+## 返回 true：main 这一下不问本功能的 blocks_input（不提示、不计数），别的功能照问。默认 false：一律照问。
+## 只许在「随后 on_pick 和 main 的老路都确定不会发导航」时返回 true。
+func pick_stays(_kind: String, _pick_id: String) -> bool:
+	return false
 
 
 ## _update_tags 末尾，可追加或改 out

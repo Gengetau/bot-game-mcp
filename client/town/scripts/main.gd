@@ -5,6 +5,10 @@ extends Node3D
 enum Phase { BOOT, READY, BUSY, LOGIN, ERROR, PLAYING }
 
 const API := "/town/api"
+const PickLogic := preload("res://scripts/pick_logic.gd")
+const SceneLogic := preload("res://scripts/scene_logic.gd")
+const DebugFlags := preload("res://scripts/debug_flags.gd")
+const ActLogic := preload("res://scripts/features/activity_logic.gd")  # 只用里面的纯函数（谁算坐着）
 ## 点按判定的移动阈值，单位是 CSS 像素；实际比较时乘 devicePixelRatio 换成画布的物理像素
 ## （Godot 网页端的触摸/鼠标坐标是物理像素，高分屏手机上固定数值会把正常点按判成拖动）
 const TAP_MAX_MOVE_CSS := 10.0
@@ -49,6 +53,7 @@ var control_epoch: int = 0
 var control_mine: bool = true
 var here: Dictionary = {}
 var my_interaction = null
+var seat_people: Dictionary = {}  # 物件编号 -> {参与者编号: true}：谁算坐着，_apply_me 时从 here.objects 算好
 var my_exits: Array = []
 var me_busy: bool = false
 var me_again: bool = false
@@ -93,6 +98,9 @@ var claiming: bool = false  # 自己正在点「接管」：这期间的 control
 var poll_busy: bool = false
 var map_retry_at: float = 0.0
 var revoke_checking: bool = false
+## 会话代号：进入小镇成功、进入「已离开」、重新登录时各加一（_new_session）。
+## 发请求时记下代号；回应回来时代号变了，说明它是上一段会话发出的：不改状态，它说「没登录」也不算数。
+var sess_gen: int = 0
 
 # 交互
 var pending: int = 0
@@ -128,6 +136,7 @@ var dir_sent_ms: float = -1.0e9
 var dir_active: bool = false  # 已经发过非零方向、还没发零
 var dir_suppressed: bool = false  # 点了地面或物件、按了 Esc：不再发方向，直到出现新的按下沿（向量归零本身不解除）
 var key_edge: int = 0  # hud.js 给的按下沿计数
+var key_gesture: int = 0  # 「这一次按住」的编号：从全部松开到按下加一；按住期间加按、换按别的方向键不变（走开拦截靠它认新的一次尝试）
 var dir_conn: int = -1  # hello 里的连接序号，点地 / 停下时连同 dir_seq 一起作栅栏发给服务器
 var dir_toast_ms: float = -1.0e9
 var _dirty: bool = true
@@ -143,6 +152,7 @@ var _had_hello: bool = false
 
 func _ready() -> void:
 	bridge.setup()
+	hide_npcs = DebugFlags.hide_npcs(bridge.debug, bridge.hide_npcs_flag())  # 启动时读页面全局量（刷新、重新登录都撑得住）
 	add_child(world)
 	add_child(rig)
 	add_child(actors_root)
@@ -241,6 +251,8 @@ func _on_ui(ev: String, arg: String) -> void:
 		"interact":
 			# arg 是来源：键盘 E 不带参数（"key"）；将来手机的「互动」按钮发 emit('interact', 'button')，走同一个入口
 			_do_interact(arg if arg != "" else "key")
+		"debug_hide_npcs":
+			_set_hide_npcs(arg == "1")
 		"debug_pick_stub":
 			if bridge.debug:
 				features.set_pick_stub(arg)
@@ -313,6 +325,8 @@ func _set_phase(p: int, msg: String = "", link: String = "") -> void:
 
 
 func _toast(msg: String, kind: String = "info") -> void:
+	if msg == "":
+		return  # 没话说就不弹（上一段会话的请求回来时，给调用方的失败不带提示，见 _stale_result）
 	bridge.hud_toast(msg, kind)
 	if kind == "err":
 		audio.fail()
@@ -460,6 +474,7 @@ func _after_ready() -> void:
 	world.show_scene(cur_scene)
 	if loc.has("x"):
 		rig.snap(Vector3(float(loc["x"]), 0.0, float(loc["z"])))
+	_new_session()
 	_set_phase(Phase.PLAYING)
 	_toast("欢迎来到栖灯镇。点地面走过去，点物件走近它。", "ok")
 	want_net = true
@@ -490,6 +505,7 @@ func _apply_me(view: Dictionary) -> void:
 		user_name = str(me.get("name", user_name))
 	var h = view.get("here")
 	here = h if h is Dictionary else {}
+	seat_people = ActLogic.seat_map(here.get("objects"))
 	my_exits = here.get("exits", []) if here.has("exits") else []
 	my_interaction = view.get("interaction")
 	var loc = view.get("location")
@@ -503,16 +519,23 @@ func _apply_me(view: Dictionary) -> void:
 
 
 func _refresh_me() -> bool:
+	if phase != Phase.PLAYING:
+		return false  # 不在场（登录流程里、已经离开）：没有可读的。读了只会把上一位的状态装回来，或者拿到 401 把页面带回登录流程
 	if me_busy:
 		me_again = true  # 正在读的这一份可能已经旧了：读完再读一次
 		return false
 	me_busy = true
 	me_again = false
+	var gen: int = sess_gen
 	var r: Dictionary = await bridge.http("GET", API + "/me?clientId=" + client_id.uri_encode())
+	if gen != sess_gen:
+		return false  # 上一段会话发出的读取（期间离开了、重新登录了）：不应用，401 也不算数。me_busy 已由 _new_session 复位，这里不碰
 	me_busy = false
 	if me_again:
 		me_again = false
 		arrival_refresh_at = clock.ticks_ms() + 30.0
+	if phase != Phase.PLAYING:
+		return false
 	if int(r["status"]) == 200 and r["data"] is Dictionary:
 		_apply_me(r["data"])
 		return true
@@ -521,7 +544,20 @@ func _refresh_me() -> bool:
 	return false
 
 
+## 换一段会话。之前发出的请求回来时代号对不上，一律不算数；它们不会再碰这几个「正在进行」的标记，所以在这里替它们复位，
+## 免得新会话被上一段会话还在路上的请求卡住（pending、nav_inflight 这类计数不在此列：旧请求回来时自己会减回去）
+func _new_session() -> void:
+	sess_gen += 1
+	revoke_checking = false
+	ticket_pending = false
+	me_busy = false
+	me_again = false
+	poll_busy = false
+	claiming = false
+
+
 func _relogin() -> void:
+	_new_session()
 	features.on_leave()  # 它不设 phase，随后 _flow_body 把 PLAYING 直接设成 BUSY：共用设备换人登录时不能留着上一个人听到的话
 	want_net = false
 	ws_ready = false
@@ -559,9 +595,10 @@ func _reload_map_after_mismatch() -> void:
 		return
 	map_retry_at = now_t + 5000.0
 	_toast("地图更新了，正在重新加载…", "warn")
+	var gen: int = sess_gen
 	var ok: bool = await _load_map(false)
-	if not ok:
-		return
+	if not ok or gen != sess_gen:
+		return  # 加载期间离开了或重新登录了：不清角色、不再要快照（重新进入的流程自己会加载地图）
 	_clear_actors()
 	# 对不上的快照被丢掉了，新地图要一份新快照；时间门槛归零，免得被旧时间戳挡掉
 	last_scene_time = 0.0
@@ -578,8 +615,15 @@ func _start_ws_attempt() -> void:
 	if ticket_pending or net.state != "idle":
 		return
 	ticket_pending = true
+	var gen: int = sess_gen
 	var r: Dictionary = await bridge.http("POST", API + "/ws-ticket", {"clientId": client_id})
+	if gen != sess_gen:
+		# 要票的这段时间里已经离开了小镇或重新登录了：这张票不用，它的 401 也不算数。
+		# 用了的话，一条 WebSocket 会在「已离开」的状态下连上并收到 hello，各功能跟着读 /me、收事件（20.95 的根因）
+		return
 	ticket_pending = false
+	if not want_net:
+		return
 	if int(r["status"]) == 200 and r["data"] is Dictionary and bool(r["data"].get("ok", false)):
 		ws_ticket = str(r["data"].get("ticket", ""))
 		var err: int = net.connect_to(bridge.ws_origin() + "/town/ws")
@@ -600,6 +644,11 @@ func _schedule_reconnect() -> void:
 
 
 func _on_ws_open() -> void:
+	if not want_net:
+		# 已经离开或正在重新登录：这条连接不该存在，不发 hello，直接关掉（防御：正常情况下离开时 close_now 已经把它掐了）
+		ws_ticket = ""
+		net.close_now()
+		return
 	last_rx_ms = clock.ticks_ms()
 	probe_until_ms = 0.0
 	net.send({"t": "hello", "v": 1, "ticket": ws_ticket} if ev_cursor == "" else {"t": "hello", "v": 1, "ticket": ws_ticket, "cursor": ev_cursor})
@@ -640,7 +689,10 @@ func _on_revoked() -> void:
 	ws_ready = false
 	net.close_now()
 	_dirty = true
+	var gen: int = sess_gen
 	var sess: Dictionary = await bridge.http("GET", API + "/session")
+	if gen != sess_gen:
+		return  # 查的是上一段会话（期间已经重新登录或重新进入）：这份结果不算数，revoke_checking 已由 _new_session 复位
 	revoke_checking = false
 	if phase != Phase.PLAYING or not want_net:
 		return
@@ -663,6 +715,7 @@ func _on_revoked() -> void:
 
 ## 居民已经不在场：停在面板上等用户点按钮，不自动重新进入。
 func _enter_left_state() -> void:
+	_new_session()
 	want_net = false
 	ws_ready = false
 	net.close_now()
@@ -795,6 +848,20 @@ func _on_renewed(msg: Dictionary) -> void:
 # ───────────────────────── 场景同步 ─────────────────────────
 
 
+## 调试开关：隐藏 NPC（只在 ?debug=1 下才可能为真；服务器照旧有 NPC，只是这个页面不画、不选、不弹菜单）
+var hide_npcs: bool = false
+var _last_scene: Dictionary = {}  # 最近一份被采用的快照：运行时切开关时重放
+
+
+func _set_hide_npcs(on: bool) -> void:
+	var v: bool = DebugFlags.hide_npcs(bridge.debug, on)
+	if v == hide_npcs:
+		return
+	hide_npcs = v
+	if not _last_scene.is_empty():
+		_on_scene(_last_scene)  # 同一份快照再走一遍：serverTime 相等不算旧，NPC 随之出现或被清掉
+
+
 func _on_scene(msg: Dictionary) -> void:
 	if phase != Phase.PLAYING and phase != Phase.BUSY:
 		return
@@ -855,6 +922,28 @@ func _on_scene(msg: Dictionary) -> void:
 			if switched or not rig_ready:
 				rig.snap(Vector3(act.disp.x, 0.0, act.disp.y))
 				rig_ready = true
+	_last_scene = msg
+	# NPC（场景快照里单独的 npcs 字段，公共场景才有；私宅和小游戏里没有）：并进同一张角色表，补 kind = "npc"。
+	# 调试开关（?debug=1 且页面设了隐藏）：npcs 当成空的，已有的 NPC 角色走下面「快照里没有了」的同一条清理路径（D2，见 C6.md）
+	# 位置、折线、插值和居民同一套（服务器给什么就按什么插值，不预测）；要当「居民」用的地方都按 kind 筛掉 NPC（见 client/docs/C6.md 的清单）
+	for n in ([] if hide_npcs else msg.get("npcs", [])):
+		if not (n is Dictionary):
+			continue
+		var nid: String = str(n.get("id", ""))
+		if nid == "":
+			continue
+		seen[nid] = true
+		var nact: TActor = actors.get(nid)
+		var nd: Dictionary = (n as Dictionary).duplicate()
+		nd["kind"] = "npc"
+		if nact == null:
+			nact = TActor.new()
+			nact.role = str(n.get("role", ""))
+			actors_root.add_child(nact)
+			nact.setup(nid, str(n.get("name", "")), "npc", false)
+			actors[nid] = nact
+		nact.role = str(n.get("role", nact.role))
+		nact.apply(nd, now)
 	for id in actors.keys():
 		if not seen.has(id):
 			(actors[id] as TActor).queue_free()
@@ -867,6 +956,7 @@ var rig_ready: bool = false
 
 
 func _clear_actors() -> void:
+	_last_scene = {}
 	for id in actors.keys():
 		(actors[id] as TActor).queue_free()
 	actors.clear()
@@ -880,7 +970,10 @@ func _poll_scene(force: bool = false) -> void:
 	if poll_busy and not force:
 		return
 	poll_busy = true
+	var gen: int = sess_gen
 	var r: Dictionary = await bridge.http("GET", API + "/scene")
+	if gen != sess_gen:
+		return  # 上一段会话要的快照：不画，401 也不算数
 	poll_busy = false
 	if int(r["status"]) == 200 and r["data"] is Dictionary:
 		_on_scene(r["data"])
@@ -902,7 +995,11 @@ func _act(action: Dictionary) -> Dictionary:
 	_dirty = true
 	var out: Dictionary = {"ok": false, "message": "没有完成。"}
 	var rid: String = _new_req_id()
+	var gen: int = sess_gen
 	for attempt in range(3):
+		if gen != sess_gen:
+			out = _stale_result(rid)  # 重试前的等待（读 /me、限流）期间换了会话
+			break
 		var body := {
 			"clientId": client_id,
 			"requestId": rid,
@@ -911,6 +1008,9 @@ func _act(action: Dictionary) -> Dictionary:
 			"action": action,
 		}
 		var res: Dictionary = await bridge.http("POST", API + "/actions", body)
+		if gen != sess_gen:
+			out = _stale_result(rid)
+			break
 		var d = res["data"]
 		if int(res["status"]) == 200 and d is Dictionary and bool(d.get("ok", false)):
 			ctx_version = int(d.get("contextVersion", ctx_version))
@@ -952,7 +1052,10 @@ func _act_once(action: Dictionary, opts: Dictionary = {}) -> Dictionary:
 		rid = _new_req_id()
 	var may_retry: bool = bool(opts.get("retry_stale", true))
 	var out: Dictionary = {}
+	var gen: int = sess_gen
 	while true:
+		if gen != sess_gen:
+			return _stale_result(rid)  # 重发前读 /me 的期间换了会话
 		var body := {
 			"clientId": client_id,
 			"requestId": rid,
@@ -961,6 +1064,8 @@ func _act_once(action: Dictionary, opts: Dictionary = {}) -> Dictionary:
 			"action": action,
 		}
 		var res: Dictionary = await bridge.http("POST", API + "/actions", body)
+		if gen != sess_gen:
+			return _stale_result(rid)
 		var d = res["data"]
 		if int(res["status"]) == 200 and d is Dictionary and bool(d.get("ok", false)):
 			ctx_version = int(d.get("contextVersion", ctx_version))
@@ -983,10 +1088,18 @@ func _act_once(action: Dictionary, opts: Dictionary = {}) -> Dictionary:
 	return out
 
 
-func _can_control() -> bool:
+## 请求在路上时已经离开了小镇或重新登录了：这个回答属于上一段会话。不动任何状态（上下文版本、控制权），
+## 它说「没登录」也不去触发重新登录；给调用方一个不带提示的失败（message 为空，_toast 不弹）。
+func _stale_result(rid: String = "") -> Dictionary:
+	return {"ok": false, "data": null, "error": "stale_session", "reason": "", "message": "", "retry_after_ms": 0, "net_fail": false, "rid": rid}
+
+
+## kind / pick_id：这一下已经知道选中的是什么时带上（点击、E 键）。功能模块说「这一下不会让我离开」的，不过它的拦截（见 hub.blocks_input）。
+## 不带（点地面、方向键、按钮）就是照旧全问。
+func _can_control(kind: String = "", pick_id: String = "") -> bool:
 	if phase != Phase.PLAYING:
 		return false
-	var why: String = features.blocks_input()
+	var why: String = features.blocks_input(kind, pick_id)
 	if why != "":
 		_toast(why, "warn")
 		return false
@@ -1080,7 +1193,10 @@ func _do_claim() -> void:
 	if claiming:
 		return
 	claiming = true
+	var gen: int = sess_gen
 	var r: Dictionary = await bridge.http("POST", API + "/claim", {"clientId": client_id})
+	if gen != sess_gen:
+		return  # 上一段会话的接管：控制权是那一段的，不装进来。claiming 已由 _new_session 复位
 	if int(r["status"]) == 200 and r["data"] is Dictionary and bool(r["data"].get("ok", true)):
 		var ctl = r["data"].get("control")
 		if ctl is Dictionary:
@@ -1089,6 +1205,8 @@ func _do_claim() -> void:
 		else:
 			control_mine = true
 		await _refresh_me()
+		if gen != sess_gen:
+			return
 		audio.confirm()
 		_toast("已接管，可以操作了。", "ok")
 	else:
@@ -1143,6 +1261,8 @@ func _on_keys(arg: String) -> void:
 		key_edge = edge
 		if _key_vec() != Vector2.ZERO:
 			dir_suppressed = false  # 新按下了一个方向键：这才是新的一次起步
+			if was_idle:
+				key_gesture += 1  # 从全部松开到按下：新的一次按住。按着 W 再加按 D 走斜线不算（那还是同一次按住）
 	if phase != Phase.PLAYING:
 		return
 	if was_idle and _key_vec() != Vector2.ZERO and not control_mine:
@@ -1246,11 +1366,32 @@ func _dir_hint(msg: String) -> void:
 
 
 ## E：和最近的可互动物件或人互动。复用点击的入口：够得着的物件直接开始动作，远的先走过去，人就走到身边。
-func _do_interact(src: String = "key") -> void:
-	if phase != Phase.PLAYING or not _can_control():
-		return
-	var sa: TActor = actors.get(self_id)
+## E 键会选中什么：INTERACT_RANGE 之内离我最近的物件或别的居民。只看本地的位置，不读网络。
+## 返回 {"kind", "id"}；什么都没有（或还没有自己的角色）时 kind 是 "none"
+func _nearest_pick(sa: TActor) -> Dictionary:
 	if sa == null:
+		return {"kind": "none", "id": ""}
+	# 只准备输入，挑选本身在 pick_logic.gd（纯函数）：物件按「中心和每个使用站位里最近的」算远近（D1）
+	var objs: Array = []
+	for ob in world.scene_objects(cur_scene):
+		objs.append({"id": str(ob["id"]), "center": ob.get("center", Vector2((ob["pos"] as Vector3).x, (ob["pos"] as Vector3).z)), "anchors": ob.get("anchors", [])})
+	var others: Array = []
+	for id in actors:
+		if id == self_id:
+			continue
+		others.append({"id": id, "pos": (actors[id] as TActor).disp})
+	return PickLogic.nearest(Vector2(sa.disp.x, sa.disp.y), objs, others, INTERACT_RANGE)
+
+
+func _do_interact(src: String = "key") -> void:
+	if phase != Phase.PLAYING:
+		return
+	# 先看这一下会选中什么，再问功能模块拦不拦：在自己这一桌按 E、或者附近什么都没有，人不会走开，不该弹「再试一次就走」。
+	# 这一步在下面的等待之前就做：会被拦的（局中、走开提示）当场提示，不白等一次读取
+	var p0: Dictionary = _nearest_pick(actors.get(self_id))
+	if not _can_control(str(p0["kind"]), str(p0["id"])):
+		return
+	if actors.get(self_id) == null:
 		return
 	var guard: int = 0
 	while me_busy and guard < 150:
@@ -1262,26 +1403,17 @@ func _do_interact(src: String = "key") -> void:
 		await _refresh_me()  # 刚停下时"够不够得着"还是旧的：读一次再决定
 		if phase != Phase.PLAYING:
 			return
-	var me := Vector2(sa.disp.x, sa.disp.y)
-	var best_kind: String = ""
-	var best_id: String = ""
-	var best_d: float = INTERACT_RANGE
-	for ob in world.scene_objects(cur_scene):
-		var d: float = me.distance_to(Vector2((ob["pos"] as Vector3).x, (ob["pos"] as Vector3).z))
-		if d < best_d:
-			best_d = d
-			best_kind = "obj"
-			best_id = str(ob["id"])
-	for id in actors:
-		if id == self_id:
-			continue
-		var a: TActor = actors[id]
-		var d2: float = me.distance_to(a.disp)
-		if d2 < best_d:
-			best_d = d2
-			best_kind = "actor"
-			best_id = id
-	if best_kind == "":
+	# 等的这几帧里人和物可能动了，活动可能开始或结束，控制权可能被接走：按最后选中的再问一次。
+	# 上面问过并放行的，这里在放行窗口内直接过，不重复计数；上面因为「不会让我离开」没问的，现在选中的换了，就在这里第一次被问
+	var sa: TActor = actors.get(self_id)
+	if sa == null:
+		return
+	var p1: Dictionary = _nearest_pick(sa)
+	var best_kind: String = str(p1["kind"])
+	var best_id: String = str(p1["id"])
+	if not _can_control(best_kind, best_id):
+		return
+	if best_kind == "none":
 		_toast("附近没有可以互动的东西。", "info")
 		return
 	# 先问功能模块：和点击一样，有功能接管就由它处理（居民卡、入座、一起喝茶），不再走下面的旧逻辑
@@ -1386,7 +1518,7 @@ func _tap_finish(p: Vector2) -> void:
 
 
 func _on_tap(p: Vector2) -> void:
-	if not _can_control():
+	if phase != Phase.PLAYING:
 		return
 	var o: Vector3 = rig.cam.project_ray_origin(p)
 	var n: Vector3 = rig.cam.project_ray_normal(p)
@@ -1397,7 +1529,8 @@ func _on_tap(p: Vector2) -> void:
 		if id == self_id:
 			continue
 		var a: TActor = actors[id]
-		var box := AABB(Vector3(a.disp.x - 0.5, 0.0, a.disp.y - 0.5), Vector3(1.0, 1.9, 1.0))
+		var half: float = 0.35 if a.kind == "npc" else 0.5  # NPC 的点选盒按模型轮廓收紧（居民的偏大是已知问题，留给美术第二轮）
+		var box := AABB(Vector3(a.disp.x - half, 0.0, a.disp.y - half), Vector3(half * 2.0, 1.9, half * 2.0))
 		var hit = box.intersects_ray(o, n)
 		if hit is Vector3:
 			var t: float = o.distance_to(hit)
@@ -1413,6 +1546,9 @@ func _on_tap(p: Vector2) -> void:
 				best_t = t2
 				best_kind = "obj"
 				best_id = str(ob["id"])
+	# 先算出点中了什么，再问拦不拦：点自己这一桌不算走开（功能模块的 pick_stays），点地面（best_kind 为空）和其余的照旧全问
+	if not _can_control(best_kind, best_id):
+		return
 	if best_kind != "" and features.on_pick(best_kind, best_id, "tap"):
 		return
 	if best_kind == "actor":
@@ -1479,7 +1615,8 @@ func _process(dt: float) -> void:
 
 	# 连接维护
 	if want_net:
-		if net.state == "idle" and not ticket_pending and now_t >= reconnect_at:
+		# 正在查「是不是在别处离开了」（revoke_checking）时不发起新的连接：查完要么重连（_schedule_reconnect），要么不再连
+		if net.state == "idle" and not ticket_pending and not revoke_checking and now_t >= reconnect_at:
 			_start_ws_attempt()
 		if not ws_ready and now_t >= next_poll:
 			next_poll = now_t + 1500.0
@@ -1554,21 +1691,22 @@ func _process(dt: float) -> void:
 			_push_debug()
 
 
-## 坐下：站在茶桌的座位锚点上、那张桌子正在被使用时坐着（自己的活动也算）。
+## 坐下：站在茶桌的座位锚点上，而且是那张桌子当前活动的参与者（自己另看 /me 的 interaction）。
+## 只看「桌子上有活动」不够：用「停下手上的事」退出的人还站在座位上，路过的人也可能正好停在空座位上，他们都不该被画成坐着。
+## 每帧每人只查 seat_people 这张表（_apply_me 时从 here.objects 算好），不在这里翻 here.objects。
 func _update_sitting(a: TActor) -> void:
+	if a.kind == "npc":
+		# NPC 的坐姿只看服务器给的 pose（sit）；不查茶桌座位表（那是居民的）
+		a.set_sitting(a.pose == "sit" and not a.moving)
+		return
 	if a.moving:
 		return
 	var spot: Dictionary = world.sit_spot(cur_scene, a.disp)
 	if spot.is_empty():
 		a.set_sitting(false)
 		return
-	var active: bool = false
-	for o in here.get("objects", []):
-		if str(o.get("id", "")) == str(spot["object"]) and o.get("active") != null:
-			active = true
-	if a.is_self and my_interaction is Dictionary and str(my_interaction.get("objectId", "")) == str(spot["object"]):
-		active = true
-	a.set_sitting(active, spot["center"])
+	var mine: String = str(my_interaction.get("objectId", "")) if my_interaction is Dictionary else ""
+	a.set_sitting(ActLogic.sits(seat_people, str(spot["object"]), a.actor_id, a.is_self, mine), spot["center"])
 
 
 ## 昼夜（服务器世界时间）、遮挡淡出（屋顶、树）。
@@ -1576,10 +1714,7 @@ func _update_scenery(dt: float, now_s: float) -> void:
 	if daynight != null:
 		daynight.tick(now_s, clock.has_sync)
 		world.set_night(daynight.night)
-	var heads: Array = []
-	for id in actors:
-		var ha: TActor = actors[id]
-		heads.append(Vector3(ha.disp.x, 1.6, ha.disp.y))
+	var heads: Array = SceneLogic.occluder_heads(actors)  # 只放居民：NPC 站在楼里不该掀屋顶
 	world.update_view(rig.cam.global_position, heads, dt)
 
 
@@ -1605,7 +1740,10 @@ func _adapt_resolution(vs: Vector2, dt: float = 0.0) -> void:
 
 
 func _heartbeat() -> void:
+	var gen: int = sess_gen
 	var r: Dictionary = await bridge.http("POST", API + "/heartbeat", {"clientId": client_id, "presenceEpoch": presence_epoch})
+	if gen != sess_gen:
+		return  # 上一段会话的心跳：控制权、在场都是那一段的，401 也不算数
 	if int(r["status"]) == 200 and r["data"] is Dictionary:
 		var d: Dictionary = r["data"]
 		heartbeat_ms = int(d.get("nextHeartbeatMs", heartbeat_ms))
@@ -1627,9 +1765,11 @@ func _heartbeat() -> void:
 		# 但主动离开小镇（在别处点了离开）时，心跳也会得到同样的 presence_lost，而「已被撤销」的通知经 WebSocket 稍后才到：
 		# 抢在它前面重新进入就违背了「离开后不自动重进」。所以先等一会儿，期间收到撤销（revoke_checking / 离开状态）就放弃。
 		await get_tree().create_timer(2.0).timeout
-		if revoke_checking or not want_net or phase != Phase.PLAYING:
+		if gen != sess_gen or revoke_checking or not want_net or phase != Phase.PLAYING:
 			return
 		var er: Dictionary = await bridge.http("POST", API + "/enter", {"clientId": client_id})
+		if gen != sess_gen or phase != Phase.PLAYING:
+			return  # 等回应的这段时间里离开了或重新登录了：这份视图不装进来
 		if int(er["status"]) == 200 and er["data"] is Dictionary:
 			presence_epoch = int(er["data"].get("presenceEpoch", presence_epoch))
 			_apply_me(er["data"].get("view", {}))
@@ -1639,7 +1779,10 @@ func _send_renew() -> void:
 	if net.is_open() and ws_ready:
 		net.send({"t": "renew", "navigationId": renew_id, "revision": renew_rev})
 		return
+	var gen: int = sess_gen
 	var r: Dictionary = await bridge.http("POST", API + "/nav/renew", {"clientId": client_id, "navigationId": renew_id, "revision": renew_rev})
+	if gen != sess_gen:
+		return  # 上一段会话的续租
 	if int(r["status"]) == 200 and r["data"] is Dictionary:
 		_on_renewed(r["data"])
 	elif r["data"] is Dictionary and str(r["data"].get("error", "")) == "control_lost":
@@ -1719,6 +1862,8 @@ func _update_tags() -> void:
 	var tags: Array = []
 	for id in actors:
 		var a: TActor = actors[id]
+		if a.kind == "npc":
+			continue  # NPC 的名牌由 npc.gd 的 tags() 钩子加（带身份标记、让位逻辑）
 		var wp := Vector3(a.disp.x, 2.05, a.disp.y)
 		if cam.is_position_behind(wp):
 			continue
@@ -1757,9 +1902,13 @@ func _push_debug() -> void:
 	var size: Vector2 = get_viewport().get_visible_rect().size
 	var cam: Camera3D = rig.cam
 	var al: Array = []
+	var nl: Array = []  # NPC 单放：__town.actors 仍然只有居民（旧的端到端到处在数它）
 	for id in actors:
 		var a: TActor = actors[id]
 		var sp: Vector2 = cam.unproject_position(Vector3(a.disp.x, 1.0, a.disp.y))
+		if a.kind == "npc":
+			nl.append({"id": id, "name": a.actor_name, "x": a.disp.x, "z": a.disp.y, "moving": a.moving, "nx": sp.x / size.x, "ny": sp.y / size.y, "pose": a.pose, "role": a.role, "sitting": a.sitting, "outfit": a.outfit})
+			continue
 		al.append({"id": id, "name": a.actor_name, "x": a.disp.x, "z": a.disp.y, "moving": a.moving, "nx": sp.x / size.x, "ny": sp.y / size.y})
 	var ol: Array = []
 	for ob in world.scene_objects(cur_scene):
@@ -1787,6 +1936,7 @@ func _push_debug() -> void:
 		"selected": selected_obj,
 		"nearValid": near_valid,
 		"actors": al,
+		"npcs": nl,
 		"objects": ol,
 		"vp": m,
 		"zoom": rig.dist,

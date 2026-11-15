@@ -2,7 +2,8 @@ extends TFeature
 ## 人和人当面认识（页签「人家」+ 居民卡）：点人出卡、问爱好、邀请到家里；请柬、会馆门牌、进屋 / 出门。
 ## 资料只来自 /me：here.residents（公开资料）、here.doors、here.home、invites。爱好只在问过之后存在内存里。
 ## 动作一律 ctx.act_once（不动 pending、不睡眠重试、可复用请求号）；too_far 时只走过去，不自动重发动作（邀请不是幂等的）。
-## 「点到的是谁、资料从哪来」集中在 _profile_of / _pickable：C6 接 NPC 时改这两处（让 NPC 返回自己的简化资料），其余不用动。
+## 「点到的是谁、资料从哪来」集中在 _profile_of / _pickable：NPC 不是居民，_pickable 对它返回 false（NPC 的服务菜单归 npc.gd），居民卡对 NPC 永远不开。
+## 一次只开一张浮层卡：_open_card 里 ctx.card_claim，_close_card 里 ctx.card_release，on_card_yield 响应别人开卡（C6）。
 
 const REACH_SLACK := 0.5  # 到达时快照位置可能还没更新：留余量
 const AUTO_CLOSE_DIST := 8.0
@@ -292,7 +293,7 @@ func on_event(ev: Dictionary) -> void:
 # ───────────────────────── 点人 ─────────────────────────
 
 
-## 能不能当「一个人」来点：C6 接 NPC 时在这里让路 / 接手
+## 能不能当「一个人」来点：只有居民（human / agent）。NPC（kind == "npc"）不是居民，让给 npc.gd 的服务菜单
 func _pickable(pid: String) -> bool:
 	if pid == "" or pid == ctx.self_id():
 		return false
@@ -303,7 +304,7 @@ func _pickable(pid: String) -> bool:
 	return k == "human" or k == "agent"
 
 
-## 资料从哪来：公开资料（here.residents）。没有就只有名字和种类；C6 的 NPC 简化版也从这里接
+## 资料从哪来：公开资料（here.residents）。没有就只有名字和种类（NPC 不会走到这里）
 func _profile_of(pid: String) -> Dictionary:
 	var a = ctx.actors().get(pid)
 	var p: Dictionary = {"id": pid, "name": "", "kind": "human", "known": false, "bio": "", "traits": [], "titles": [], "mood": ""}
@@ -363,6 +364,7 @@ func _open_card(pid: String) -> void:
 		return
 	if _card_id == pid:
 		return
+	ctx.card_claim(id)  # 一次只开一张卡：别的功能（NPC 菜单）开着的话，它先收起
 	_card_id = pid
 	_card_scene = ctx.cur_scene()
 	_card_walk = false
@@ -375,7 +377,15 @@ func _close_card() -> void:
 	_card_id = ""
 	_card_scene = ""
 	_card_walk = false
+	ctx.card_release(id)
 	ctx.mark_dirty()
+
+
+## 别的功能要开它自己的浮层卡了（底座通知）：收起居民卡并推一次状态
+func on_card_yield() -> void:
+	if _card_id != "":
+		_close_card()
+		_push()
 
 
 ## 开始「走向 ta」：c4_approach 确实发出了才调用。超时按路程算，给改道、被拦、对方走远留一条出路

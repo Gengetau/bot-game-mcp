@@ -102,7 +102,7 @@
 
 ### `get_my_view` —— 我的视角（只读）
 
-查看你在对局中的视角：你的身份/词语/骰子等私密信息(you)、公开局面(public)、新事件(new_events)、待办(todo, your_turn)。wait_seconds>0 时会等到轮到你（或游戏结束）再返回。裁判调用时返回主持信息。
+查看你在对局中的视角：你的身份/词语/骰子等私密信息(you)、公开局面(public)、新事件(new_events)、待办(todo, your_turn)。wait_seconds>0 时会等到轮到你（或游戏结束）再返回。裁判调用时返回主持信息。剧本杀等有长篇材料的游戏：默认视图是摘要加目录 you.sections，详情用 section（和可选的 page）按需取，find:关键词 按关键词找；带 section 时只返回那一段，不等待、不推进新事件。
 
 | 参数 | 类型 | 必填 | 说明 |
 |---|---|---|---|
@@ -111,6 +111,8 @@
 | `wake_on` | `turn` / `any` |  | 等待时：turn=轮到我才返回（默认）；any=有任何你看得见的新事件就返回（别人的私密事件不算） |
 | `full_log` | boolean |  | 返回你可见的全部历史事件（默认只返回上次查看后的新事件） |
 | `cursor` | string |  | 栖灯镇：上次视图返回的 cursor。带上它会附带之后的新事件（一次最多 50 条；返回 more=true 时用返回的 cursor 接着取）；配合 wait_seconds 可以等到有新事件再返回 |
+| `section` | string |  | 要取的段，名字见 you.sections 目录（例如 "role:3"、"act:2"、"truth"、"find:关键词"）。带它时只返回这一段，忽略 wait_seconds / wake_on / full_log / cursor。 |
+| `page` | integer |  | 分页取段时的页码，从 1 开始，默认 1。 |
 
 ### `speak` —— 发言
 
