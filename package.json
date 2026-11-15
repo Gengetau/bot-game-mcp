@@ -30,7 +30,9 @@
     "client:shots": "node scripts/client-shots.mjs",
     "client:lint": "node client/tools/lint-web.mjs",
     "client:unit": "bash client/tools/unit.sh",
-    "client:web": "bash client/tools/web-only.sh"
+    "client:web": "bash client/tools/web-only.sh",
+    "client:assets:build": "bash client/art_source/build_kits.sh",
+    "client:assets:check": "bash client/tools/check_assets.sh"
   },
   "devDependencies": {
     "@modelcontextprotocol/sdk": "^1.32.2",
