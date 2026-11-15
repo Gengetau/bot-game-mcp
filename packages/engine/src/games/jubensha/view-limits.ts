@@ -33,7 +33,7 @@ export const PLACES_LISTED = 20;
 export const PUBLIC_PLACES_LISTED = 12;
 /** you.search.my_cards 最多列几张（最新的优先；其余记 my_cards_more，清单用 section:"my_clues"，每张用 clue:id） */
 export const MY_CARDS_LISTED = 6;
-/** public.search.shared 最多列几条（最新的优先；其余记 shared_more，原文在 get_game_log 的 clue_shared 事件） */
+/** public.search.shared 最多列几条（最新的优先；其余记 shared_more，全部的原文用 section:"shared"） */
 export const SHARED_LISTED = 6;
 /** you.questionnaire（玩家自己的问卷，答题必需）的 JSON 超过它时，每题只留题号、分值、已答情况和前几个字；全文用 section:"questionnaire"（quiz 阶段 todo.prompt 里也有） */
 export const QUIZ_YOU_INLINE = 8000;
@@ -140,13 +140,13 @@ export function paginate(text: string, page: number): Paged {
 // ───────────────────────── 段名 ─────────────────────────
 
 export type SectionRef =
-  | { kind: 'host_notes' | 'truth' | 'faq' | 'clues' | 'questionnaire' | 'images' | 'questions' | 'places' | 'script' | 'confession' | 'my_clues' | 'cast' }
+  | { kind: 'host_notes' | 'truth' | 'faq' | 'clues' | 'questionnaire' | 'images' | 'questions' | 'places' | 'script' | 'confession' | 'my_clues' | 'cast' | 'shared' }
   | { kind: 'role'; n: number }
   | { kind: 'act'; n: number }
   | { kind: 'clue'; id: string }
   | { kind: 'find'; q: string };
 
-const FIXED = ['host_notes', 'truth', 'faq', 'clues', 'questionnaire', 'images', 'questions', 'places', 'script', 'confession', 'my_clues', 'cast'] as const;
+const FIXED = ['host_notes', 'truth', 'faq', 'clues', 'questionnaire', 'images', 'questions', 'places', 'script', 'confession', 'my_clues', 'cast', 'shared'] as const;
 
 /**
  * 解析段名（lookup 别名和取段都走这一个，没有第二套）。

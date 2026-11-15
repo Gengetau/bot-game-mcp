@@ -1343,3 +1343,78 @@ describe('公开段 cast：公开介绍合计不超过总量时原样，超过�
     expect(err(() => g.manager.getSection(bot(99), g.gameId, 'cast', 1))).toMatchObject({ code: 'FORBIDDEN' });
   });
 });
+
+describe('公开段 shared：已公开的线索全文按需取（public.search.shared 只列最新几条时，较早的在这里）', () => {
+  type Shared = { by: number; id: string; title: string; text: string; images?: string[] };
+  const sharedText = (g: Rig) =>
+    (inst(g).publicView().search.shared as Shared[])
+      .map((x, i) => `${i + 1}. 【${x.title}】（${x.id}，${x.by}号公开）\n${x.text}${x.images?.length ? `\n图：${x.images.join('；')}` : ''}`)
+      .join('\n\n');
+  /** 走到第二轮讨论，把合成包里每张线索的正文改成各不相同的（合成包里原本全是同一串字），清空已公开的 */
+  const ready = () => {
+    const g = rig(synth({ ...X1, clues: 100, clueText: 1000 }));
+    stopAt(g, 'discuss#2', { search: true });
+    const clues = g.rec.state.pack.clues as { id: string; title: string; text: string }[];
+    clues.forEach((c, i) => (c.text = `〈第${i}张的正文〉${c.text}`));
+    g.rec.state.search.shared.splice(0);
+    return { g, clues };
+  };
+  const everyone = (g: Rig) => [hostSeat(g), ...(playerSeats(g) as number[])];
+
+  it('还没有人公开线索：取 shared 和取乱写的段是同一个拒绝，目录里没有它；公开一张之后所有座位都有', () => {
+    const { g, clues } = ready();
+    for (const seat of everyone(g)) {
+      expect(err(() => section(g, seat, 'shared')), `${seat}`).toEqual({ code: 'INVALID_ACTION', message: REFUSAL });
+      expect(err(() => section(g, seat, 'shared')), `${seat}`).toEqual(err(() => section(g, seat, 'nope')));
+      expect(g.view(seat).you.sections.map((x: any) => x.section)).not.toContain('shared');
+    }
+    g.rec.state.search.shared.push({ id: clues[0]!.id, by: playerSeats(g)[0] });
+    for (const seat of everyone(g)) {
+      expect(section(g, seat, 'shared').text, `${seat}`).toContain(clues[0]!.text);
+      expect(g.view(seat).you.sections.map((x: any) => x.section)).toContain('shared');
+    }
+  });
+
+  it('DM 和每个玩家拿到同一份：全部已公开线索的全文，与公开视图逐条一致；没公开的线索（包括别人手里的）一个字都不在里面', () => {
+    const { g, clues } = ready();
+    const pub = clues.slice(0, SHARED_LISTED + 4);
+    const hidden = clues.slice(SHARED_LISTED + 4);
+    for (const c of pub) g.rec.state.search.shared.push({ id: c.id, by: playerSeats(g)[0] });
+    const want = sharedText(g);
+    for (const c of pub) expect(want).toContain(c.text);
+    for (const c of hidden) {
+      expect(want).not.toContain(`〈第${clues.indexOf(c)}张的正文〉`);
+      expect(want).not.toContain(`（${c.id}，`);
+    }
+    // 对照：没公开的线索里确实有人手里拿着的（否则上面的否定断言没有意义）
+    const holders = g.rec.state.search.holders as Record<string, number[]>;
+    expect(hidden.some((c) => (holders[c.id] ?? []).length > 0)).toBe(true);
+    for (const seat of everyone(g)) {
+      expect(joinSection(g, seat, 'shared'), `${seat}`).toBe(want);
+      for (const name of ['SHARED', ' Shared ', 'ＳＨＡＲＥＤ']) expect(section(g, seat, name).section).toBe('shared');
+    }
+    expect(section(g, hostSeat(g), 'shared').pages).toBe(Math.ceil(want.length / SECTION_PAGE));
+    expect(section(g, hostSeat(g), 'shared').pages).toBeGreaterThan(1);
+  });
+
+  it('默认视图：只列最新的几条并记 shared_more，被截短的正文指向 shared 段；目录的 chars 等于段的全文长度；静态部分仍在预算内', () => {
+    const { g, clues } = ready();
+    for (const c of clues.slice(0, SHARED_LISTED + 4)) g.rec.state.search.shared.push({ id: c.id, by: playerSeats(g)[0] });
+    const want = sharedText(g);
+    for (const seat of everyone(g)) {
+      const v = g.view(seat);
+      const sh = v.public.search.shared as Shared[];
+      expect(sh.map((x) => x.id)).toEqual(clues.slice(4, SHARED_LISTED + 4).map((c) => c.id));
+      expect(v.public.search.shared_more).toBe(4);
+      for (const x of sh) {
+        expect(x.text.length, x.id).toBeLessThan(1000);
+        expect(x.text, x.id).toContain('get_my_view({"section":"shared"})');
+        expect(x.text, x.id).not.toContain('get_game_log');
+      }
+      expect(v.you.sections.find((x: any) => x.section === 'shared').chars).toBe(want.length);
+      expect(staticLen(v)).toBeLessThanOrEqual(viewBudget(seat === hostSeat(g) ? 'dm' : 'player', 6, 4));
+    }
+    // 网页和观战用的公开视图不变：全部线索、全文
+    expect((inst(g).publicView().search.shared as Shared[]).map((x) => x.text)).toEqual(clues.slice(0, SHARED_LISTED + 4).map((c) => c.text));
+  });
+});

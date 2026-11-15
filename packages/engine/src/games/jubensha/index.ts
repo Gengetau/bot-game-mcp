@@ -1431,7 +1431,17 @@ export function createJubenshaDefinition(
         const text = hits.length ? hits.map((h, i) => `${i + 1}. 【${h.where}】（${h.section}）${h.snippet}`).join('\n') : '没找到。换个词，或直接看目录里的段。';
         return { section: sectionName(ref), title: `按关键词找「${cleanSpeech(ref.q, 40)}」`, page: 1, pages: 1, chars: text.length, text, hits };
       }
-      const got = ref.kind === 'cast' ? { title: '角色表全文', body: this.castBody() } : dm ? this.dmSectionBody(ref) : this.playerSectionBody(seat, ref);
+      // cast、shared 是公开段：DM 和玩家拿到的是同一份，只含公开视图里本来就有的东西
+      const got =
+        ref.kind === 'cast'
+          ? { title: '角色表全文', body: this.castBody() }
+          : ref.kind === 'shared'
+            ? this.hasSharedSection()
+              ? { title: '已公开的线索全文', body: this.sharedBody() }
+              : null
+            : dm
+              ? this.dmSectionBody(ref)
+              : this.playerSectionBody(seat, ref);
       if (!got) return null;
       return { section: sectionName(ref), title: got.title, ...paginate(got.body, page) };
     }
@@ -1459,6 +1469,7 @@ export function createJubenshaDefinition(
         if (s.pack.images.length) out.push(item({ kind: 'images' }, '图片说明', this.dmImagesBody().body, '问题涉及图'));
         if (s.qa.some((x) => x.a === undefined)) out.push(item({ kind: 'questions' }, '待答提问', this.dmQuestionsBody(), 'open_questions_more 出现时，或想一次看全'));
         out.push(item({ kind: 'cast' }, '角色表全文', this.castBody(), '公开介绍被截断时看'));
+        if (this.hasSharedSection()) out.push(item({ kind: 'shared' }, '已公开的线索全文', this.sharedBody(), 'shared_more 出现或公开线索被截短时看'));
         out.push(find);
         return out;
       }
@@ -1474,6 +1485,7 @@ export function createJubenshaDefinition(
       if (this.hasPlacesSection(seat)) out.push(item({ kind: 'places' }, '各地点剩余卡背', this.placesBody(seat), 'cards_more 或 places_more 出现时看全部'));
       if (this.hasQuizSection(seat)) out.push(item({ kind: 'questionnaire' }, '我的问卷', this.playerQuizBody(seat), 'you.questionnaire 被缩短时看全文'));
       out.push(item({ kind: 'cast' }, '角色表全文', this.castBody(), '公开介绍被截断时看'));
+      if (this.hasSharedSection()) out.push(item({ kind: 'shared' }, '已公开的线索全文', this.sharedBody(), 'shared_more 出现或公开线索被截短时看'));
       out.push({ ...find, use: '想核对剧本里的某个词（只找你自己的材料）' });
       return out;
     }
@@ -1790,6 +1802,26 @@ export function createJubenshaDefinition(
         .join('\n\n');
     }
 
+    /** 已公开的线索（public.search.shared）：谁公开的、线索 id、标题、正文、图片说明。shared 段和 publicView 共用，不含任何别的东西。 */
+    private publicShared(): { by: Seat; id: string; title: string; text: string; images?: string[] }[] {
+      return (this.state.search?.shared ?? []).map((x) => {
+        const c = this.clueById(x.id)!;
+        return { by: x.by, id: c.id, title: c.title, text: c.text, ...(c.images.length ? { images: this.imageCaptions(c.images) } : {}) };
+      });
+    }
+
+    /** 有没有 shared 段：至少公开过一张线索（对所有座位都一样，不透露任何人手里有什么） */
+    private hasSharedSection(): boolean {
+      return Boolean(this.state.search?.shared.length);
+    }
+
+    /** shared 段：全部已公开的线索，按公开的先后（public.search.shared 只列最新几条时，较早的在这里；DM 和玩家都能取） */
+    private sharedBody(): string {
+      return this.publicShared()
+        .map((x, i) => `${i + 1}. 【${x.title}】（${x.id}，${x.by}号公开）\n${x.text}${x.images?.length ? `\n图：${x.images.join('；')}` : ''}`)
+        .join('\n\n');
+    }
+
     publicView(): Record<string, unknown> {
       const s = this.state;
       const ph = this.phase;
@@ -1816,10 +1848,7 @@ export function createJubenshaDefinition(
                   ...(this.blind ? {} : { left: this.remaining(p.key, null).length }),
                 })),
                 log: s.search.log.map((x) => ({ seat: x.seat, place: x.place, how: x.how })),
-                shared: s.search.shared.map((x) => {
-                  const c = this.clueById(x.id)!;
-                  return { by: x.by, id: c.id, title: c.title, text: c.text, ...(c.images.length ? { images: this.imageCaptions(c.images) } : {}) };
-                }),
+                shared: this.publicShared(),
               },
             }
           : {}),
@@ -1845,15 +1874,15 @@ export function createJubenshaDefinition(
      */
     override agentPublicView(_seat: Seat): Record<string, unknown> {
       const pv = this.publicView() as Record<string, any>;
-      const more = '未显示的部分见 get_game_log 里对应的公开事件';
       const out: Record<string, unknown> = { ...pv };
       if (Array.isArray(pv.cast) && this.castClipped()) {
         out.cast = pv.cast.map((c: any) => (c.public.length > CAST_PUBLIC_INLINE ? { ...c, public: clip(c.public, CAST_PUBLIC_INLINE, `全文：${getViewCall('cast')}`) } : c));
       }
       if (pv.search?.shared) {
         const sharedAll = pv.search.shared as { text: string; images?: string[] }[];
-        // 公开线索条数没有上限（最多 500 张）：只列最新的几条，其余记 shared_more（原文在 get_game_log 的 clue_shared 事件）
+        // 公开线索条数没有上限（最多 500 张）：只列最新的几条，其余记 shared_more；全部的原文用 section:"shared"
         const shared = sharedAll.slice(-SHARED_LISTED);
+        const more = `全文：${getViewCall('shared')}`;
         let used = 0;
         const imgLeft = { left: IMAGES_INLINE };
         const fixed = new Array<any>(shared.length);
@@ -1865,7 +1894,7 @@ export function createJubenshaDefinition(
           fixed[i] = {
             ...x,
             text,
-            ...(x.images ? { images: capCaptions(x.images, 'get_game_log 里对应的公开事件', imgLeft) } : {}),
+            ...(x.images ? { images: capCaptions(x.images, getViewCall('shared'), imgLeft) } : {}),
           };
         }
         out.search = { ...pv.search, shared: fixed, ...(sharedAll.length > shared.length ? { shared_more: sharedAll.length - shared.length } : {}) };
