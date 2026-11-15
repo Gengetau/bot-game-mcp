@@ -25,6 +25,13 @@ export interface SynthOpts {
   qOptions?: number;
   blind?: boolean;
   clueTitle?: number;
+  /** 地点个数（默认 8；格式上限 50） */
+  locations?: number;
+  /** 卡背也放在角色身上（搜这个人）：每个角色都成为可搜对象 */
+  roleClues?: boolean;
+  /** 问卷题干 / 选项文字长度（默认 60 / 50；格式上限 300 / 200） */
+  qStem?: number;
+  qOptText?: number;
 }
 
 export const fill = (n: number, tag: string) => (tag + '这是一段剧本文字，用来占位。').repeat(Math.ceil(n / 14)).slice(0, n);
@@ -67,10 +74,10 @@ export function synth(o: SynthOpts): any {
     ...(o.clues
       ? {
           search: { points: 10, carry_over: true, exclusive: true, self_search: false, blind: o.blind ?? false },
-          locations: Array.from({ length: 8 }, (_, i) => ({ key: `loc${i}`, name: `地点${i}` })),
+          locations: Array.from({ length: o.locations ?? 8 }, (_, i) => ({ key: `loc${i}`, name: `地点${i}` })),
           clues: Array.from({ length: o.clues }, (_, i) => ({
             id: `c${i}`,
-            at: `loc${i % 8}`,
+            at: o.roleClues && i % 2 === 1 ? keys[(i >> 1) % keys.length] : `loc${(o.roleClues ? i >> 1 : i) % (o.locations ?? 8)}`,
             round: 1 + (i % Math.max(1, o.actN - 1)),
             cost: 1,
             title: fill(o.clueTitle ?? 6, `线索${i}`).slice(0, o.clueTitle ?? 6),
@@ -81,8 +88,8 @@ export function synth(o: SynthOpts): any {
       : {}),
     questionnaire: Array.from({ length: o.q }, (_, i) => ({
       id: `q${i}`,
-      question: fill(60, 'Q'),
-      options: o.qOptions ? Array.from({ length: o.qOptions }, (_, j) => ({ key: `o${j}`, text: fill(50, 'O') })) : 'roles',
+      question: fill(o.qStem ?? 60, 'Q'),
+      options: o.qOptions ? Array.from({ length: o.qOptions }, (_, j) => ({ key: `o${j}`, text: fill(o.qOptText ?? 50, 'O') })) : 'roles',
       answer: [o.qOptions ? 'o0' : keys[0]],
       points: 1,
       culprit: !o.qOptions && i === 0,

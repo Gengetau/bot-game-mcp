@@ -127,7 +127,7 @@ export abstract class BaseGame<S = any, O = any> {
     return null;
   }
 
-  /** AI 座位的事件文字整理：只改文字，不增删事件、不改编号、不改 kind。默认原样。 */
+  /** AI 座位的事件文字整理：只改文字，不增删事件、不改编号、不改 kind。默认原样。image = 这条事件带图（announce / tell 带 image 时日志里记 data.image）。 */
   agentEventText(_seat: Seat, ev: { seq: number; kind: string; text: string; own: boolean; image: boolean }): string {
     return ev.text;
   }
@@ -365,7 +365,9 @@ export abstract class BaseGame<S = any, O = any> {
 
   /** 公告：写公开日志 + 让裁判发到群里。文本中可用 this.at(seat) 产生 @。 */
   protected announce(text: string, opts: AnnounceOptions = {}): void {
-    this.addLog(opts.kind ?? 'announce', text, PUBLIC, opts.data ? { data: opts.data } : {});
+    // 带图的事件在日志里留一个 image 标记：agentEventText 的 ev.image 就是读它（图片事件的文字只是说明，游戏的视图整理不该动它）
+    const data = opts.image ? { ...(opts.data ?? {}), image: true } : opts.data;
+    this.addLog(opts.kind ?? 'announce', text, PUBLIC, data ? { data } : {});
     const group = { type: 'group' as const, groupId: this.rec.groupId };
     if (!this.webStage) {
       this.pushDelivery(group, text, opts.category ?? 'announce', opts.delayMs ?? 0, opts.image);
@@ -393,7 +395,8 @@ export abstract class BaseGame<S = any, O = any> {
   protected tellMany(seats: Seat[], text: string, opts: TellOptions = {}): void {
     if (seats.length === 0) return;
     // 身份牌类消息打上标记：真人私聊问「我身份呢」时可以补发
-    const data = opts.category === 'role' ? { ...(opts.data ?? {}), role: true } : opts.data;
+    const base = opts.image ? { ...(opts.data ?? {}), image: true } : opts.data;
+    const data = opts.category === 'role' ? { ...(base ?? {}), role: true } : base;
     this.addLog(opts.kind ?? 'private', text, { type: 'seats', seats: [...seats] }, data ? { data } : {});
     for (const seat of seats) {
       const p = this.player(seat);

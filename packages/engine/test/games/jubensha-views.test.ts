@@ -2,6 +2,7 @@
  * 剧本杀 AI 座位视图（FB261108-02 第二轮）：默认视图有预算、目录 you.sections、按需取段、find、事件整理。
  * 合成包的参数、推进方式见 jubensha-views-helpers.ts；基线 fixtures/jubensha-views-baseline.json 是改前（68d1b58）的 you / public。
  */
+import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
@@ -21,14 +22,21 @@ import {
   FIND_MAX_HITS,
   FIND_SNIPPET,
   IMAGE_CAPTION_INLINE,
+  MY_CARDS_LISTED,
   MY_Q_LISTED,
   OPEN_Q_LISTED,
+  PLACES_LISTED,
   PLACE_TITLES_LISTED,
+  PUBLIC_PLACES_LISTED,
+  QUIZ_STEM_INLINE,
+  QUIZ_YOU_INLINE,
+  SHARED_LISTED,
   PLAYER_VIEW_BUDGET,
   POINTER_MAX,
   PUBLIC_TRUTH_INLINE,
   QUIZ_PUBLIC_INLINE,
   SECTION_PAGE,
+  SHARED_TOTAL_INLINE,
   parseEventKind,
   parseSection,
   pointerLine,
@@ -36,7 +44,8 @@ import {
 } from '../../src/games/jubensha/view-limits.js';
 import { createMcpServer } from '../../src/mcp/server.js';
 import { Authenticator } from '../../src/mcp/auth.js';
-import { REF, bot, human, identityOf, setup, startGame } from '../helpers.js';
+import { REF, bot, human, identityOf, pendingSeats, setup, startGame } from '../helpers.js';
+import { makeTown } from '../world/helpers.js';
 import { BIG12, NEAR_MAX, X1, driveSamples, exampleDemo, fill, rig, synth, type Rig, type Sample, type SynthOpts } from './jubensha-views-helpers.js';
 
 const baseline = JSON.parse(readFileSync(new URL('./fixtures/jubensha-views-baseline.json', import.meta.url), 'utf8')) as Record<string, { tag: string; seat: number; dm: boolean; you: any; public: any }[]>;
@@ -157,16 +166,11 @@ describe('静态部分（去掉 new_events）在预算内', () => {
       let plMax = 0;
       for (const s of samples) {
         const v = { ...s.view, new_events: [] as unknown[] };
-        if (t.noQuestionnaire) {
-          // 问卷是答题必需，不截断：单列扣除。quiz 阶段 todo.prompt 和 hint 里还各带一份问卷全文（通用层，本段不动），也扣掉
-          v.you = { ...v.you };
-          delete v.you.questionnaire;
-          v.public = { ...v.public };
-          delete v.public.questionnaire;
-          if (s.tag.startsWith('quiz')) {
-            delete v.todo;
-            delete v.hint;
-          }
+        if (t.noQuestionnaire && s.tag.startsWith('quiz')) {
+          // 已知不覆盖：quiz 阶段 todo.prompt 和 hint 里各带一份问卷全文（答题必需，也是通用层的 todo / hint，本段不动）。
+          // you.questionnaire 和 public.questionnaire 不再扣除：超长时它们自己缩短（QUIZ_YOU_INLINE / QUIZ_PUBLIC_INLINE）
+          delete v.todo;
+          delete v.hint;
         }
         const n = JSON.stringify(v).length;
         const budget = viewBudget(s.dm ? 'dm' : 'player', t.opts.players, t.opts.actN);
@@ -611,7 +615,9 @@ describe('待答提问、洪水', () => {
     const v = g.view(s);
     expect(JSON.stringify(inst(g).publicView().questionnaire).length).toBeGreaterThan(QUIZ_PUBLIC_INLINE);
     for (const q of v.public.questionnaire) expect(q).not.toHaveProperty('options');
-    expect(v.you.questionnaire[0].options.length).toBe(6);
+    // 30 题 × 6 个选项超过 QUIZ_YOU_INLINE：you.questionnaire 缩短（选项在 section:questionnaire 里，见下一条测试和「预算」一组）
+    expect(v.you.questionnaire[0]).not.toHaveProperty('options');
+    expect(joinSection(g, s, 'questionnaire')).toContain('o5=');
     expect(joinSection(g, hostSeat(g), 'questionnaire')).toContain('选项');
   });
 
@@ -804,4 +810,466 @@ describe('MCP：get_my_view 的 section / page', () => {
     expect(tools.find((t) => t.name === 'get_my_view')?.annotations?.readOnlyHint).toBe(true);
     expect(manager.getRecord(gameId).status).toBe('running');
   });
+});
+
+// ───────────────────────── 评审修复（第二轮）：没有上限的字段、事件的图片标记、测试缺口 ─────────────────────────
+
+describe('预算：地点数、持有的卡、公开线索、问卷', () => {
+  const searchOpts = (extra: Partial<SynthOpts> = {}): SynthOpts => ({ ...NEAR_MAX, clues: 500, clueText: 100, clueTitle: 40, locations: 50, roleClues: true, ...extra });
+  const maxStatic = (samples: Sample[], players: number, acts: number) => {
+    let dm = 0;
+    let pl = 0;
+    for (const s of samples) {
+      const n = staticLen(s.view);
+      if (s.dm) dm = Math.max(dm, n);
+      else pl = Math.max(pl, n);
+      expect(n, `${s.dm ? 'DM' : '玩家'} @${s.tag}`).toBeLessThanOrEqual(viewBudget(s.dm ? 'dm' : 'player', players, acts));
+    }
+    return { dm, pl };
+  };
+
+  it('50 个地点 + 身上有线索的角色：you.search.places 只列前几个，其余记 places_more，section:places 列全；静态部分在预算内', () => {
+    const g = rig(synth(searchOpts()));
+    const samples = driveSamples(g, { search: true });
+    const m = maxStatic(samples, 6, 4);
+    console.info(`[预算实测] 50 地点 500 线索：DM 最大 ${m.dm}，玩家最大 ${m.pl}`);
+    const s = playerSeats(g)[0] as number;
+    const total = inst(g).places(s).length;
+    expect(total).toBeGreaterThan(PLACES_LISTED);
+    // 搜证中间的视图（还有卡可搜）
+    const g2 = rig(synth(searchOpts()));
+    stopAt(g2, 'discuss#2', { search: true });
+    const you = g2.view(s).you;
+    expect(you.search.places.length).toBe(PLACES_LISTED);
+    expect(you.search.places_more).toBe(total - PLACES_LISTED);
+    for (const p of you.search.places) expect(p.cards.length).toBeLessThanOrEqual(PLACE_TITLES_LISTED);
+    expect(section(g2, s, 'places').text.split('\n').length).toBe(total);
+    expect(you.sections.find((x: any) => x.section === 'places').use).toContain('places_more');
+    // 公开视图里的地点也只列前几个
+    const pub = g2.view(s).public.search;
+    expect(pub.places.length).toBe(PUBLIC_PLACES_LISTED);
+    expect(pub.places_more).toBe(inst(g2).places(null).length - PUBLIC_PLACES_LISTED);
+    expect(inst(g2).publicView().search.places.length).toBe(inst(g2).places(null).length);
+  });
+
+  it('盲搜：没有 places 段，地点只有 key 和名字，列全，仍在预算内', () => {
+    const g = rig(synth(searchOpts({ blind: true })));
+    const m = maxStatic(driveSamples(g, { search: true }), 6, 4);
+    console.info(`[预算实测] 50 地点盲搜：DM 最大 ${m.dm}，玩家最大 ${m.pl}`);
+    const g2 = rig(synth(searchOpts({ blind: true })));
+    stopAt(g2, 'discuss#2', { search: true });
+    const s = playerSeats(g2)[0] as number;
+    expect(g2.view(s).you.search.places.length).toBe(inst(g2).places(s).length);
+    expect(g2.view(s).you.search).not.toHaveProperty('places_more');
+  });
+
+  it('12 个座位 + 50 个地点：也在 viewBudget 内', () => {
+    const g = rig(synth(searchOpts({ players: 12, clues: 300 })));
+    maxStatic(driveSamples(g, { search: true }), 12, 4);
+  });
+
+  it('持有的卡太多（cost=0 的卡可以无限搜）：my_cards 只列最新的几张，my_cards_more 记其余，my_clues 列全；目录不随卡数增长', () => {
+    const g = rig(synth({ ...X1, clues: 100, clueText: 300 }));
+    stopAt(g, 'discuss#2', { search: true });
+    const [a, b] = playerSeats(g) as number[];
+    const holders = g.rec.state.search.holders as Record<string, number[]>;
+    for (const c of g.rec.state.pack.clues) holders[c.id] = [a!];
+    const you = g.view(a!).you;
+    expect(you.search.my_cards.length).toBe(MY_CARDS_LISTED);
+    expect(you.search.my_cards_more).toBe(100 - MY_CARDS_LISTED);
+    expect(you.search.my_cards.map((c: any) => c.id)).toEqual(Array.from({ length: MY_CARDS_LISTED }, (_, i) => `c${100 - MY_CARDS_LISTED + i}`));
+    const names = you.sections.map((x: any) => x.section);
+    expect(names.filter((n: string) => n.startsWith('clue:')).length).toBe(MY_CARDS_LISTED);
+    expect(names).toContain('my_clues');
+    expect(joinSection(g, a!, 'my_clues').split('\n').length).toBe(100);
+    for (const c of g.rec.state.pack.clues) expect(err(() => section(g, a!, `clue:${c.id}`))).toBeNull();
+    expect(staticLen(g.view(a!))).toBeLessThanOrEqual(PLAYER_VIEW_BUDGET);
+    // 没有卡的人、DM 取 my_clues 都是统一拒绝
+    expect(err(() => section(g, b!, 'my_clues'))).toEqual({ code: 'INVALID_ACTION', message: REFUSAL });
+    expect(err(() => section(g, hostSeat(g), 'my_clues'))).toEqual({ code: 'INVALID_ACTION', message: REFUSAL });
+    // 卡不多时没有 my_cards_more，也没有 my_clues
+    const small = rig(synth({ ...X1, clues: 10, clueText: 100 }));
+    stopAt(small, 'discuss#2', { search: true });
+    const sv = small.view(playerSeats(small)[0]).you;
+    expect(sv.search).not.toHaveProperty('my_cards_more');
+    expect(sv.sections.map((x: any) => x.section)).not.toContain('my_clues');
+  });
+
+  it('公开线索太多：public.search.shared 只列最新的几条，shared_more 记其余，累计字数有上限', () => {
+    const g = rig(synth({ ...X1, clues: 100, clueText: 1000 }));
+    stopAt(g, 'discuss#2', { search: true });
+    const sx = g.rec.state.search;
+    for (const c of g.rec.state.pack.clues) sx.shared.push({ id: c.id, by: playerSeats(g)[0] });
+    const total = sx.shared.length;
+    expect(total).toBeGreaterThan(SHARED_LISTED);
+    for (const seat of [hostSeat(g), ...(playerSeats(g) as number[])]) {
+      const v = g.view(seat);
+      const sh = v.public.search.shared as { id: string; text: string }[];
+      expect(sh.length).toBe(SHARED_LISTED);
+      expect(v.public.search.shared_more).toBe(total - SHARED_LISTED);
+      expect(sh.map((x) => x.id)).toEqual(sx.shared.slice(-SHARED_LISTED).map((x: any) => x.id));
+      expect(sh.reduce((n, x) => n + x.text.length, 0)).toBeLessThan(SHARED_TOTAL_INLINE + SHARED_LISTED * 200);
+      expect(staticLen(v)).toBeLessThanOrEqual(viewBudget(seat === hostSeat(g) ? 'dm' : 'player', 6, 4));
+    }
+    expect(inst(g).publicView().search.shared.length).toBe(total);
+  });
+
+  it('问卷格式上限（30 题 × 300 字题干 × 20 个 200 字选项）：public 和 you 都缩短，全文用 section:questionnaire 取，答案不丢', () => {
+    const opts: SynthOpts = { ...X1, q: 30, qStem: 300, qOptions: 20, qOptText: 200 };
+    const g = rig(synth(opts));
+    stopAt(g, 'quiz#4', { search: true });
+    const s = playerSeats(g)[0] as number;
+    const v = g.view(s);
+    expect(JSON.stringify(inst(g).privateView(s).questionnaire).length).toBeGreaterThan(QUIZ_YOU_INLINE);
+    expect(JSON.stringify(v.you.questionnaire).length).toBeLessThanOrEqual(QUIZ_YOU_INLINE);
+    for (const q of v.you.questionnaire) {
+      expect(q).not.toHaveProperty('options');
+      expect(q.question.length).toBeLessThanOrEqual(QUIZ_STEM_INLINE + 1);
+      expect(q).toHaveProperty('my_answer');
+    }
+    expect(v.you.questionnaire_note).toContain('"section":"questionnaire"');
+    expect(v.public.questionnaire.length).toBe(30);
+    for (const q of v.public.questionnaire) {
+      expect(q).not.toHaveProperty('options');
+      expect(q.question.length).toBeLessThanOrEqual(QUIZ_STEM_INLINE + 1);
+    }
+    expect(JSON.stringify(v.public.questionnaire).length).toBeLessThan(4000);
+    expect(v.public.questionnaire_note).toContain('"section":"questionnaire"');
+    // 全文用段取回：题干、选项、我的答案都在，目录的字数对得上
+    const full = joinSection(g, s, 'questionnaire');
+    expect(full).toContain(fill(300, 'Q'));
+    expect(full).toContain(fill(200, 'O'));
+    expect(full.match(/我的答案：/g)!.length).toBe(30);
+    expect(v.you.sections.find((x: any) => x.section === 'questionnaire').chars).toBe(full.length);
+    // 静态部分去掉 quiz 阶段通用层的 todo / hint 后在预算内
+    const stat = { ...v, new_events: [], todo: undefined, hint: undefined };
+    expect(JSON.stringify(stat).length).toBeLessThanOrEqual(PLAYER_VIEW_BUDGET);
+    // 问卷不长（示例包）时原样：you.questionnaire 带选项，没有 note
+    const small = rig(synth({ ...X1, q: 4 }));
+    stopAt(small, 'quiz#4', { search: true });
+    const sv = small.view(playerSeats(small)[0]);
+    expect(sv.you.questionnaire[0]).toHaveProperty('options');
+    expect(sv.you).not.toHaveProperty('questionnaire_note');
+    // 问卷段：不在答题阶段、DM 都是统一拒绝
+    expect(err(() => section(g, hostSeat(g), 'questionnaire'))).toBeNull();
+    const early = rig(synth(opts));
+    stopAt(early, 'discuss#1');
+    expect(err(() => section(early, playerSeats(early)[0], 'questionnaire'))).toEqual({ code: 'INVALID_ACTION', message: REFUSAL });
+  });
+});
+
+describe('事件的图片标记', () => {
+  it('带图的公告 / 私发在日志里记 data.image，钩子收到的 ev.image 对得上；文字事件没有', () => {
+    const g = rig(synth({ ...X1, floodImages: 2, images: 0 }));
+    const i = inst(g);
+    const seen: { kind: string; image: boolean; own: boolean }[] = [];
+    const orig = i.agentEventText.bind(i);
+    i.agentEventText = (seat: number, ev: any) => {
+      seen.push({ kind: ev.kind, image: ev.image, own: ev.own });
+      return orig(seat, ev);
+    };
+    driveSamples(g, { search: true });
+    const imageKinds = (k: string) => /_img:\d+$/.test(k);
+    const logs = g.rec.log as { kind: string; data?: Record<string, unknown> }[];
+    expect(logs.filter((e) => imageKinds(e.kind)).length).toBeGreaterThan(0);
+    for (const e of logs) expect(Boolean(e.data?.image), e.kind).toBe(imageKinds(e.kind));
+    expect(seen.filter((x) => imageKinds(x.kind)).length).toBeGreaterThan(0);
+    for (const x of seen) expect(x.image, x.kind).toBe(imageKinds(x.kind));
+    // 图片事件的文字原样（含自己的，kind 形如 clue_c1_img:0 不会被当成线索文字改写）
+    expect(seen.some((x) => imageKinds(x.kind) && x.own)).toBe(true);
+  });
+});
+
+describe('测试缺口：纯读的副作用、结束后不放宽、小镇会话、事件大小、dm_actions 里的段名', () => {
+  it('取段不触发 touch：不通知订阅者（存档和长轮询都靠它）、不动 updatedAt；对照：真的行动会触发', () => {
+    const g = rig(synth(X1));
+    stopAt(g, 'discuss#0');
+    const [a, b] = playerSeats(g) as number[];
+    let changes = 0;
+    const off = g.manager.onChange(() => changes++);
+    g.act(b!, { action: 'speech', text: '对照：这一句会触发。' });
+    expect(changes).toBeGreaterThan(0);
+    const updated = g.rec.updatedAt;
+    g.clock.advance(1000);
+    changes = 0;
+    section(g, a!, 'script');
+    section(g, a!, 'find:剧本');
+    section(g, hostSeat(g), 'truth');
+    section(g, hostSeat(g), 'role:1', 2);
+    expect(err(() => section(g, a!, 'truth'))).not.toBeNull();
+    expect(changes).toBe(0);
+    expect(g.rec.updatedAt).toBe(updated);
+    off();
+  });
+
+  it('对局结束 / 中止之后规则不变：玩家仍取不到别人的 role / act，DM 仍取不到 script；get_game_log 的复盘是公开的（对照）', () => {
+    for (const how of ['ended', 'aborted'] as const) {
+      const g = rig(synth({ ...X1, clues: 20, clueText: 200 }));
+      if (how === 'ended') driveSamples(g, { search: true });
+      else {
+        stopAt(g, 'discuss#2', { search: true });
+        g.manager.abortGame({ id: g.rec.hostId, name: 'x' }, g.gameId, '测试中止');
+      }
+      expect(g.rec.status).toBe(how);
+      const dm = hostSeat(g);
+      const seats = playerSeats(g) as number[];
+      const s = seats[0]!;
+      const other = seats[1]!;
+      // 对照：结束后的 get_game_log 把别人的私密事件也公开了（中止后不公开），所以「结束后放宽」是有诱惑的
+      const kinds = (g.manager.getLog(identityOf(g.rec, s), g.gameId, { limit: 1000 }).events as any[]).filter((e) => /^script:\d+$/.test(e.kind));
+      const mine = (g.rec.log as any[]).filter((e) => /^script:\d+$/.test(e.kind) && e.audience.type === 'seats' && e.audience.seats.includes(s)).length;
+      expect(mine).toBeGreaterThan(0);
+      if (how === 'ended') expect(kinds.length).toBeGreaterThan(mine);
+      else expect(kinds.length).toBe(mine);
+      for (const b of [`role:${other}`, `role:${s}`, 'act:1;role:2', 'truth', 'host_notes', 'faq', 'clues', 'questionnaire', 'images', `clue:c0`]) {
+        // 自己持有的卡可以取；其余统一拒绝
+        const hasIt = b === 'clue:c0' && (g.rec.state.search.holders.c0 ?? []).includes(s);
+        const e = err(() => section(g, s, b));
+        if (hasIt) expect(e, `${how} ${b}`).toBeNull();
+        else expect(e, `${how} 玩家取 ${b}`).toEqual({ code: 'INVALID_ACTION', message: REFUSAL });
+      }
+      for (const b of ['script', 'confession', 'places', 'my_clues']) expect(err(() => section(g, dm, b)), `${how} DM 取 ${b}`).toEqual({ code: 'INVALID_ACTION', message: REFUSAL });
+      // 自己的、DM 的段照常
+      expect(err(() => section(g, s, 'script'))).toBeNull();
+      expect(err(() => section(g, dm, 'truth'))).toBeNull();
+      expect(err(() => section(g, dm, `role:${other}`))).toBeNull();
+    }
+  });
+
+  it('MCP：会话在小镇里、没带 game_id 带 section → INVALID_ACTION，不返回小镇视图；带真实的 game_id 照常取', async () => {
+    const demo = exampleDemo('demo-rainy-bookshop');
+    const t = makeTown();
+    const manager = new GameManager({ registry: createRegistry({ scripts: memoryLibrary([demo]) }), rng: new SeededRng('mcp-town-g2') });
+    const agents = [1, 2, 3, 4, 5].map((n) => ({ key: `town-k${n}`.padEnd(16, 'x'), id: `600${n}`, name: `Bot${n}` }));
+    const auth = new Authenticator({ mode: 'keys', adminKeys: [], agents }, manager);
+    const deps = { manager, auth, version: 't', town: { world: t.w, auth, trustedIds: [] as string[] } };
+    const clients: Client[] = [];
+    for (const a of agents) {
+      const server = createMcpServer(deps, { identity: { id: a.id, name: a.name } as Identity, fixed: true, transport: 'memory' });
+      const [x, y] = InMemoryTransport.createLinkedPair();
+      const client = new Client({ name: 't', version: '1' });
+      await server.connect(y);
+      await client.connect(x);
+      clients.push(client);
+    }
+    const call = async (c: Client, name: string, args: Record<string, unknown>) => {
+      const r: any = await c.callTool({ name, arguments: args });
+      return { isError: Boolean(r.isError), text: r.content[0].text as string };
+    };
+    const made = await call(clients[0]!, 'create_game', { game_type: 'jubensha', group_id: '1', auto_referee: true, options: { host: '6005', random_seats: false, stage: 'group' } });
+    const gameId = JSON.parse(made.text).game_id ?? JSON.parse(made.text).summary?.game_id;
+    for (const [i, c] of clients.entries()) if (i > 0) await call(c, 'join_game', { game_id: gameId });
+    await call(clients[0]!, 'start_game', { game_id: gameId });
+    // 还没进小镇：不带 game_id 取段是普通的「没指定对局」之类的错误，不是小镇的拒绝
+    const entered = await call(clients[4]!, 'enter_world', { client_id: 'run-6005-aaaa' });
+    expect(entered.isError, entered.text).toBe(false);
+    const inTown = await call(clients[4]!, 'get_my_view', { section: 'truth' });
+    expect(inTown.isError).toBe(true);
+    expect(inTown.text).toContain('INVALID_ACTION');
+    expect(inTown.text).toContain('你现在在小镇里');
+    expect(inTown.text).not.toContain('"context"');
+    // 带上对局编号：照常取到（DM = 5 号机器人）
+    const ok = await call(clients[4]!, 'get_my_view', { game_id: gameId, section: 'truth' });
+    expect(ok.isError, ok.text).toBe(false);
+    expect(JSON.parse(ok.text)).toMatchObject({ ok: true, section: 'truth', game_id: gameId });
+  });
+
+  it('事件单次大小：近上限包里每个阶段变化后各座位取一次，重复类每条 ≤ POINTER_MAX，其余事件的字数不超过该阶段新增的公开文字和发言之和加 2000', () => {
+    const g = rig(synth(NEAR_MAX), { options: { ask_limit: 3 } });
+    const samples = driveSamples(g, { search: true, withLog: true, askAll: 1 });
+    let maxDm = 0;
+    let maxPl = 0;
+    for (const s of samples) {
+      const events = s.view.new_events as { seq: number; kind: string; text: string }[];
+      let other = 0;
+      let allowed = 2000;
+      for (const e of events) {
+        if (REWRITABLE.test(e.kind) && e.text.startsWith('〔')) {
+          expect(e.text.length, `${s.seat} ${e.kind}`).toBeLessThanOrEqual(POINTER_MAX);
+          continue;
+        }
+        other += e.text.length;
+        const orig = s.log!.find((x) => x.seq === e.seq)!;
+        expect(e.text, `${s.seat} ${e.kind} 没被改写的事件要和 get_game_log 逐字相同`).toBe(orig.text);
+        // 被允许的字数：公开文字、发言、提问、回答、图片说明（都是本来就不改写的）
+        allowed += e.text.length;
+      }
+      expect(other).toBeLessThanOrEqual(allowed);
+      const n = JSON.stringify(events).length;
+      if (s.dm) maxDm = Math.max(maxDm, n);
+      else maxPl = Math.max(maxPl, n);
+    }
+    console.info(`[事件实测] 近上限 6 座位 4 幕：单次 new_events 最大 DM ${maxDm} 字、玩家 ${maxPl} 字（JSON 长度）`);
+    expect(maxDm).toBeGreaterThan(0);
+  });
+
+  it('dm_actions 最后一项里裸写的段名（"act:1"、"host_notes"、"clue:线索id"……）都是目录里真有的或可解析的', () => {
+    const g = rig(synth({ ...X1, clues: 20, clueText: 200 }));
+    stopAt(g, 'discuss#1', { search: true });
+    const dm = hostSeat(g);
+    const you = g.view(dm).you;
+    const last = you.dm_actions.at(-1) as string;
+    const names = new Set((you.sections as { section: string }[]).map((x) => x.section));
+    const list = last.match(/section 也可以是([^；]*)；/)?.[1];
+    expect(list, last).toBeTruthy();
+    const bare = [...list!.matchAll(/"([^"]+)"/g)].map((m) => m[1]!);
+    expect(bare.length).toBeGreaterThanOrEqual(7);
+    for (const n of bare) {
+      if (n.startsWith('clue:')) {
+        expect(parseSection('clue:c1'), n).not.toBeNull();
+        expect(err(() => section(g, dm, 'clue:c1'))).toBeNull();
+        expect(names.has('clues')).toBe(true);
+      } else {
+        expect(parseSection(n), n).not.toBeNull();
+        expect(names.has(n), `${n} 不在 DM 目录里`).toBe(true);
+        expect(err(() => section(g, dm, n)), n).toBeNull();
+      }
+    }
+    // "find:钥匙" 这一条
+    const find = last.match(/"(find:[^"]+)"/)?.[1];
+    expect(find).toBeTruthy();
+    expect(err(() => section(g, dm, find!))).toBeNull();
+  });
+});
+
+// ───────────────────────── 与改前（68d1b58）逐条对照 ─────────────────────────
+
+type LogHash = { seq: number; kind: string; sha: string };
+type OutHash = { seq: number; sha: string };
+interface Base2Case {
+  lookups: Record<string, string>;
+  stateKeys: string[];
+  logs: LogHash[] | Record<string, LogHash[]>;
+  outbox: OutHash[];
+}
+interface Base2Web {
+  web: { tag: string; hSeat: number; len: number; sha: string }[];
+  status: string;
+  outbox: OutHash[];
+}
+/** 改前（68d1b58）的 get_game_log 每条事件的 sha、出箱每条的 sha、DM lookup 的返回、rec.state 的键、真人座位网页的 private（fixtures/jubensha-views-baseline2.json，由改前的代码生成） */
+const base2 = JSON.parse(readFileSync(new URL('./fixtures/jubensha-views-baseline2.json', import.meta.url), 'utf8')) as Record<string, any>;
+const sha256 = (x: unknown) => createHash('sha256').update(JSON.stringify(x)).digest('hex');
+
+describe('与改前逐条相同：get_game_log、出箱、DM 的 lookup 与取段、rec.state 的键、真人座位网页', () => {
+  /** 只允许这些事件的文字变化（本段改的开局私信文案） */
+  const CHANGED_KINDS = new Set(['dm_brief']);
+  const cases = [
+    ['rainy-host', 'demo-rainy-bookshop', true],
+    ['rainy-nohost', 'demo-rainy-bookshop', false],
+    ['lighthouse-host', 'demo-search-lighthouse', true],
+  ] as const;
+  for (const [key, name, host] of cases) {
+    it(`${key}：get_game_log 每条事件、出箱每条、rec.state 的键与改前相同；lookup 的返回与改前逐字相同，取段的正文与它一致`, () => {
+      const b = base2[key] as Base2Case;
+      const g = rig(exampleDemo(name), { host });
+      const lookups: Record<string, string> = {};
+      const secs: Record<string, string> = {};
+      driveSamples(g, {
+        onTag: (tag) => {
+          if (tag !== 'discuss#0' || !host) return;
+          const dm = g.rec.state.host as number;
+          const texts = [...g.rec.players.filter((p: any) => p.seat !== dm).map((p: any) => String(p.seat)), 'act:1', 'act:2', 'questionnaire', 'images', ...g.rec.state.pack.clues.map((c: any) => `clue:${c.id}`)];
+          for (const t of texts) {
+            try {
+              lookups[t] = g.act(dm, { action: 'lookup', text: t }).message as string;
+            } catch (e: any) {
+              lookups[t] = `ERR:${e.message}`;
+            }
+            const sec = /^\d+$/.test(t) ? `role:${t}` : t;
+            secs[t] = err(() => section(g, dm, sec)) ? 'ERR' : (section(g, dm, sec).text as string);
+          }
+        },
+      });
+      if (host) {
+        expect(Object.keys(lookups).length).toBeGreaterThan(4);
+        expect(lookups).toEqual(b.lookups);
+        for (const [t, msg] of Object.entries(lookups)) {
+          if (msg.startsWith('ERR:')) expect(secs[t]).toBe('ERR');
+          else if (msg.startsWith('（这个剧本没有')) expect(secs[t], `取段 ${t}：没有这一段`).toBe('ERR'); // lookup 保留旧提示，取段是统一拒绝
+          else expect(secs[t], `取段 ${t} 与旧 lookup 的正文`).toBe(msg.slice(msg.indexOf('\n') + 1));
+        }
+      }
+      expect(Object.keys(g.rec.state).sort()).toEqual(b.stateKeys);
+      // get_game_log：每个座位看到的每条事件（编号、kind 相同；文字相同，开局私信除外）
+      for (const p of g.rec.players) {
+        const want = Array.isArray(b.logs) ? b.logs : (b.logs as Record<string, LogHash[]>)[String(p.seat)]!;
+        const got = (g.manager.getLog(identityOf(g.rec, p.seat), g.gameId, { limit: 1000 }).events as any[]).map((e) => ({ seq: e.seq, kind: e.kind, sha: sha256(e) }));
+        expect(got.map((x) => [x.seq, x.kind]), `座位 ${p.seat} 的事件编号和 kind`).toEqual(want.map((x) => [x.seq, x.kind]));
+        const diff = got.filter((x, i) => x.sha !== want[i]!.sha).map((x) => x.kind);
+        for (const k of diff) expect(CHANGED_KINDS.has(k), `座位 ${p.seat} 的 ${k} 事件文字变了`).toBe(true);
+      }
+      // 出箱：条数、编号、每条都相同
+      expect(g.rec.outbox.map((d: any) => d.seq)).toEqual(b.outbox.map((d) => d.seq));
+      g.rec.outbox.forEach((d: any, i: number) => expect(sha256(d), `出箱第 ${i} 条`).toBe(b.outbox[i]!.sha));
+    });
+  }
+
+  it('真人玩家的座位网页 private 每个阶段都与改前逐字相同，也等于 fullView；发给真人的出箱每条相同', async () => {
+    const b = base2['web-human-player'] as Base2Web;
+    const { web, outbox, game } = await driveWithHuman(false);
+    expect(web.map((x) => x.tag)).toEqual(b.web.map((x) => x.tag));
+    expect(web.length).toBeGreaterThan(3);
+    expect(game.rec.status).toBe('ended');
+    web.forEach((x, i) => expect(x.sha, `阶段 ${x.tag}`).toBe(b.web[i]!.sha));
+    for (const x of web) expect(x.private).toEqual(x.full);
+    expect(outbox.map((d) => d.seq)).toEqual(b.outbox.map((d) => d.seq));
+    outbox.forEach((d, i) => expect(sha256(d), `出箱第 ${i} 条`).toBe(b.outbox[i]!.sha));
+    expect(game.rec.status).toBe(b.status);
+  });
+
+  it('真人 DM 的出箱除了开局私信（本段改的文案）外与改前逐条相同', async () => {
+    const b = base2['web-human-dm'] as Base2Web;
+    const { outbox } = await driveWithHuman(true);
+    expect(outbox.map((d) => d.seq)).toEqual(b.outbox.map((d) => d.seq));
+    const diff = outbox.map((d, i) => (sha256(d) === b.outbox[i]!.sha ? null : d)).filter((d) => d !== null) as any[];
+    expect(diff.length).toBeLessThanOrEqual(1);
+    for (const d of diff) expect(d.text).toContain('你是本局 DM');
+  });
+
+  /** 与生成基线时相同的推进：1 个真人（玩家或 DM），其余是机器人，裁判代行 */
+  async function driveWithHuman(hostHuman: boolean) {
+    const demo = exampleDemo('demo-search-lighthouse');
+    const { manager, clock } = setup(1, undefined, { scripts: memoryLibrary([demo]) });
+    const n = demo.players;
+    const bots = Array.from({ length: hostHuman ? n : n - 1 }, (_, i) => bot(i + 1));
+    const humans = [human(1)];
+    const { gameId, rec } = startGame(manager, 'jubensha', { players: bots, humans, referee: REF, options: { random_seats: false, stage: 'group', ...(hostHuman ? { host: humans[0]!.userId } : {}) } });
+    const r: any = rec;
+    const hSeat = r.players.find((p: any) => p.kind === 'human').seat;
+    const web: { tag: string; hSeat: number; len: number; sha: string; private: any; full: any }[] = [];
+    let last = '';
+    for (let i = 0; i < 400 && r.status === 'running'; i++) {
+      await manager.refereeStep(REF, gameId);
+      if (r.status !== 'running') break;
+      const k = r.phase?.key ?? '-';
+      const tag = `${k}#${r.state.act}`;
+      if (r.phase?.openedAt !== null && tag !== last) {
+        last = tag;
+        const priv = (manager.webSeatView(rec, hSeat) as any).me.private;
+        web.push({ tag, hSeat, len: JSON.stringify(priv).length, sha: sha256(JSON.stringify(priv)), private: priv, full: (manager as any).inst(r).fullView(hSeat) });
+      }
+      for (const seat of pendingSeats(r)) {
+        const p = r.players.find((x: any) => x.seat === seat);
+        const req = r.phase.pending[String(seat)];
+        if (!req || req.done) continue;
+        if (p.kind === 'human') {
+          try {
+            manager.relayHumanMessage(REF, gameId, { userId: p.id, text: '过', channel: req.channel });
+          } catch {
+            /* ignore */
+          }
+          continue;
+        }
+        const input = k === 'read' ? { action: 'ready' } : k === 'vote' || k === 'search' || k === 'quiz' ? { action: 'skip' } : k === 'discuss' ? { action: 'end_speech' } : { action: 'speech', text: '我是我。' };
+        try {
+          manager.act({ id: p.id, name: p.name }, gameId, input as any);
+        } catch {
+          /* ignore */
+        }
+      }
+      clock.advance(30_000);
+    }
+    return { web, outbox: r.outbox as any[], game: { rec: r } };
+  }
 });

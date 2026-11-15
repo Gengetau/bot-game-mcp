@@ -27,6 +27,18 @@ export const PLAYER_CONFESSION_INLINE = 2000;
 export const PLAYER_ACTS_INLINE = 3500;
 export const PLAYER_CARDS_INLINE = 2500;
 export const PLACE_TITLES_LISTED = 5;
+/** you.search.places 最多列几个地点（非盲搜；其余记 places_more，全部用 section:"places"）。盲搜没有这一段，列全（只有 key 和名字） */
+export const PLACES_LISTED = 20;
+/** public.search.places 最多列几个地点（非盲搜；其余记 places_more） */
+export const PUBLIC_PLACES_LISTED = 20;
+/** you.search.my_cards 最多列几张（最新的优先；其余记 my_cards_more，清单用 section:"my_clues"，每张用 clue:id） */
+export const MY_CARDS_LISTED = 12;
+/** public.search.shared 最多列几条（最新的优先；其余记 shared_more，原文在 get_game_log 的 clue_shared 事件） */
+export const SHARED_LISTED = 6;
+/** you.questionnaire（玩家自己的问卷，答题必需）的 JSON 超过它时，每题只留题号、分值、已答情况和前几个字；全文用 section:"questionnaire"（quiz 阶段 todo.prompt 里也有） */
+export const QUIZ_YOU_INLINE = 8000;
+/** public.questionnaire 去掉选项后仍超过 QUIZ_PUBLIC_INLINE 时，每题题干留多少字 */
+export const QUIZ_STEM_INLINE = 40;
 export const IMAGE_CAPTION_INLINE = 400;
 /** 一个视图里所有图片说明（人物剧本、各幕、线索卡；公开线索另算一份）合计的内联字数；放不下的张数在列表末尾留一行指引 */
 export const IMAGES_INLINE = 2400;
@@ -34,8 +46,8 @@ export const IMAGES_INLINE = 2400;
 export const SEARCH_LOG_LISTED = 20;
 export const QUIZ_PUBLIC_INLINE = 2000;
 export const CAST_PUBLIC_INLINE = 150;
-export const SHARED_CLUE_INLINE = 800;
-export const SHARED_TOTAL_INLINE = 4000;
+export const SHARED_CLUE_INLINE = 400;
+export const SHARED_TOTAL_INLINE = 1200;
 export const PUBLIC_TRUTH_INLINE = 800;
 /** 被改写成指引行的私密重复事件，每条的字数上限 */
 export const POINTER_MAX = 200;
@@ -121,13 +133,13 @@ export function paginate(text: string, page: number): Paged {
 // ───────────────────────── 段名 ─────────────────────────
 
 export type SectionRef =
-  | { kind: 'host_notes' | 'truth' | 'faq' | 'clues' | 'questionnaire' | 'images' | 'questions' | 'places' | 'script' | 'confession' }
+  | { kind: 'host_notes' | 'truth' | 'faq' | 'clues' | 'questionnaire' | 'images' | 'questions' | 'places' | 'script' | 'confession' | 'my_clues' }
   | { kind: 'role'; n: number }
   | { kind: 'act'; n: number }
   | { kind: 'clue'; id: string }
   | { kind: 'find'; q: string };
 
-const FIXED = ['host_notes', 'truth', 'faq', 'clues', 'questionnaire', 'images', 'questions', 'places', 'script', 'confession'] as const;
+const FIXED = ['host_notes', 'truth', 'faq', 'clues', 'questionnaire', 'images', 'questions', 'places', 'script', 'confession', 'my_clues'] as const;
 
 /**
  * 解析段名（lookup 别名和取段都走这一个，没有第二套）。

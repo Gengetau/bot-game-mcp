@@ -24,8 +24,14 @@ import {
   DM_NOTES_INLINE,
   DM_TRUTH_INLINE,
   IMAGES_INLINE,
+  MY_CARDS_LISTED,
   MY_Q_LISTED,
   OPEN_Q_LISTED,
+  PLACES_LISTED,
+  PUBLIC_PLACES_LISTED,
+  QUIZ_STEM_INLINE,
+  QUIZ_YOU_INLINE,
+  SHARED_LISTED,
   Q_TEXT_INLINE,
   PLAYER_CARDS_INLINE,
   PLAYER_SCRIPT_INLINE,
@@ -1367,9 +1373,31 @@ export function createJubenshaDefinition(
           return { title: '我的提问和回答', body: this.playerQuestionsBody(seat) };
         case 'places':
           return this.hasPlacesSection(seat) ? { title: '各地点剩余卡背标题', body: this.placesBody(seat) } : null;
+        case 'my_clues':
+          return this.held(seat).length ? { title: '我持有的线索', body: this.myCluesBody(seat) } : null;
+        case 'questionnaire':
+          return this.hasQuizSection(seat) ? { title: '我的问卷', body: this.playerQuizBody(seat) } : null;
         default:
           return null;
       }
+    }
+
+    /** 我持有的全部线索：id、标题、字数（my_cards 列不下时看这里；全文用 clue:id） */
+    private myCluesBody(seat: Seat): string {
+      return this.held(seat)
+        .map((c) => `${c.id}｜${c.title}｜全文 ${c.text.length} 字${this.state.search?.shared.some((x) => x.id === c.id) ? '｜已公开' : ''}`)
+        .join('\n');
+    }
+
+    private hasQuizSection(seat: Seat): boolean {
+      return Boolean(this.quizFor(seat).length && (this.phase?.key === 'quiz' || this.state.quiz));
+    }
+
+    /** 玩家自己的问卷（和 you.questionnaire 同一份数据，写成文字：题干、选项、我的答案） */
+    private playerQuizBody(seat: Seat): string {
+      return (this.quizView(seat) as { no: number; question: string; points: number; options: { key: string; text: string }[]; my_answer: string | null; correct?: string[] }[])
+        .map((q) => `${q.no}. ${q.question}（${q.points} 分）\n   ${q.options.map((o) => `${o.key}=${o.text}`).join('  ')}\n   我的答案：${q.my_answer ?? '（还没答）'}${q.correct ? `　正确答案：${JSON.stringify(q.correct)}` : ''}`)
+        .join('\n');
     }
 
     /** 玩家自己的材料（find 只在这里找，不读任何别人的东西） */
@@ -1437,9 +1465,12 @@ export function createJubenshaDefinition(
       const out: Record<string, unknown>[] = [item({ kind: 'script' }, '我的人物剧本', this.playerSectionBody(seat, { kind: 'script' })!.body, 'you.script 被截断时看后面的页')];
       s.pack.acts.slice(0, s.unlocked).forEach((a, i) => out.push(item({ kind: 'act', n: i + 1 }, `第 ${i + 1} 幕 ${a.title}`, this.playerSectionBody(seat, { kind: 'act', n: i + 1 })!.body)));
       if (this.confessing(seat)) out.push(item({ kind: 'confession' }, '我的认罪书', r.confession, '被截断时看'));
-      for (const c of this.held(seat)) out.push(item({ kind: 'clue', id: c.id }, c.title, this.playerSectionBody(seat, { kind: 'clue', id: c.id })!.body));
+      const held = this.held(seat);
+      for (const c of held.slice(-MY_CARDS_LISTED)) out.push(item({ kind: 'clue', id: c.id }, c.title, this.playerSectionBody(seat, { kind: 'clue', id: c.id })!.body));
+      if (held.length > MY_CARDS_LISTED) out.push(item({ kind: 'my_clues' }, '我持有的全部线索', this.myCluesBody(seat), 'my_cards_more 出现时看清单，全文用 clue:线索id'));
       out.push(item({ kind: 'questions' }, '我的提问和回答', this.playerQuestionsBody(seat), 'my_questions_more 出现时看全部'));
-      if (this.hasPlacesSection(seat)) out.push(item({ kind: 'places' }, '各地点剩余卡背', this.placesBody(seat), 'cards_more 出现时看全部'));
+      if (this.hasPlacesSection(seat)) out.push(item({ kind: 'places' }, '各地点剩余卡背', this.placesBody(seat), 'cards_more 或 places_more 出现时看全部'));
+      if (this.hasQuizSection(seat)) out.push(item({ kind: 'questionnaire' }, '我的问卷', this.playerQuizBody(seat), 'you.questionnaire 被缩短时看全文'));
       out.push({ ...find, use: '想核对剧本里的某个词（只找你自己的材料）' });
       return out;
     }
@@ -1659,6 +1690,12 @@ export function createJubenshaDefinition(
       const where = `全文：${getViewCall('questions')}`;
       out.my_questions = ((out.my_questions ?? qs) as { question: string; answer: string }[]).map((x) => (x.question.length > Q_TEXT_INLINE || x.answer.length > Q_TEXT_INLINE ? { question: clip(x.question, Q_TEXT_INLINE, where), answer: clip(x.answer, Q_TEXT_INLINE, where) } : x));
       if (s.search) out.search = this.searchView(seat, img);
+      // 问卷是答题必需，不能丢；太长时每题只留题号、分值、已答情况和前几个字（选项和全文在 todo.prompt 或 section:"questionnaire"）
+      const qv = full.questionnaire as { id: string; question: string; options?: unknown }[] | undefined;
+      if (qv && JSON.stringify(qv).length > QUIZ_YOU_INLINE) {
+        out.questionnaire = qv.map(({ options: _o, id: _i, question, ...q }) => ({ ...q, question: question.length > QUIZ_STEM_INLINE ? `${question.slice(0, QUIZ_STEM_INLINE)}…` : question }));
+        out.questionnaire_note = `问卷太长，这里只给了题号、分值和你的答案；题干和选项全文：${getViewCall('questionnaire')}（答题阶段 todo.prompt 里也有）`;
+      }
       out.sections = sections;
       return out;
     }
@@ -1668,17 +1705,26 @@ export function createJubenshaDefinition(
       const sx = this.sx;
       const searching = this.phase?.key === 'search';
       const lim = Boolean(img);
-      const held = this.held(seat);
+      const heldAll = this.held(seat);
+      // 持有的卡太多（cost=0 的卡可以无限搜）：只列最新的几张，清单用 section:"my_clues"
+      const held = lim ? heldAll.slice(-MY_CARDS_LISTED) : heldAll;
       const fits = lim ? fitFromNewest(held.map((c) => c.text.length), PLAYER_CARDS_INLINE) : held.map(() => true);
       const cardImgs = new Array<string[] | undefined>(held.length);
       for (let i = held.length - 1; i >= 0; i--) {
         const c = held[i]!;
         if (c.images.length) cardImgs[i] = lim ? capCaptions(this.imageCaptions(c.images), getViewCall(`clue:${c.id}`), img!) : this.imageCaptions(c.images);
       }
+      // 地点太多（上限 50 个地点 + 身上有线索的角色）：非盲搜时先放还有卡的，只列前 PLACES_LISTED 个；盲搜没有 places 段，列全（只有 key 和名字）
+      const allPlaces = this.places(seat);
+      let placeList = allPlaces;
+      if (lim && !this.blind && allPlaces.length > PLACES_LISTED) {
+        const has = (p: { key: string }) => this.remaining(p.key, seat).length > 0;
+        placeList = [...allPlaces.filter(has), ...allPlaces.filter((p) => !has(p))].slice(0, PLACES_LISTED);
+      }
       return {
         points_left: sx.left[String(seat)] ?? 0,
         ...(searching ? { this_round: this.allowance(seat) } : {}),
-        places: this.places(seat).map((p) => {
+        places: placeList.map((p) => {
           if (this.blind) return { key: p.key, name: p.name };
           const left = this.remaining(p.key, seat);
           const titles = left.map((c) => c.title);
@@ -1690,6 +1736,7 @@ export function createJubenshaDefinition(
             ...(lim && titles.length > PLACE_TITLES_LISTED ? { cards_more: titles.length - PLACE_TITLES_LISTED } : {}),
           };
         }),
+        ...(placeList.length < allPlaces.length ? { places_more: allPlaces.length - placeList.length } : {}),
         my_cards: held.map((c, i) => ({
           id: c.id,
           title: c.title,
@@ -1698,6 +1745,7 @@ export function createJubenshaDefinition(
           shared: sx.shared.some((x) => x.id === c.id),
           ...(this.deepKids(seat, c).length ? { can_deep: true } : {}),
         })),
+        ...(held.length < heldAll.length ? { my_cards_more: heldAll.length - held.length } : {}),
         how_to: [
           '搜证环节：act({"action":"search","text":"地点 key"}) 或 act({"action":"search","target":3}) 搜 3 号；act({"action":"deep","text":"线索id"}) 深入；act({"action":"skip"}) 结束本轮',
           '任何时候：act({"action":"share","text":"线索id"}) 把自己的卡公开到群里',
@@ -1781,7 +1829,9 @@ export function createJubenshaDefinition(
       const out: Record<string, unknown> = { ...pv };
       if (Array.isArray(pv.cast)) out.cast = pv.cast.map((c: any) => (c.public.length > CAST_PUBLIC_INLINE ? { ...c, public: clip(c.public, CAST_PUBLIC_INLINE, more) } : c));
       if (pv.search?.shared) {
-        const shared = pv.search.shared as { text: string; images?: string[] }[];
+        const sharedAll = pv.search.shared as { text: string; images?: string[] }[];
+        // 公开线索条数没有上限（最多 500 张）：只列最新的几条，其余记 shared_more（原文在 get_game_log 的 clue_shared 事件）
+        const shared = sharedAll.slice(-SHARED_LISTED);
         let used = 0;
         const imgLeft = { left: IMAGES_INLINE };
         const fixed = new Array<any>(shared.length);
@@ -1796,12 +1846,19 @@ export function createJubenshaDefinition(
             ...(x.images ? { images: capCaptions(x.images, 'get_game_log 里对应的公开事件', imgLeft) } : {}),
           };
         }
-        out.search = { ...pv.search, shared: fixed };
+        out.search = { ...pv.search, shared: fixed, ...(sharedAll.length > shared.length ? { shared_more: sharedAll.length - shared.length } : {}) };
+        const places = pv.search.places as unknown[];
+        if (!this.blind && places.length > PUBLIC_PLACES_LISTED) out.search = { ...(out.search as object), places: places.slice(0, PUBLIC_PLACES_LISTED), places_more: places.length - PUBLIC_PLACES_LISTED };
         const log = pv.search.log as unknown[];
         if (log.length > SEARCH_LOG_LISTED) out.search = { ...(out.search as object), log: log.slice(-SEARCH_LOG_LISTED), log_more: log.length - SEARCH_LOG_LISTED };
       }
       if (Array.isArray(pv.questionnaire) && JSON.stringify(pv.questionnaire).length > QUIZ_PUBLIC_INLINE) {
         out.questionnaire = pv.questionnaire.map(({ options: _o, ...q }: any) => q);
+        // 去掉选项后题干仍然太长（30 题 × 300 字）：每题只留前几个字，全文在 you.questionnaire / section:"questionnaire"
+        if (JSON.stringify(out.questionnaire).length > QUIZ_PUBLIC_INLINE) {
+          out.questionnaire = (out.questionnaire as { question: string }[]).map((q) => (q.question.length > QUIZ_STEM_INLINE ? { ...q, question: `${q.question.slice(0, QUIZ_STEM_INLINE)}…` } : q));
+          out.questionnaire_note = `题干已缩短、选项已省略；全文：${getViewCall('questionnaire')}`;
+        }
       }
       if (typeof pv.truth === 'string' && pv.truth.length > PUBLIC_TRUTH_INLINE) {
         out.truth = `${pv.truth.slice(0, PUBLIC_TRUTH_INLINE)}\n…（共 ${pv.truth.length} 字；全文在 new_events 的 truth 事件或 get_game_log）`;
