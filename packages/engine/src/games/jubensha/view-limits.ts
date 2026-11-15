@@ -32,7 +32,7 @@ export const PLACES_LISTED = 20;
 /** public.search.places 最多列几个地点（非盲搜；其余记 places_more） */
 export const PUBLIC_PLACES_LISTED = 20;
 /** you.search.my_cards 最多列几张（最新的优先；其余记 my_cards_more，清单用 section:"my_clues"，每张用 clue:id） */
-export const MY_CARDS_LISTED = 12;
+export const MY_CARDS_LISTED = 6;
 /** public.search.shared 最多列几条（最新的优先；其余记 shared_more，原文在 get_game_log 的 clue_shared 事件） */
 export const SHARED_LISTED = 6;
 /** you.questionnaire（玩家自己的问卷，答题必需）的 JSON 超过它时，每题只留题号、分值、已答情况和前几个字；全文用 section:"questionnaire"（quiz 阶段 todo.prompt 里也有） */
@@ -48,7 +48,7 @@ export const QUIZ_PUBLIC_INLINE = 2000;
 export const CAST_PUBLIC_INLINE = 150;
 export const SHARED_CLUE_INLINE = 400;
 export const SHARED_TOTAL_INLINE = 1200;
-export const PUBLIC_TRUTH_INLINE = 800;
+export const PUBLIC_TRUTH_INLINE = 600;
 /** 被改写成指引行的私密重复事件，每条的字数上限 */
 export const POINTER_MAX = 200;
 export const FIND_MAX_HITS = 8;

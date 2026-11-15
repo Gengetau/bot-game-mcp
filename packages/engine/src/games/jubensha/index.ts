@@ -1854,10 +1854,10 @@ export function createJubenshaDefinition(
       }
       if (Array.isArray(pv.questionnaire) && JSON.stringify(pv.questionnaire).length > QUIZ_PUBLIC_INLINE) {
         out.questionnaire = pv.questionnaire.map(({ options: _o, ...q }: any) => q);
-        // 去掉选项后题干仍然太长（30 题 × 300 字）：每题只留前几个字，全文在 you.questionnaire / section:"questionnaire"
+        // 去掉选项后题干仍然太长（30 题 × 300 字）：只留题号和分值，题干和选项的全文在 todo.prompt（答题阶段）/ you.questionnaire（玩家）/ section:"questionnaire"
         if (JSON.stringify(out.questionnaire).length > QUIZ_PUBLIC_INLINE) {
-          out.questionnaire = (out.questionnaire as { question: string }[]).map((q) => (q.question.length > QUIZ_STEM_INLINE ? { ...q, question: `${q.question.slice(0, QUIZ_STEM_INLINE)}…` } : q));
-          out.questionnaire_note = `题干已缩短、选项已省略；全文：${getViewCall('questionnaire')}`;
+          out.questionnaire = (out.questionnaire as { no: number; points: number }[]).map(({ no, points }) => ({ no, points }));
+          out.questionnaire_note = `题干和选项已省略（只留题号和分值）；全文：${getViewCall('questionnaire')}`;
         }
       }
       if (typeof pv.truth === 'string' && pv.truth.length > PUBLIC_TRUTH_INLINE) {

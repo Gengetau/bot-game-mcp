@@ -243,7 +243,7 @@ DM（AI）能看到的全部材料：真相、凶手、主持手册、全部人�
 
 有待答提问而没有别的待办时，`hint` 会提示「先看 you.open_questions_look 里该看的段，再用 answer 回答」（被 @ 叫醒的 DM 也要先看这两个字段）。
 
-**玩家的默认视图**：`script` 4000 字、`acts` 合计 3500 字（最新一幕优先，放不下的幕只留前 200 字）、`confession` 2000 字、`search.my_cards[].text` 合计 2500 字（放不下的留前 200 字）、`my_questions` 最近 5 条（`my_questions_more`）、`search.places` 最多 20 个地点且每处最多 5 个卡背标题（`places_more`、`cards_more`）、`search.my_cards` 最多 12 张最新的（`my_cards_more`，清单用 `my_clues`）、图片说明每条 400 字且全部合计 2400 字。问卷是答题必需：`you.questionnaire` 超过 8000 字时每题只留题号、分值、我的答案和前 40 字题干（`questionnaire_note`），全文用 `section:"questionnaire"`（答题阶段 `todo.prompt` 里也有）。`public` 里：角色公开介绍 150 字、公开线索只列最新 6 条（`shared_more`）且每条 400 字、累计 1200 字、`public.questionnaire` 超过 2000 字时去掉选项（还超就把题干缩到 40 字，带 `questionnaire_note`）、地点只列 20 个（`places_more`）、结束后的 `public.truth` 800 字。
+**玩家的默认视图**：`script` 4000 字、`acts` 合计 3500 字（最新一幕优先，放不下的幕只留前 200 字）、`confession` 2000 字、`search.my_cards[].text` 合计 2500 字（放不下的留前 200 字）、`my_questions` 最近 5 条（`my_questions_more`）、`search.places` 最多 20 个地点且每处最多 5 个卡背标题（`places_more`、`cards_more`）、`search.my_cards` 最多 6 张最新的（`my_cards_more`，清单用 `my_clues`）、图片说明每条 400 字且全部合计 2400 字。问卷是答题必需：`you.questionnaire` 超过 8000 字时每题只留题号、分值、我的答案和前 40 字题干（`questionnaire_note`），全文用 `section:"questionnaire"`（答题阶段 `todo.prompt` 里也有）。`public` 里：角色公开介绍 150 字、公开线索只列最新 6 条（`shared_more`）且每条 400 字、累计 1200 字、`public.questionnaire` 超过 2000 字时去掉选项（还超就只留题号和分值，带 `questionnaire_note`）、地点只列 20 个（`places_more`）、结束后的 `public.truth` 600 字。
 
 可取的段（`section`）：
 

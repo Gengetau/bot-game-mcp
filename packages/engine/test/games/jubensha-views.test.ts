@@ -843,7 +843,7 @@ describe('预算：地点数、持有的卡、公开线索、问卷', () => {
     expect(you.search.places.length).toBe(PLACES_LISTED);
     expect(you.search.places_more).toBe(total - PLACES_LISTED);
     for (const p of you.search.places) expect(p.cards.length).toBeLessThanOrEqual(PLACE_TITLES_LISTED);
-    expect(section(g2, s, 'places').text.split('\n').length).toBe(total);
+    expect(joinSection(g2, s, 'places').split('\n').length).toBe(total);
     expect(you.sections.find((x: any) => x.section === 'places').use).toContain('places_more');
     // 公开视图里的地点也只列前几个
     const pub = g2.view(s).public.search;
@@ -930,8 +930,8 @@ describe('预算：地点数、持有的卡、公开线索、问卷', () => {
     expect(v.you.questionnaire_note).toContain('"section":"questionnaire"');
     expect(v.public.questionnaire.length).toBe(30);
     for (const q of v.public.questionnaire) {
-      expect(q).not.toHaveProperty('options');
-      expect(q.question.length).toBeLessThanOrEqual(QUIZ_STEM_INLINE + 1);
+      // 去掉选项后仍超过 QUIZ_PUBLIC_INLINE：只留题号和分值（题干全文在 todo.prompt / you.questionnaire / section）
+      expect(Object.keys(q).sort()).toEqual(['no', 'points']);
     }
     expect(JSON.stringify(v.public.questionnaire).length).toBeLessThan(4000);
     expect(v.public.questionnaire_note).toContain('"section":"questionnaire"');
@@ -1022,8 +1022,8 @@ describe('测试缺口：纯读的副作用、结束后不放宽、小镇会话�
       if (how === 'ended') expect(kinds.length).toBeGreaterThan(mine);
       else expect(kinds.length).toBe(mine);
       for (const b of [`role:${other}`, `role:${s}`, 'act:1;role:2', 'truth', 'host_notes', 'faq', 'clues', 'questionnaire', 'images', `clue:c0`]) {
-        // 自己持有的卡可以取；其余统一拒绝
-        const hasIt = b === 'clue:c0' && (g.rec.state.search.holders.c0 ?? []).includes(s);
+        // 自己持有的卡可以取；自己的问卷在答问卷阶段起可以取（结束后仍是自己的）；其余统一拒绝
+        const hasIt = (b === 'clue:c0' && (g.rec.state.search.holders.c0 ?? []).includes(s)) || (b === 'questionnaire' && how === 'ended');
         const e = err(() => section(g, s, b));
         if (hasIt) expect(e, `${how} ${b}`).toBeNull();
         else expect(e, `${how} 玩家取 ${b}`).toEqual({ code: 'INVALID_ACTION', message: REFUSAL });
@@ -1186,7 +1186,7 @@ describe('与改前逐条相同：get_game_log、出箱、DM 的 lookup 与取�
         expect(lookups).toEqual(b.lookups);
         for (const [t, msg] of Object.entries(lookups)) {
           if (msg.startsWith('ERR:')) expect(secs[t]).toBe('ERR');
-          else if (msg.startsWith('（这个剧本没有')) expect(secs[t], `取段 ${t}：没有这一段`).toBe('ERR'); // lookup 保留旧提示，取段是统一拒绝
+          else if (msg.slice(msg.indexOf('\n') + 1).startsWith('（这个剧本没有')) expect(secs[t], `取段 ${t}：没有这一段`).toBe('ERR'); // lookup 保留旧提示，取段是统一拒绝
           else expect(secs[t], `取段 ${t} 与旧 lookup 的正文`).toBe(msg.slice(msg.indexOf('\n') + 1));
         }
       }
