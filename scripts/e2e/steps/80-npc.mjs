@@ -50,6 +50,19 @@ export default async function run(h) {
       if (!(s.x >= 40 && s.x <= vp.w - 40 && s.y >= 60 && s.y <= vp.h - 140)) return null;
       return (await p.page.evaluate(([x, y]) => document.elementFromPoint(x, y)?.id ?? '', [s.x, s.y])) === 'canvas' ? s : null;
     }, 20_000, `${p.label} 点得到 ${id}`, 300);
+  /** 点得到之前先把镜头拉远（滚轮），直到这个 NPC 在视口里、最上面是画布（坐在茶桌上时掌柜在画面下沿，被底栏盖住） */
+  const zoomToSee = async (p, id) => {
+    for (let i = 0; i < 12; i++) {
+      const s = await npcScreen(p.page, id);
+      const vp = await p.page.evaluate(() => ({ w: window.innerWidth, h: window.innerHeight }));
+      const ok = s && s.x >= 40 && s.x <= vp.w - 40 && s.y >= 60 && s.y <= vp.h - 140 && (await p.page.evaluate(([x, y]) => document.elementFromPoint(x, y)?.id ?? '', [s.x, s.y])) === 'canvas';
+      if (ok) return s;
+      await p.page.mouse.move(vp.w / 2, vp.h / 2);
+      await p.page.mouse.wheel(0, 400);
+      await sleep(700);
+    }
+    return clickable(p, id);
+  };
   const closeMenu = async (p) => {
     if ((await menuState(p.page))?.open) {
       await p.page.click(`${MENU} [data-role="close"]`);
@@ -257,8 +270,9 @@ export default async function run(h) {
     check(m1.note.length > 0 && !m1.goods[0].buyDisabled, `菜单应提示重试且「买」可再点：${JSON.stringify([m1.note, m1.goods[0]])}`);
     // 页面把网络失败记成一个「请求失败」问题（故意断的）：核对只有这一条，然后摘掉
     const failed = A.w.problems.filter((p) => p.includes('请求失败：POST /town/api/actions'));
-    check(failed.length === 1, `应只有一条（故意断的）请求失败：${JSON.stringify(failed)}`);
-    A.w.problems = A.w.problems.filter((p) => !p.includes('请求失败：POST /town/api/actions'));
+    const consoleFail = A.w.problems.filter((p) => p.includes('控制台错误：Failed to load resource: net::ERR_FAILED'));
+    check(failed.length === 1 && consoleFail.length === 1, `应只有一条（故意断的）请求失败和对应的一行控制台错误：${JSON.stringify([failed, consoleFail])}`);
+    A.w.problems = A.w.problems.filter((p) => !p.includes('请求失败：POST /town/api/actions') && !p.includes('控制台错误：Failed to load resource: net::ERR_FAILED'));
     await sleep(900);
     await clickBuy(A, 'tea_leaves');
     const a2 = await ackAfter(until, A, 'buy', a1.n);
@@ -364,7 +378,7 @@ export default async function run(h) {
     const nAsk = actionsOf(A, 'ask_npc').length;
     const nNav = actionsOf(A, 'navigate').length;
     const toast0 = (await toasts(A)).length;
-    await clickable(A, KEEPER);
+    await zoomToSee(A, KEEPER);
     await clickNpc(A, KEEPER);
     await sleep(1500);
     check(!(await menuState(A.page)).open, '活动中点 NPC：菜单不该打开');
