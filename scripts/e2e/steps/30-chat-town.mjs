@@ -406,6 +406,13 @@ export default async function run(h) {
   // ───────────────────────── 30.75 resync ─────────────────────────
   await step(30.75, 'resync：B 把 _after 改成无效游标并断线，A 发 M3；重连后请求返回 resync:true，列表整体重建，与服务端最近一页逐条一致，resyncs===1，重读的话不计未读', async () => {
     await openTown(B.page); // 先看完，未读清零
+    // 到这里服务端该有至少 11 条公屏（下面要把列表读到 11 行，30.9 要 12 条）。30.5「耗额度」能发出去几条看机器快慢：
+    // 前面的步骤跑得快，额度一上来就是空的，一条也发不出去，总数就少一条。这里按服务端的真实条数补齐，不靠那一步的运气
+    for (let n = (await apiTownPage(A, 'limit=100')).messages.length; n < 11; n++) {
+      const F = uniq('垫一句');
+      await apiTownSayWait(A, F);
+      await waitRow(B, F);
+    }
     await until(async () => (await townUnread(B.page)).town === 0, 10_000, '先清零未读');
     // 造「旧列表里有已滑出最近一页的行」：页大小改成 5，再点「看更早的话」把列表读长。
     // 重读的最近一页只有 5 条，旧列表若不整体清掉，滑出这一页的老行会残留下来，列表就比服务端长

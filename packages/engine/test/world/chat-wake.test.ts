@@ -312,7 +312,7 @@ describe('附近聊天的叫醒额度', () => {
     // 补叫：事件发出的时刻晚于那句话说出的时刻
     const late = evs.filter((e) => e.at > sentAt.get(e.text)!);
     expect(late.length).toBeGreaterThan(10);
-  });
+  }, 120_000); // 两千多次提交：Windows 上文件数据库每次提交都慢，实测整条要二十秒以上，默认上限不够
 
   it('10b. 上限：好几位 AI 轮流说，总数不超过 nearbyWakeBurst + nearbyWakePerHour，同一位发言者不超过成对上限', () => {
     const { t, people } = cast(['agent', 'agent', 'agent', 'agent']);
@@ -331,7 +331,7 @@ describe('附近聊天的叫醒额度', () => {
     }
     expect(evs.length).toBeGreaterThan(t.w.params.nearbyWakeBurst);
     expect(wakeJobs(t, 'done').length + pending(t).length).toBeGreaterThan(0);
-  });
+  }, 120_000); // 五千多次提交，理由同 10a
 });
 
 describe('补叫的其它性质', () => {
