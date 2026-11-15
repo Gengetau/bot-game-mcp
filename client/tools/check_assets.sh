@@ -7,8 +7,17 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 CACHE="$ROOT/client/town/.godot/global_script_class_cache.cfg"
 declared="$(grep -rhoE '^class_name[[:space:]]+[A-Za-z0-9_]+' "$ROOT/client/town" --include='*.gd' --exclude-dir=.godot --exclude-dir=build 2>/dev/null | awk '{print $2}' | sort -u)"
 cached="$(grep -oE '"class": &"[A-Za-z0-9_]+"' "$CACHE" 2>/dev/null | sed -E 's/.*&"([^"]+)"/\1/' | sort -u)"
-if [ ! -f "$CACHE" ] || [ "$declared" != "$cached" ]; then
-  echo "[assets] 导入缓存没有，或者类名和脚本对不上：先导入一遍资源…"
+# 有哪件套件的 GLB 还没被这份工程导入过（刚拉下来的、刚从别的工作树拷来的）：也要先导入，否则校验读到的是没有导入结果的场景，
+# 报出来的是「找不到资产根节点」这种看不出原因的话
+stale=0
+while IFS= read -r glb; do
+  [ -n "$glb" ] || continue
+  if ! ls "$ROOT/client/town/.godot/imported/$(basename "$glb")"-*.scn >/dev/null 2>&1; then
+    stale=1
+  fi
+done < <(find "$ROOT/client/town/assets/kits" -name '*.glb' 2>/dev/null)
+if [ ! -f "$CACHE" ] || [ "$declared" != "$cached" ] || [ "$stale" = 1 ]; then
+  echo "[assets] 导入缓存没有、类名和脚本对不上，或者有 GLB 还没导入：先导入一遍资源…"
   timeout 900 "$GODOT" --headless --path "$ROOT/client/town" --import >/dev/null 2>&1 || true
 fi
 args=()
