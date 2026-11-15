@@ -489,13 +489,14 @@ export default async function run(h) {
     await until(async () => (await serverMe(A)).interaction, 15_000, '服务器上出现 A 的活动', 300);
     const nAsk = actionsOf(A, 'ask_npc').length;
     const nNav = actionsOf(A, 'navigate').length;
-    const toast0 = (await toasts(A)).length;
+    const toastsBefore0 = await toasts(A);
     await zoomToSee(A, KEEPER);
     await clickNpc(A, KEEPER);
-    await sleep(1500);
+    // 屏障：提示条出现一条原来没有的文字。不能比「条数」：提示条最多留 3 条（hud.js 超过就挤掉最早的），已有 3 条时新来一条条数不变
+    const fresh = await until(async () => ((await toasts(A)).some((t) => !toastsBefore0.includes(t)) ? true : null), 4000, '点 NPC 之后出现新的「走开」提示', 100).catch(() => false);
+    check(fresh, '应有「走开」提示');
     check(!(await menuState(A.page)).open, '活动中点 NPC：菜单不该打开');
     check(actionsOf(A, 'ask_npc').length === nAsk && actionsOf(A, 'navigate').length === nNav, `活动中点 NPC：不该发 ask_npc / navigate：${JSON.stringify(A.w.actions.slice(-3).map((r) => r.type))}`);
-    check((await toasts(A)).length > toast0, '应有「走开」提示');
     // E 键同理
     await A.page.keyboard.press('KeyE');
     await sleep(800);
@@ -631,3 +632,9 @@ export default async function run(h) {
 // 14. （D1）main.gd 的 _nearest_pick 把物件的 anchors 传成空数组（只按中心算远近）：84.1 红，选中记录是 (actor, npc:plaza_stroller)，而不是书架。【实测，--only=1,80 --until=84.2】单测（pick_logic_test）同样红 3 项。
 // 15. （D2）main.gd 的 _on_scene 里让「隐藏」永远不成立（`[] if false else msg.get("npcs", [])`）：84.2 红，「默认页面里 __town.npcs 应为空」。【实测，同一遍】
 // 16. （D2）不带 ?debug=1 就认全局量（debug_flags.gd 的 hide_npcs 改成只看 flag）：单测「debug 关、全局量设了：无视」红；84.2 最后一段（页面 E）本该红，但那一遍没有单独做浏览器验证。【单测实测；浏览器一侧推演】
+// 17. （评审）npc.css 里抽屉打开时的 #npcMenu 去掉 max-height 的「减去 --dock-h」那一项（回到固定 44vh）：86 红，「390 宽抽屉打开时菜单不该压到底栏：菜单 150..502，底栏 442..490」。【实测：在修复之前的导出上跑 --only=1,80 看到】
+// 18. （评审）步骤 86 的「加 / 减 / 买」真触摸点：tapGoodButton 点之前做命中测试（按钮中心最上面必须就是该按钮）。命中测试那一层没有单独改坏验证（要让 .npc-gact 折行后某个按钮被盖住）。【推演】
+// 19. （评审）84.2 切回显示后的屏障（frames 30 帧 + 开菜单累计次数不变）：要让它红得在显示 NPC 的路径里让菜单自动开，没有做。【推演】
+// 20. （评审）85 的「走开」提示改成比文字：把 hud.js 提示条上限当成 3 条的情形（已有 3 条时条数不变）下旧写法红，新写法绿；连续两次（修复前的导出、修复后的导出）在 85 红过，改成比文字之后 --only=1,80 全绿。根因（提示条最多留 3 条）是从 hud.js 读出来的，没有在浏览器里单独复现。【间接实测】
+// 21. （评审）main.gd 的 _update_scenery 把 NPC 的头放回 heads：茶馆屋顶对所有人永远隐藏。端到端没有断言它（要读 world 节点的网格可见性，没有 debug 口），由 client/tests/scene_logic_test.gd 守着。【单测实测，浏览器侧未验证】
+// 22. （评审）npc.gd 的「走过去」：you_arrived 不结束 _walking、没有按距离算的上限：单测 t_walk_arrival_not_close、t_walk_rejected_times_out 红；端到端里造不出「服务器拒绝 navigate」，所以只有单测。【单测实测】
