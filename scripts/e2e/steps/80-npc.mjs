@@ -455,4 +455,19 @@ export default async function run(h) {
 }
 
 // ───────────────────────── 怎么让它失败 ─────────────────────────
-// （见 client/docs/C6.md 的「反向验证」一节，逐条注明实测或推演。）
+// 每条都注明「实测」（临时改坏实现、重新导出、跑本文件，确实看到对应步骤变红，之后还原并核对 git diff 干净）或「推演」（没有做浏览器验证，理由写在后面）。
+// 单测一侧的反向验证（client/tests/npc_feature_test.gd、npc_logic_test.gd，都是实测）见 client/docs/C6.md 第 7 节。
+//
+//  1. main.gd 的 _on_scene 里把 `for n in msg.get("npcs", [])` 改成 `for n in []`（NPC 不并进角色表）：80 红（等不到两个 NPC），其后依赖 NPC 的步骤跟着红。【实测，--until=80】
+//  2. npc.gd 的 on_pick 删掉「菜单已开就 return true」，同时 _open 里删掉 `_open_id == pid` 的守卫：83 红（连按两下 E 开了两次）。只删前一处不会红：_open 自己还有一道同样的守卫，两层互相兜底。【实测（两处一起删）】
+//  3. npc.gd 的 you_arrived 里把 `tid == mine` 去掉（别处发起的走近也开菜单）：83.1 红（最后一段「不是在这个页面点出来的走近，到了不弹菜单」）。【实测】
+//  4. npc.gd 的 tick 里把「走远了收起」(`d > reach + CLOSE_SLACK`) 改成永不成立：83.1 红（A 走远后菜单关不掉，等不到关闭）。【实测】
+//  5. npc.gd 的 _buy 里网络失败后不再把请求号记进 _pending：82.1 红（两次 buy 的请求号不同；服务器会多卖一份，钱多扣）。【实测】
+//  6. npc.gd 的 _buy 成功分支里把成交文字也弹成 toast：82 红（提示条里出现「买了 2 件茶叶……」）。【实测】
+//  7. npc.gd 的 _open 里删掉 ctx.card_claim(id)：84 红（开 NPC 菜单时居民卡没有收起）。【实测】
+//  8. chat_util.gd 的 kind_of 去掉对 npc 的识别：本文件的 81 不会红（NPC 的「NPC」标记靠 data-from 前缀的样式，不看 kind），由 npc_logic_test 的 t_chat_kind 守着。【实测：端到端没抓住（已知），单测红】
+//  9. main.gd 的 _can_control 里对 NPC 目标跳过 blocks_input：85 红（共同活动中点 NPC 照样开菜单）。【实测】
+// 10. npc.gd 限流分支里不再记 _cool_until：81.1 红（等不到菜单进入冷却）。【实测】
+// 11. npc.gd 把回执迟到的 `_gen` 对账改成永远当「菜单还在」、`_sess` 对账去掉、`error` 与 `reason` 的判断顺序对调、场景换了不收起、居民卡接管 NPC：本文件没有对应步骤（迟到回执要在毫秒级对上，浏览器里造不稳），由单测的对应断言守着。【单测实测】
+// 12. 名牌让位（NPC 牌与居民牌重叠过半就不画）：本文件只检查样式与层级，没有构造「两牌重叠」的画面（站位由服务器出生点决定）；由 npc_logic_test 的 t_tags 守着。【推演：端到端没有造重叠，单测里改坏阈值会红】
+// 13. 手机 360 / 390 宽的溢出与点击区：86 红的办法是给 #npcMenu 加固定宽度（如 min-width: 420px）或把 .npc-step 的 min-width 改小到 20px。【推演：没有真的改过 CSS 重跑】
