@@ -1,0 +1,25 @@
+{
+ "key": "C5",
+ "title": "C5 客户端：信箱",
+ "brief": "本段的完整要求在文件 /tmp/claude-0/-home-user-bot-game-mcp/48bdbfcb-c0a0-5988-916a-1e7ef7ff9b30/scratchpad/seg-C5-spec.md（219 行，约 35 千字）。它就是这一段的任务书，这里不再重复。动手之前先用 Read 把它从头到尾读完（不要只读开头；一次读不完就分几次读到最后一行）。文件有五个一级标题：「# 任务书」、「# 完成的标准」、「# 检查命令」、「# 核实办法」、「# 评审角度」；任务书最前面的「统筹的更新」优先于后文。这个文件只读，不要改它。",
+ "done": "见文件 /tmp/claude-0/-home-user-bot-game-mcp/48bdbfcb-c0a0-5988-916a-1e7ef7ff9b30/scratchpad/seg-C5-spec.md 的「# 完成的标准」一节，逐条都要满足（其中说的检查命令即同一文件「# 检查命令」一节）。（并以任务书最前面「统筹的更新」第三条为准：不跑完整的浏览器端到端，只跑 --only=1,<自己的步骤> 加直接受影响的旧步骤）",
+ "checks": "文件 /tmp/claude-0/-home-user-bot-game-mcp/48bdbfcb-c0a0-5988-916a-1e7ef7ff9b30/scratchpad/seg-C5-spec.md 的「# 检查命令」一节列出的全部命令（并以任务书最前面「统筹的更新」第三条为准：不跑完整的浏览器端到端，只跑 --only=1,<自己的步骤> 加直接受影响的旧步骤）",
+ "verifyHow": "核实的办法见文件 /tmp/claude-0/-home-user-bot-game-mcp/48bdbfcb-c0a0-5988-916a-1e7ef7ff9b30/scratchpad/seg-C5-spec.md 的「# 核实办法」一节。浏览器里的问题只用 --only= 跑相关步骤，不要跑完整的 client:e2e。",
+ "lenses": [
+  {
+   "key": "privacy-lifecycle",
+   "name": "私密内容、生命周期与重入",
+   "ask": "你这个角度要找什么，写在文件 /tmp/claude-0/-home-user-bot-game-mcp/48bdbfcb-c0a0-5988-916a-1e7ef7ff9b30/scratchpad/seg-C5-spec.md 末尾「# 评审角度」下的「## 评审角度 privacy-lifecycle：私密内容、生命周期与重入」一小节里，逐项照着查；先把整份文件读完（它也是本段的要求，最前面「统筹的更新」优先于后文；其中说明本段不要求实现者跑完整的浏览器端到端，这一点不算缺陷，但实现者声称跑过的步骤要有证据）。截图要自己用 Read 看。"
+  },
+  {
+   "key": "rules-flow",
+   "name": "规则一致性、状态与错误提示",
+   "ask": "你这个角度要找什么，写在文件 /tmp/claude-0/-home-user-bot-game-mcp/48bdbfcb-c0a0-5988-916a-1e7ef7ff9b30/scratchpad/seg-C5-spec.md 末尾「# 评审角度」下的「## 评审角度 rules-flow：规则一致性、状态与错误提示」一小节里，逐项照着查；先把整份文件读完（它也是本段的要求，最前面「统筹的更新」优先于后文；其中说明本段不要求实现者跑完整的浏览器端到端，这一点不算缺陷，但实现者声称跑过的步骤要有证据）。截图要自己用 Read 看。"
+  },
+  {
+   "key": "mobile-visual-e2e",
+   "name": "手机、布局、观感与端到端质量",
+   "ask": "你这个角度要找什么，写在文件 /tmp/claude-0/-home-user-bot-game-mcp/48bdbfcb-c0a0-5988-916a-1e7ef7ff9b30/scratchpad/seg-C5-spec.md 末尾「# 评审角度」下的「## 评审角度 mobile-visual-e2e：手机、布局、观感与端到端质量」一小节里，逐项照着查；先把整份文件读完（它也是本段的要求，最前面「统筹的更新」优先于后文；其中说明本段不要求实现者跑完整的浏览器端到端，这一点不算缺陷，但实现者声称跑过的步骤要有证据）。截图要自己用 Read 看。"
+  }
+ ]
+}

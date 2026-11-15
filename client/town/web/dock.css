@@ -83,6 +83,15 @@ body[data-dock="drawer"] #dockGrip { display: block; }
   overflow-x: auto; overflow-y: hidden; scrollbar-width: none; -ms-overflow-style: none; overscroll-behavior-x: contain;
 }
 #dockTabs::-webkit-scrollbar { display: none; }
+/* 页签条两头的渐隐 + 小箭头（dock.js 的 updateTabFade）：这一侧还有页签没滚出来时才有 */
+#dockFadeL, #dockFadeR { position: absolute; top: 0; width: 26px; height: 36px; z-index: 5; pointer-events: none; display: block; }
+#dockFadeL[hidden], #dockFadeR[hidden] { display: none; }
+#dockFadeL { left: 0; background: linear-gradient(to right, var(--d-wood) 35%, rgba(139, 94, 60, 0)); }
+#dockFadeR { right: 44px; background: linear-gradient(to left, var(--d-wood) 35%, rgba(139, 94, 60, 0)); }
+#dockFadeL::after, #dockFadeR::after { content: ""; position: absolute; top: 50%; margin-top: -5px; border: 5px solid transparent; }
+#dockFadeL::after { left: 4px; border-right-color: var(--d-paper); border-left-width: 0; }
+#dockFadeR::after { right: 4px; border-left-color: var(--d-paper); border-right-width: 0; }
+body[data-dock="drawer"] #dockFadeL, body[data-dock="drawer"] #dockFadeR { height: 44px; }
 body[data-dock="drawer"] #dockTabs { height: 44px; padding-top: 6px; }
 /* 前缀 #dock：#dock button 的重置（背景、字体、颜色、内边距）特异性更高，不加前缀这些样式一直没生效 */
 #dock .dock-tab {

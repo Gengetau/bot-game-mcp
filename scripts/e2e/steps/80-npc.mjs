@@ -557,8 +557,9 @@ export default async function run(h) {
     await until(async () => (await bag(B)).tea === b0.tea + 1, 15_000, 'B 的茶叶多了一份（服务器真值）');
     // 抽屉打开（聊天面板顶上来）：菜单挂在上半屏，下沿不能压到底栏（停下 / 回家 / 地点 / 聊天），底栏每个按钮真的点得到
     await openDock(B.page);
-    for (const vw of [390, 360]) {
-      await B.page.setViewportSize({ width: vw, height: vw === 390 ? 844 : 740 });
+    // V1：加一个 360x640（小屏手机，抽屉占掉近一半高度，#npcMenu 的 min-height 可能压到底栏）
+    for (const [vw, vh] of [[390, 844], [360, 740], [360, 640]]) {
+      await B.page.setViewportSize({ width: vw, height: vh });
       await sleep(700);
       const r = await B.page.evaluate(() => {
         const q = document.querySelector('#npcMenu');
@@ -572,10 +573,10 @@ export default async function run(h) {
         });
         return { rc, bb, btns, open: document.body.dataset.dockOpen, dock: document.body.dataset.dock };
       });
-      check(r.open === '1' && r.dock === 'drawer', `${vw} 宽：前提，抽屉是打开的：${JSON.stringify([r.open, r.dock])}`);
-      check(r.btns.length >= 1, `${vw} 宽：抽屉打开时底栏应有可见按钮`);
-      check(!hit(r.rc, r.bb), `${vw} 宽抽屉打开时菜单不该压到底栏：菜单 ${JSON.stringify(r.rc)}，底栏 ${JSON.stringify(r.bb)}`);
-      check(r.btns.every((b) => !b.covered), `${vw} 宽抽屉打开时底栏按钮都点得到（不被菜单盖住）：${JSON.stringify(r.btns.filter((b) => b.covered))}`);
+      check(r.open === '1' && r.dock === 'drawer', `${vw}x${vh}：前提，抽屉是打开的：${JSON.stringify([r.open, r.dock])}`);
+      check(r.btns.length >= 1, `${vw}x${vh}：抽屉打开时底栏应有可见按钮`);
+      check(!hit(r.rc, r.bb), `${vw}x${vh} 抽屉打开时菜单不该压到底栏：菜单 ${JSON.stringify(r.rc)}，底栏 ${JSON.stringify(r.bb)}`);
+      check(r.btns.every((b) => !b.covered), `${vw}x${vh} 抽屉打开时底栏按钮都点得到（不被菜单盖住）：${JSON.stringify(r.btns.filter((b) => b.covered))}`);
     }
     await shot(B.page, '80-mobile-menu-drawer');
     await closeDock(B.page);

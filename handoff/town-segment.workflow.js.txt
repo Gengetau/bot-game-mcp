@@ -1,0 +1,241 @@
+export const meta = {
+  name: 'town-segment',
+  description: '栖灯镇一段工作：独立工作树里实现（或接手已有工作树）→ 三个角度评审并逐条质疑核实 → 修复 → 复查修复',
+  phases: [
+    { title: 'Implement', detail: '一位同事在独立工作树里完成这一段并跑完检查' },
+    { title: 'Review', detail: '三个角度各找问题，各自由一位质疑者核实' },
+    { title: 'Fix', detail: '修掉核实过的问题' },
+    { title: 'Recheck', detail: '复查修复有没有真的解决、有没有引入新问题' },
+  ],
+}
+
+const seg = args
+const PLAN = '/tmp/claude-0/-home-user-bot-game-mcp/48bdbfcb-c0a0-5988-916a-1e7ef7ff9b30/scratchpad/p1-gap-map.json'
+const DOC = '/root/.claude/uploads/48bdbfcb-c0a0-5988-916a-1e7ef7ff9b30/469e5449-TOWN-DESIGN-v2.0-20261112.md'
+
+const RULES = `共同约定：
+- 用中文汇报。只写你实际做过、读过、跑过的东西；失败就写失败。
+- 机器只有 4 核，另有同事在做对帧间隔敏感的浏览器测量。所有重命令（任何 vitest / npm test、npm run build、npm run e2e、world:simulate、world:recovery、world-load、client:export、client:e2e）都必须用同一把锁排队：\`flock /tmp/town-heavy.lock <命令>\`。拿不到锁时会等（可能十几分钟），超时给够或放后台等。读文件、搜索、编辑不用锁。
+- 不推送、不开 PR、不碰服务器、不部署、不读写任何密钥。不要改 docs/PROGRESS.md（由统筹的人写，免得多人都在文件开头加一节造成冲突）。
+- 提交信息用中文。只 \`git add\` 自己改的具体文件，不要 \`git add -A\`，不要提交 node_modules。
+- 仓库 CLAUDE.md 里的不变量必须遵守（写入只走 WorldService.command() 或任务处理器并在 w.commit() 里；时间用 w.now()、随机用 w.rng；位置只由 space.ts 写；事件和公开投影里没有坐标；别人的私密信息不进任何别人能拿到的投影；玩家文字先 sanitize；地图动了可走范围、落脚点或物件位置要换 mapVersion）。
+- 背景材料：设计文档 ${DOC}；小镇契约 docs/TOWN.md；一份刚做完的事实调查和分段计划 ${PLAN}（JSON：facts[] 是六个方向的代码事实，plan.segments[] 是分段计划，critique.issues[] 是对计划的挑漏；其中和本段有关的都要读，但以你自己读到的代码为准，调查有错就按代码来并在汇报里指出）。`
+
+const IMPL_SCHEMA = {
+  type: 'object',
+  properties: {
+    worktreePath: { type: 'string', description: '你的工作树的绝对路径（pwd）' },
+    branch: { type: 'string', description: 'git branch --show-current' },
+    baseCommit: { type: 'string', description: '本段改动的比较基线：开发分支并入时的提交（见开头步骤）' },
+    headCommit: { type: 'string' },
+    summary: { type: 'string', description: '做了什么，按文件和要点' },
+    decisions: { type: 'array', items: { type: 'string' }, description: '你自己做的取舍和理由' },
+    checks: { type: 'array', items: { type: 'string' }, description: '每条：命令 → 结果（通过 / 失败及原因、数字）' },
+    notDone: { type: 'array', items: { type: 'string' } },
+    mergeNotes: { type: 'array', items: { type: 'string' }, description: '合并时要注意的文件和可能的冲突' },
+  },
+  required: ['worktreePath', 'branch', 'baseCommit', 'headCommit', 'summary', 'decisions', 'checks', 'notDone', 'mergeNotes'],
+}
+
+const CHECKS = seg.checks || '`npm run typecheck`、`npm test`、`npm run docs`（之后 git status 无多余差异）、`npm run build && npm run e2e`、`npm run world:simulate -- --days 1 --residents 12 --seed 1`、`npm run world:recovery`'
+const DONE = seg.done ? String(seg.done).split('${CHECKS}').join(CHECKS) : `- 代码、测试、文档（docs/TOWN.md 的动作表 / 错误码 / 事件表、src/mcp/town.ts 的指南、packages/agent-kit/prompts/resident-zh.md 与代码一致、改了工具描述或规则后跑 \`npm run docs\` 并提交生成物）都同步。
+- 新行为都有测试；每个关键断言都做一次反向验证（把实现临时改坏，确认测试会红，再改回来），在汇报里写哪几处做过。
+- 结束前这些都要通过（都用 flock 包着跑）：${CHECKS}。有不通过的，查到根因修掉；确实不是你这段引起的，要拿出证据（在 baseCommit 上同样失败）。
+- 在工作树分支上本地提交（可以多次提交）。`
+const VERIFY_HOW = seg.verifyHow || '必要时写一个临时测试来验证（临时测试文件放在工作树的 packages/engine/test/world/ 下，文件名以 _tmp_verify_ 开头，用 `flock /tmp/town-heavy.lock npx vitest run <文件>` 在 packages/engine 目录里跑，跑完必须删掉，不要提交）'
+
+const DEV = 'claude/loving-ride-s01h0g'
+const resume = !!seg.worktree
+const START = resume
+  ? `你接手「栖灯镇」一段做到一半的工作，工作地点是已有的 git 工作树 ${seg.worktree}：所有命令都先 cd 到那里，所有编辑都用那个目录下的绝对路径，不要在 /home/user/bot-game-mcp 主目录里改任何东西（主目录里有别的同事没提交的改动）。
+
+背景：${seg.background || `这个工作树当初是从 main 建的，而开发分支 ${DEV} 比 main 多了不少东西（键盘方向输入、附近聊天与全镇公屏 chat.ts / hearing.ts、街景美术、音频、一批测试修正）。前一位同事在旧基线上已经做了一部分。`}现状：${seg.state}
+
+先做这几步：
+1. \`git status\`、\`git log --oneline -3\`。有未提交的改动就先原样本地提交一次（信息写「${seg.key} 进行中：合并开发分支之前的快照」；node_modules 是指向主目录的链接，不要提交）。
+2. \`git rev-parse ${DEV}\` 记下来，这就是汇报里的 baseCommit。然后 \`git merge ${DEV}\`（普通合并，不要 rebase、不要改写历史）。有冲突就逐个解决：开发分支上已有的功能一律保留，本段的改动叠在上面；解决完提交这次合并。
+3. 读一遍开发分支带来的、和本段有关的代码（见下面的「接手须知」），再把这一段在合并后的代码上做完整。前一位同事写的东西不要想当然地认为是对的：对照要求逐项过一遍，没做的补上，做错的改掉。
+
+# 接手须知
+
+${seg.resumeNotes || '（无）'}
+`
+  : `你要在一个全新的独立 git 工作树里完成「栖灯镇」的一段工作。先执行 \`pwd\`、\`git branch --show-current\`。这个工作树是从 main 建的，而开发在 ${DEV} 分支上：先执行 \`git merge --ff-only ${DEV}\`（main 是它的祖先，一定能快进；失败就停下来汇报），再 \`git rev-parse HEAD\` 记下来作为 baseCommit。工作树里没有 node_modules：执行 \`ln -s /home/user/bot-game-mcp/node_modules node_modules\`（各包目录如需要同理），不要提交它。
+`
+
+phase('Implement')
+const impl = seg.impl ? seg.impl : await agent(`${START}
+# 这一段：${seg.title}
+
+${seg.brief}
+
+# 完成的标准
+
+${DONE}
+
+${RULES}`, resume
+  ? { label: `impl:${seg.key}`, phase: 'Implement', schema: IMPL_SCHEMA }
+  : { label: `impl:${seg.key}`, phase: 'Implement', isolation: 'worktree', schema: IMPL_SCHEMA })
+
+if (!impl) return { error: '实现的同事没有交回结果' }
+log(`实现完成：${impl.branch} @ ${impl.headCommit}`)
+
+const where = `工作树：${impl.worktreePath}（分支 ${impl.branch}）。看这一段的全部改动：\`git -C ${impl.worktreePath} diff ${impl.baseCommit}..HEAD\`（先 --stat 再逐文件看）。`
+
+const DEFAULT_LENSES = [
+  { key: 'rules', name: '规则正确性与不变量', ask: `逐条对照本段的要求和仓库 CLAUDE.md 的不变量找真问题：规则有没有漏掉的入口（HTTP 动作、MCP 工具、WebSocket、旧二维页面 packages/engine/town/、agent-kit、定时任务都走同一条判定吗）；边界条件（恰好在阈值上、一方在走路、一方刚进屋 / 离线 / 进对局、同一事务里先后顺序）；有没有绕过校验的参数（伪造 id、缺省值、类型不对）；写入是不是都在 command / 任务处理器的事务里；错误码和 docs/TOWN.md 是否一致。` },
+  { key: 'privacy', name: '隐私、投影与可观察差异', ask: `找信息泄露和可被试探的差异：新的错误码、提示文字、回执字段、事件、视图字段会不会让人推断出别人在不在家、在谁家、屋里有谁、别人的坐标、别人的信件 / 背包 / 关系；事件和公开投影里有没有坐标、折线、到达时间；对「不存在」「不在场」「在私宅里」这几种情况的响应能不能被区分（包括响应耗时以外的可见差异）；AI 能拿到的上下文里有没有未标 untrusted 的玩家文字。` },
+  { key: 'tests', name: '测试质量、恢复与文档一致', ask: `检查测试是不是真的在测：有没有只断言「不报错」的、依赖随机编号或时序而会偶发失败的、和实现写法绑死的；关键规则有没有反向用例；world-simulate / world-recovery 的不变量有没有随规则更新（独立于实现重新算一遍，而不是调用被测函数）；数据库迁移（如有）在旧库上能不能跑、能不能重复跑、停机恢复后任务是否还对得上；docs/TOWN.md、mcp/town.ts 指南、agent-kit 提示词、docs/TOOLS.md 是否和代码一致。` },
+]
+
+const LENSES = seg.lenses || DEFAULT_LENSES
+
+const FINDINGS = {
+  type: 'object',
+  properties: {
+    findings: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          title: { type: 'string' },
+          file: { type: 'string' },
+          line: { type: 'integer' },
+          severity: { type: 'string', enum: ['high', 'medium', 'low'] },
+          scenario: { type: 'string', description: '具体的输入或状态 → 错误的结果' },
+          suggestion: { type: 'string' },
+        },
+        required: ['title', 'file', 'severity', 'scenario'],
+      },
+    },
+    covered: { type: 'array', items: { type: 'string' }, description: '你实际读过的文件，以及在每个文件里核对了什么（一条一个文件）' },
+  },
+  required: ['findings', 'covered'],
+}
+const VERDICTS = {
+  type: 'object',
+  properties: {
+    verdicts: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          index: { type: 'integer' },
+          real: { type: 'boolean' },
+          evidence: { type: 'string', description: '你读了哪些代码 / 跑了什么得出结论' },
+          fixHint: { type: 'string' },
+        },
+        required: ['index', 'real', 'evidence'],
+      },
+    },
+  },
+  required: ['verdicts'],
+}
+
+phase('Review')
+const reviewed = await pipeline(
+  LENSES,
+  (l) => agent(`你是评审，角度是「${l.name}」。评审的是「栖灯镇」的一段工作：${seg.title}。
+
+本段要求：
+${seg.brief}
+
+${where}
+
+实现的同事自述（不要轻信，以代码为准）：
+${impl.summary}
+取舍：${impl.decisions.join('；')}
+
+${l.ask}
+
+先看 --stat，再把和你这个角度有关的每个文件的差异读完（连同它调用到的现有代码），然后才下结论；covered 里逐条写你实际读过的文件和在里面核对了什么。改动不小，几分钟读不完，不要草草返回空数组。
+
+只报你在代码里核实过、能给出具体触发场景的问题；风格和命名不算。只读，不要改工作树里的任何文件。没有问题就返回空数组。
+${RULES}`, { label: `review:${seg.key}:${l.key}`, phase: 'Review', schema: FINDINGS }),
+  (r, l) => {
+    const fs = (r && r.findings) || []
+    if (!fs.length) return { lens: l.key, items: [] }
+    const indexed = fs.map((f, i) => ({ index: i, ...f }))
+    return agent(`你是质疑者。下面是一位评审（角度「${l.name}」）对「${seg.title}」这段改动提的问题，每条带 index。你的任务是逐条尝试推翻：去读代码，${VERIFY_HOW}。拿不出证据证明它是真的，就判 real=false。除临时测试外不要改任何文件。
+
+${where}
+
+问题列表：
+${JSON.stringify(indexed, null, 1)}
+
+每条都要给出 verdict（index 对应）。
+${RULES}`, { label: `verify:${seg.key}:${l.key}`, phase: 'Review', schema: VERDICTS })
+      .then((v) => {
+        const vs = (v && v.verdicts) || []
+        return { lens: l.key, items: indexed.map((f) => ({ ...f, lens: l.key, verdict: vs.find((x) => x.index === f.index) || null })) }
+      })
+  },
+)
+
+const allItems = reviewed.filter(Boolean).flatMap((r) => r.items)
+const confirmed = allItems.filter((f) => f.verdict && f.verdict.real)
+const unverified = allItems.filter((f) => !f.verdict)
+const rejected = allItems.filter((f) => f.verdict && !f.verdict.real)
+log(`评审：共 ${allItems.length} 条，核实为真 ${confirmed.length} 条，被推翻 ${rejected.length} 条，未核实 ${unverified.length} 条`)
+
+const FIX = {
+  type: 'object',
+  properties: {
+    headCommit: { type: 'string' },
+    fixed: { type: 'array', items: { type: 'string' }, description: '每条：问题标题 → 怎么修的、加了什么测试、反向验证结果' },
+    notFixed: { type: 'array', items: { type: 'string' }, description: '没修的和理由' },
+    checks: { type: 'array', items: { type: 'string' } },
+  },
+  required: ['headCommit', 'fixed', 'notFixed', 'checks'],
+}
+
+let fix = null
+let recheck = null
+const todo = [...confirmed, ...unverified]
+if (todo.length) {
+  phase('Fix')
+  fix = await agent(`你来修「${seg.title}」这段改动里评审核实过的问题。工作地点是已有的工作树 ${impl.worktreePath}（分支 ${impl.branch}）：所有命令都先 cd 到那里，所有编辑都用那个目录下的绝对路径，不要在 /home/user/bot-game-mcp 主目录里改东西。
+
+本段要求：
+${seg.brief}
+
+要处理的问题（verdict 为 null 的是没来得及核实的，你先自己核实，是真的再修）：
+${JSON.stringify(todo, null, 1)}
+
+每条按根因修，配一条会因为这个问题而失败的测试（先看到它红，再修到绿）。不要靠放宽或删除已有断言来通过。修完后把「完成的标准」里的检查全部重跑一遍（都用 flock）：${CHECKS}。在工作树分支上本地提交。
+${RULES}`, { label: `fix:${seg.key}`, phase: 'Fix', schema: FIX })
+
+  phase('Recheck')
+  recheck = await agent(`你来复查一次修复。「${seg.title}」这段改动经过评审后做了一轮修复。工作树：${impl.worktreePath}（分支 ${impl.branch}）。修复之前的提交是 ${impl.headCommit}，看修复的改动：\`git -C ${impl.worktreePath} diff ${impl.headCommit}..HEAD\`；看整段改动：\`git -C ${impl.worktreePath} diff ${impl.baseCommit}..HEAD\`。
+
+当初核实为真的问题：
+${JSON.stringify(todo.map((f) => ({ title: f.title, file: f.file, scenario: f.scenario })), null, 1)}
+
+修复的同事自述：
+${fix ? JSON.stringify(fix, null, 1) : '（没有交回结果）'}
+
+逐条判断：这个问题真的解决了吗（读代码，看对应测试是不是真的覆盖了那个场景）？修复有没有引入新的问题（尤其是隐私、事务、别的入口没同步）？有没有靠放宽断言解决的？只读，不要改文件。
+${RULES}`, {
+    label: `recheck:${seg.key}`, phase: 'Recheck',
+    schema: {
+      type: 'object',
+      properties: {
+        unresolved: { type: 'array', items: { type: 'string' } },
+        newIssues: { type: 'array', items: { type: 'string' } },
+        ok: { type: 'boolean' },
+        notes: { type: 'string' },
+      },
+      required: ['unresolved', 'newIssues', 'ok'],
+    },
+  })
+}
+
+return {
+  segment: seg.key,
+  impl,
+  counts: { total: allItems.length, confirmed: confirmed.length, rejected: rejected.length, unverified: unverified.length },
+  confirmed: confirmed.map((f) => ({ title: f.title, file: f.file, severity: f.severity, lens: f.lens, scenario: f.scenario })),
+  rejected: rejected.map((f) => ({ title: f.title, why: f.verdict.evidence })),
+  fix,
+  recheck,
+}

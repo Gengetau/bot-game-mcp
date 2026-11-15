@@ -1,0 +1,139 @@
+export const meta = {
+  name: 'town-p2-gap-map',
+  description: '只读梳理：栖灯镇 P2 还差什么（财物与借还、愿望关系与日报、NPC、三款小游戏、六类功能空间、美术与音频），并排出分段计划',
+  phases: [
+    { title: 'Read', detail: '六个方向各读一块代码，产出事实清单' },
+    { title: 'Plan', detail: '汇总成 P2 的分段计划，再由一位挑漏' },
+  ],
+}
+
+const DOC = '/root/.claude/uploads/48bdbfcb-c0a0-5988-916a-1e7ef7ff9b30/469e5449-TOWN-DESIGN-v2.0-20261112.md'
+const COMMON = `仓库在 /home/user/bot-game-mcp（分支 claude/loving-ride-s01h0g）。这是只读调查：不要改任何文件，不要跑测试、构建、导出或浏览器（机器只有 4 核，正有别的同事在跑对帧间隔敏感的浏览器测量，别占 CPU），只用读文件和搜索。
+设计文档：${DOC}（852 行，按章节读需要的部分；第 16 章「P2 扩充生活与内容」在 724 行起，第 17 章的参数表、正确性与恢复矩阵在 751 行起）。小镇服务端说明和接口契约在 docs/TOWN.md；进度在 docs/PROGRESS.md（开头一节和其中的段落表格说明了 P1 各段做到哪了）；三维客户端在 client/town/（scripts/*.gd 和 scripts/features/*.gd 是 Godot 一侧，web/ 是 DOM 界面：shell.html、hud.js、dock.js、mod/ 下每个功能一组 html / js / css），各段的说明在 client/docs/*.md；旧的二维页面在 packages/engine/town/（静态文件，可以借鉴它怎么组织界面）；服务端在 packages/engine/src/world/；浏览器端到端在 scripts/client-e2e.mjs 和 scripts/e2e/（steps/ 下按号段分文件，lib/ 是公共辅助）。
+现状提示：P1 的服务端和大部分客户端功能已经有了（走路、附近聊天、全镇公屏、共同活动、游戏桌玩数字炸弹、居民卡与邀请入户、NPC 外观与服务菜单）。此刻另有同事在别的工作树里做 P1 剩下的几段：V1（镜头让位、标签避让、提示条等观感）、C5（信箱）、之后是 C7a（手机「互动」按钮、连接异常提示、离开入口）和 C7b（第一条试玩的连续端到端）。你读主目录里的代码，以读到的为准，不用管它们是否还会变。
+回答用中文。只写你在代码或文档里实际读到的事实，每条带文件路径（最好带行号）；没读到就写「没找到」，不要猜。`
+
+const FACTS = {
+  type: 'object',
+  properties: {
+    area: { type: 'string' },
+    exists: { type: 'array', items: { type: 'string' }, description: '已经有的能力，每条带文件路径' },
+    missing: { type: 'array', items: { type: 'string' }, description: '相对设计文档 P2（第 16 章）和第 17 章矩阵里相关的行还缺的，每条说明缺在哪一层（服务端 / 三维客户端 / 素材 / 文档 / 测试）' },
+    contracts: { type: 'array', items: { type: 'string' }, description: '做这一块时必须遵守的接口契约和不变量（动作名与参数、事件、字段、错误码、限流、谁能看见什么）' },
+    risks: { type: 'array', items: { type: 'string' }, description: '容易做错或会牵连别处的地方' },
+    notes: { type: 'string' },
+  },
+  required: ['area', 'exists', 'missing', 'contracts', 'risks'],
+}
+
+const AREAS = [
+  {
+    key: 'property',
+    prompt: `调查方向：基础财物与借还（硬币、物品、赠送、交易、借出与归还）。
+读 packages/engine/src/world/property.ts（ledger、addStack / takeStack / reserve / release）、interact.ts 和 social.ts 里和提议（offer：赠送、交易、借出、归还）有关的动作、views.ts 本人视图里背包、硬币、待确认提议的字段、docs/TOWN.md 对应章节（动作表、事件表、错误码），设计文档第 4 章「镇币物品与借还」、第 13 章「事务中的空间 经济与活动」、第 17 章矩阵「财物与关系」一行（幂等、双方确认、距离变更、库存竞争、账本一致、重复礼物防刷）。
+列出：每个动作的名字、参数、前置条件（按距离、同区域还是在场）、对方收到什么事件、回执与幂等、借出的到期和提醒、防刷规则；packages/engine/test/world/ 下的测试覆盖了矩阵那一行的哪些情况、哪些没有；scripts/world-simulate.ts 里有哪些和账本、物品有关的不变量检查。
+再看三维客户端现在有哪些入口：NPC 菜单能买什么（client/town/scripts/features/npc.gd、web/mod/npc.*）、居民卡上有哪些按钮（features/ 下和居民卡有关的模块、client/docs/C4.md）、背包和硬币在界面哪里显示、收到别人的提议时界面有没有反应。旧二维页面 packages/engine/town/ 里这些界面怎么组织。
+最后指出：要让真人在三维客户端里走完「看背包 → 送礼或借出 → 对方确认 → 归还」，客户端要做什么（面板、居民卡上的按钮、提议的弹出与确认、手机版式、断线重试时的请求号），服务端还有什么缺口。`,
+  },
+  {
+    key: 'wishes-reports',
+    prompt: `调查方向：个性喜好、轻量需要、愿望、关系事实与回顾、日报与回访。
+读 packages/engine/src/world/life.ts（喜好、需要、愿望）、social.ts（关系、w.fact() 记录的结构化事实）、reports.ts（日报、回顾）、views.ts（本人视图和公开视图里相关的字段）、http.ts 里公开日报的端点、docs/TOWN.md 对应章节，设计文档第 4 章「个性喜好与轻量需要」「愿望与关系事实」、第 5 章「日报与回访」、第 6 章「离线期间继续与停止的事项」。
+列出：这些数据从哪些事实来、谁能看到什么（本人、别人、匿名）；相关的动作（设愿望、完成愿望、问喜好、回答等）的名字、参数、事件；日报什么时候生成、内容有哪些栏目、保留多久；「回访」（隔一段时间再进来，看到自己离开期间发生了什么）现在有没有、数据从哪取；需要（饿、累之类）是怎么变化的、对玩法有什么影响。
+再看三维客户端有没有任何入口（多半没有，逐项确认：搜 client/town/web/ 和 client/town/scripts/）；旧二维页面 packages/engine/town/ 怎么展示这些；AI 居民从 MCP 视图里能看到哪些（src/mcp/town.ts、packages/agent-kit/prompts/resident-zh.md）。
+最后指出：P2 说的「愿望和关系回顾」「日报与回访」在三维客户端要做哪些面板和入口，服务端有没有缺口，测试覆盖如何。`,
+  },
+  {
+    key: 'npc',
+    prompt: `调查方向：常驻服务 NPC、氛围 NPC 的日程、可选的社交型 LLM NPC。
+读 packages/engine/src/world/content.ts 里的 NPCS 和店铺（shops）、npc.ts（日程、ask_npc 的固定台词）、space.ts 里和 NPC 有关的部分、docs/TOWN.md 的 NPC 一节，设计文档第 8 章全章（三类 NPC 的职责、服务与氛围日程、有限的 LLM 社交能力、唤醒与调用预算）和第 17 章参数表（首版 NPC：3 服务 2 氛围 可选 1 社交；社交 NPC 模型起点：每小时 30 次、全镇并发 1、滑动窗口持久化、每次和每日 token 上限）。客户端：client/docs/C6.md、client/town/scripts/features/npc.gd、npc_logic.gd、scripts/npc_look.gd、web/mod/npc.*。
+列出：现在有几个 NPC，各自的类别、站位、日程、台词、提供的服务或货品；离「3 名服务 NPC、2 名氛围 NPC、少量氛围日程」还差什么（建议新角色放在哪个功能空间、卖什么或提供什么服务、日程怎么排），每加一个 NPC 服务端要动哪些地方（数据、任务、测试、模拟脚本的检查），客户端要动哪些地方（外观是否数据驱动、菜单项是否数据驱动、要不要新素材）。
+社交型 LLM NPC：引擎里现在有没有任何调用模型的基础设施（搜一下，应该没有；确认）。给出一个最小可行的做法供计划参考：模型调用从哪里注入（引擎不直接依赖任何模型供应方，接口注入、默认关闭）、调用预算的滑动窗口怎么持久化、被什么唤醒（只在有人对它说话或提及时）、关闭或超预算时退回固定台词、测试用假模型；并列出它必须遵守的不变量（命令处理同步、不在事务里等模型、NPC 不是聊天听众这一条现有约定会不会被打破、进它上下文的文字要标不可信）。`,
+  },
+  {
+    key: 'games',
+    prompt: `调查方向：镇上的小游戏（首版最多三款已通过接入检查的游戏）。
+读 packages/engine/src/world/games.ts、src/core/runner.ts、三款可嵌入游戏的定义和视图（packages/engine/src/games/ 下 liars-dice、number-bomb、sealed-auction，找 embeddable: true）、docs/TOWN.md 的小游戏一节，设计文档第 4 章「公共小游戏」、第 17 章矩阵「小游戏」一行（占座、入局停导航、旧上下文拒绝、超时退出、结束返回、奖励一次）和参数表（并发小游戏目标 3 局、小游戏停机恢复 120 秒）。客户端：client/docs/C3.md、client/town/scripts/features/ 下和游戏有关的模块、web/mod/game.*、端到端 scripts/e2e/steps/50-*.mjs 和 scripts/e2e/lib/game.mjs。
+列出：客户端的游戏面板现在能玩哪几款，每一款的局面显示和出招控件是写死的还是通用的；让另外两款在三维客户端里可玩要做什么（局面怎么画、出招控件、保密信息怎么显示、手机版式）；地图上游戏桌和座位有几处、能不能同时开三局；AI 居民经 MCP 在镇上玩这三款的路径是否通（src/mcp/town.ts、packages/agent-kit）；奖励、超时退出、停机恢复在服务端和测试里的现状，矩阵那一行哪些情况有测试、哪些没有。`,
+  },
+  {
+    key: 'spaces',
+    prompt: `调查方向：六类功能空间（会面、喝茶、阅读、公共制作、园艺、小游戏）和地图。
+读 packages/engine/src/world/spatial/town-map.ts（地点、建筑、门、物件、使用站位、mapVersion）、content.ts 里地点、物件、互动的定义、interact.ts、life.ts，客户端里搭街景和室内的脚本（client/town/scripts/ 下和 scene、street、building、props 有关的文件）与 client/README.md，设计文档第 3 章、第 4 章「家具与现场活动」、第 16 章 P2 第二段（六类功能空间；书架、厨房设施和游戏桌可以设在同一公共建筑，园艺设在广场边缘）。
+逐类列出六类功能空间现在在地图上的落点、可用的物件和动作、是一个人做还是共同活动。缺的（多半是公共制作和园艺）在服务端有没有任何基础（动作、物品、配方、成长或制作的计时任务；搜 craft、cook、garden、plant、kitchen 等），要新增什么：地图物件和站位（动了物件位置要换 mapVersion）、动作、物品、定时任务、事件、docs/TOWN.md、src/mcp/town.ts 的指南、agent-kit 的提示词、测试、模拟脚本的不变量；客户端要新增什么（物件的模型或程序生成的几何、动作动画、面板或菜单）。
+同时写清楚地图换版本的流程和牵连：客户端的地图数据从哪来（是服务器下发还是客户端里也有一份）、端到端和测试里有哪些写死的坐标或地点名会受影响、已有居民的位置在换版本时怎么处理（设计文档第 15 章「资源与地图一同版本化」「已有居民数据如何迁移」）。`,
+  },
+  {
+    key: 'art-audio',
+    prompt: `调查方向：建筑、室内家具、居民外观、骨架与动作、音乐与音效。
+读 client/ASSETS.md（素材许可台账）、client/README.md、client/town/assets/ 的目录结构（只列目录和文件名，不要读二进制文件）、client/town/scripts/actor.gd、npc_look.gd 和外观、服装、动作有关的脚本、audio.gd 和音乐、音效的清单，client/docs/ 下各段说明里写着「留给美术二」「没做」「看到但没做」的清单（C3.md、C4.md、C6.md 等），docs/PROGRESS.md 里提到「美术二」「L1」「L2」「L3」「形象」的段落，设计文档第 9 章、第 10 章、第 11 章和第 16 章 P2 第三段。
+列出：现有的建筑、家具、角色素材（来源和许可）；居民有几套外观、怎么选；有哪些动作（走、站、坐、喝茶、读书等）和缺的动作（制作、园艺、挥手等），是不是一副通用骨架；音乐现在几首、P2 要到三至四首还差几首；音效现在几个（首版六至十个）；「美术二」清单的全部条目；「自己捏形象」（L1 到 L3）现在做到哪了、服务端有没有保存外观的字段。
+最后把 P2 美术与音频要做的条目分成「必须」和「可以晚些」两组，并注明公开仓库只能放 CC0 素材这条约束对每一条的影响（哪些可以用程序生成或对现有 CC0 素材改色来解决）。`,
+  },
+]
+
+phase('Read')
+const facts = (await parallel(AREAS.map(a => () =>
+  agent(`${COMMON}\n\n${a.prompt}`, { label: `read:${a.key}`, phase: 'Read', schema: FACTS, agentType: 'Explore' })
+))).filter(Boolean)
+log(`读完 ${facts.length}/${AREAS.length} 个方向`)
+
+phase('Plan')
+const PLAN = {
+  type: 'object',
+  properties: {
+    segments: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          key: { type: 'string', description: '短代号，比如 P2-S1（服务端）、P2-C1（客户端）、P2-A1（美术音频）' },
+          title: { type: 'string' },
+          goal: { type: 'string' },
+          server: { type: 'array', items: { type: 'string' } },
+          client: { type: 'array', items: { type: 'string' } },
+          tests: { type: 'array', items: { type: 'string' } },
+          dependsOn: { type: 'array', items: { type: 'string' } },
+          canStartNow: { type: 'boolean', description: '不碰 P1 剩余几段正在改的文件、现在就能在独立工作树里开工' },
+          canParallelWith: { type: 'array', items: { type: 'string' } },
+          filesTouched: { type: 'array', items: { type: 'string' } },
+          size: { type: 'string', description: '小 / 中 / 大，并说明主要工作量在哪' },
+        },
+        required: ['key', 'title', 'goal', 'server', 'client', 'tests', 'dependsOn', 'canStartNow', 'filesTouched', 'size'],
+      },
+    },
+    deferToP3: { type: 'array', items: { type: 'string' } },
+    openQuestions: { type: 'array', items: { type: 'string' }, description: '需要产品决定的点，每条给出你推荐的默认做法' },
+  },
+  required: ['segments', 'deferToP3', 'openQuestions'],
+}
+const plan = await agent(`${COMMON}
+
+你是做计划的人。下面是六位同事对代码的事实调查（JSON）。请据此给出「栖灯镇 P2」的分段计划，目标是设计文档第 16 章「P2 扩充生活与内容」三段话里的每一项都真的做到：基础财物与借还、愿望和关系回顾、常驻服务 NPC（首版 3 名服务、2 名氛围）、少量氛围日程、完整信件邀请流程（信箱 C5 正在做，只排它没覆盖的）、所选已有小游戏的适配（最多三款）；会面、喝茶、阅读、公共制作、园艺和小游戏六类功能空间；首批可复用的建筑、室内家具和居民外观，一副通用骨架及所需动作，音乐三至四首；可选的社交型 LLM NPC（最多一个，默认关闭，关闭时基础玩法照常）。
+
+要求：
+- 每一段是一个可以单独交给一位同事在独立工作树里完成、单独评审合并的单元；写清楚它会改哪些文件。P1 剩下的几段（V1、C5、C7a、C7b）正在或即将改这些公共文件：client/town/scripts/main.gd、rig.gd、client/town/web/hud.js、hud.css、dock.js、dock.css、shell.html、scripts/client-e2e.mjs。P2 的客户端段尽量做成功能模块（client/town/scripts/features/ 下一个 .gd 加 client/town/web/mod/ 下一组 html / js / css，端到端一个新的步骤文件），不碰上面那些公共文件；确实要碰的，排在 C7b 之后，并标出来。
+- 只动服务端（packages/engine、packages/agent-kit、docs、scripts/world-*.ts）的段现在就能开工，把 canStartNow 标成 true；互相会改同一批文件的段（尤其 content.ts、spatial/town-map.ts、space.ts、interact.ts、views.ts、docs/TOWN.md、src/mcp/town.ts）不能并行，写进 dependsOn 或在 canParallelWith 里不列。
+- 地图要动物件位置或可走范围的段（公共制作、园艺的新物件）只换一次 mapVersion：把所有要动地图的事并进同一段，或者排成一条线。
+- 顺序按「真人能玩到的东西最先出现」排；每段写出要补的测试（单元测试、world-simulate 的不变量、浏览器端到端步骤）。
+- 遵守仓库 CLAUDE.md 的不变量（写入只走 command 或任务处理器并在 w.commit() 里；时间用 w.now()、随机用 w.rng；位置只由 space.ts 写；硬币只经 ledger()、物品只经 addStack / takeStack / reserve / release；事件和公开投影里没有坐标；别人的私密信息不进任何别人能拿到的投影；新动作要补 docs/TOWN.md、src/mcp/town.ts、agent-kit 的提示词和测试）。公开仓库只能放 CC0 素材。
+- 属于 P3（第 17 章的整套验证、负载、迁移演练、真机与真模型试玩）的放进 deferToP3。需要产品拍板的放进 openQuestions 并给推荐默认值（保守的那个）。
+- 事实调查里互相矛盾或明显没查清的地方，自己去读代码核实后再写。
+
+事实调查：
+${JSON.stringify(facts, null, 1)}`, { label: 'plan', phase: 'Plan', schema: PLAN })
+
+const critique = await agent(`${COMMON}
+
+下面是一份「栖灯镇 P2」分段计划（JSON）和它依据的事实调查。你的任务是挑漏：对照设计文档第 16 章「P2 扩充生活与内容」的三段话、第 17 章参数表和「正确性与恢复矩阵」里和这些功能有关的行（财物与关系、共同活动、小游戏、私宅投影），逐条检查计划有没有漏掉 P2 必须的东西；有没有把两段会改同一文件的工作标成可并行；标了「现在就能开工」的段是不是真的不碰 P1 剩余几段正在改的公共文件（client/town/scripts/main.gd、rig.gd、client/town/web/hud.js、hud.css、dock.js、dock.css、shell.html、scripts/client-e2e.mjs）；有没有哪一段的前提在代码里其实不成立（自己读代码核实，给出文件路径）；地图是否只换一次版本；有没有哪一段大到应该拆开；有没有违反仓库 CLAUDE.md 不变量的设计（尤其社交型 LLM NPC：不能在事务里等模型，引擎不能硬依赖模型供应方，默认必须关闭）。只报你核实过的问题，每条写：问题、证据（文件路径或文档章节）、建议怎么改计划。没有问题就返回空数组。
+
+计划：
+${JSON.stringify(plan, null, 1)}
+
+事实调查：
+${JSON.stringify(facts, null, 1)}`, {
+  label: 'critic', phase: 'Plan',
+  schema: { type: 'object', properties: { issues: { type: 'array', items: { type: 'object', properties: { problem: { type: 'string' }, evidence: { type: 'string' }, suggestion: { type: 'string' } }, required: ['problem', 'evidence', 'suggestion'] } } }, required: ['issues'] },
+})
+
+return { facts, plan, critique }

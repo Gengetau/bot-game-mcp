@@ -253,11 +253,19 @@ func _on_ui(ev: String, arg: String) -> void:
 			_do_interact(arg if arg != "" else "key")
 		"debug_hide_npcs":
 			_set_hide_npcs(arg == "1")
+		"debug_view_hold":
+			if bridge.debug:
+				rig.hold_t = float(arg) if arg != "" else -1.0
 		"debug_pick_stub":
 			if bridge.debug:
 				features.set_pick_stub(arg)
 		"esc":
 			_do_esc()
+		"view":
+			# 网页层量出来的「没被界面盖住的那块」（layout.js，只在版式变化时发）：镜头让自己的角色站到那块的中间偏下
+			var vparsed = JSON.parse_string(arg)
+			if vparsed is Dictionary:
+				rig.set_view(vparsed)
 		"claim":
 			_do_claim()
 		"home":
@@ -1940,6 +1948,7 @@ func _push_debug() -> void:
 		"objects": ol,
 		"vp": m,
 		"zoom": rig.dist,
+		"view": {"msgs": rig.view_msgs, "tx": snappedf(rig.tgt.x, 0.0001), "ty": snappedf(rig.tgt.y, 0.0001), "gx": rig.tgt_goal.x, "gy": rig.tgt_goal.y, "settled": rig.settled},
 		"drs": snappedf(_drs, 0.01),
 		"quality": "high" if quality_high else "low",
 		"hour": snappedf(daynight.hour, 0.01) if daynight != null else -1.0,

@@ -227,7 +227,10 @@
   var dead = false;
   var lastPhase = '';
   function show(el, on) {
-    el.hidden = !on;
+    if (el.hidden !== !on) el.hidden = !on; // 值没变就不写：layout.js 的 MutationObserver 不该被每 0.5 秒一次的状态推送吵醒
+  }
+  function setPhaseAttr(ph) {
+    if (document.body.getAttribute('data-phase') !== ph) document.body.setAttribute('data-phase', ph);
   }
   function renderPanel(s) {
     var panel = $('panel');
@@ -472,11 +475,13 @@
     if (s.phase !== 'playing') {
       releaseAll();
       show($('keyHint'), false);
-      document.body.setAttribute('data-phase', s.phase);
+      setPhaseAttr(s.phase);
       clearTags(); // 重新登录 / 出错面板下不留旧姓名牌
       return;
     }
-    document.body.setAttribute('data-phase', 'playing');
+    var wasPlaying = document.body.getAttribute('data-phase') === 'playing';
+    setPhaseAttr('playing');
+    if (!wasPlaying && window.TownLayout) window.TownLayout.reset(); // 新一轮进入小镇：第一条版式消息一定发出（目标点复位）
     show($('keyHint'), hasKeyboard);
     $('space').textContent = s.space || s.sceneName || '栖灯镇';
     $('conn').className = 'dot ' + (s.conn || '');
@@ -503,6 +508,8 @@
 
   /* ── 提示条 ── */
   function toast(msg, kind) {
+    // 另一处握着控制权：横幅（#readonly）已经说了「现在只读」，提示条不再重复同一件事，只说怎么拿回来
+    if (/只读/.test(String(msg)) && $('roToastText')) msg = $('roToastText').textContent;
     var box = $('toasts');
     var d = document.createElement('div');
     d.className = 'toast ' + (kind || 'info');
@@ -514,12 +521,15 @@
     }, 4500);
   }
 
-  /* ── 姓名牌：Godot 每帧给归一化的屏幕坐标，这里用 transform 摆 ── */
+  /* ── 姓名牌：Godot 每帧给归一化的屏幕坐标，这里先量尺寸、再交给 fit.js 的 layoutTags 做避让（V1 第三项），最后用 transform 摆 ── */
   var tagEls = {};
+  var fitState = {}; // 每块牌上一次的避让决定（fit.js 里的 st）
+  var lastFitAt = 0;
   function clearTags() {
     if (!Object.keys(tagEls).length) return;
     $('tags').textContent = '';
     tagEls = {};
+    fitState = {};
   }
   // 顶栏下沿：地面标签（区域名、门口）不画进这条带里，免得压住右上角按钮；一秒量一次，别每帧强制布局
   var topLimit = 0;
@@ -532,6 +542,13 @@
     }
     return topLimit;
   }
+  function firstWord(k) {
+    var i = k.indexOf(' ');
+    return i < 0 ? k : k.slice(0, i);
+  }
+  var tagBoxW = 0;
+  var tagBoxH = 0;
+  var tagBoxAt = -1e9;
   function setTags(json) {
     if (dead) return;
     var list;
@@ -541,10 +558,18 @@
       return;
     }
     var box = $('tags');
-    var W = box.clientWidth;
-    var H = box.clientHeight;
+    var now = performance.now();
+    // #tags 铺满视口：尺寸只在 500 毫秒一次的节拍上重读（窗口尺寸变化由 layout.js 另行处理），不每帧读布局
+    if (now - tagBoxAt > 500 || !tagBoxW) {
+      tagBoxAt = now;
+      tagBoxW = box.clientWidth;
+      tagBoxH = box.clientHeight;
+    }
+    var W = tagBoxW;
+    var H = tagBoxH;
     var top = getTopLimit();
-    var seen = {};
+    var items = [];
+    var els = [];
     for (var i = 0; i < list.length; i++) {
       var t = list[i];
       var px = t.x * W;
@@ -559,7 +584,11 @@
         box.appendChild(el);
       }
       var cls = 'tag ' + t.k + (t.m ? ' m' : '') + (t.sel ? ' sel' : '');
-      if (el.className !== cls) el.className = cls;
+      var off = el._off ? ' off' : '';
+      if (el._cls !== cls) {
+        el._cls = cls;
+        el.className = cls + off;
+      }
       if (el.textContent !== t.n) el.textContent = t.n;
       var sig = cls + '|' + t.n;
       if (el._sig !== sig) {
@@ -568,26 +597,25 @@
         el._w = el.offsetWidth;
         el._h = el.offsetHeight;
       }
-      var hw = el._w / 2 + 2;
-      var hh = el._h;
-      if (t.k === 'z' || t.k === 'p') {
-        // 区域名 / 门口牌贴着顶栏时直接不画，比被按钮遮住好
-        if (py - hh < top) {
-          if (el.style.display !== 'none') el.style.display = 'none';
-          seen[t.i] = true;
-          continue;
-        }
-      } else if (py - hh < top) {
-        py = top + hh;
+      items.push({ id: t.i, k: firstWord(t.k), x: px, y: py, w: el._w + 4, h: el._h, sel: !!t.sel });
+      els.push(el);
+    }
+    var dt = lastFitAt ? Math.min(0.25, (now - lastFitAt) / 1000) : 0;
+    lastFitAt = now;
+    var res = window.TownFit.layoutTags(items, fitState, { W: W, H: H, top: top, now: now, dt: dt });
+    var seen = {};
+    for (var j = 0; j < res.length; j++) {
+      var r = res[j];
+      var e2 = els[j];
+      seen[r.id] = true;
+      var hide = !r.show;
+      if (hide !== !!e2._off) {
+        e2._off = hide;
+        e2.className = e2._cls + (hide ? ' off' : '');
       }
-      if (el.style.display === 'none') el.style.display = '';
-      // 贴着左右边缘时钳进屏幕，整块牌都看得见
-      px = hw * 2 >= W ? W / 2 : Math.max(hw, Math.min(W - hw, px));
-      py = Math.min(py, H - 2);
-      seen[t.i] = true;
-      var zi = t.k === 's' ? '5' : t.k === 'a' ? '4' : t.k === 'z' ? '1' : '3';
-      if (el.style.zIndex !== zi) el.style.zIndex = zi;
-      el.style.transform = 'translate(' + px.toFixed(1) + 'px,' + py.toFixed(1) + 'px) translate(-50%,-100%)';
+      var zi = items[j].k === 's' ? '5' : items[j].k === 'a' ? '4' : items[j].k === 'z' ? '1' : '3';
+      if (e2.style.zIndex !== zi) e2.style.zIndex = zi;
+      e2.style.transform = 'translate(' + r.x.toFixed(1) + 'px,' + r.y.toFixed(1) + 'px) translate(-50%,-100%)';
     }
     for (var id in tagEls) {
       if (!seen[id]) {
@@ -660,7 +688,12 @@
       window.__townHideNpcs = !!on;
       emit('debug_hide_npcs', on ? '1' : '0');
     };
+    /* 调试：把镜头的目标点缓动冻结在第 t 秒（t 为 null 或不传就放开）。端到端用它在缓动中途精确地点地 */
+    d.holdView = function (t) {
+      emit('debug_view_hold', t === null || t === undefined ? '' : String(t));
+    };
     d.dock = window.TownDock ? window.TownDock.debug() : {};
+    d.layout = window.TownLayout ? window.TownLayout.debug() : {};
     window.__town = d;
   }
 

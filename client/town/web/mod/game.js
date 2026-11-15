@@ -69,6 +69,18 @@
         var top = bb.getBoundingClientRect().top;
         var bottom = Math.max(8, Math.round(window.innerHeight - top + 8));
         root.style.setProperty('--game-bottom', bottom + 'px');
+        /* 上沿：顶栏和提示条（#stack：只读横幅、状态条、提示条）的下沿再留 4 像素，横屏矮屏的面板据此限高，不压提示条（V1） */
+        var tb = document.getElementById('topbar');
+        var st = document.getElementById('stack');
+        var topEdge = Math.max(tb ? tb.getBoundingClientRect().bottom : 0, st && st.offsetHeight > 0 ? st.getBoundingClientRect().bottom : 0);
+        root.style.setProperty('--game-top', Math.round(topEdge + 4) + 'px');
+      }
+      if (window.ResizeObserver && document.getElementById('stack')) {
+        try {
+          new ResizeObserver(place).observe(document.getElementById('stack'));
+        } catch (e) {
+          /* ignore */
+        }
       }
       if (window.ResizeObserver && document.getElementById('bottombar')) {
         try {

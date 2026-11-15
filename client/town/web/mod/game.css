@@ -115,8 +115,8 @@ body[data-dock="drawer"][data-dock-open="1"] #gamePanel { bottom: calc(var(--doc
 /* 横屏矮屏：左右两栏，左边是局面，右边是输入。
    右栏要放得下一排 6 个数字键、每个不小于 44 像素（6 x 44 + 5 x 4 = 284），所以右栏最窄 292px，面板也跟着放宽 */
 @media (orientation: landscape) and (max-height: 520px) {
-  #gamePanel { width: min(600px, 86vw); max-height: calc(100vh - max(var(--game-bottom), calc(var(--kb, 0px) + 8px)) - 60px); }
-  body[data-dock="drawer"] #gamePanel { left: calc(8px + var(--safe-left)); right: auto; width: min(600px, 86vw); max-height: calc(100vh - var(--game-bottom) - 60px); }
+  #gamePanel { width: min(600px, 86vw); max-height: calc(100vh - max(var(--game-bottom), calc(var(--kb, 0px) + 8px)) - var(--game-top, 60px)); }
+  body[data-dock="drawer"] #gamePanel { left: calc(8px + var(--safe-left)); right: auto; width: min(600px, 86vw); max-height: calc(100vh - var(--game-bottom) - var(--game-top, 60px)); }
   #gamePanel .game-play { display: grid; grid-template-columns: minmax(0, 1fr) minmax(292px, 55%); grid-auto-flow: dense; column-gap: 12px; align-items: start; }
   #gamePanel .game-head, #gamePanel .game-confirm { grid-column: 1 / 3; }
   #gamePanel .game-range, #gamePanel .game-players, #gamePanel .game-hist { grid-column: 1; }
@@ -135,6 +135,16 @@ body[data-dock="drawer"][data-dock-open="1"] #gamePanel { bottom: calc(var(--doc
   body[data-dock="side"][data-dock-open="1"] #gamePanel .game-hist, body[data-dock="side"][data-dock-open="1"] #gamePanel .game-input,
   body[data-dock="side"][data-dock-open="1"] #gamePanel .game-hint { grid-column: 1; grid-row: auto; }
   body[data-dock="side"][data-dock-open="1"] #gamePanel .game-hist { display: none; }
+  /* 矮屏（高不到 400）侧栏开着：玩家一行也收起（谁在玩侧栏里看得到，轮到谁在标题里），输入区贴紧，「轮到你」时面板内部不出滚动条、不压提示条（V1） */
+  body[data-dock="side"][data-dock-open="1"] #gamePanel .game-players { display: none; }
+  body[data-dock="side"][data-dock-open="1"] #gamePanel .game-input { margin-top: 2px; }
+  body[data-dock="side"][data-dock-open="1"] #gamePanel { padding-top: 4px; padding-bottom: 4px; }
+  body[data-dock="side"][data-dock-open="1"] #gamePanel .game-leave { min-height: 36px; padding: 0 8px; }
+  body[data-dock="side"][data-dock-open="1"] #gamePanel .game-range { margin-top: 2px; }
+  body[data-dock="side"][data-dock-open="1"] #gamePanel .game-end { font-size: 13px; }
+  body[data-dock="side"][data-dock-open="1"] #gamePanel { border-width: 3px; }
+  body[data-dock="side"][data-dock-open="1"] #gamePanel .game-field .game-btn, body[data-dock="side"][data-dock-open="1"] #gamePanel .game-num { min-height: 40px; }
+  body[data-dock="side"][data-dock-open="1"] #gamePanel .game-pad { margin-top: 2px; gap: 3px; }
   /* 地方更紧：纸板的内边距、间距收一收，空着的提示行不占高度（有提示时面板往上长一点） */
   body[data-dock="side"][data-dock-open="1"] #gamePanel { padding: 6px 10px 6px; }
   body[data-dock="side"][data-dock-open="1"] #gamePanel .game-bomb { width: 28px; height: 28px; }

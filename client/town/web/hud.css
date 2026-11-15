@@ -100,8 +100,17 @@ button.big { font-size: 18px; padding: 12px 28px; min-height: 48px; }
 #actions button small { font-size: 12px; opacity: 0.8; font-weight: 400; }
 #actions button.do { background: var(--accent); color: var(--accent-ink); font-weight: 700; border-color: transparent; }
 #controls { display: flex; gap: 8px; }
-#controls button { min-width: 76px; background: var(--panel); backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px); }
-#controls button.danger:not(:disabled) { background: rgba(120, 40, 40, 0.85); }
+#controls button { min-width: 76px; }
+/* 画面上的按钮（V1 第四项第 3 条）：不透明的底，不依赖下面是浅色地砖还是草地。
+ * 可用：文字对底 >= 4.5:1；不可用：不再靠半透明，换成灰底灰字加虚线边（对比 >= 3:1），一眼看得出是灰的 */
+#controls button, #actions button { background: #243142; border-color: rgba(255, 255, 255, 0.32); color: var(--text); }
+#controls button:hover:not(:disabled), #actions button:hover:not(:disabled) { background: #31435a; }
+#controls button.danger:not(:disabled) { background: #7a2e2e; border-color: rgba(255, 176, 176, 0.65); }
+#controls button.danger:not(:disabled):hover { background: #8d3737; }
+#actions button.do:hover:not(:disabled) { background: #ffd987; }
+#controls button:disabled, #actions button:disabled { opacity: 1; background: #3d4552; color: #bcc4cf; border-style: dashed; border-color: rgba(255, 255, 255, 0.28); }
+#stack .banner button, #stack #activityChip button { background: #243142; border-color: rgba(255, 255, 255, 0.32); }
+#stack .banner button.primary { background: var(--accent); color: var(--accent-ink); }
 #destMenu {
   display: flex; flex-wrap: wrap; gap: 6px; justify-content: center; max-width: min(640px, 100%); background: var(--panel-solid);
   border: 1px solid var(--line); border-radius: 14px; padding: 10px;
@@ -110,14 +119,16 @@ button.big { font-size: 18px; padding: 12px 28px; min-height: 48px; }
 
 #hud #keyHint {
   position: absolute; left: calc(12px + var(--safe-left)); bottom: calc(14px + var(--safe-bottom)); z-index: 1; pointer-events: none;
-  font-size: 13px; color: var(--muted); min-height: 30px; padding: 4px 10px; gap: 4px; flex-wrap: wrap;
+  font-size: 13px; color: var(--muted); min-height: 30px; padding: 4px 10px; gap: 4px; flex-wrap: nowrap; white-space: nowrap;
 }
+/* 放得下哪一版由 layout.js 按实际量到的宽度定（data-mode）：full 完整；short 只留按键；off 隐藏。局中（body[data-game="1"]）也是 off。不再有写死的宽度断点 */
+#keyHint[data-mode="short"] .kh-t { display: none; }
+#keyHint[data-mode="off"] { display: none !important; }
 #keyHint kbd {
   font: inherit; font-size: 12px; font-weight: 700; color: var(--text); background: rgba(255, 255, 255, 0.12); border: 1px solid var(--line);
   border-radius: 5px; padding: 0 5px; min-width: 20px; text-align: center;
 }
 #keyHint .sep { opacity: 0.5; }
-@media (max-width: 900px) { #keyHint { display: none !important; } }
 
 /* z-index:0 让 #tags 自成层叠上下文：里面 .tag 的 z-index 不再外泄、压到顶栏 / 按钮 / 遮罩上面 */
 #tags { position: absolute; inset: 0; overflow: hidden; pointer-events: none; z-index: 0; }
@@ -130,8 +141,11 @@ button.big { font-size: 18px; padding: 12px 28px; min-height: 48px; }
 .tag.a.m::after { content: " …"; }
 .tag.o { background: rgba(80, 52, 24, 0.82); font-size: 12px; }
 .tag.o.sel { border-color: var(--accent); color: var(--accent); }
-.tag.z { background: transparent; font-size: 15px; font-weight: 700; color: rgba(255, 255, 255, 0.85); letter-spacing: 2px; text-shadow: 0 1px 3px rgba(0, 0, 0, 0.8); padding: 0; }
+.tag.z { background: rgba(15, 22, 32, 0.7); font-size: 15px; font-weight: 700; color: #fff; letter-spacing: 2px; text-shadow: 0 1px 2px rgba(0, 0, 0, 0.7); padding: 1px 10px; border-radius: 10px; }
 .tag.p { background: rgba(120, 90, 20, 0.88); border-color: rgba(243, 201, 105, 0.7); font-size: 12px; }
+/* 避让（fit.js）让出位置的牌：淡出，不改布局、不收指针 */
+.tag { transition: opacity 0.18s ease-out; }
+.tag.off { opacity: 0; }
 
 /* 矮屏 / 键盘弹出时卡片可以滚动；用 margin:auto 居中（装不下时贴顶，不像 center 那样上下都被裁） */
 .overlay {

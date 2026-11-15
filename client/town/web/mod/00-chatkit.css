@@ -80,3 +80,6 @@
 body[data-kb="1"] .chat-pane .scope, body[data-kb="1"] .chat-pane .note { display: none; }
 
 @media (prefers-reduced-motion: reduce) { .chat-pane .msg { animation: none; } }
+
+/* 手机抽屉：输入框和发送钮不小于 44 像素（V1） */
+body[data-dock="drawer"] .chat-pane .compose input, body[data-dock="drawer"] #dock .chat-pane .send { min-height: 44px; }
