@@ -137,7 +137,7 @@ client/art_source/, client/ASSETS.md   素材来源与台账（audio/ 是音频�
 ## 已知限制
 
 - 房屋是剖开式：屋顶、山墙和上半墙在角色进屋或挡住视线时淡出，不画成半高墙。居民 8 套服装、站走坐挥手互动动画；昼夜跟服务器世界时间。美术是第一版，之后可以换模型（见下节）。
-- 无头 Chromium 用 SwiftShader 渲染，帧率约 3 到 8，没有性能参考意义。画面像素超过 250 万时会自动降 3D 分辨率。桌面 deviceScaleFactor 2（520 万像素）时只剩 1 到 2 帧，页面的时钟估计会被拖到往返 1.5 秒、位置偏差到 0.7 到 1 米，所以验收里桌面用 dsf 1（见 `client/demo/README.md`）。
+- 无头 Chromium 用 SwiftShader 渲染，帧率约 3 到 8，没有性能参考意义。画面像素超过 250 万时会按比例封顶 3D 渲染分辨率；自动档的动态分辨率在帧率长期过低时下调、恢复后升回（软件渲染下限 0.3，正常设备 0.5）。桌面 deviceScaleFactor 2（520 万像素）时只剩 1 到 2 帧，页面的时钟估计会被拖到往返 1.5 秒、位置偏差到 0.7 到 1 米，所以验收里桌面用 dsf 1（见 `client/demo/README.md`）。
 - 服务器规则失败（422 等）时 Chromium 控制台会有一行「Failed to load resource」，这是 fetch 对非 2xx 的固有输出，不是脚本错误；端到端要求这类行数等于步骤里声明过的预期失败次数。
 - 卡顿诊断与预热：`?debug=1` 下 `window.__town.frameMaxMs` 是 Godot 自上次推送以来最长的一帧间隔（用墙钟量，引擎传给 `_process` 的 dt 会被截断，看不出长卡顿），`window.__frameMaxMs` 是网页层累计值，`__town.slow` 记最近超过 400 毫秒的帧（时刻、间隔、动态分辨率、自己的位置）。端到端每一步结束时把这一步里两个页面的最长帧间隔和浏览器报告的主线程长任务写进备注。兼容渲染器在某个东西第一次进入画面时才编译着色器、上传缓冲，软件渲染下一次可达 0.6 秒，而方向输入的租约只有 0.5 秒，走到那里的人就会停一下；所以 `world.gd` 在第一次显示每个场景时用一个 48x48 的离屏视口、正交俯视把整个场景画一遍（`_warm_up`），把这些一次性开销付在进入小镇的那一刻。
 - 软件渲染（3 到 8 帧每秒）下页面的服务器时间估计比真实服务器慢约 110 到 290 毫秒（端到端步骤 2、8 的对时数据；推断原因是 pong 要等下一帧才被读到），折成位置是整体滞后 0.3 到 0.7 米；真机待测。
@@ -206,5 +206,6 @@ client/art_source/, client/ASSETS.md   素材来源与台账（audio/ 是音频�
 - `town/scripts/art.gd`（`TArt`）读这张表；`town/scripts/town_layout.gd` 摆放非可走地面上的装饰（树、路灯、围栏、摊位、长椅……），`world.gd` 的 `put()` 会拿服务器地图校验脚印，压到可走格的装饰被拒绝，不会挡路。
 - **私有覆盖目录** `town/art_private/`（已在 `.gitignore`，不进仓库）：放 `art_table.json` 和模型文件，同名 kind 覆盖仓库里的条目，路径用 `res://art_private/...`。不是 CC0 的素材（例如 YumeForge）只能放这里。没有这个目录时用仓库里的 CC0 默认素材，导出照常成功。
 - 居民外观：`actor.gd` 的 `appearance_for(id)`，按编号 hash 选 8 套服装之一；要换规则只改这个函数。
-- 画质：HUD 的「画质」按钮切高 / 低（localStorage `town3d.quality`）。高 = 平行光阴影；低 = 脚底圆影，手机和软件渲染默认低。3D 分辨率会在帧率长期过低时自动下调（动态分辨率）。
-- 调试：`?debug=1&hour=19` 固定世界钟点（昼夜截图用）。
+- 画质：HUD 的「画质」按钮在 自动 → 高 → 低 之间循环（localStorage `town3d.quality` = `auto` / `high` / `low`，没存过是自动）。自动 = 动态分辨率（规则和常量见 `client/docs/T01.md`、`scripts/quality_logic.gd`），阴影触屏和软件渲染关；高 = 渲染比例取像素上限允许的最大值 + 平行光阴影；低 = 固定 0.6 + 脚底圆影。
+- 调试：`?debug=1&hour=19` 固定世界钟点（昼夜截图用）；`?debug=1&scale=0.75` 固定 3D 渲染比例（0.3～1.0，仍受 250 万像素上限约束）；`?debug=1&zoom=12` 固定镜头距离（米）。诊断读数：`__town.renderScale`、`renderSize`、`canvasSize`、`qualityMode`、`drsFloor`、`drsCeil`。
+- 固定镜头对照：`npm run client:shots`（先导出；真实 Chrome 有头，`--headless` 只做无显卡冒烟）把 3 种渲染设置 × 4 种镜头（默认、最近缩放、夜里、茶馆里）截成 PNG，数据汇总进 `client/docs/T01/shots/results.json`。选项见 `scripts/client-shots.mjs` 开头的注释。
