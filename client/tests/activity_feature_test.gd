@@ -5,11 +5,14 @@ extends SceneTree
 ## 用法：npm run client:unit（或 /opt/godot/godot --headless --path client/town --script ../tests/activity_feature_test.gd）
 
 const Activity := preload("res://scripts/features/activity.gd")
+const ActLogic := preload("res://scripts/features/activity_logic.gd")  # 只用来核对前提（人是不是坐在座位上）
 
 const TEA := "tea_house:table1"
 const SHELF := "tea_house:shelf"  # 不是茶桌的共同物件（没有「坐在座位上」的说法，只看够不够得着）
 const SELF := "r_me"
 const ANCHORS := [Vector2(7, 3.75), Vector2(7, 6.25), Vector2(8.25, 5), Vector2(5.75, 5)]
+const TEA2 := "tea_house:table2"  # 另一张茶桌：真有这张桌、真有座位，只是活动不在它上面
+const ANCHORS2 := [Vector2(14, 3.75), Vector2(14, 6.25), Vector2(15.25, 5), Vector2(12.75, 5)]
 
 var _fails: int = 0
 var _checks: int = 0
@@ -77,6 +80,8 @@ class FakeCtx:
 	func object_info(oid: String) -> Dictionary:
 		if oid == SHELF:
 			return {"id": SHELF, "name": "藏书架", "kind": "bookshelf", "anchors": [Vector2(2, 1.2), Vector2(3, 1.2)], "pos": Vector3(2.5, 0, 0.5)}
+		if oid == TEA2:
+			return {"id": TEA2, "name": "里间的茶桌", "kind": "tea_table", "anchors": ANCHORS2, "pos": Vector3(14, 0, 5)}
 		if oid != TEA:
 			return {}
 		return {"id": TEA, "name": "靠窗的茶桌", "kind": "tea_table", "anchors": ANCHORS, "pos": Vector3(7, 0, 5)}
@@ -393,11 +398,24 @@ func t_pick_stays() -> void:
 	check(f.pick_stays("none", ""), "pick_stays: 在活动里按 E 而附近什么都没有为真")
 	check(not f.pick_stays("", ""), "pick_stays: 点地面（kind 为空）为假")
 	check(not f.pick_stays("actor", "r_b"), "pick_stays: 选中别人为假")
-	check(not f.pick_stays("obj", "tea_house:table2"), "pick_stays: 选中别的物件为假")
+	check(not f.pick_stays("obj", "tea_house:nowhere"), "pick_stays: 选中不认得的物件为假")
 	check(not f.pick_stays("obj", SHELF), "pick_stays: 选中不是我这一桌的共同物件为假（哪怕够得着）")
 	check(not f.pick_stays("obj", ""), "pick_stays: 空编号为假")
 	check(f._gate == gate0, "pick_stays: 只是问一问，不动走开拦截的任何状态：%s" % str(f._gate))
 	check(int(f.debug()["warned"]) == 0 and int(f.debug()["passed"]) == 0, "pick_stays: 不计提示、不计放行")
+	# 活动在茶桌 1，人却坐在茶桌 2 的座位上（视图里两张桌都在）：选中茶桌 2 不是「我这一桌」，为假。
+	# 这一条单独钉住「选中的得是我这一桌」：茶桌 2 是真的茶桌、有座位、人就坐在上面，别的条件全都成立
+	var both: Dictionary = _view(op, op)
+	(both["here"]["objects"] as Array).append({"id": TEA2, "type": "tea_table", "label": "里间的茶桌", "near": true, "action": {"def": "tea", "name": "一起喝茶", "cost": "茶叶 1", "min": 2, "max": 4}, "active": null})
+	f.on_me(both)
+	me.disp = ANCHORS2[1]
+	check(f._objs.has(TEA2) and not c.object_info(TEA2).is_empty(), "pick_stays: 前提：茶桌 2 在视图里，也查得到")
+	check(bool(ActLogic.pick_seat(ANCHORS2, me.disp, [])["seated"]), "pick_stays: 前提：人坐在茶桌 2 的座位上")
+	check(not f.pick_stays("obj", TEA2), "pick_stays: 活动在茶桌 1，坐在茶桌 2 的座位上选中茶桌 2 为假（不是我这一桌）")
+	check(not f.pick_stays("obj", TEA), "pick_stays: 人不在茶桌 1 的座位上，选中茶桌 1 也为假")
+	me.disp = ANCHORS[1]
+	check(f.pick_stays("obj", TEA), "pick_stays: 回到茶桌 1 的座位上，选中茶桌 1 为真")
+	check(f._gate == gate0, "pick_stays: 两张桌问下来仍不动走开拦截的状态：%s" % str(f._gate))
 	# 在活动里，但没坐在座位上（站在桌边，离最近的座位 0.85 米）：点它会走去座位，要照旧过拦截
 	me.disp = Vector2(7, 4.6)
 	check(not f.pick_stays("obj", TEA), "pick_stays: 没坐在座位上为假（点它会走去座位）")
