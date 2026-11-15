@@ -30,7 +30,7 @@ export const PLACE_TITLES_LISTED = 5;
 /** you.search.places 最多列几个地点（非盲搜；其余记 places_more，全部用 section:"places"）。盲搜没有这一段，列全（只有 key 和名字） */
 export const PLACES_LISTED = 20;
 /** public.search.places 最多列几个地点（非盲搜；其余记 places_more） */
-export const PUBLIC_PLACES_LISTED = 20;
+export const PUBLIC_PLACES_LISTED = 12;
 /** you.search.my_cards 最多列几张（最新的优先；其余记 my_cards_more，清单用 section:"my_clues"，每张用 clue:id） */
 export const MY_CARDS_LISTED = 6;
 /** public.search.shared 最多列几条（最新的优先；其余记 shared_more，原文在 get_game_log 的 clue_shared 事件） */
@@ -45,7 +45,14 @@ export const IMAGES_INLINE = 2400;
 /** public.search.log（每次搜证一条，公开）只给最近几条，其余记 log_more */
 export const SEARCH_LOG_LISTED = 20;
 export const QUIZ_PUBLIC_INLINE = 2000;
+/** 全体公开介绍的字数合计不超过它时，public.cast[].public 和 you.role.public 原样给出（和改前逐字相同）；超过才每人截到 CAST_PUBLIC_INLINE，全文用 section:"cast" */
+export const CAST_PUBLIC_TOTAL_INLINE = 2400;
+/** 公开介绍合计超过 CAST_PUBLIC_TOTAL_INLINE 时，每人留多少字 */
 export const CAST_PUBLIC_INLINE = 150;
+/** 这一局的公开介绍要不要截（合计超过总量才截；public.cast 和 you.role.public 走同一个判断） */
+export function castNeedsClip(publics: readonly string[]): boolean {
+  return publics.reduce((n, t) => n + t.length, 0) > CAST_PUBLIC_TOTAL_INLINE;
+}
 export const SHARED_CLUE_INLINE = 400;
 export const SHARED_TOTAL_INLINE = 1200;
 export const PUBLIC_TRUTH_INLINE = 600;
@@ -133,13 +140,13 @@ export function paginate(text: string, page: number): Paged {
 // ───────────────────────── 段名 ─────────────────────────
 
 export type SectionRef =
-  | { kind: 'host_notes' | 'truth' | 'faq' | 'clues' | 'questionnaire' | 'images' | 'questions' | 'places' | 'script' | 'confession' | 'my_clues' }
+  | { kind: 'host_notes' | 'truth' | 'faq' | 'clues' | 'questionnaire' | 'images' | 'questions' | 'places' | 'script' | 'confession' | 'my_clues' | 'cast' }
   | { kind: 'role'; n: number }
   | { kind: 'act'; n: number }
   | { kind: 'clue'; id: string }
   | { kind: 'find'; q: string };
 
-const FIXED = ['host_notes', 'truth', 'faq', 'clues', 'questionnaire', 'images', 'questions', 'places', 'script', 'confession', 'my_clues'] as const;
+const FIXED = ['host_notes', 'truth', 'faq', 'clues', 'questionnaire', 'images', 'questions', 'places', 'script', 'confession', 'my_clues', 'cast'] as const;
 
 /**
  * 解析段名（lookup 别名和取段都走这一个，没有第二套）。

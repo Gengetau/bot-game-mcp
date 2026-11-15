@@ -32,6 +32,8 @@ export interface SynthOpts {
   /** 问卷题干 / 选项文字长度（默认 60 / 50；格式上限 300 / 200） */
   qStem?: number;
   qOptText?: number;
+  /** 每个角色的公开介绍字数（默认 1000） */
+  rolePublic?: number;
 }
 
 export const fill = (n: number, tag: string) => (tag + '这是一段剧本文字，用来占位。').repeat(Math.ceil(n / 14)).slice(0, n);
@@ -45,7 +47,7 @@ export function synth(o: SynthOpts): any {
   const roles = keys.map((k, i) => ({
     key: k,
     name: `角色${i + 1}`,
-    public: fill(1000, 'P'),
+    public: fill(o.rolePublic ?? 1000, 'P'),
     script: fill(o.roleScript, k),
     confession: i === 0 ? fill(o.confession, 'X') : '',
     images: flood ? take() : [],

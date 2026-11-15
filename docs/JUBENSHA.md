@@ -243,18 +243,19 @@ DM（AI）能看到的全部材料：真相、凶手、主持手册、全部人�
 
 有待答提问而没有别的待办时，`hint` 会提示「先看 you.open_questions_look 里该看的段，再用 answer 回答」（被 @ 叫醒的 DM 也要先看这两个字段）。
 
-**玩家的默认视图**：`script` 4000 字、`acts` 合计 3500 字（最新一幕优先，放不下的幕只留前 200 字）、`confession` 2000 字、`search.my_cards[].text` 合计 2500 字（放不下的留前 200 字）、`my_questions` 最近 5 条（`my_questions_more`）、`search.places` 最多 20 个地点且每处最多 5 个卡背标题（`places_more`、`cards_more`）、`search.my_cards` 最多 6 张最新的（`my_cards_more`，清单用 `my_clues`）、图片说明每条 400 字且全部合计 2400 字。问卷是答题必需：`you.questionnaire` 超过 8000 字时每题只留题号、分值、我的答案和前 40 字题干（`questionnaire_note`），全文用 `section:"questionnaire"`（答题阶段 `todo.prompt` 里也有）。`public` 里：角色公开介绍 150 字、公开线索只列最新 6 条（`shared_more`）且每条 400 字、累计 1200 字、`public.questionnaire` 超过 2000 字时去掉选项（还超就只留题号和分值，带 `questionnaire_note`）、地点只列 20 个（`places_more`）、结束后的 `public.truth` 600 字。
+**玩家的默认视图**：`script` 4000 字、`acts` 合计 3500 字（最新一幕优先，放不下的幕只留前 200 字）、`confession` 2000 字、`search.my_cards[].text` 合计 2500 字（放不下的留前 200 字）、`my_questions` 最近 5 条（`my_questions_more`）、`search.places` 最多 20 个地点且每处最多 5 个卡背标题（`places_more`、`cards_more`）、`search.my_cards` 最多 6 张最新的（`my_cards_more`，清单用 `my_clues`）、图片说明每条 400 字且全部合计 2400 字。问卷是答题必需：`you.questionnaire` 超过 8000 字时每题只留题号、分值、我的答案和前 40 字题干（`questionnaire_note`），全文用 `section:"questionnaire"`（答题阶段 `todo.prompt` 里也有）。`public` 里：角色公开介绍（`public.cast[].public`，`you.role.public` 同）全体合计不超过 2400 字（`CAST_PUBLIC_TOTAL_INLINE`）时原样给出，超过才每人截到 150 字并指向 `section:"cast"`、公开线索只列最新 6 条（`shared_more`）且每条 400 字、累计 1200 字、`public.questionnaire` 超过 2000 字时去掉选项（还超就只留题号和分值，带 `questionnaire_note`）、地点只列 12 个（`places_more`）、结束后的 `public.truth` 600 字。
 
 可取的段（`section`）：
 
 | 谁 | 段名 |
 |---|---|
-| DM | `host_notes`（主持手册）、`truth`（真相）、`faq`、`role:N`（N 号人物）、`act:N`、`clues`、`clue:线索id`、`questionnaire`、`images`、`questions`（全部待答提问）、`find:关键词` |
-| 玩家 | `script`（我的人物剧本）、`act:N`（已解锁的幕里我自己的部分）、`confession`、`clue:线索id`（只限自己持有或已公开的）、`my_clues`（我持有的全部线索清单，卡多时用）、`questions`（我的提问和回答）、`places`、`questionnaire`（答问卷阶段起，我自己的题目）、`find:关键词` |
+| DM | `host_notes`（主持手册）、`truth`（真相）、`faq`、`role:N`（N 号人物）、`act:N`、`clues`、`clue:线索id`、`questionnaire`、`images`、`questions`（全部待答提问）、`cast`、`find:关键词` |
+| 玩家 | `script`（我的人物剧本）、`act:N`（已解锁的幕里我自己的部分）、`confession`、`clue:线索id`（只限自己持有或已公开的）、`my_clues`（我持有的全部线索清单，卡多时用）、`questions`（我的提问和回答）、`places`、`questionnaire`（答问卷阶段起，我自己的题目）、`cast`、`find:关键词` |
 
+- `cast`（DM 和玩家都能取）：每个座位的「名字、角色名、公开介绍全文」，只含公开视图 `public.cast` 里本来就有的内容。
 - 段名的写法：不区分大小写，全角、前后空白都认（`role:3`、`ROLE：３`、` role:3号 ` 是同一段），**不支持简写**（`r:3`、`hn` 取不到）；序号必须是纯数字（`role:3,4`、`act:1;role:3`、`role:03x` 一律不认）；`clue:` 后面的线索 id 区分大小写；整串最长 80 字。不存在、不是你的、格式不对，一律返回同一句拒绝，不泄露这一段存不存在。
 - `find:关键词` 在你自己能取的材料里按段落找，多个词用空格（全部命中才算），最多返回 8 条命中、每条带前后文。玩家只找自己的材料。
-- DM 的 `act({"action":"lookup","text":"3"})` 仍可用，是取段的别名，文字和报错与以前一致。
+- DM 的 `act({"action":"lookup","text":"3"})` 仍可用，是取段的别名，文字和报错与以前一致。DM 默认视图里 `questionnaire` 一栏的提示也改成指向 `get_my_view({"section":"questionnaire"})`。
 - 真人 DM 在座位网页上仍然看到完整材料（人在读，不受 token 限制）；真人 DM 没有 `get_my_view`。其他真人玩家的网页视图不变。
 - 小镇里的嵌入局走网页完整视图，不受影响。
 

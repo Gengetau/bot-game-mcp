@@ -14,7 +14,7 @@ export function playerPrompt(opts: { toolPrefix?: string; refereeName?: string; 
     `- 这是程序主持的桌游（狼人杀、谁是卧底、大话骰、数字炸弹、密封竞拍、彩牌接龙、诈牌酒馆、德州扑克等）：身份、座位、顺序、结算、胜负全由程序决定，谁也改不了。${ref}只负责把程序的话发到群里和私聊里。`,
     `- 报名：${ref}发「🎮【某某】房间 xxx 已开启」并 @ 你时，调用 ${p}join_game({game_id:"xxx", join_as:"player"})，成功后在群里简短说一句就行。不想玩就不报名，不用解释。`,
     `- 对局中只在${ref} @ 你（「请调用 get_my_view 查看自己的行动面板」、轮到你发言/猜数/叫牌）时行动：先调用 ${p}get_my_view()，看 todo。todo 为空就什么都不做，也不用在群里回应。`,
-    `  · 剧本杀：get_my_view 的 you 是摘要加目录 you.sections；剧本或资料被截断、或想按关键词查，用 ${p}get_my_view({game_id, section, page}) 取（例如 section:"script"、"act:2"、"find:关键词"）；事件里的「〔……已在 you.script〕」指引行说明那段文字在 you 里，被截断时按指引取全。`,
+    `  · 剧本杀：get_my_view 的 you 是摘要加目录 you.sections；剧本或资料被截断、或想按关键词查，用 ${p}get_my_view({game_id, section, page}) 取（例如 section:"script"、"act:2"、"cast"（全体角色的公开介绍全文）、"find:关键词"）；事件里的「〔……已在 you.script〕」指引行说明那段文字在 you 里，被截断时按指引取全。`,
     `  · 你是剧本杀的 DM 时：被 @「有玩家私下向 DM 提问」，即使 todo 为空也要看 you.open_questions 和 you.open_questions_look，需要细节就取那一段，再用 ${p}act({action:"answer", target:座位号, text}) 回答；这是上面「todo 为空就什么都不做」的例外。`,
     `  · 发言类 todo：${p}speak({game_id, text}) 提交，返回里有 post_to_group 就再用${send}把同一段话原样发到群里，这就是你这轮全部的话。`,
     `  · 其他 todo（投票、夜里行动、猜数、叫牌、放弃）：照 todo.actions 里的 example 用 ${p}act 提交；秘密阶段提交完什么都别发。`,

@@ -14,6 +14,8 @@ import type { Identity } from '../../src/core/types.js';
 import { createRegistry } from '../../src/games/index.js';
 import { memoryLibrary } from '../../src/games/jubensha/index.js';
 import {
+  CAST_PUBLIC_INLINE,
+  CAST_PUBLIC_TOTAL_INLINE,
   DM_CLUES_LISTED,
   DM_FAQ_INLINE,
   DM_NOTES_INLINE,
@@ -119,9 +121,14 @@ describe('默认视图：没超预算时与改前逐字节相同（示例包）'
           expect(you.dm_actions.slice(0, -1)).toEqual(b.you.dm_actions.slice(0, -1));
           expect(you.dm_actions.at(-1)).toContain('lookup');
           expect(you.dm_actions.at(-1)).toContain('"section":"role:3"');
-          const { note: _n, dm_actions: _a, ...rest } = you;
-          const { note: _bn, dm_actions: _ba, ...baseRest } = b.you;
+          const { note: _n, dm_actions: _a, questionnaire: qNow, ...rest } = you;
+          const { note: _bn, dm_actions: _ba, questionnaire: qBase, ...baseRest } = b.you;
           expect(rest).toEqual(baseRest);
+          // 问卷字段：只有「用 lookup 查看」换成指向 get_my_view 的 section（lookup 仍可用，是别名）
+          if (typeof qBase === 'string') {
+            expect(qNow).toBe(qBase.replace('用 lookup "questionnaire" 查看', '用 get_my_view({"section":"questionnaire"}) 查看'));
+            expect(qNow).not.toContain('lookup');
+          } else expect(qNow).toEqual(qBase);
         } else {
           expect(you).toEqual(b.you);
           // 玩家的默认视图与完整视图（真人网页用的那份）一致
@@ -1272,4 +1279,67 @@ describe('与改前逐条相同：get_game_log、出箱、DM 的 lookup 与取�
     }
     return { web, outbox: r.outbox as any[], game: { rec: r } };
   }
+});
+
+describe('公开段 cast：公开介绍合计不超过总量时原样，超过才每人截断并指向 cast 段', () => {
+  const castText = (g: Rig) => (inst(g).publicView().cast as { seat: number; name: string; role: string; public: string }[]).map((c) => `${c.seat}号 ${c.name}【${c.role}】\n${c.public}`).join('\n\n');
+
+  it('合计在总量以内（6 人 × 300 字）：public.cast 与改前的公开视图逐字相同，you.role.public 也是原文；目录里仍列出 cast', () => {
+    const opts: SynthOpts = { ...X1, rolePublic: 300 };
+    expect(opts.players * 300).toBeLessThanOrEqual(CAST_PUBLIC_TOTAL_INLINE);
+    const g = rig(synth(opts));
+    stopAt(g, 'discuss#1', { search: true });
+    const pv = inst(g).publicView();
+    for (const seat of g.rec.players.map((p: any) => p.seat) as number[]) {
+      const v = g.view(seat);
+      expect(v.public.cast, `${seat}`).toEqual(pv.cast);
+      expect(JSON.stringify(v.public.cast)).not.toContain('…（共');
+      if (seat !== hostSeat(g)) expect(v.you.role.public).toBe(inst(g).roleOf(seat).public);
+      expect(v.you.sections.map((x: any) => x.section)).toContain('cast');
+    }
+  });
+
+  it('合计超过总量（6 人 × 500 字）：每人截到 CAST_PUBLIC_INLINE 并指向 cast 段；you.role.public 跟同一个判断走', () => {
+    const opts: SynthOpts = { ...X1, rolePublic: 500 };
+    expect(opts.players * 500).toBeGreaterThan(CAST_PUBLIC_TOTAL_INLINE);
+    const g = rig(synth(opts));
+    stopAt(g, 'discuss#1', { search: true });
+    for (const seat of g.rec.players.map((p: any) => p.seat) as number[]) {
+      const v = g.view(seat);
+      for (const c of v.public.cast) {
+        expect(c.public.startsWith(fill(CAST_PUBLIC_INLINE, 'P')), `${seat}`).toBe(true);
+        expect(c.public).toContain('get_my_view({"section":"cast"})');
+        expect(c.public.length).toBeLessThan(500);
+      }
+      if (seat !== hostSeat(g)) {
+        expect(v.you.role.public).toContain('get_my_view({"section":"cast"})');
+        expect(v.you.role.public.length).toBeLessThan(500);
+      }
+    }
+  });
+
+  it('DM 和每个玩家都取得到 cast 段：全文与公开视图的介绍一致，只含 publicView().cast 里有的字段；段名大小写不敏感；目录的 chars 对得上', () => {
+    const g = rig(synth({ ...X1, rolePublic: 500 }));
+    stopAt(g, 'discuss#1', { search: true });
+    const want = castText(g);
+    const pub = inst(g).publicView().cast as { public: string }[];
+    for (const c of pub) expect(want).toContain(c.public);
+    for (const seat of g.rec.players.map((p: any) => p.seat) as number[]) {
+      expect(joinSection(g, seat, 'cast'), `${seat}`).toBe(want);
+      for (const name of ['CAST', ' Cast ', 'ＣＡＳＴ']) expect(section(g, seat, name).section).toBe('cast');
+      expect(g.view(seat).you.sections.find((x: any) => x.section === 'cast').chars).toBe(want.length);
+    }
+    // 里面没有任何别的东西：没有剧本、认罪书、真相
+    expect(want).not.toContain(fill(40, 'r1'));
+    expect(want).not.toContain(fill(40, 'T'));
+    expect(want).not.toContain(fill(40, 'X'));
+  });
+
+  it('没开局的局取 cast 被拒（INVALID_STATE）；非参赛者 FORBIDDEN', () => {
+    const { manager } = setup(1, undefined, { scripts: memoryLibrary([exampleDemo('demo-rainy-bookshop')]) });
+    const lobby = manager.createGame(bot(1), { type: 'jubensha', groupId: '9100', options: { stage: 'group', script: 'demo-rainy-bookshop' }, joinAs: 'player', autoReferee: true, selfPost: false });
+    expect(err(() => manager.getSection(bot(1), lobby.summary.game_id, 'cast', 1))).toMatchObject({ code: 'INVALID_STATE' });
+    const g = rig(synth({ ...X1, rolePublic: 500 }));
+    expect(err(() => g.manager.getSection(bot(99), g.gameId, 'cast', 1))).toMatchObject({ code: 'FORBIDDEN' });
+  });
 });

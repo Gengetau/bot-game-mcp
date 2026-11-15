@@ -19,6 +19,7 @@ import type { AssetStore } from '../../core/assets.js';
 import { actRounds, packAssets, type PackClue, type PackQuestion, type ScriptLibrary, type ScriptPack } from './pack.js';
 import {
   CAST_PUBLIC_INLINE,
+  castNeedsClip,
   DM_CLUES_LISTED,
   DM_FAQ_INLINE,
   DM_NOTES_INLINE,
@@ -1430,7 +1431,7 @@ export function createJubenshaDefinition(
         const text = hits.length ? hits.map((h, i) => `${i + 1}. 【${h.where}】（${h.section}）${h.snippet}`).join('\n') : '没找到。换个词，或直接看目录里的段。';
         return { section: sectionName(ref), title: `按关键词找「${cleanSpeech(ref.q, 40)}」`, page: 1, pages: 1, chars: text.length, text, hits };
       }
-      const got = dm ? this.dmSectionBody(ref) : this.playerSectionBody(seat, ref);
+      const got = ref.kind === 'cast' ? { title: '角色表全文', body: this.castBody() } : dm ? this.dmSectionBody(ref) : this.playerSectionBody(seat, ref);
       if (!got) return null;
       return { section: sectionName(ref), title: got.title, ...paginate(got.body, page) };
     }
@@ -1457,6 +1458,7 @@ export function createJubenshaDefinition(
         if (s.pack.questionnaire.length) out.push(item({ kind: 'questionnaire' }, '问卷题与答案', this.dmQuestionnaireBody().body, '问卷阶段答疑'));
         if (s.pack.images.length) out.push(item({ kind: 'images' }, '图片说明', this.dmImagesBody().body, '问题涉及图'));
         if (s.qa.some((x) => x.a === undefined)) out.push(item({ kind: 'questions' }, '待答提问', this.dmQuestionsBody(), 'open_questions_more 出现时，或想一次看全'));
+        out.push(item({ kind: 'cast' }, '角色表全文', this.castBody(), '公开介绍被截断时看'));
         out.push(find);
         return out;
       }
@@ -1471,6 +1473,7 @@ export function createJubenshaDefinition(
       out.push(item({ kind: 'questions' }, '我的提问和回答', this.playerQuestionsBody(seat), 'my_questions_more 出现时看全部'));
       if (this.hasPlacesSection(seat)) out.push(item({ kind: 'places' }, '各地点剩余卡背', this.placesBody(seat), 'cards_more 或 places_more 出现时看全部'));
       if (this.hasQuizSection(seat)) out.push(item({ kind: 'questionnaire' }, '我的问卷', this.playerQuizBody(seat), 'you.questionnaire 被缩短时看全文'));
+      out.push(item({ kind: 'cast' }, '角色表全文', this.castBody(), '公开介绍被截断时看'));
       out.push({ ...find, use: '想核对剧本里的某个词（只找你自己的材料）' });
       return out;
     }
@@ -1659,7 +1662,7 @@ export function createJubenshaDefinition(
                 },
               }
             : {}),
-          ...(s.pack.questionnaire.length ? { questionnaire: `${s.pack.questionnaire.length} 道题，用 lookup "questionnaire" 查看`, ...(ph?.key === 'quiz' ? { quiz_answers: ph.data.answers } : {}) } : {}),
+          ...(s.pack.questionnaire.length ? { questionnaire: `${s.pack.questionnaire.length} 道题，用 ${getViewCall('questionnaire')} 查看`, ...(ph?.key === 'quiz' ? { quiz_answers: ph.data.answers } : {}) } : {}),
           sections,
         };
       }
@@ -1668,7 +1671,7 @@ export function createJubenshaDefinition(
       const full = this.fullView(seat) as Record<string, any>;
       const img = { left: IMAGES_INLINE };
       const out: Record<string, unknown> = { ...full };
-      out.role = { ...full.role, public: clip(r.public, CAST_PUBLIC_INLINE, '全文见开局公告（get_game_log）') };
+      if (this.castClipped()) out.role = { ...full.role, public: clip(r.public, CAST_PUBLIC_INLINE, `全文：${getViewCall('cast')}`) };
       out.script = clip(r.script, PLAYER_SCRIPT_INLINE, `全文：${getViewCall('script')}`);
       // 各幕：从最新一幕往前放到预算，放不下的只留前 200 字；图片说明也是最新的先放
       const acts = full.acts as { title: string; text: string; images?: string[] }[];
@@ -1767,6 +1770,26 @@ export function createJubenshaDefinition(
       }));
     }
 
+    /** 公开的角色表（public.cast）：座位、名字、角色名、公开介绍。cast 段和 publicView 共用，不含任何别的东西。 */
+    private publicCast(): { seat: Seat; name: string; role: string; public: string }[] {
+      return this.playerSeats().map((x) => {
+        const r = this.roleOf(x)!;
+        return { seat: x, name: this.player(x).name, role: r.name, public: r.public };
+      });
+    }
+
+    /** 公开介绍合计太长，MCP 视图里要不要截（public.cast 和 you.role.public 走同一个判断） */
+    private castClipped(): boolean {
+      return castNeedsClip(this.publicCast().map((c) => c.public));
+    }
+
+    /** cast 段：每个座位的名字、角色名、公开介绍全文（只用 publicView().cast 里本来就有的字段；DM 和玩家都能取） */
+    private castBody(): string {
+      return this.publicCast()
+        .map((c) => `${c.seat}号 ${c.name}【${c.role}】\n${c.public}`)
+        .join('\n\n');
+    }
+
     publicView(): Record<string, unknown> {
       const s = this.state;
       const ph = this.phase;
@@ -1774,10 +1797,7 @@ export function createJubenshaDefinition(
       return {
         script: { id: s.pack.id, title: s.pack.title, acts: s.pack.acts.length },
         dm: s.host ? { seat: s.host, name: this.player(s.host).name } : null,
-        cast: this.playerSeats().map((x) => {
-          const r = this.roleOf(x)!;
-          return { seat: x, name: this.player(x).name, role: r.name, public: r.public };
-        }),
+        cast: this.publicCast(),
         act: s.act >= 0 && s.act < s.pack.acts.length ? { index: s.act + 1, title: s.pack.acts[s.act]!.title } : null,
         stage: ph ? ph.title : null,
         discussion:
@@ -1827,7 +1847,9 @@ export function createJubenshaDefinition(
       const pv = this.publicView() as Record<string, any>;
       const more = '未显示的部分见 get_game_log 里对应的公开事件';
       const out: Record<string, unknown> = { ...pv };
-      if (Array.isArray(pv.cast)) out.cast = pv.cast.map((c: any) => (c.public.length > CAST_PUBLIC_INLINE ? { ...c, public: clip(c.public, CAST_PUBLIC_INLINE, more) } : c));
+      if (Array.isArray(pv.cast) && this.castClipped()) {
+        out.cast = pv.cast.map((c: any) => (c.public.length > CAST_PUBLIC_INLINE ? { ...c, public: clip(c.public, CAST_PUBLIC_INLINE, `全文：${getViewCall('cast')}`) } : c));
+      }
       if (pv.search?.shared) {
         const sharedAll = pv.search.shared as { text: string; images?: string[] }[];
         // 公开线索条数没有上限（最多 500 张）：只列最新的几条，其余记 shared_more（原文在 get_game_log 的 clue_shared 事件）
