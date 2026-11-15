@@ -23,6 +23,7 @@ func _init() -> void:
 	t_keys()
 	t_shop()
 	t_far()
+	t_chat_kind()
 	print("%d 项检查，%d 项失败" % [_checks, _fails])
 	quit(1 if _fails > 0 else 0)
 
@@ -104,3 +105,10 @@ func t_far() -> void:
 	s = L.far_step(true, true, 6, 6, 40.0)
 	check(s["far"], "走着没改道：一直等")
 	check(not L.far_step(false, false, 1, 1, 0.0)["far"], "本来就没在等")
+
+
+## 附近聊天里发话人的种类：NPC 认作 npc（网页那边只对 agent 画 AI 标记，NPC 的「NPC」标记靠 data-from 前缀），其余未知的当 human
+func t_chat_kind() -> void:
+	check(TChatUtil.kind_of({"kind": "npc"}) == "npc", "发话人是 NPC：kind 为 npc")
+	check(TChatUtil.kind_of({"kind": "agent"}) == "agent", "AI 仍是 agent")
+	check(TChatUtil.kind_of({"kind": "human"}) == "human" and TChatUtil.kind_of({}) == "human" and TChatUtil.kind_of({"kind": "x"}) == "human", "真人和未知的当 human")
