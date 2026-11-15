@@ -248,7 +248,19 @@ func c4_person_reach() -> float:
 # ─────────────────────────────────────────────────────────────────────────
 
 
-# ───────────────────────── C6 分区（预留，空）─────────────────────────
+# ───────────────────────── C6 分区 ─────────────────────────
+## 浮层卡一次只开一张（居民卡、NPC 菜单……）：功能开卡时 claim（上一张卡的主人会收到 on_card_yield 并自己收起），关卡时 release。
+func card_claim(fid: String) -> void:
+	m.features.claim_card(fid)
+
+
+func card_release(fid: String) -> void:
+	m.features.release_card(fid)
+
+
+## 走到某个 NPC 身边（和点它时 main 的调用一致：navigate {approach}）。返回 false 表示没发出（被拦下、对方不在场景里）
+func c6_approach(actor_id: String) -> bool:
+	return c4_approach(actor_id)
 # ─────────────────────────────────────────────────────────────────────────
 
 

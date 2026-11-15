@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""居民外观：把 KayKit 底模的调色板贴图重新配色成 8 套日常服装 / 发色 / 肤色。
+"""居民外观：把 KayKit 底模的调色板贴图重新配色成 10 套服装（0..7 居民日常，8、9 镇上 NPC），换服装 / 发色 / 肤色。
 
 用法：python3 -I client/art_source/recolor_residents.py <KayKit_Adventurers_2.0_FREE 目录> <输出目录>
 
@@ -38,6 +38,10 @@ OUTFITS = [
     ("mage", {"skin": "deep", "hair": "#6a4a3a", "coat": "#5f8f93", "belt": "#c58b4e", "boots": "#5a4437", "pants": "#3f4d52"}),
     ("knight", {"skin": "fair", "hair": "#d8b878", "coat": "#56688a", "coat2": "#8d9bb5", "coat3": "#c9d0dc", "belt": "#8a6445", "boots": "#46403d"}),
     ("knight", {"skin": "tan", "hair": "#3b2e2a", "coat": "#7d8f70", "coat2": "#aeb99f", "coat3": "#e6e0cc", "belt": "#6d5139", "boots": "#4a4036"}),
+    # 8、9：镇上 NPC 专用（居民的 appearance_for 只在 0..7 里挑，这两套不会撞）。同一个 CC0 底模，本仓库脚本改色。
+    # 8 = 茶馆掌柜（奶白衬衫、灰白头发；围裙和木牌是客户端程序生成的配件）；9 = 广场闲逛者（薰衣草色上衣、芥黄色衣领；软帽同样是程序生成的配件）
+    ("rogue", {"skin": "tan", "hair": "#a8a29a", "top": "#efe4cc", "collar": "#cdb98d", "belt": "#5b3f2a", "pants": "#4a4540", "boots": "#3a302a"}),
+    ("knight", {"skin": "light", "hair": "#5a4a42", "coat": "#9a86b0", "coat2": "#c9a24d", "coat3": "#e8e0d0", "belt": "#6d5139", "boots": "#4a4036"}),
 ]
 
 

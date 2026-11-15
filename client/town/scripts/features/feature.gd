@@ -74,6 +74,12 @@ func on_ui(_name: String, _arg: String) -> void:
 	pass
 
 
+## 底座记着现在是谁的浮层卡（见 hub.claim_card）：别的功能要开自己的卡时，上一个主人会收到这个通知，自己关卡（并推一次状态）。
+## 默认什么都不做；实现时别再调 ctx.card_claim，关卡里调 ctx.card_release 即可（此时主人已经换了人，release 是空操作）
+func on_card_yield() -> void:
+	pass
+
+
 ## 仅 wants_tick，仅 PLAYING，每帧；自己节流到 4Hz 以内
 func tick(_dt: float, _now_ms: float) -> void:
 	pass

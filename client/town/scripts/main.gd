@@ -5,6 +5,9 @@ extends Node3D
 enum Phase { BOOT, READY, BUSY, LOGIN, ERROR, PLAYING }
 
 const API := "/town/api"
+const PickLogic := preload("res://scripts/pick_logic.gd")
+const SceneLogic := preload("res://scripts/scene_logic.gd")
+const DebugFlags := preload("res://scripts/debug_flags.gd")
 const ActLogic := preload("res://scripts/features/activity_logic.gd")  # 只用里面的纯函数（谁算坐着）
 ## 点按判定的移动阈值，单位是 CSS 像素；实际比较时乘 devicePixelRatio 换成画布的物理像素
 ## （Godot 网页端的触摸/鼠标坐标是物理像素，高分屏手机上固定数值会把正常点按判成拖动）
@@ -149,6 +152,7 @@ var _had_hello: bool = false
 
 func _ready() -> void:
 	bridge.setup()
+	hide_npcs = DebugFlags.hide_npcs(bridge.debug, bridge.hide_npcs_flag())  # 启动时读页面全局量（刷新、重新登录都撑得住）
 	add_child(world)
 	add_child(rig)
 	add_child(actors_root)
@@ -247,6 +251,8 @@ func _on_ui(ev: String, arg: String) -> void:
 		"interact":
 			# arg 是来源：键盘 E 不带参数（"key"）；将来手机的「互动」按钮发 emit('interact', 'button')，走同一个入口
 			_do_interact(arg if arg != "" else "key")
+		"debug_hide_npcs":
+			_set_hide_npcs(arg == "1")
 		"debug_pick_stub":
 			if bridge.debug:
 				features.set_pick_stub(arg)
@@ -842,6 +848,20 @@ func _on_renewed(msg: Dictionary) -> void:
 # ───────────────────────── 场景同步 ─────────────────────────
 
 
+## 调试开关：隐藏 NPC（只在 ?debug=1 下才可能为真；服务器照旧有 NPC，只是这个页面不画、不选、不弹菜单）
+var hide_npcs: bool = false
+var _last_scene: Dictionary = {}  # 最近一份被采用的快照：运行时切开关时重放
+
+
+func _set_hide_npcs(on: bool) -> void:
+	var v: bool = DebugFlags.hide_npcs(bridge.debug, on)
+	if v == hide_npcs:
+		return
+	hide_npcs = v
+	if not _last_scene.is_empty():
+		_on_scene(_last_scene)  # 同一份快照再走一遍：serverTime 相等不算旧，NPC 随之出现或被清掉
+
+
 func _on_scene(msg: Dictionary) -> void:
 	if phase != Phase.PLAYING and phase != Phase.BUSY:
 		return
@@ -902,6 +922,28 @@ func _on_scene(msg: Dictionary) -> void:
 			if switched or not rig_ready:
 				rig.snap(Vector3(act.disp.x, 0.0, act.disp.y))
 				rig_ready = true
+	_last_scene = msg
+	# NPC（场景快照里单独的 npcs 字段，公共场景才有；私宅和小游戏里没有）：并进同一张角色表，补 kind = "npc"。
+	# 调试开关（?debug=1 且页面设了隐藏）：npcs 当成空的，已有的 NPC 角色走下面「快照里没有了」的同一条清理路径（D2，见 C6.md）
+	# 位置、折线、插值和居民同一套（服务器给什么就按什么插值，不预测）；要当「居民」用的地方都按 kind 筛掉 NPC（见 client/docs/C6.md 的清单）
+	for n in ([] if hide_npcs else msg.get("npcs", [])):
+		if not (n is Dictionary):
+			continue
+		var nid: String = str(n.get("id", ""))
+		if nid == "":
+			continue
+		seen[nid] = true
+		var nact: TActor = actors.get(nid)
+		var nd: Dictionary = (n as Dictionary).duplicate()
+		nd["kind"] = "npc"
+		if nact == null:
+			nact = TActor.new()
+			nact.role = str(n.get("role", ""))
+			actors_root.add_child(nact)
+			nact.setup(nid, str(n.get("name", "")), "npc", false)
+			actors[nid] = nact
+		nact.role = str(n.get("role", nact.role))
+		nact.apply(nd, now)
 	for id in actors.keys():
 		if not seen.has(id):
 			(actors[id] as TActor).queue_free()
@@ -914,6 +956,7 @@ var rig_ready: bool = false
 
 
 func _clear_actors() -> void:
+	_last_scene = {}
 	for id in actors.keys():
 		(actors[id] as TActor).queue_free()
 	actors.clear()
@@ -1326,28 +1369,18 @@ func _dir_hint(msg: String) -> void:
 ## E 键会选中什么：INTERACT_RANGE 之内离我最近的物件或别的居民。只看本地的位置，不读网络。
 ## 返回 {"kind", "id"}；什么都没有（或还没有自己的角色）时 kind 是 "none"
 func _nearest_pick(sa: TActor) -> Dictionary:
-	var best_kind: String = "none"
-	var best_id: String = ""
 	if sa == null:
-		return {"kind": best_kind, "id": best_id}
-	var me := Vector2(sa.disp.x, sa.disp.y)
-	var best_d: float = INTERACT_RANGE
+		return {"kind": "none", "id": ""}
+	# 只准备输入，挑选本身在 pick_logic.gd（纯函数）：物件按「中心和每个使用站位里最近的」算远近（D1）
+	var objs: Array = []
 	for ob in world.scene_objects(cur_scene):
-		var d: float = me.distance_to(Vector2((ob["pos"] as Vector3).x, (ob["pos"] as Vector3).z))
-		if d < best_d:
-			best_d = d
-			best_kind = "obj"
-			best_id = str(ob["id"])
+		objs.append({"id": str(ob["id"]), "center": ob.get("center", Vector2((ob["pos"] as Vector3).x, (ob["pos"] as Vector3).z)), "anchors": ob.get("anchors", [])})
+	var others: Array = []
 	for id in actors:
 		if id == self_id:
 			continue
-		var a: TActor = actors[id]
-		var d2: float = me.distance_to(a.disp)
-		if d2 < best_d:
-			best_d = d2
-			best_kind = "actor"
-			best_id = id
-	return {"kind": best_kind, "id": best_id}
+		others.append({"id": id, "pos": (actors[id] as TActor).disp})
+	return PickLogic.nearest(Vector2(sa.disp.x, sa.disp.y), objs, others, INTERACT_RANGE)
 
 
 func _do_interact(src: String = "key") -> void:
@@ -1496,7 +1529,8 @@ func _on_tap(p: Vector2) -> void:
 		if id == self_id:
 			continue
 		var a: TActor = actors[id]
-		var box := AABB(Vector3(a.disp.x - 0.5, 0.0, a.disp.y - 0.5), Vector3(1.0, 1.9, 1.0))
+		var half: float = 0.35 if a.kind == "npc" else 0.5  # NPC 的点选盒按模型轮廓收紧（居民的偏大是已知问题，留给美术第二轮）
+		var box := AABB(Vector3(a.disp.x - half, 0.0, a.disp.y - half), Vector3(half * 2.0, 1.9, half * 2.0))
 		var hit = box.intersects_ray(o, n)
 		if hit is Vector3:
 			var t: float = o.distance_to(hit)
@@ -1661,6 +1695,10 @@ func _process(dt: float) -> void:
 ## 只看「桌子上有活动」不够：用「停下手上的事」退出的人还站在座位上，路过的人也可能正好停在空座位上，他们都不该被画成坐着。
 ## 每帧每人只查 seat_people 这张表（_apply_me 时从 here.objects 算好），不在这里翻 here.objects。
 func _update_sitting(a: TActor) -> void:
+	if a.kind == "npc":
+		# NPC 的坐姿只看服务器给的 pose（sit）；不查茶桌座位表（那是居民的）
+		a.set_sitting(a.pose == "sit" and not a.moving)
+		return
 	if a.moving:
 		return
 	var spot: Dictionary = world.sit_spot(cur_scene, a.disp)
@@ -1676,10 +1714,7 @@ func _update_scenery(dt: float, now_s: float) -> void:
 	if daynight != null:
 		daynight.tick(now_s, clock.has_sync)
 		world.set_night(daynight.night)
-	var heads: Array = []
-	for id in actors:
-		var ha: TActor = actors[id]
-		heads.append(Vector3(ha.disp.x, 1.6, ha.disp.y))
+	var heads: Array = SceneLogic.occluder_heads(actors)  # 只放居民：NPC 站在楼里不该掀屋顶
 	world.update_view(rig.cam.global_position, heads, dt)
 
 
@@ -1827,6 +1862,8 @@ func _update_tags() -> void:
 	var tags: Array = []
 	for id in actors:
 		var a: TActor = actors[id]
+		if a.kind == "npc":
+			continue  # NPC 的名牌由 npc.gd 的 tags() 钩子加（带身份标记、让位逻辑）
 		var wp := Vector3(a.disp.x, 2.05, a.disp.y)
 		if cam.is_position_behind(wp):
 			continue
@@ -1865,9 +1902,13 @@ func _push_debug() -> void:
 	var size: Vector2 = get_viewport().get_visible_rect().size
 	var cam: Camera3D = rig.cam
 	var al: Array = []
+	var nl: Array = []  # NPC 单放：__town.actors 仍然只有居民（旧的端到端到处在数它）
 	for id in actors:
 		var a: TActor = actors[id]
 		var sp: Vector2 = cam.unproject_position(Vector3(a.disp.x, 1.0, a.disp.y))
+		if a.kind == "npc":
+			nl.append({"id": id, "name": a.actor_name, "x": a.disp.x, "z": a.disp.y, "moving": a.moving, "nx": sp.x / size.x, "ny": sp.y / size.y, "pose": a.pose, "role": a.role, "sitting": a.sitting, "outfit": a.outfit})
+			continue
 		al.append({"id": id, "name": a.actor_name, "x": a.disp.x, "z": a.disp.y, "moving": a.moving, "nx": sp.x / size.x, "ny": sp.y / size.y})
 	var ol: Array = []
 	for ob in world.scene_objects(cur_scene):
@@ -1895,6 +1936,7 @@ func _push_debug() -> void:
 		"selected": selected_obj,
 		"nearValid": near_valid,
 		"actors": al,
+		"npcs": nl,
 		"objects": ol,
 		"vp": m,
 		"zoom": rig.dist,

@@ -655,6 +655,11 @@
     d.pickStub = function (id) {
       emit('debug_pick_stub', String(id || ''));
     };
+    /* 调试：运行时切「隐藏 NPC」（旧端到端页面默认不显示 NPC，见 client/docs/C6.md）；同时写回页面全局量，刷新前的选择不丢。只在 ?debug=1 下有 */
+    d.hideNpcs = function (on) {
+      window.__townHideNpcs = !!on;
+      emit('debug_hide_npcs', on ? '1' : '0');
+    };
     d.dock = window.TownDock ? window.TownDock.debug() : {};
     window.__town = d;
   }
@@ -667,6 +672,9 @@
     setLoading: setLoading,
     fatal: fatal,
     debugSet: debugSet,
+    debugHideNpcs: function () {
+      return DEBUG && window.__townHideNpcs === true;
+    },
     bgMute: function () {
       return audioPrefs.bg;
     },

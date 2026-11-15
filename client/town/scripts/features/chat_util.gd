@@ -1,11 +1,12 @@
 class_name TChatUtil
 extends RefCounted
 ## 聊天类功能共用的静态函数：把服务端的事件 / 历史条目转成网页模块（TownChatKit）用的消息字典。
-## 字段：id（收件人自己的连续序号，messageId）、from、name、kind（只有 human / agent，其余当 human）、text、at、space、spaceName、mine。
+## 字段：id（收件人自己的连续序号，messageId）、from、name、kind（human / agent / npc，其余当 human；npc 是镇上 NPC 的固定台词，聊天面板用 CSS 给发言人加「NPC」标记）、text、at、space、spaceName、mine。
 
 
 static func kind_of(frm: Dictionary) -> String:
-	return "agent" if str(frm.get("kind", "")) == "agent" else "human"
+	var k: String = str(frm.get("kind", ""))
+	return k if k == "agent" or k == "npc" else "human"
 
 
 static func item(mid: int, frm: Dictionary, text: String, at: float, space: String, space_name: String, self_id: String) -> Dictionary:

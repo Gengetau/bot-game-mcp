@@ -120,8 +120,10 @@ const AI_KEY = `bgk_e2e_${rnd()}${rnd()}${rnd()}`;
  *  - letterDeliveryDelayMs 4000：信 4 秒进信箱（默认 60 秒）。
  *  - activityLobbyTtlMs 25000：小游戏 / 共同活动开了桌没人来，25 秒后自动散（默认 10 分钟）。旧步骤不凑桌；凑人的步骤要在 25 秒内完成「开桌 + 加入」。
  * 旧的 1 到 15 步里只有步骤 6 开了一次读书（马上点「停下」），不依赖时长；其余步骤不涉及信件和报名。
+ *  - npcStayMinMs / npcStayMaxMs 20000 / 40000（C6）：NPC 在每个落脚点停留的时间（默认 60 到 180 秒）。拉到 20~40 秒，让「它从一处换到另一处」在一个步骤的时间里能被看到；
+ *    NPC 的位置只由日程定，e2e 不依赖它在哪里，每次都读 scene.npcs 现取。
  */
-const TOWN_PARAMS = Object.freeze({ interactionTimeScale: 0.075, letterDeliveryDelayMs: 4000, activityLobbyTtlMs: 25_000 });
+const TOWN_PARAMS = Object.freeze({ interactionTimeScale: 0.075, letterDeliveryDelayMs: 4000, activityLobbyTtlMs: 25_000, npcStayMinMs: 20_000, npcStayMaxMs: 40_000 });
 let engine = null;
 const engineTail = [];
 let BASE = '';
@@ -369,11 +371,16 @@ function allowFailure(w, method, path, { min = 1, max = 1, why }) {
   w.allow.push({ method, path, min, max, why, hits: 0 });
 }
 
-async function newPlayer(browser, label, ctxOpts, { wsGate = false } = {}) {
+/**
+ * npcs：这个页面要不要显示 NPC。默认不显示：旧步骤（1 到 60）写的时候镇上没有 NPC，路过的 NPC 会搅乱 E 键选最近的、点地面、截图、桌牌让位（C6 的 D2）。
+ * 做法是页面全局量 window.__townHideNpcs（客户端只在 ?debug=1 下认，刷新和重新登录都撑得住）；服务器照旧有 NPC。80 号段的页面传 { npcs: true }。
+ */
+async function newPlayer(browser, label, ctxOpts, { wsGate = false, npcs = false } = {}) {
   const ctx = await browser.newContext(ctxOpts);
   const page = await ctx.newPage();
   const w = watch(page, label);
-  await page.addInitScript(() => {
+  await page.addInitScript((hideNpcs) => {
+    if (hideNpcs) window.__townHideNpcs = true;
     window.__csp = [];
     document.addEventListener('securitypolicyviolation', (e) => window.__csp.push(`${e.violatedDirective} ${e.blockedURI}`));
     // 主线程长任务（浏览器自己量的，和 Godot 的帧间隔互相印证）：每步开头清零、结尾读取
@@ -389,7 +396,7 @@ async function newPlayer(browser, label, ctxOpts, { wsGate = false } = {}) {
     } catch {
       /* 浏览器不支持就没有这一项 */
     }
-  });
+  }, !npcs);
   let gate = null;
   if (wsGate) {
     // 让测试能在需要的时候把 WebSocket 断掉并拦住重连
@@ -412,7 +419,7 @@ async function newPlayer(browser, label, ctxOpts, { wsGate = false } = {}) {
       gate.sockets.push(ws);
     });
   }
-  return { ctx, page, w, label, touch: !!ctxOpts.hasTouch, gate, name: null };
+  return { ctx, page, w, label, touch: !!ctxOpts.hasTouch, gate, name: null, npcs };
 }
 
 async function login(p, name, { shotEnter, query = '' } = {}) {
@@ -609,7 +616,8 @@ async function walkTo(p, x, z, tol = 0.8, opts = {}) {
  */
 async function clearSpot(p, cands) {
   const sc = await serverScene(p);
-  const others = sc.actors.filter((a) => a.id !== sc.self);
+  // NPC 的点选盒也会挡住身后的地面（C6）；页面隐藏了 NPC（默认）时没有点选盒，不算
+  const others = [...sc.actors.filter((a) => a.id !== sc.self), ...(p.npcs ? (sc.npcs ?? []) : [])];
   const blocked = (c) => others.some((a) => Math.abs(c.x - a.x) < 1.2 && c.z - a.z > -3.2 && c.z - a.z < 1.2);
   const hit = cands.find((c) => !blocked(c));
   check(hit, `候选落点都被别的居民挡住：${JSON.stringify(others.map((a) => [a.x.toFixed(1), a.z.toFixed(1)]))}`);
@@ -630,9 +638,9 @@ const metrics = { versions: {}, bundle: [], load: {} };
 const finishedWatches = []; // release 过的页面的监视记录：最后的全程检查仍统计它们的问题
 
 /** 新步骤文件用的一对新页面：桌面 1440x900 DSF 1（A）+ 手机 390x844 DSF 2 触摸（B），都带 wsGate，名字随机，登录好并互相看见。 */
-async function pair() {
-  const a = await newPlayer(browsers[0], 'N-A 桌面', { viewport: { width: 1440, height: 900 }, deviceScaleFactor: 1 }, { wsGate: true }); // 桌面 DSF 必须是 1：DSF 2 会把软件渲染拖到 1~2 帧每秒
-  const b = await newPlayer(browsers[1], 'N-B 手机', { viewport: { width: 390, height: 844 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true }, { wsGate: true });
+async function pair({ npcs = false } = {}) {
+  const a = await newPlayer(browsers[0], 'N-A 桌面', { viewport: { width: 1440, height: 900 }, deviceScaleFactor: 1 }, { wsGate: true, npcs }); // 桌面 DSF 必须是 1：DSF 2 会把软件渲染拖到 1~2 帧每秒
+  const b = await newPlayer(browsers[1], 'N-B 手机', { viewport: { width: 390, height: 844 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true }, { wsGate: true, npcs });
   extra.push(a, b);
   await Promise.all([login(a, `阿桌${rnd()}`), login(b, `阿机${rnd()}`)]);
   a.id = (await snap(a.page)).self;
@@ -1506,6 +1514,7 @@ async function main() {
     const page2 = await A.ctx.newPage();
     A2 = { ctx: A.ctx, page: page2, w: watch(page2, 'A2 第二标签页'), label: 'A2', touch: false };
     await page2.addInitScript(() => {
+      window.__townHideNpcs = true; // 旧步骤的页面不显示 NPC（见 newPlayer）
       window.__csp = [];
       document.addEventListener('securitypolicyviolation', (e) => window.__csp.push(`${e.violatedDirective} ${e.blockedURI}`));
     });
