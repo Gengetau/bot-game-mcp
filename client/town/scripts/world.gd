@@ -43,6 +43,9 @@ var _mm: Dictionary = {}  # 摆放中的 MultiMesh 数据 scene -> kind -> Array
 var _glows: Dictionary = {}  # scene -> Array[Transform3D]
 var _lamps: Dictionary = {}  # scene -> Array[Vector4]
 var _kind_cache: Dictionary = {}
+var _props: Dictionary = {}  # scene id -> {物件编号: TStatefulProp}（带状态的物件，不进 MultiMesh）
+var _prop_want: Dictionary = {}  # 物件编号 -> 服务端数据给出的状态名（clear_all 不清：地图重建后要恢复）
+var _prop_forced: Dictionary = {}  # 物件编号 -> 调试钩子强行指定的状态名（同上）
 var _warmed: Dictionary = {}
 var _bakes: Array = []  # 地面烘焙的 SubViewport（挂在自己下面，clear_all 要一并释放）
 var _cur: Dictionary = {}  # 正在构建的场景的上下文
@@ -71,6 +74,7 @@ func clear_all() -> void:
 	glow_nodes.clear()
 	_lamps.clear()
 	_kind_cache.clear()
+	_props.clear()
 	current = ""
 
 
@@ -89,6 +93,7 @@ func build(m: Dictionary) -> void:
 	clear_all()
 	manifest = m
 	_ensure_materials()
+	art.apply_debug()
 	rejected = 0
 	placed = 0
 	var src: Dictionary = m.get("source", {})
@@ -134,8 +139,15 @@ func _warm_up(sid: String) -> void:
 	var c: Vector2 = r.get_center()
 	cam.global_position = Vector3(c.x, 120.0, c.y)
 	cam.look_at(Vector3(c.x, 0.0, c.y), Vector3.FORWARD)
+	# 带状态的物件：隐藏着的状态节点不会被画，第一次切状态才编译会卡一下。预热这几帧把它们全显示出来，之后还原。
+	# 代价：和主视口共用一个世界，这三帧里镜头里若正好有这些物件，会闪一下所有状态叠在一起（线上没有 scene 条目时不存在）。
+	for p in (_props.get(sid, {}) as Dictionary).values():
+		(p as TStatefulProp).show_all_states()
 	for i in range(3):
 		await get_tree().process_frame
+	for p in (_props.get(sid, {}) as Dictionary).values():
+		if is_instance_valid(p):
+			(p as TStatefulProp).set_state((p as TStatefulProp).get_state())
 	vp.queue_free()
 
 
@@ -382,6 +394,10 @@ func _flush_glows() -> void:
 func _add_building(p: Dictionary, is_hall: bool) -> void:
 	var sid: String = _cur["sid"]
 	var root: Node3D = _cur["root"]
+	# 外观表里有 building.<区域编号> 且带 scene：用那个包装场景代替程序生成的房子（没有这种条目时下面的代码和以前完全一样）
+	var bscene: String = art.scene_path("building." + str(p.get("name", "")))
+	if bscene != "" and _add_scene_building(p, is_hall, bscene):
+		return
 	var kind: String = "building.hall" if is_hall else "building.house"
 	var res: Dictionary
 	if is_hall:
@@ -419,6 +435,152 @@ func _add_building(p: Dictionary, is_hall: bool) -> void:
 		pool(float(p["front_x"]) + 1.2, float(p["door_z"]) - 1.3, 2.8, 0.8)
 		pool(float(p["front_x"]) + 1.2, float(p["door_z"]) + 1.3, 2.8, 0.8)
 	_cur["builds"].append({"kind": kind, "outer": res["outer"]})
+
+
+# ───────────────────────── 带状态的物件 / 替换的建筑（包装场景） ─────────────────────────
+
+
+## 实例化包装场景挂到场景根下（不进 MultiMesh），材质换成城镇着色器，fade* 部分登记淡出。path 为空或不是 TStatefulProp 返回 null。
+## facing：绕 y 转的弧度（地图里的物件带 facing 就按它转，没有就是 0）。
+func _spawn_scene_prop(path: String, sid: String, root: Node3D, oid: String, x: float, z: float, facing: float, fade_outer: Rect2 = Rect2(), fade_min: float = 0.22) -> TStatefulProp:
+	if path == "":
+		return null
+	var ps = load(path)
+	if not (ps is PackedScene):
+		return null
+	var inst: Node = (ps as PackedScene).instantiate()
+	if not (inst is TStatefulProp):
+		inst.free()
+		return null
+	var prop: TStatefulProp = inst
+	prop.name = "prop_" + oid.replace(":", "_")
+	prop.position = Vector3(x, 0.0, z)
+	prop.rotation.y = facing
+	root.add_child(prop)
+	var fade_mat: ShaderMaterial = _mat_static.duplicate()
+	prop.apply_materials(_mat_static, fade_mat)
+	_register_prop_fades(sid, prop, fade_mat, fade_outer, fade_min)
+	if not _props.has(sid):
+		_props[sid] = {}
+	(_props[sid] as Dictionary)[oid] = prop
+	prop.set_state(str(_prop_forced.get(oid, _prop_want.get(oid, TPropState.IDLE))))
+	return prop
+
+
+## 这件资产的所有 fade* 节点一起淡出（共用一份材质、同一个世界包围盒、同一个「人在里面」的矩形），和程序房子的 up 部分一样。
+func _register_prop_fades(sid: String, prop: TStatefulProp, mat: ShaderMaterial, outer: Rect2, min_fade: float) -> void:
+	var fades: Array = prop.fade_nodes()
+	if fades.is_empty():
+		return
+	var box := AABB()
+	var first := true
+	for f in fades:
+		var bb: AABB = prop.fade_bounds(f)
+		box = bb if first else box.merge(bb)
+		first = false
+	var wb: AABB = prop.transform * box
+	for f in fades:
+		(_fade_items[sid] as Array).append({"node": f, "mat": mat, "aabb": wb, "outer": outer, "min": min_fade, "fade": 1.0})
+
+
+## 用包装场景代替程序生成的房子。原点在外框中心的地面上：房子是室内矩形四周各加 0.65，会馆是 Rect2(front_x - depth, z0, depth, z1 - z0)。
+## 门洞、墙的碰撞仍然只看服务端地图；这里只管画。返回 false 就回到程序房子。
+func _add_scene_building(p: Dictionary, is_hall: bool, path: String) -> bool:
+	var sid: String = _cur["sid"]
+	var root: Node3D = _cur["root"]
+	var outer: Rect2
+	if is_hall:
+		outer = Rect2(float(p["front_x"]) - float(p.get("depth", 7.0)), float(p["z0"]), float(p.get("depth", 7.0)), float(p["z1"]) - float(p["z0"]))
+	else:
+		outer = (p["inner"] as Rect2).grow(0.65)
+	var c: Vector2 = outer.get_center()
+	var prop: TStatefulProp = _spawn_scene_prop(path, sid, root, "building:" + str(p.get("name", "b")), c.x, c.y, 0.0, outer, 0.1)
+	if prop == null:
+		return false
+	# 淡出：人在外框里整栋淡掉；挡在镜头和人之间时淡到 0.1（和程序房子的 up 部分一致），见 _spawn_scene_prop 里的登记
+	# 门口的暖光池（和程序房子一样）
+	if not is_hall:
+		var d: Dictionary = p["door"]
+		var ds: float = 1.0 if str(d["side"]) == "s" else -1.0
+		var zz: float = (outer.position.y + outer.size.y) if str(d["side"]) == "s" else outer.position.y
+		pool((float(d["x0"]) + float(d["x1"])) * 0.5, zz + ds * 0.8, 3.2, 0.9)
+	else:
+		pool(float(p["front_x"]) + 1.2, float(p["door_z"]) - 1.3, 2.8, 0.8)
+		pool(float(p["front_x"]) + 1.2, float(p["door_z"]) + 1.3, 2.8, 0.8)
+	_cur["builds"].append({"kind": "building.hall" if is_hall else "building.house", "outer": outer})
+	return true
+
+
+func _prop_of(sid: String, oid: String) -> TStatefulProp:
+	var d: Dictionary = _props.get(sid, {})
+	var p = d.get(oid)
+	if p != null and is_instance_valid(p):
+		return p
+	return null
+
+
+## 切一件带状态的物件的外观。找不到物件、或它不是带状态的节点时安静地返回（不报错）。
+func set_object_state(sid: String, oid: String, state: String) -> void:
+	var p: TStatefulProp = _prop_of(sid, oid)
+	if p != null:
+		p.set_state(state)
+
+
+## 当前状态名；找不到返回空串。
+func object_state(sid: String, oid: String) -> String:
+	var p: TStatefulProp = _prop_of(sid, oid)
+	return "" if p == null else p.get_state()
+
+
+## 锚点的全局变换；找不到物件返回 null。
+func object_anchor(sid: String, oid: String, anchor_name: String) -> Variant:
+	var p: TStatefulProp = _prop_of(sid, oid)
+	if p == null or not (anchor_name in p.anchor_names()):
+		return null
+	return p.anchor(anchor_name)
+
+
+## 服务端数据 -> 外观：objs 是 /me 的 here.objects（只含我所在的空间）。每件带状态的物件按 prop_state.gd 的映射定状态，
+## 不在 objs 里的按 idle。调试钩子强行指定过的物件不被盖回去，直到解除。
+func sync_object_states(sid: String, objs: Variant) -> void:
+	var d: Dictionary = _props.get(sid, {})
+	if d.is_empty():
+		return
+	var by_id: Dictionary = TPropState.states_by_id(objs)
+	for oid in d:
+		var want: String = str(by_id.get(oid, TPropState.IDLE))
+		# 状态没变就不再调：每次刷新都重设一遍会把正在放的循环动画重新起头
+		var p: TStatefulProp = _prop_of(sid, str(oid))
+		var changed: bool = _prop_want.get(oid) != want or (p != null and p.get_state() != TKitLogic.resolve_state(want, p.states()))
+		_prop_want[oid] = want
+		if changed and not _prop_forced.has(oid):
+			set_object_state(sid, str(oid), want)
+
+
+## 调试钩子：强行指定某件物件的状态；state 为空串解除，回到服务端数据（最近一次的映射结果）。
+func force_object_state(oid: String, state: String) -> void:
+	if state == "":
+		_prop_forced.erase(oid)
+	else:
+		_prop_forced[oid] = state
+	var shown: String = state if state != "" else str(_prop_want.get(oid, TPropState.IDLE))
+	for sid in _props:
+		set_object_state(str(sid), oid, shown)
+
+
+## 调试用：当前场景里每件带状态的物件 [{id, kind, state, states, forced}]。
+func props_info(sid: String) -> Array:
+	var out: Array = []
+	var d: Dictionary = _props.get(sid, {})
+	var keys: Array = d.keys()
+	keys.sort()
+	for oid in keys:
+		var p: TStatefulProp = _prop_of(sid, str(oid))
+		if p == null or str(oid).begins_with("building:"):
+			continue
+		var o: Dictionary = find_object(sid, str(oid))
+		out.append({"id": oid, "kind": str(o.get("kind", "")), "state": p.get_state(), "states": p.states(), "forced": _prop_forced.has(oid)})
+	return out
 
 
 # ───────────────────────── 场景 ─────────────────────────
@@ -759,7 +921,12 @@ func _build_interactables(sc: Dictionary, sid: String, root: Node3D) -> void:
 		var oh: float = 1.8 if kind == "bookshelf" else (1.0 if kind == "stove" else 0.8)
 		# 画出来的模型高度（点击盒至少要罩住它，否则点物件上部的射线会穿过去落到后面的地面）
 		var mh: float = float(INTERACTABLE_MODEL_H.get(kind, 0.0))
-		match kind:
+		# 外观表里这个种类（prop.<种类>）有 scene：实例化包装场景代替下面写死的道具；点选盒和高度取自节点包围盒，不查 INTERACTABLE_MODEL_H
+		var sprop: TStatefulProp = _spawn_scene_prop(art.scene_path("prop." + kind), sid, root, str(it["id"]), cx, cz, float(it.get("facing", 0.0)))
+		if sprop != null:
+			mh = sprop.local_bounds("all").end.y
+			oh = sprop.local_bounds("base").end.y  # 标牌的高度跟着常显的部分，不跟着烟
+		match "" if sprop != null else kind:
 			"tea_table":
 				put("prop.table_round", cx, cz, 0.0, 1.0, -1.0)
 				for ua in it.get("useAnchors", []):

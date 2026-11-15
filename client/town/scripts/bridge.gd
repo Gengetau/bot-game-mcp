@@ -6,6 +6,8 @@ extends RefCounted
 ## - 界面 -> Godot：window.TownHost.emit 调到这里的回调。
 ## 回调对象必须一直被引用，否则会被回收，之后 JS 调用就没有反应。
 
+const DebugFlags := preload("res://scripts/debug_flags.gd")
+
 ## 页面脚本（dock.js）与客户端的接口版本：不一致就报「页面文件和客户端版本不一致」，免得缓存错位后半新半旧地运行。
 const HUD_PROTOCOL := 2
 
@@ -25,6 +27,8 @@ var _pending: Dictionary = {}
 var origin: String = ""
 var debug: bool = false
 var debug_hour: float = -1.0
+var debug_scale: float = -1.0  # ?debug=1&scale=0.75：固定 3D 渲染比例（0.3～1.0）
+var debug_zoom: float = -1.0  # ?debug=1&zoom=12：固定镜头距离（米）
 
 
 func setup() -> void:
@@ -39,10 +43,16 @@ func setup() -> void:
 	var loc = JavaScriptBridge.get_interface("location")
 	origin = str(loc.origin)
 	debug = "debug=1" in str(loc.search).trim_prefix("?").split("&")
+	# ?debug=1&props=sample：把灶台和公共厨房指到占位样件（art.gd 的 apply_debug 读它）；不带 debug 时一定是空串
+	DebugFlags.props_mode = DebugFlags.props_mode_of(debug, str(loc.search))
 	# 截图 / 端到端用：?hour=20 把世界时间固定在某个钟点（只在调试模式下生效）
 	for kv in str(loc.search).trim_prefix("?").split("&"):
 		if debug and kv.begins_with("hour="):
 			debug_hour = float(kv.substr(5))
+		if debug and kv.begins_with("scale="):
+			debug_scale = float(kv.substr(6))
+		if debug and kv.begins_with("zoom="):
+			debug_zoom = float(kv.substr(5))
 
 
 ## 页面全局量 window.__townHideNpcs 是否设了（调试用；端到端的 addInitScript 设）。是否生效由 debug_flags.gd 判断：不带 ?debug=1 一律无视

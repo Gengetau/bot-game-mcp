@@ -13,3 +13,9 @@ client/town/.godot/
 # 端到端失败运行的结果（成功的 results.json 才入库）
 client/demo/results.failed.json
 client/town/art_private/
+
+# 对照截图（client:shots）：原始整幅图和每个组合的数据留在本地，仓库里只放 results.json 和拼好的对照条 strip*.png
+client/docs/T0*/shots/**/*.png
+!client/docs/T0*/shots/**/strip*.png
+client/docs/T01/shots/*.json
+!client/docs/T01/shots/results.json

@@ -4,7 +4,7 @@ extends Node3D
 ## 服务器快照把位置纠正了，就把「显示位置 − 新的真值」记成偏差，让它指数衰减，画面平滑收敛。
 ## 外观：KayKit 的骨架（Rig_Medium）+ 8 套重新配色的衣服，按居民编号的哈希挑一套（见 appearance_for，换一套规则只改这一个函数）。
 ## 镇上的 NPC（kind == "npc"）也是同一个 TActor：用专属的两套配色（8 掌柜、9 闲逛者，居民挑不到）加程序生成的配件（npc_look.gd），姿态 pose 来自服务器快照。
-## 动作：idle / walk / sit_down / sit_idle / stand_up / wave / interact，朝向跟着移动方向。
+## 动作：idle / idle2 / walk / sit_down / sit_idle / stand_up / wave / interact，朝向跟着移动方向。待机只在 idle 和 idle2 之间换，wave / interact 只由真实事件触发（play_once）。
 
 const SNAP_DISTANCE := 6.0
 const ERR_RATE := 6.0
@@ -56,6 +56,8 @@ var _shadow: MeshInstance3D
 var _marker: MeshInstance3D = null
 var _sit_phase: int = 0  # 0 站着 1 坐下中 2 坐着 3 起身中
 var _flavor_t: float = 6.0
+var _alt_left: float = 0.0  # >0：正在播 idle2，还剩几秒
+const IDLE_ALT_S := 3.5  # idle2 每次播多久再回 idle
 var _once: bool = false
 var _age: float = 0.0
 var _book: Node3D = null  # NPC 看书姿态手里的书（npc_look.gd 生成）
@@ -255,6 +257,7 @@ func set_sitting(on: bool, face: Vector2 = Vector2.ZERO) -> void:
 	if on == sitting:
 		return
 	sitting = on
+	_alt_left = 0.0
 	if on:
 		_sit_phase = 1
 		_cur_anim = ""
@@ -269,6 +272,7 @@ func play_once(anim: String) -> void:
 	if _anim == null or sitting or moving or not _anim.has_animation(anim):
 		return
 	_once = true
+	_alt_left = 0.0
 	_cur_anim = ""
 	_play(anim)
 
@@ -382,16 +386,26 @@ func tick(dt: float, now_ms: float) -> void:
 	_apply_transform()
 	if moving:
 		_once = false
+		_alt_left = 0.0
 		# 起身 / 坐下动画被走路顶掉时 Godot 不发 animation_finished，阶段要在这里清零，否则站定后永远不再回到 idle
 		if _sit_phase == 1 or _sit_phase == 3:
 			_sit_phase = 0
 		_play("walk", clampf(nav_speed / 2.0, 0.6, 1.8))
 	elif _sit_phase == 0 and not _once:
-		_play("idle")
-		_flavor_t -= dt
-		if _flavor_t <= 0.0 and not (kind == "npc" and pose == "read"):
-			_flavor_t = 9.0 + float(absi(actor_id.hash() + int(_age)) % 120) * 0.1
-			play_once("wave" if int(_age) % 2 == 0 else "interact")
+		# 待机只在 idle 和 idle2（换个重心的站姿）之间偶尔换一下：不带社交含义。
+		# 挥手、互动这类社交动作只由真实指令 / 事件经 play_once 触发，待机不能自己做。
+		# 捧着书读的 NPC 不换站姿（书是挂在固定姿势上的）。
+		var reading: bool = kind == "npc" and pose == "read"
+		if _alt_left > 0.0 and not reading and _anim != null and _anim.has_animation("idle2"):
+			_alt_left -= dt
+			_play("idle2")
+		else:
+			_alt_left = 0.0
+			_play("idle")
+			_flavor_t -= dt
+			if _flavor_t <= 0.0 and not reading:
+				_flavor_t = 9.0 + float(absi(actor_id.hash() + int(_age)) % 120) * 0.1
+				_alt_left = IDLE_ALT_S
 	if _book != null:
 		_book.visible = pose == "read" and not moving and not sitting
 	if _marker != null:

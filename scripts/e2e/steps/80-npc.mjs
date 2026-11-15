@@ -158,7 +158,9 @@ export default async function run(h) {
     check(actionsOf(A, 'ask_npc').length === n0 + 1, `应恰好多一条 ask_npc：${actionsOf(A, 'ask_npc').length - n0}`);
     const m = await menuState(A.page);
     check(m.answer && m.answer !== (await bank(A.page, 'answer.empty')), `菜单里应有回话：${m.answer}`);
-    // 关掉重开再双击话题：只发一次
+    // 再双击另一个话题：只发一次。菜单对连续点击有 700 毫秒的防抖（mod/npc.js 的 act），机器快的时候上面那次问话不到 700 毫秒就回来了，
+    // 紧接着的双击两下都落在防抖窗口里、一条也不发：先等过这个窗口
+    await sleep(800);
     const n1 = actionsOf(A, 'ask_npc').length;
     const k1 = await lastAckN(A);
     const r = await A.page.evaluate((s) => document.querySelector(s)?.getBoundingClientRect().toJSON(), `${MENU} [data-topic="town"]`);

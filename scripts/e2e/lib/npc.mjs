@@ -58,13 +58,32 @@ export async function clickNpc(p, id, { dbl = false } = {}) {
 }
 
 /** 等菜单开在某个 NPC 上。 */
-export const menuIs = (until, p, id, ms = 30_000) => until(async () => { const m = await menuState(p.page); return m?.open && m.id === id ? m : null; }, ms, `${p.label} 的服务菜单出现（${id}）`);
+export const menuIs = async (until, p, id, ms = 30_000) => {
+  try {
+    return await until(async () => { const m = await menuState(p.page); return m?.open && m.id === id ? m : null; }, ms, `${p.label} 的服务菜单出现（${id}）`);
+  } catch (e) {
+    // 等不到时带上 Godot 一侧的状态和两边的位置（到了没开，多半是「到达」和「位置跟上」之间出了岔子）
+    const g = await godotNpc(p).catch(() => null);
+    const pos = await p.page.evaluate((i) => { const t = window.__town; const me = (t?.actors ?? []).find((x) => x.id === t.self); const n = (t?.npcs ?? []).find((x) => x.id === i); return { me: me && [me.x, me.z, me.moving], npc: n && [n.x, n.z, n.moving] }; }, id).catch(() => null);
+    const nav = (p.w?.actions ?? []).filter((r) => r.type === 'navigate').at(-1) ?? null; // 最后一条 navigate：是走向这个 NPC（approach），还是点到了地面
+    throw new Error(`${e.message}；Godot：${JSON.stringify(g)}；页面位置：${JSON.stringify(pos)}；最后一条 navigate：${JSON.stringify(nav)}`);
+  }
+};
 
 /** 等菜单关上。 */
 export const menuClosed = (until, p, ms = 10_000) => until(async () => !(await menuState(p.page))?.open, ms, `${p.label} 的服务菜单关闭`);
 
 /** 等一个动作得到回应（lastAck 的 n 超过 n0，且 verb 对得上）。 */
-export const ackAfter = (until, p, verb, n0, ms = 30_000) => until(async () => { const a = (await godotNpc(p))?.lastAck; return a && a.verb === verb && a.n > n0 ? a : null; }, ms, `${p.label} 的 ${verb} 得到回应`);
+export const ackAfter = async (until, p, verb, n0, ms = 30_000) => {
+  try {
+    return await until(async () => { const a = (await godotNpc(p))?.lastAck; return a && a.verb === verb && a.n > n0 ? a : null; }, ms, `${p.label} 的 ${verb} 得到回应`);
+  } catch (e) {
+    // 等不到时把两边的状态带上：Godot 一侧有几条「不发、也不回应」的路径（菜单没开、被拦、冷却中、上一条还在路上）
+    const g = await godotNpc(p).catch(() => null);
+    const m = await menuState(p.page).catch(() => null);
+    throw new Error(`${e.message}；Godot：${JSON.stringify(g)}；菜单：${JSON.stringify(m && { open: m.open, id: m.id, busy: m.busy, cool: m.cool, msg: m.msg, far: m.far, ctl: m.ctl })}`);
+  }
+};
 export const lastAckN = async (p) => (await godotNpc(p))?.lastAck?.n ?? 0;
 
 /** 让菜单上的某个话题按钮被点一下（真点击；手机用触摸）。 */

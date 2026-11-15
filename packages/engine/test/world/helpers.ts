@@ -144,6 +144,9 @@ export class Actor {
   }
 }
 
+/** 用文件数据库打开过的小镇，tempDb().cleanup 靠它找到要关的库。 */
+const fileTowns = new Set<Town>();
+
 export class Town {
   w: WorldService;
   readonly clock: FakeClock;
@@ -153,6 +156,7 @@ export class Town {
   constructor(readonly opts: TownOpts = {}) {
     this.clock = opts.clock ?? new FakeClock();
     this.w = this.open();
+    if (opts.dbPath) fileTowns.add(this);
   }
 
   private open(): WorldService {
@@ -224,8 +228,29 @@ export function makeTown(opts: TownOpts = {}): Town {
   return new Town(opts);
 }
 
-/** 临时目录里的文件数据库（重启、备份测试用）。用完调 cleanup。 */
+/** 临时目录里的文件数据库（重启、备份测试用）。用完调 cleanup。
+ *  cleanup 会先关掉这个目录下还开着的小镇：Windows 上删不掉被打开的文件（EPERM），Linux 可以。 */
 export function tempDb(): { path: string; dir: string; cleanup: () => void } {
   const dir = mkdtempSync(joinPath(tmpdir(), 'town-test-'));
-  return { path: joinPath(dir, 'town.db'), dir, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
+  return {
+    path: joinPath(dir, 'town.db'),
+    dir,
+    cleanup: () => {
+      for (const t of [...fileTowns]) {
+        const p = t.opts.dbPath;
+        if (!p || !p.startsWith(dir)) continue;
+        fileTowns.delete(t);
+        try {
+          t.w.close();
+        } catch {
+          try {
+            t.w.db.db.close();
+          } catch {
+            /* 已经关过了 */
+          }
+        }
+      }
+      rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    },
+  };
 }

@@ -655,12 +655,22 @@ export class TownDb {
     this.path = path;
     if (path !== ':memory:') mkdirSync(dirname(path), { recursive: true });
     this.db = new DatabaseSync(path);
-    this.db.exec('PRAGMA journal_mode = WAL');
-    this.db.exec('PRAGMA synchronous = FULL');
-    this.db.exec('PRAGMA foreign_keys = ON');
-    this.db.exec('PRAGMA busy_timeout = 2000');
-    this.db.exec('PRAGMA wal_autocheckpoint = 1000');
-    this.migrate();
+    try {
+      this.db.exec('PRAGMA journal_mode = WAL');
+      this.db.exec('PRAGMA synchronous = FULL');
+      this.db.exec('PRAGMA foreign_keys = ON');
+      this.db.exec('PRAGMA busy_timeout = 2000');
+      this.db.exec('PRAGMA wal_autocheckpoint = 1000');
+      this.migrate();
+    } catch (e) {
+      // 打开失败（schema 太新、迁移失败）时把句柄关掉：否则文件一直被占着，Windows 上删不掉、也没法换个办法重开
+      try {
+        this.db.close();
+      } catch {
+        /* 已经关了 */
+      }
+      throw e;
+    }
   }
 
   get inMemory(): boolean {

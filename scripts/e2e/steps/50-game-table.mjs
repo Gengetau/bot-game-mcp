@@ -518,7 +518,15 @@ export default async function run(h) {
     check((await gg(A)).lastAck.code === 'phase_stale', `应是 phase_stale：${JSON.stringify((await gg(A)).lastAck)}`);
     await until(async () => (await gg(A)).pulls >= 1, 10_000, '刷新了 /game', 200);
     // 非自己回合：让 C 先猜一次，轮到 C 时 A 强发 -> 422 game_not_your_turn
-    await takeTurn(A, (await gameMod(A.page)).range.from); // 范围最小值：不容易踩中炸弹
+    // 先等面板从上面那次刷新里稳下来：刷新在途时面板是「忙」或暂时不算轮到自己，takeTurn 会什么都不发就返回，
+    // 下面的「不再轮到 A」又会被这个瞬间骗过去，接着强发的那一手其实正轮到 A、被服务器收下（机器快的时候才撞得上）
+    await until(async () => { const d = await gameMod(A.page); return d.mode === 'game' && d.yourTurn && !d.busy; }, 15_000, '面板刷新完，仍轮到 A', 150);
+    const nT = await ackN(A);
+    const took = await takeTurn(A, (await gameMod(A.page)).range.from); // 范围最小值：不容易踩中炸弹
+    check(took !== null, 'A 这一手应真的发出去了');
+    // 等这一手自己的回应到了再往下：takeTurn 只等到「发出去了」。不等的话下面记的基准序号在这次回应之前，
+    // 「强发得到回应」会被这次回应满足，读到的是这一手的 ok，不是强发那一手的 422（机器快的时候才撞得上）
+    await until(async () => (await ackN(A)) > nT, 15_000, 'A 这一手得到回应');
     await until(async () => !(await gameMod(A.page)).yourTurn, 15_000, '猜完后不再轮到 A', 150);
     allowFailure(A.w, 'POST', /\/town\/api\/actions$/, { min: 1, max: 1, why: '50.5：不是自己的回合强发猜数必定 game_not_your_turn（422）' });
     const n3 = await ackN(A);

@@ -10,6 +10,8 @@
 | Character Animations (1.1) | Kay Lousberg (www.kaylousberg.com) | https://kaylousberg.itch.io/kaykit-character-animations | 2026-11-13 | CC0 1.0（`art_source/third_party/kaykit_character-animations/License.txt`）；zip 的 sha256 `65882f31f905ad2e953819648a59287cdeab8f623908d5ef701971d3758be20f` | `town/assets/models/characters/residents_anims.res`（约 93 KB） | `build_residents.gd` 只摘出用到的动作（idle、walk、sit 三段、wave、interact 等）合成一个动画库，循环动作设成 LOOP_LINEAR；其余动作没有进仓库 |
 | Interface Sounds (1.0) | Kenney (www.kenney.nl) | https://kenney.nl/assets/interface-sounds | 2026-11-12 | CC0 1.0（`art_source/third_party/kenney_interface-sounds/License.txt`） | 输入：`art_source/source/audio/kenney_interface_confirmation_001.ogg`；输出：`town/assets/audio/sfx/confirm.ogg` | `art_source/audio/build_audio.py`：去开头静音，峰值归一到 -9 dBFS，末尾 15 ms 渐出，单声道 Ogg Vorbis（q3）。详见下面「音频台账」 |
 | Impact Sounds (1.0) | Kenney (www.kenney.nl) | https://kenney.nl/assets/impact-sounds | 2026-11-12 | CC0 1.0（`art_source/third_party/kenney_impact-sounds/License.txt`） | 输入：`art_source/source/audio/kenney_impact_footstep_concrete_001.ogg`；输出：`town/assets/audio/sfx/step.ogg` | 同上（峰值 -16 dBFS，比确认音轻） |
+| 占位样件 station_sample、building_sample（自制，v1） | 自制（本仓库） | 无外部来源 | 2026-11-15 | 自制，随仓库许可；没有第三方素材（颜色全是顶点色，贴图用 Kenney 调色板里的纯白块） | `town/assets/kits/sample/station_sample/`、`town/assets/kits/sample/building_sample/`：`.glb`（60,432 和 22,464 字节）、`.glb.import`、`.tscn`、`manifest.json` | 制作脚本 `art_source/kits/sample/<编号>/build.py`（Blender 5.2.3 LTS 无头，用 `art_source/tools/kit_lib.py`）；`.tscn` 和 `manifest.json` 由 `client/tools/kit_wrap.gd` 生成。只是证明资产管线的灰盒占位，默认不启用，只在 `?debug=1&props=sample` 下出现；约定见 `client/docs/T02a.md` |
+| 厨房标准工位样件 stove_station（自制，v1） | 自制（本仓库） | 无外部来源 | 2026-11-15 | 自制，随仓库许可；没有第三方素材（颜色全是顶点色，贴图用 Kenney 调色板里的纯白块） | `town/assets/kits/kitchen/stove_station/`：`.glb`（159,076 字节，1588 个三角形、21 个网格）、`.glb.import`、`.tscn`、`manifest.json` | 制作脚本 `art_source/kits/kitchen/stove_station/build.py`（Antigravity 按任务包写的，Blender 5.2.3 LTS 无头，用 `art_source/tools/kit_lib.py`）；`.tscn` 和 `manifest.json` 由 `client/tools/kit_wrap.gd` 生成。砖砌双眼灶台，四个状态（空闲、使用中、完成、异常）。**还没有进默认的外观表**：只在 `?debug=1&props=kitchen` 下出现，等主人看过实际镜头下的样子再定；记录见 `client/docs/T02b.md` |
 | Godot Engine (4.7.2.stable) | Godot Engine contributors | https://godotengine.org | 以 `/opt/godot/godot --headless --version` 确认：`4.7.2.stable.official.ed1daf0bf` | MIT；引擎内置的第三方组件各有自己的许可（完整清单见 Godot 自带的 `COPYRIGHT.txt`，或引擎「第三方许可」页面） | 网页导出产物里的引擎 `index.wasm`、`index.js` 等（`client/town/build/web/`） | 引擎随网页导出一起分发；许可入口见下面「Godot 引擎的许可」；模板核对见同一节 |
 
 取得方式：用 Playwright 打开 Kenney 素材页，点页面自己的「Download」和「Continue without donating」按钮下载（正常访客流程），
@@ -32,20 +34,25 @@ CC0 不要求署名；按 Kenney 的建议，游戏的「关于」里可以写�
 ## 可替换的美术层
 
 物件的模型对应表在 `town/assets/art_table.json`（kind -> 模型、缩放、朝向、偏移、调色板、淡出、发光）。
+条目也可以写 `scene`（包装场景，`town/assets/kits/` 下，带状态的功能物件和替换的建筑用，见 `docs/T02a.md`）。
 可选的私有覆盖目录 `client/town/art_private/`（git 忽略，不进仓库），里面放 `art_table.json` 和模型就会覆盖同名条目；用法见 `client/README.md`。
 **不是 CC0 的素材（例如 YumeForge）只能放在 art_private 里，不得进 git。**
 
 ## 怎么重新生成
 
 ```bash
-# 一次性准备：Python 3.13 虚拟环境装 bpy（不需要装 Blender）；Pillow
-python3.13 -m venv /tmp/bpyenv && /tmp/bpyenv/bin/pip install bpy pillow
+# 一次性准备：Python 3.13 虚拟环境装 Pillow、numpy（recolor_*.py 只用这两个，不需要 bpy 和 Blender）
+python3.13 -m venv /tmp/bpyenv && /tmp/bpyenv/bin/pip install pillow numpy
 
 # Kenney 调色板重绘
 /tmp/bpyenv/bin/python client/art_source/recolor_kenney.py
 # 居民：身体 + 动画库 + 服装调色板（需要 Godot 4.7.2；两个原始 zip 各解压在独立目录）
 bash client/art_source/build_residents.sh <KayKit_Adventurers 目录> <KayKit_Character_Animations 目录>
 /tmp/bpyenv/bin/python client/art_source/recolor_residents.py
+
+# 资产套件（功能物件和建筑，用本机的 Blender 4.2 以上 + Godot 4.7；环境变量 BLENDER、GODOT 指到可执行文件；约定见 client/docs/T02a.md）
+npm run client:assets:build      # 全部：build.py -> GLB -> 包装场景和清单 -> 校验；可以 bash client/art_source/build_kits.sh sample/station_sample 只建一件
+npm run client:assets:check      # 只校验
 
 # 音频（需要 ffmpeg 带 libvorbis、numpy；原始素材放进一个目录，布局见脚本开头的注释）
 python3 -I client/art_source/audio/build_audio.py <原始素材目录> [候选试听输出目录]
