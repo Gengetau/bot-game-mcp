@@ -2,7 +2,7 @@
 // 步骤号都是数字，文件内的子步骤按顺序互相依赖，只能整个文件一起跑（--only=props 或 --only=100）。
 // 末尾有一段「怎么让它失败」。
 //
-// 这个文件需要先导出客户端（npm run client:export）；写的时候机器上有别的重任务在跑，没有真的跑过，只做过 node --check。
+// 这个文件需要先导出客户端（npm run client:export）。
 import { propsOf, propState, setPropState } from '../lib/props.mjs';
 import { goPlace, settle } from '../lib/activity.mjs';
 
@@ -14,7 +14,8 @@ const STATES = ['idle', 'busy', 'done', 'fault'];
 
 export default async function run(h) {
   const { check, until, sleep, step, shot, walkTo, BASE, townParams } = h;
-  const { A } = await h.pair();
+  const { A, B } = await h.pair();
+  await h.release(B); // 这个文件只用桌面页面；手机那位不放走的话会一直站在出生点，污染后面文件里「附近的人」的断言
   const loadIn = async (p, query) => {
     p.w.closing = true;
     await p.page.goto(`${BASE}/town/3d/?${query}`);
@@ -24,10 +25,18 @@ export default async function run(h) {
     await p.page.waitForFunction(() => document.body.dataset.phase === 'playing', null, { timeout: 60_000 });
   };
   const stateIs = (id, st) => async () => ((await propState(A.page, id)) === st ? true : null);
+  // 人已经在厨房里时地点菜单里没有「公共厨房」这一项（重新进页面后人还在原地）：在了就不用走
+  const toKitchen = async () => {
+    const s = await until(async () => {
+      const v = await h.snap(A.page);
+      return v && v.self && v.space ? v : null;
+    }, 20_000, '进镇后拿到场景快照');
+    if (s.space !== 'kitchen') await goPlace(h, A, 'kitchen');
+  };
 
   await step(100, '占位样件：?debug=1&props=sample 进镇，__town.props 里有两个灶台，状态是 idle，可用状态是四个', async () => {
     await loadIn(A, 'debug=1&hour=12&props=sample');
-    await goPlace(h, A, 'kitchen');
+    await toKitchen();
     const ps = await until(async () => {
       const l = await propsOf(A.page);
       return l.length === 2 ? l : null;
@@ -37,14 +46,18 @@ export default async function run(h) {
       check(p.kind === 'stove' && p.state === 'idle' && !p.forced, `${p.id} 应是 idle、没被强行指定：${JSON.stringify(p)}`);
       check(STATES.every((s) => p.states.includes(s)), `${p.id} 应有四个状态：${JSON.stringify(p.states)}`);
     }
-    check(typeof (await A.page.evaluate(() => window.__town.setPropState)) === 'function', 'window.__town.setPropState 应是函数（hud.js 在 debug 下挂）');
+    // 函数过不了 page.evaluate 的序列化，在页面里取 typeof
+    check((await A.page.evaluate(() => typeof window.__town.setPropState)) === 'function', 'window.__town.setPropState 应是函数（hud.js 在 debug 下挂）');
   });
 
   await step(100.1, '强行切四种状态并截图；__town.props 跟着变，forced 为真；解除后回到服务端数据（idle）', async () => {
     for (const st of STATES) {
       await A.page.evaluate(([i, s]) => window.__town.setPropState(i, s), [S1, st]);
-      await until(stateIs(S1, st), 8000, `${S1} 切到 ${st}`);
-      const p = (await propsOf(A.page)).find((x) => x.id === S1);
+      // 状态和 forced 一起等：第一个是 idle，本来就是 idle，只等状态的话会在调试读数（每 100 毫秒推一次）更新之前就过去
+      const p = await until(async () => {
+        const x = (await propsOf(A.page)).find((y) => y.id === S1);
+        return x && x.state === st && x.forced === true ? x : null;
+      }, 8000, `${S1} 切到 ${st} 并标 forced`);
       check(p.forced === true, `切到 ${st} 后应标 forced：${JSON.stringify(p)}`);
       check((await propState(A.page, S2)) === 'idle', '另一个灶台不受影响');
       await sleep(400); // 让这一状态至少画出几帧再截图
@@ -76,7 +89,7 @@ export default async function run(h) {
 
   await step(100.3, '不带 props=sample：__town.props 为空，灶台还是原来的程序模型（地图物件还在）；带 props=sample 但不带 debug=1：一律无视', async () => {
     await loadIn(A, 'debug=1&hour=12');
-    await goPlace(h, A, 'kitchen');
+    await toKitchen();
     await sleep(800);
     check((await propsOf(A.page)).length === 0, `不带 props=sample 时 __town.props 应为空：${JSON.stringify(await propsOf(A.page))}`);
     const ids = await A.page.evaluate(() => window.__town.objects.map((o) => o.id));

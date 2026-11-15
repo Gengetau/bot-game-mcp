@@ -27,6 +27,8 @@ func _init() -> void:
 	t_debug_override()
 	t_mode_switch_keeps_state()
 	t_insensitive()
+	t_insensitive_under_pixel_cap()
+	t_mode_switch_drops_probe()
 	print("%d 项检查，%d 项失败" % [_checks, _fails])
 	quit(1 if _fails > 0 else 0)
 
@@ -180,6 +182,9 @@ func t_pixel_cap() -> void:
 	q.set_mode("high")
 	check(absf(q.render_scale(px) - cap) < 0.0001, "high 受像素上限约束（%.3f）" % q.render_scale(px))
 	check(q.is_capped(px) and not q.is_capped(PX), "诊断看得出被像素上限压低")
+	var au = L.new()
+	run(au, 5.0, func(_s): return 60.0, px)
+	check(absf(au.drs - cap) < 0.001 and au.is_capped(px) and au.changes == 0, "auto 的动态比例贴在像素上限上，诊断里看得出，不算一次变动（%.3f）" % au.drs)
 	q.set_mode("low")
 	check(absf(q.render_scale(px) - minf(cap, 0.6)) < 0.0001, "low 受像素上限约束（%.3f）" % q.render_scale(px))
 	q.set_mode("auto")
@@ -191,6 +196,33 @@ func t_pixel_cap() -> void:
 	run(w, 120.0, func(_s): return 30.0, px)
 	check(w.drs <= cap + 0.001, "升档不超过像素上限（%.3f <= %.3f）" % [w.drs, cap])
 	check(L.pixel_cap(2500000.0) == 1.0 and L.pixel_cap(1.0e6) == 1.0, "不超过 250 万像素不封顶")
+
+
+## 高分屏（像素上限 0.69）上帧率跟着像素数走的设备：降档从上限算起，不会因为上限以上那几档「没效果」被判成降了没用
+func t_insensitive_under_pixel_cap() -> void:
+	var px: float = 5200000.0
+	var cap: float = sqrt(2500000.0 / px)
+	var q = L.new()
+	run(q, 40.0, func(s): return minf(60.0, 6.0 / (s * s)), px)
+	check(q.holds == 0, "像素上限下: 降了有用的设备不误判（%d 次）" % q.holds)
+	check(q.drs < cap - 0.1, "像素上限下: 能降到上限以下（%.3f < %.3f）" % [q.drs, cap])
+	# 对照：同一块屏上瓶颈不在像素的设备，照样判定，回到上限那一档
+	var c = L.new()
+	run(c, 14.0, _contended, px)
+	check(c.holds == 1 and absf(c.drs - cap) < 0.001, "像素上限下: 降了没用照样判定，回到上限（%d 次，%.3f）" % [c.holds, c.drs])
+
+
+## 降到一半切到别的档位，过一阵再切回 auto：不拿切走之前的帧率当基准去判「降了没用」
+func t_mode_switch_drops_probe() -> void:
+	var q = L.new()
+	run(q, 2.0, _contended)  # 降了一档（0.85），探测刚开始
+	check(q.drs < 0.99 and q.holds == 0, "切档: 先降了一档（%.2f）" % q.drs)
+	q.set_mode("low")
+	run(q, 300.0, func(_s): return 60.0)
+	q.set_mode("auto")
+	var d: float = q.drs
+	run(q, 4.0, _heavy)  # 这回是真的吃力，而且降了有用
+	check(q.holds == 0 and q.drs < d, "切档: 切回来后照常降，不被旧基准误判（%d 次，%.2f -> %.2f）" % [q.holds, d, q.drs])
 
 
 func t_debug_override() -> void:

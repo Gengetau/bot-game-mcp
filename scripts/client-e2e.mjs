@@ -55,13 +55,13 @@ const rnd = () => randomBytes(3).toString('hex');
 // ───────────────────────── 新步骤文件（scripts/e2e/steps/*.mjs，写法见那里的 README.md）─────────────────────────
 
 const STEPS_DIR = join(ROOT, 'scripts', 'e2e', 'steps');
-/** 读全部步骤文件（按文件名排序）；id 或 n 重复就抛错，免得两个人的步骤互相覆盖。 */
+/** 读全部步骤文件（按文件名开头的数字排序：100-props 排在 80-npc 后面，不是 20 前面）；id 或 n 重复就抛错，免得两个人的步骤互相覆盖。 */
 async function loadStepFiles() {
   if (!existsSync(STEPS_DIR)) return [];
   const mods = [];
   const ids = new Map();
   const ns = new Map();
-  for (const f of readdirSync(STEPS_DIR).filter((x) => x.endsWith('.mjs')).sort()) {
+  for (const f of readdirSync(STEPS_DIR).filter((x) => x.endsWith('.mjs')).sort((a, b) => (parseInt(a, 10) || 0) - (parseInt(b, 10) || 0) || a.localeCompare(b))) {
     const m = await import(pathToFileURL(join(STEPS_DIR, f)).href);
     if (!m.meta || typeof m.default !== 'function') throw new Error(`步骤文件 ${f} 必须导出 meta 和 default 函数`);
     const { id, n } = m.meta;
@@ -701,7 +701,7 @@ async function runStepFiles(hh) {
   // 90 到 98 这一段里不止一个文件（C7a 90、C7b 93、V1 95）：--only=93 只该选中 93 号文件，不该连 90 号文件一起跑。
   const byN = [...mods].sort((a, b) => a.meta.n - b.meta.n);
   const fileOf = (x) => {
-    if (!Number.isFinite(x) || x >= 99) return null;
+    if (!Number.isFinite(x) || (x >= 99 && x < 100)) return null; // 99 是全程检查；100 起又是步骤文件的号段
     let hit = null;
     for (const m of byN) if (m.meta.n <= x) hit = m;
     return hit && x < hit.meta.n + 10 ? hit : null;

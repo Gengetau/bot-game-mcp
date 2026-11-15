@@ -211,4 +211,4 @@ client/art_source/, client/ASSETS.md   素材来源与台账（audio/ 是音频�
 - 画质：HUD 的「画质」按钮在 自动 → 高 → 低 之间循环（localStorage `town3d.quality` = `auto` / `high` / `low`，没存过是自动）。自动 = 动态分辨率（规则和常量见 `client/docs/T01.md`、`scripts/quality_logic.gd`），阴影触屏和软件渲染关；高 = 渲染比例取像素上限允许的最大值 + 平行光阴影；低 = 固定 0.6 + 脚底圆影。
 - 调试：`?debug=1&hour=19` 固定世界钟点（昼夜截图用）；`?debug=1&scale=0.75` 固定 3D 渲染比例（0.3～1.0，仍受 250 万像素上限约束）；`?debug=1&zoom=12` 固定镜头距离（米）。诊断读数：`__town.renderScale`、`renderSize`、`canvasSize`、`qualityMode`、`drsFloor`、`drsCeil`。
 - 固定镜头对照：`npm run client:shots`（先导出；真实 Chrome 有头，`--headless` 只做无显卡冒烟）把 3 种渲染设置 × 4 种镜头（默认、最近缩放、夜里、茶馆里）截成 PNG，数据汇总进 `client/docs/T01/shots/results.json`。选项见 `scripts/client-shots.mjs` 开头的注释。
-- 调试：`?debug=1&props=sample` 把灶台和公共厨房换成占位样件（`assets/kits/sample/`），`window.__town.props` 列出带状态的物件，`window.__town.setPropState(编号, 状态名)` 强行切状态（空串解除）。默认的外观表不指向样件；不带 `?debug=1` 无视 `props`。
+- 调试：`?debug=1&props=sample` 把灶台和公共厨房换成占位样件（`assets/kits/sample/`），`window.__town.props` 列出带状态的物件，`window.__town.setPropState(编号, 状态名)` 强行切状态（空串解除）。默认的外观表不指向样件；不带 `?debug=1` 无视 `props`。 `?debug=1&props=kitchen` 把灶台换成厨房的标准工位样件（`assets/kits/kitchen/stove_station/`，见 `docs/T02b.md`）。

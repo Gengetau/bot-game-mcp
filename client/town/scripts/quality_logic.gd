@@ -89,12 +89,15 @@ static func valid_mode(m: String) -> bool:
 func set_mode(m: String) -> bool:
 	if not valid_mode(m):
 		return false
+	if m != mode:
+		_reset_probe()  # 切走再切回来，隔了多久不知道：不拿切走之前的帧率当「降了没用」的基准
 	mode = m
 	return true
 
 
 func set_debug_scale(s: float) -> void:
 	debug_scale = clampf(s, DEBUG_MIN, DEBUG_MAX) if s > 0.0 else -1.0
+	_reset_probe()
 
 
 func floor_scale() -> float:
@@ -143,7 +146,7 @@ func is_capped(px: float) -> bool:
 		return true
 	if mode == MODE_LOW:
 		return LOW_SCALE > cap
-	return drs > cap
+	return drs >= cap - 0.0005  # auto 的动态比例会被压到上限上（见 frame），贴着上限就算被它压着
 
 
 ## 每帧调用。dt 是这一帧的间隔（秒）；px 是画面像素数（用来知道像素上限，升档不超过上限）。
@@ -157,6 +160,13 @@ func frame(dt: float, px: float = 0.0) -> void:
 	if mode != MODE_AUTO or debug_scale > 0.0:
 		return
 	var fl: float = floor_scale()
+	# 像素上限以上的那一截本来就没有生效（实际渲染比例是 min(上限, drs)）：先压到上限上。
+	# 不压的话，高分屏上头几次「降档」一个像素都没少，帧率自然不涨，会被当成「降了没用」，从此降不到上限以下。
+	if px > 0.0:
+		var capf: float = maxf(fl, pixel_cap(px))
+		drs = minf(drs, capf)
+		if _probe_from > capf:
+			_probe_from = capf
 	# 暂时上限到期：放开，开始试探
 	if _ceil < 1.0 and t >= _ceil_until:
 		_ceil = 1.0
@@ -213,6 +223,17 @@ func frame(dt: float, px: float = 0.0) -> void:
 			_up_armed = true
 	else:
 		_up_armed = false
+
+
+## 丢掉正在进行的探测和升档观察（档位或调试覆盖变了）。暂时上限和「不再降」的时段按时间算，照旧有效。
+func _reset_probe() -> void:
+	_probe_from = 0.0
+	_probe_fps = 0.0
+	_check_t = 0.0
+	_win_n = 0
+	_last_win_fps = 0.0
+	_up_armed = false
+	_up_from = 0.0
 
 
 func _probe_begin(fps_now: float) -> void:

@@ -549,8 +549,11 @@ func sync_object_states(sid: String, objs: Variant) -> void:
 	var by_id: Dictionary = TPropState.states_by_id(objs)
 	for oid in d:
 		var want: String = str(by_id.get(oid, TPropState.IDLE))
+		# 状态没变就不再调：每次刷新都重设一遍会把正在放的循环动画重新起头
+		var p: TStatefulProp = _prop_of(sid, str(oid))
+		var changed: bool = _prop_want.get(oid) != want or (p != null and p.get_state() != TKitLogic.resolve_state(want, p.states()))
 		_prop_want[oid] = want
-		if not _prop_forced.has(oid):
+		if changed and not _prop_forced.has(oid):
 			set_object_state(sid, str(oid), want)
 
 

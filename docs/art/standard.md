@@ -92,6 +92,8 @@
 
 Antigravity 的第一个任务是厨房的一个标准工位。**退路写在前面**：样件在实际镜头下不过关（轮廓、风格统一、状态可辨其中任何一项），就不继续让它从零建模，改成用现有的 CC0 素材包（Kenney Fantasy Town、KayKit）改色、拼装、加程序生成的配件，这条路仓库里已经走通过（`recolor_kenney.py`、`recolor_residents.py`、`town_art.gd`）。走哪条路由主人看过样件之后定。
 
+**现状（2026-11-15 夜）**：样件交了，是公共厨房的砖砌双眼灶台 `kitchen/stove_station`（记录在 `client/docs/T02b.md`，实际镜头的对照条在 `client/docs/T02/shots/kitchen/`）。它只在 `?debug=1&props=kitchen` 下出现，没有进默认的外观表。过不过关、走自建还是 CC0 拼装，等主人看图定。
+
 ## 图形验证
 
 - 报告里分开标：静态检查、无界面导入、编辑器运行、真实浏览器运行、真实移动设备。没做的那一层写「待验证」。
