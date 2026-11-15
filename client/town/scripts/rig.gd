@@ -25,6 +25,7 @@ var view_msgs: int = 0  # 收到的版式消息条数（?debug=1 里读：站着
 var _tgt_from: Vector2 = Vector2(0.5, 0.5)
 var _tgt_t: float = ViewLogic.DUR
 var settled: bool = true  # 目标点缓动完、跟随也赶上了
+var hold_t: float = -1.0  # 仅测试（?debug=1）：>= 0 时把缓动冻结在这个时刻（秒），让端到端能在「缓动中途」精确地点地；负数是不冻结
 
 
 func _ready() -> void:
@@ -74,10 +75,13 @@ func set_view(rect: Dictionary) -> void:
 
 func follow(p: Vector3, dt: float) -> void:
 	focus = focus.lerp(p, 1.0 - exp(-dt * 5.0))
-	if _tgt_t < ViewLogic.DUR:
+	if hold_t >= 0.0:
+		_tgt_t = minf(hold_t, ViewLogic.DUR * 0.99)
+		tgt = ViewLogic.eased(_tgt_from, tgt_goal, _tgt_t)
+	elif _tgt_t < ViewLogic.DUR:
 		_tgt_t += dt
 		tgt = ViewLogic.eased(_tgt_from, tgt_goal, _tgt_t)
-	settled = _tgt_t >= ViewLogic.DUR and focus.distance_to(p) < 0.03
+	settled = hold_t < 0.0 and _tgt_t >= ViewLogic.DUR and focus.distance_to(p) < 0.03
 	_update()
 
 

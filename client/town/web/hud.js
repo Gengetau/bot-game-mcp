@@ -688,6 +688,10 @@
       window.__townHideNpcs = !!on;
       emit('debug_hide_npcs', on ? '1' : '0');
     };
+    /* 调试：把镜头的目标点缓动冻结在第 t 秒（t 为 null 或不传就放开）。端到端用它在缓动中途精确地点地 */
+    d.holdView = function (t) {
+      emit('debug_view_hold', t === null || t === undefined ? '' : String(t));
+    };
     d.dock = window.TownDock ? window.TownDock.debug() : {};
     d.layout = window.TownLayout ? window.TownLayout.debug() : {};
     window.__town = d;

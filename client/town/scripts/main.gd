@@ -253,6 +253,9 @@ func _on_ui(ev: String, arg: String) -> void:
 			_do_interact(arg if arg != "" else "key")
 		"debug_hide_npcs":
 			_set_hide_npcs(arg == "1")
+		"debug_view_hold":
+			if bridge.debug:
+				rig.hold_t = float(arg) if arg != "" else -1.0
 		"debug_pick_stub":
 			if bridge.debug:
 				features.set_pick_stub(arg)

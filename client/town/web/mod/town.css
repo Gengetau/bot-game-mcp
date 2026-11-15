@@ -77,8 +77,13 @@ body[data-kb="1"] [data-pane="town"] .rules, body[data-kb="1"] [data-pane="town"
 body[data-dock="drawer"] [data-pane="town"] .rules { display: none; }
 body[data-dock="drawer"] [data-pane="town"] .scope { padding-top: 4px; padding-bottom: 2px; }
 body[data-dock="drawer"] [data-pane="town"] .compose { min-height: 48px; padding: 4px 8px 6px; }
-body[data-dock="drawer"] [data-pane="town"] .compose input { height: 38px; }
-body[data-dock="drawer"] [data-pane="town"] .compose .send { height: 38px; }
+body[data-dock="drawer"] [data-pane="town"] .compose input { height: 44px; }
+body[data-dock="drawer"] [data-pane="town"] .compose .send { height: 44px; }
+/* 手机上能点的东西不小于 44 像素（V1）：静音和类型小牌用伪元素把点按区扩到 44，地点下拉直接加高 */
+body[data-dock="drawer"] #dock .chat-pane[data-pane="town"] button.mute { height: 40px; line-height: 40px; }
+body[data-dock="drawer"] #dock .chat-pane[data-pane="town"] button.mute::before { top: -4px; bottom: -4px; }
+body[data-dock="drawer"] #dock .chat-pane[data-pane="town"] .kinds button { height: 36px; font-size: 13px; line-height: 36px; }
+body[data-dock="drawer"] [data-pane="town"] .placesel { height: 44px; }
 body[data-dock="drawer"] [data-pane="town"] .msg { margin-top: 3px; }
 body[data-dock="drawer"] [data-pane="town"] .who { line-height: 14px; }
 body[data-dock="drawer"] [data-pane="town"] .bub { padding: 2px 10px; font-size: 13px; line-height: 1.35; }
