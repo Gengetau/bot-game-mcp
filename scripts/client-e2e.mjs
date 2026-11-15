@@ -31,6 +31,7 @@ import { join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { randomBytes } from 'node:crypto';
 
+const IS_WIN = process.platform === 'win32';
 const ROOT = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const CLIENT_DIR = join(ROOT, 'client', 'town', 'build', 'web');
 const DEMO_DIR = join(ROOT, 'client', 'demo');
@@ -142,13 +143,16 @@ async function startEngine() {
   };
   const cfgFile = join(TMP, 'engine.json');
   writeFileSync(cfgFile, JSON.stringify(cfg));
-  const tsx = join(ROOT, 'node_modules', '.bin', 'tsx');
-  engine = spawn(tsx, [join(ROOT, 'packages', 'engine', 'src', 'cli.ts'), 'serve'], {
+  const cli = join(ROOT, 'packages', 'engine', 'src', 'cli.ts');
+  const spawnOpts = {
     cwd: ROOT,
-    detached: true, // 自成进程组，结束时整组杀掉（tsx 会再起一层 node）
     stdio: ['ignore', 'pipe', 'pipe'],
     env: { ...process.env, BOTGAME_CONFIG: cfgFile },
-  });
+  };
+  engine = IS_WIN
+    ? // Windows：.bin/tsx 是 shell 脚本，没法直接 spawn；改用 node 跑 tsx 的 cli.mjs。没有进程组，结束时用 taskkill /T 杀整棵进程树
+      spawn(process.execPath, [join(ROOT, 'node_modules', 'tsx', 'dist', 'cli.mjs'), cli, 'serve'], { ...spawnOpts, windowsHide: true })
+    : spawn(join(ROOT, 'node_modules', '.bin', 'tsx'), [cli, 'serve'], { ...spawnOpts, detached: true }); // 自成进程组，结束时整组杀掉（tsx 会再起一层 node）
   const onData = (b) => {
     for (const l of b.toString('utf8').split('\n')) if (l.trim()) engineTail.push(l);
     if (engineTail.length > 120) engineTail.splice(0, engineTail.length - 120);
@@ -169,22 +173,28 @@ async function startEngine() {
   }
 }
 
-/** 引擎进程组里还有没有活着的进程（tsx 会再起一层 node，组长退出了孙子可能还在关库）。 */
+/** 引擎进程组里还有没有活着的进程（tsx 会再起一层 node，组长退出了孙子可能还在关库）。Windows 没有进程组，只看组长。 */
 function groupAlive() {
   if (!engine?.pid) return false;
   try {
-    process.kill(-engine.pid, 0);
+    process.kill(IS_WIN ? engine.pid : -engine.pid, 0);
     return true;
   } catch {
     return false;
   }
 }
 
+/** 给引擎整组 / 整棵进程树发信号。Windows 没有进程组，也没有 SIGTERM（kill 就是强制结束）：用 taskkill /T 结束整棵树。 */
+function signalEngineGroup(sig) {
+  if (IS_WIN) execFileSync('taskkill', ['/pid', String(engine.pid), '/T', '/F'], { stdio: 'ignore' });
+  else process.kill(-engine.pid, sig);
+}
+
 /** 停引擎并等进程组真正退出；超时改发 SIGKILL。删临时目录必须在这之后，否则引擎还在关 SQLite 时目录就没了。 */
 async function stopEngine() {
   if (!engine?.pid || !groupAlive()) return;
   try {
-    process.kill(-engine.pid, 'SIGTERM');
+    signalEngineGroup('SIGTERM');
   } catch {
     /* 已经退出 */
   }
@@ -192,12 +202,13 @@ async function stopEngine() {
   while (groupAlive() && Date.now() - t0 < 8000) await sleep(100);
   if (groupAlive()) {
     try {
-      process.kill(-engine.pid, 'SIGKILL');
+      signalEngineGroup('SIGKILL');
     } catch {
       /* 已经退出 */
     }
     while (groupAlive() && Date.now() - t0 < 12_000) await sleep(100);
   }
+  if (IS_WIN) await sleep(500); // Windows 上进程刚结束，SQLite 文件句柄要稍等才释放，之后才能删临时目录
 }
 
 // 脚本被 Ctrl-C / 超时杀掉时，引擎自成进程组收不到终端的信号，必须自己停；同步的 exit 钩子兜底（崩溃路径）
@@ -216,7 +227,7 @@ for (const sig of ['SIGINT', 'SIGTERM']) {
 process.on('exit', () => {
   if (engine?.pid && groupAlive()) {
     try {
-      process.kill(-engine.pid, 'SIGKILL');
+      signalEngineGroup('SIGKILL');
     } catch {
       /* 已经退出 */
     }
