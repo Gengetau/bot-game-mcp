@@ -25,6 +25,8 @@ var _pending: Dictionary = {}
 var origin: String = ""
 var debug: bool = false
 var debug_hour: float = -1.0
+var debug_scale: float = -1.0  # ?debug=1&scale=0.75：固定 3D 渲染比例（0.3～1.0）
+var debug_zoom: float = -1.0  # ?debug=1&zoom=12：固定镜头距离（米）
 
 
 func setup() -> void:
@@ -43,6 +45,10 @@ func setup() -> void:
 	for kv in str(loc.search).trim_prefix("?").split("&"):
 		if debug and kv.begins_with("hour="):
 			debug_hour = float(kv.substr(5))
+		if debug and kv.begins_with("scale="):
+			debug_scale = float(kv.substr(6))
+		if debug and kv.begins_with("zoom="):
+			debug_zoom = float(kv.substr(5))
 
 
 ## 页面全局量 window.__townHideNpcs 是否设了（调试用；端到端的 addInitScript 设）。是否生效由 debug_flags.gd 判断：不带 ?debug=1 一律无视

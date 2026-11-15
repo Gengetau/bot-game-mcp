@@ -132,32 +132,38 @@
     if (soundOn && window.TownHost) window.TownHost.unlockAudio();
   });
 
-  /* ── 画质：高 = 实时阴影；低 = 只有脚下的软影（手机默认低）。选择记在本机 ── */
-  var qualityHigh = (function () {
+  /* ── 画质：自动 / 高 / 低 三态循环，选择记在本机（town3d.quality = auto | high | low）。
+   *  自动 = 动态分辨率，阴影看设备（触屏和软件渲染关）；高 = 满分辨率 + 实时阴影；低 = 0.6 分辨率 + 脚底圆影。
+   *  以前存的 high / low 是用户点过的，照字面沿用；没存过或存了别的值就是自动。 ── */
+  var QUALITY_MODES = ['auto', 'high', 'low'];
+  var QUALITY_TEXT = { auto: '画质：自动', high: '画质：高', low: '画质：低' };
+  var QUALITY_LABEL = { auto: '画质切换，当前自动', high: '画质切换，当前高', low: '画质切换，当前低' };
+  var qualityMode = (function () {
     var v = lsGet('town3d.quality');
-    if (v === 'high') return true;
-    if (v === 'low') return false;
-    if (window.matchMedia && window.matchMedia('(pointer: coarse)').matches) return false;
-    // 软件渲染（SwiftShader / llvmpipe）开实时阴影只会更卡
+    return v === 'high' || v === 'low' ? v : 'auto';
+  })();
+  /* 软件渲染（SwiftShader / llvmpipe）：开实时阴影只会更卡，动态分辨率的下限也放到 0.3（Godot 一侧按这个告知决定） */
+  var softGpu = (function () {
     try {
       var gl = document.createElement('canvas').getContext('webgl2');
       var ext = gl && gl.getExtension('WEBGL_debug_renderer_info');
       var rn = ext ? String(gl.getParameter(ext.UNMASKED_RENDERER_WEBGL)) : '';
-      if (/swiftshader|llvmpipe|software/i.test(rn)) return false;
+      return /swiftshader|llvmpipe|software/i.test(rn);
     } catch (e) {
-      /* 取不到就按桌面默认 */
+      return false; /* 取不到就按桌面默认 */
     }
-    return true;
   })();
   function renderQuality() {
-    $('qualityBtn').textContent = qualityHigh ? '画质：高' : '画质：低';
+    var b = $('qualityBtn');
+    b.textContent = QUALITY_TEXT[qualityMode];
+    b.setAttribute('aria-label', QUALITY_LABEL[qualityMode]);
   }
   renderQuality();
   $('qualityBtn').addEventListener('click', function () {
-    qualityHigh = !qualityHigh;
-    lsSet('town3d.quality', qualityHigh ? 'high' : 'low');
+    qualityMode = QUALITY_MODES[(QUALITY_MODES.indexOf(qualityMode) + 1) % QUALITY_MODES.length];
+    lsSet('town3d.quality', qualityMode);
     renderQuality();
-    emit('quality', qualityHigh ? 'high' : 'low');
+    emit('quality', qualityMode);
   });
   /* ── 音量设置：音乐 / 环境声 / 音效三条独立音量 + 切后台静音，记在 localStorage（读写都包 try/catch，读不到用默认值） ── */
   var AUDIO_DEFAULT = { music: 60, amb: 70, sfx: 80, bg: true };
@@ -265,7 +271,8 @@
   $('enterBtn').addEventListener('click', function () {
     if (window.TownHost) window.TownHost.unlockAudio();
     emit('sound', soundOn ? '1' : '0');
-    emit('quality', qualityHigh ? 'high' : 'low');
+    emit('gpu', softGpu ? 'soft' : 'hw');
+    emit('quality', qualityMode);
     emitAudioPrefs();
     emit('enter');
   });

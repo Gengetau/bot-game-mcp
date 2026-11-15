@@ -4,6 +4,7 @@ extends Node3D
 
 enum Phase { BOOT, READY, BUSY, LOGIN, ERROR, PLAYING }
 
+const QL := preload("res://scripts/quality_logic.gd")
 const API := "/town/api"
 const PickLogic := preload("res://scripts/pick_logic.gd")
 const SceneLogic := preload("res://scripts/scene_logic.gd")
@@ -181,11 +182,10 @@ func _ready() -> void:
 
 
 ## 光照和昼夜在 daynight.gd（按服务器世界时间），画质档由界面按钮 / 默认值决定。
-var _fps_avg: float = 60.0
-var _drs: float = 1.0
-var _drs_t: float = 0.0
+var ql := QL.new()  # 清晰度策略（档位、动态分辨率），纯逻辑在 quality_logic.gd
+var _px_now: float = 0.0  # 最近一帧的画面像素数（诊断用）
 var daynight: TDayNight = null
-var quality_high: bool = true
+var quality_high: bool = true  # 实时阴影开着（原 __town.quality 的含义）
 
 
 func _build_environment() -> void:
@@ -193,7 +193,14 @@ func _build_environment() -> void:
 	add_child(daynight)
 	daynight.debug_hour = bridge.debug_hour
 	daynight.bridge = bridge
-	_set_quality(not DisplayServer.is_touchscreen_available())
+	if bridge.debug_scale > 0.0:
+		ql.set_debug_scale(bridge.debug_scale)
+	_apply_quality()
+
+
+## 档位 / 软件渲染变了：重新决定阴影（high 开、low 关、auto 看触屏和软件渲染）。渲染比例每帧在 _adapt_resolution 里取。
+func _apply_quality() -> void:
+	_set_quality(ql.shadows(DisplayServer.is_touchscreen_available()))
 
 
 func _set_quality(high: bool) -> void:
@@ -235,7 +242,13 @@ func _on_ui(ev: String, arg: String) -> void:
 		"login":
 			login_submitted.emit(arg)
 		"quality":
-			_set_quality(arg == "high")
+			# arg：auto / high / low（旧页面只会发 high / low，含义不变）
+			if ql.set_mode(arg):
+				_apply_quality()
+		"gpu":
+			# 网页层判断出是软件渲染（SwiftShader / llvmpipe）：auto 档关阴影、动态分辨率下限放到 0.3
+			ql.soft = arg == "soft"
+			_apply_quality()
 		"sound":
 			audio.set_enabled(arg == "1")
 		"vol":
@@ -1597,7 +1610,7 @@ func _process(dt: float) -> void:
 		_frame_max_ms = maxf(_frame_max_ms, gap)
 		if gap > 400.0:
 			var pa: TActor = actors.get(self_id)
-			_slow.append("%d gap %.0f drs %.2f pos %s mv %s" % [Time.get_ticks_msec(), gap, _drs, str(pa.disp.snapped(Vector2(0.1, 0.1))) if pa != null else "-", str(pa.moving) if pa != null else "-"])
+			_slow.append("%d gap %.0f drs %.2f pos %s mv %s" % [Time.get_ticks_msec(), gap, ql.drs, str(pa.disp.snapped(Vector2(0.1, 0.1))) if pa != null else "-", str(pa.moving) if pa != null else "-"])
 			if _slow.size() > 12:
 				_slow.pop_front()
 	_last_wall_us = wall_us
@@ -1611,6 +1624,8 @@ func _process(dt: float) -> void:
 	var vs: Vector2 = get_viewport().get_visible_rect().size
 	if vs.y > 1.0:
 		rig.set_aspect(vs.x / vs.y)
+		if bridge.debug_zoom > 0.0:
+			rig.dist = clampf(bridge.debug_zoom, TRig.DIST_MIN, TRig.DIST_MAX)  # ?debug=1&zoom=：固定镜头距离（每帧压回，滚轮 / 双指缩放不改它）
 		_adapt_resolution(vs, dt)
 
 	# 连接维护
@@ -1721,20 +1736,10 @@ func _update_scenery(dt: float, now_s: float) -> void:
 ## 画面像素太多（高分屏手机）时降低 3D 渲染分辨率，保证帧率；界面是 DOM，不受影响。
 func _adapt_resolution(vs: Vector2, dt: float = 0.0) -> void:
 	var px: float = vs.x * vs.y
-	var scale: float = 1.0 if px <= 2500000.0 else sqrt(2500000.0 / px)
-	# 动态分辨率：帧率长期过低（软件渲染、老手机）就逐步降低 3D 渲染分辨率，恢复后慢慢升回去；界面是 DOM，文字不受影响
-	if dt > 0.0:
-		_fps_avg = lerpf(_fps_avg, 1.0 / maxf(dt, 0.0005), 1.0 - exp(-dt * 0.7))
-		if dt > 0.35 and _drs > 0.3:
-			_drs = maxf(0.3, _drs * 0.7)  # 一帧就超过 0.35 秒：马上降一档，不等平均值
-		_drs_t += dt
-		if _drs_t > 1.5:
-			_drs_t = 0.0
-			if _fps_avg < 24.0 and _drs > 0.3:
-				_drs = maxf(0.3, _drs * 0.85)
-			elif _fps_avg > 52.0 and _drs < 1.0:
-				_drs = minf(1.0, _drs * 1.08)
-	scale = minf(scale, _drs)
+	_px_now = px
+	# 档位、动态分辨率（降 / 升 / 防抖）、像素上限、调试覆盖全在 quality_logic.gd；界面是 DOM，文字不受影响
+	ql.frame(dt, px)
+	var scale: float = ql.render_scale(px)
 	if absf(get_viewport().scaling_3d_scale - scale) > 0.01:
 		get_viewport().scaling_3d_scale = scale
 
@@ -1940,8 +1945,17 @@ func _push_debug() -> void:
 		"objects": ol,
 		"vp": m,
 		"zoom": rig.dist,
-		"drs": snappedf(_drs, 0.01),
-		"quality": "high" if quality_high else "low",
+		"drs": snappedf(ql.drs, 0.01),
+		"quality": "high" if quality_high else "low",  # 实时阴影高 / 低（原含义）；档位见 qualityMode
+		"qualityMode": ql.mode,
+		"renderScale": snappedf(get_viewport().scaling_3d_scale, 0.001),
+		"renderSize": [roundi(size.x * get_viewport().scaling_3d_scale), roundi(size.y * get_viewport().scaling_3d_scale)],
+		"canvasSize": [roundi(size.x), roundi(size.y)],
+		"drsFloor": ql.floor_scale(),
+		"drsCeil": snappedf(ql.ceil_scale(), 0.001),
+		"scaleCapped": ql.is_capped(_px_now),  # 渲染比例被 250 万像素上限压低了
+		"debugScale": ql.debug_scale,
+		"softGpu": ql.soft,
 		"hour": snappedf(daynight.hour, 0.01) if daynight != null else -1.0,
 		"serverNow": clock.server_now(),
 		"fps": Engine.get_frames_per_second(),

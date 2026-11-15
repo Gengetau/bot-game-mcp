@@ -59,7 +59,7 @@ button.big { font-size: 18px; padding: 12px 28px; min-height: 48px; }
   display: flex; gap: 8px; align-items: center; z-index: 2;
 }
 #topbar .spacer { flex: 1; }
-#topbar .btn { flex: none; }
+#topbar .btn { flex: none; white-space: nowrap; }
 #where { min-width: 0; flex: 0 1 auto; }
 #space { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
