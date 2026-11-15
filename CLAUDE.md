@@ -15,7 +15,7 @@ npm run world:simulate -- --days 1 --residents 12 --seed 1    # 栖灯镇：固�
 npm run world:recovery                                         # 栖灯镇：故障注入
 npm run client:lint && npm run client:unit                      # 三维客户端：网页层检查、Godot 无头单元测试（client/tests/，几秒钟；需要 Godot 4.7）
 npm run client:export && npm run client:e2e                    # 三维客户端：导出并跑浏览器端到端（需要 Godot 4.7，不在 CI 里；导出约 2 分钟，端到端完整一遍约 31 分钟，其中声音两步约 11 分钟；每并入一段客户端功能还会变长）
-npm run client:shots                                          # 三维客户端：固定镜头对照截图（真实 Chrome 有头、要先导出；3 种渲染设置 × 4 种镜头，数据进 results.json；不在 CI 里）
+npm run client:shots                                          # 三维客户端：固定镜头对照截图（真实 Chrome 有头、要先导出；3 种渲染设置 × 4 种镜头，数据进 results.json；加 --kit=sample 或 --kit=kitchen 截带状态物件的四种状态；不在 CI 里）
 npm run client:assets:build                                       # 三维客户端：重建资产套件（Blender 脚本 -> GLB -> 包装场景和清单 -> 校验；需要环境变量 BLENDER、GODOT，Blender 4.2 以上）
 npm run client:assets:check                                       # 三维客户端：只校验资产套件（需要 Godot 4.7，不需要 Blender，几秒钟）
 ```

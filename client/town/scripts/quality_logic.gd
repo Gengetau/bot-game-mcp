@@ -36,6 +36,17 @@ const FLICKER_S := 6.0
 ## 撑不住的那一档记成暂时的上限，60 秒后再试，每次失败翻倍，封顶 5 分钟：不会一直试，也不会永远不试。
 const BACKOFF_MIN_S := 60.0
 const BACKOFF_MAX_S := 300.0
+## 降了没用就不降：从开始降的那一档算起，比例降到 73% 以下（像素少了一半）帧率却没涨 15%，说明瓶颈不在像素上
+## （显卡被别的程序占着、CPU 忙、绘制次数多），再降只会白白变糊。这时回到开始降之前的那一档，120 秒内不再降，每次再犯翻倍，封顶 10 分钟。
+## 实测依据：主人的电脑上动态壁纸占着核显，1.0 和 0.5 的帧率一样（都是 8 帧上下），旧规则会一路降到底。
+const INSENS_DROP := 0.73
+## 要求的涨幅跟着少掉的像素走：完全由像素决定的设备，帧率该涨到 (原比例 / 现比例)² 倍；这里只要求拿到其中的两成
+## （降到 73% 时是 1.18 倍）。帧率和比例成反比的「半敏感」设备（1.38 倍）也算有用。
+const INSENS_SHARE := 0.2
+## 到了下限也要看一眼，但这一轮至少降了一成才看（降得太少，量不出差别）
+const INSENS_MIN_DROP := 0.9
+const HOLD_MIN_S := 120.0
+const HOLD_MAX_S := 600.0
 ## 调试覆盖的范围
 const DEBUG_MIN := 0.3
 const DEBUG_MAX := 1.0
@@ -57,6 +68,13 @@ var _backoff_s: float = BACKOFF_MIN_S
 var _probing: bool = false  # 上限到期后正在试探：试成功了就把退避清零
 var _up_from: float = 0.0  # 最近一次升档之前的比例，<=0 表示没有待观察的升档
 var _up_at: float = -1.0e9
+var _probe_from: float = 0.0  # 这一轮下降开始之前的比例，<=0 表示没有在下降
+var _probe_fps: float = 0.0  # 当时的帧率（开始降之前那个检查周期里实数出来的，不用平滑值：平滑值有滞后，会把刚启动时的虚高算进去）
+var _win_n: int = 0  # 这个检查周期里过了几帧
+var _last_win_fps: float = 0.0  # 上一个完整检查周期的帧率
+var _hold_until: float = 0.0  # 在这之前不再降档（降了没用）
+var _hold_s: float = HOLD_MIN_S
+var holds: int = 0  # 判定过几次「降了没用」，单测和诊断用
 var changes: int = 0  # 动态比例变过几次（升降都算），单测和诊断用
 
 
@@ -86,6 +104,11 @@ func floor_scale() -> float:
 ## 暂时的上限（没有时为 1）
 func ceil_scale() -> float:
 	return _ceil
+
+
+## 现在是不是处在「降了没用，先不降」的那段时间里（诊断用）
+func holding() -> bool:
+	return t < _hold_until
 
 
 ## 实时阴影开不开。auto：触屏和软件渲染关，其余开。
@@ -144,17 +167,40 @@ func frame(dt: float, px: float = 0.0) -> void:
 		if _probing:
 			_probing = false
 			_backoff_s = BACKOFF_MIN_S
-	if dt > HITCH_S and drs > fl:
+	var held: bool = t < _hold_until
+	if dt > HITCH_S and drs > fl and not held:
+		# 基准用上一个完整检查周期的帧率；还没有的话（刚启动就卡）用这一帧自己的：偏低，只会让判定偏向「降了有用」，也就是原来的做法
+		_probe_begin(_last_win_fps if _last_win_fps > 0.0 else 1.0 / dt)
 		_down(maxf(fl, drs * HITCH_MUL))  # 一帧就超过 0.35 秒：马上降一档，不等平均值
 		_check_t = 0.0
+		_win_n = 0
 		return
 	_check_t += dt
+	_win_n += 1
 	if _check_t <= CHECK_S:
 		return
+	var win_fps: float = float(_win_n) / _check_t  # 这个检查周期里实数出来的帧率
+	_last_win_fps = win_fps
 	_check_t = 0.0
-	if fps_avg < DOWN_FPS and drs > fl:
-		_down(maxf(fl, drs * DOWN_MUL))
+	_win_n = 0
+	if fps_avg < DOWN_FPS:
+		if held:
+			return
+		# 已经降了不少（或者到底了）还是慢：看看降下来有没有换到帧率
+		if _probe_from > 0.0 and (drs <= _probe_from * INSENS_DROP or drs <= fl + 0.001):
+			# 软件渲染不做这个判定：那里画得慢就是像素多，照旧一路降到 0.3（端到端跑在软件渲染上，不想让它变慢）
+			if drs <= _probe_from * INSENS_MIN_DROP and not soft:
+				var r: float = _probe_from / drs
+				if win_fps < _probe_fps * (1.0 + INSENS_SHARE * (r * r - 1.0)):
+					_give_up_dropping()
+					return
+				_hold_s = HOLD_MIN_S  # 降下来是有用的
+			_probe_from = 0.0  # 从这里重新算
+		if drs > fl:
+			_probe_begin(win_fps)
+			_down(maxf(fl, drs * DOWN_MUL))
 		return
+	_probe_from = 0.0  # 帧率够了：这一轮下降结束
 	var limit: float = minf(_ceil, maxf(fl, pixel_cap(px) if px > 0.0 else 1.0))
 	if fps_avg >= fps_peak * UP_RATIO and drs < limit - 0.001:
 		if _up_armed:
@@ -167,6 +213,24 @@ func frame(dt: float, px: float = 0.0) -> void:
 			_up_armed = true
 	else:
 		_up_armed = false
+
+
+func _probe_begin(fps_now: float) -> void:
+	if _probe_from <= 0.0:
+		_probe_from = drs
+		_probe_fps = fps_now
+
+
+## 降了没用：回到开始降之前的那一档，一段时间内不再降
+func _give_up_dropping() -> void:
+	drs = minf(_probe_from, _ceil)
+	_probe_from = 0.0
+	_hold_until = t + _hold_s
+	_hold_s = minf(HOLD_MAX_S, _hold_s * 2.0)
+	_up_armed = false
+	_up_from = 0.0
+	holds += 1
+	changes += 1
 
 
 func _down(new_scale: float) -> void:

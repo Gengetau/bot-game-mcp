@@ -26,6 +26,7 @@ func _init() -> void:
 	t_pixel_cap()
 	t_debug_override()
 	t_mode_switch_keeps_state()
+	t_insensitive()
 	print("%d 项检查，%d 项失败" % [_checks, _fails])
 	quit(1 if _fails > 0 else 0)
 
@@ -49,13 +50,24 @@ func fps_30(_s: float) -> float:
 	return 30.0
 
 
-func _stuck(_s: float) -> float:
-	return 10.0
+## 跑不动的设备：降分辨率是有用的（帧率跟着像素数走），但降到底也到不了 24 帧
+func _stuck(s: float) -> float:
+	return 4.5 / (s * s)
+
+
+## 一段很吃力的负载：帧率跟着像素数走，满分辨率只有 6 帧
+func _heavy(s: float) -> float:
+	return minf(60.0, 6.0 / (s * s))
+
+
+## 瓶颈不在像素上（显卡被别的程序占着）：什么比例都是 9 帧
+func _contended(_s: float) -> float:
+	return 9.0
 
 
 func t_recover_60() -> void:
 	var q = L.new()
-	run(q, 15.0, func(_s): return 12.0)  # 一段很吃力的负载
+	run(q, 15.0, _heavy)  # 一段很吃力的负载
 	check(q.drs < 0.6, "60 帧设备: 吃力时降档（%.2f）" % q.drs)
 	var low: float = q.drs
 	# 负载过去（比如切走了别的标签页），这台设备其实在任何比例下都跑得满 60 帧
@@ -67,7 +79,7 @@ func t_recover_60() -> void:
 func t_recover_locked_30() -> void:
 	# 这次要修的毛病：帧率被锁在 30 的设备一旦降档，旧规则（高于 52 才升）永远升不回来
 	var q = L.new()
-	run(q, 15.0, func(_s): return 12.0)
+	run(q, 15.0, _heavy)
 	check(q.drs < 0.6, "锁 30 帧设备: 先被卡顿压低（%.2f）" % q.drs)
 	run(q, 180.0, fps_30)
 	check(absf(q.drs - 1.0) < 0.001, "锁 30 帧设备: 降档后能升回 1.0（%.3f，估计 %.1f，平均 %.1f）" % [q.drs, q.fps_peak, q.fps_avg])
@@ -107,7 +119,7 @@ func t_backoff_retry() -> void:
 	var peak_level: float = q.drs
 	# 升上去之后马上变卡：必须降档，并把升之前的一档记成上限
 	var up_from: float = 0.7
-	run(q, 3.0, func(_s): return 12.0)
+	run(q, 3.0, _heavy)
 	check(q.drs < peak_level, "升了又掉: 变卡后降档（%.3f）" % q.drs)
 	check(q.ceil_scale() <= peak_level and q.ceil_scale() >= up_from - 0.001 and q.ceil_scale() < 1.0, "升了又掉: 记下暂时上限（%.3f）" % q.ceil_scale())
 	var ceil_v: float = q.ceil_scale()
@@ -127,7 +139,7 @@ func t_floors() -> void:
 	check(absf(a.render_scale(PX) - 0.5) < 0.001, "正常设备渲染比例不低于 0.5")
 	var b = L.new()
 	b.soft = true
-	run(b, 120.0, _stuck)
+	run(b, 120.0, func(s): return 1.8 / (s * s))  # 降到 0.3 也只有 20 帧
 	check(absf(b.drs - 0.3) < 0.001, "软件渲染下限 0.3（%.3f）" % b.drs)
 	check(absf(b.floor_scale() - 0.3) < 0.0001 and absf(a.floor_scale() - 0.5) < 0.0001, "下限读数")
 	# 一帧超过 0.35 秒：立刻降一档，也不低于下限
@@ -209,3 +221,55 @@ func t_mode_switch_keeps_state() -> void:
 	check(absf(q.drs - d) < 0.0001, "high 期间动态比例不变")
 	q.set_mode("auto")
 	check(absf(q.render_scale(PX) - d) < 0.0001, "切回 auto 从原来的动态比例继续")
+
+
+func t_insensitive() -> void:
+	# 降了没用：什么比例都是 9 帧。降两档之后发现帧率没涨，回到原来的比例，之后一段时间不再降
+	var q = L.new()
+	run(q, 12.0, _contended)
+	check(q.holds == 1, "降了没用: 判定一次（%d）" % q.holds)
+	check(absf(q.drs - 1.0) < 0.001, "降了没用: 回到开始降之前的比例（%.3f）" % q.drs)
+	check(q.holding(), "降了没用: 进入不再降的时段")
+	var lowest: float = 1.0
+	var end: float = q.t + 90.0
+	while q.t < end:
+		q.frame(1.0 / 9.0, PX)
+		lowest = minf(lowest, q.drs)
+	check(lowest > 0.999, "降了没用: 时段内不再降（最低 %.3f）" % lowest)
+	# 时段内偶尔一帧很长也不降
+	q.frame(0.5, PX)
+	check(absf(q.drs - 1.0) < 0.001, "降了没用: 时段内单帧过长也不降（%.3f）" % q.drs)
+	# 到期后再试一次，还是没用：再回来，时段翻倍
+	run(q, 60.0, _contended)
+	check(q.holds == 2 and absf(q.drs - 1.0) < 0.001, "降了没用: 到期再试，仍回到原比例（%d 次，%.3f）" % [q.holds, q.drs])
+	var before: int = q.changes
+	run(q, 200.0, _contended)
+	check(q.changes == before and q.holds == 2, "降了没用: 第二个时段更长（200 秒内不再试，变动 %d 次）" % (q.changes - before))
+	# 十分钟里绝大部分时间是清晰的
+	var blurry: float = 0.0
+	var total: float = 0.0
+	var w = L.new()
+	while w.t < 600.0:
+		w.frame(1.0 / 9.0, PX)
+		total += 1.0
+		if w.drs < 0.99:
+			blurry += 1.0
+	check(blurry / total < 0.05, "降了没用: 十分钟里变糊的时间不到 5%%（%.1f%%）" % (100.0 * blurry / total))
+	# 从暂时上限下面开始降的：回到的是开始降之前那一档，不是 1.0
+	var c = L.new()
+	c.drs = 0.8
+	run(c, 12.0, _contended)
+	check(absf(c.drs - 0.8) < 0.001, "降了没用: 回到的是开始降之前那一档（%.3f）" % c.drs)
+	# 软件渲染不做这个判定：照旧降到下限
+	var sw = L.new()
+	sw.soft = true
+	run(sw, 60.0, _contended)
+	check(sw.holds == 0 and absf(sw.drs - 0.3) < 0.001, "软件渲染不判定，照旧降到 0.3（%d 次，%.3f）" % [sw.holds, sw.drs])
+	# 对照：降了有用的设备不会被误判（帧率跟着像素数走），照常降下去
+	var s = L.new()
+	run(s, 30.0, _heavy)
+	check(s.holds == 0 and s.drs < 0.6, "降了有用的设备不误判（%d 次，%.2f）" % [s.holds, s.drs])
+	# 对照：半敏感的设备（帧率和比例成反比）也不误判
+	var h = L.new()
+	run(h, 30.0, func(sc): return 14.0 / sc)
+	check(h.holds == 0 and h.drs < 0.62, "半敏感的设备不误判（%d 次，%.2f）" % [h.holds, h.drs])

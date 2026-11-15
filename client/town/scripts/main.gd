@@ -1957,6 +1957,8 @@ func _push_debug() -> void:
 		"canvasSize": [roundi(size.x), roundi(size.y)],
 		"drsFloor": ql.floor_scale(),
 		"drsCeil": snappedf(ql.ceil_scale(), 0.001),
+		"drsHold": ql.holding(),  # 降分辨率换不到帧率（瓶颈不在像素上），这段时间不再降
+		"fpsAvg": snappedf(ql.fps_avg, 0.1),
 		"scaleCapped": ql.is_capped(_px_now),  # 渲染比例被 250 万像素上限压低了
 		"debugScale": ql.debug_scale,
 		"softGpu": ql.soft,

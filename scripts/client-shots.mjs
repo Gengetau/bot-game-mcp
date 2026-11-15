@@ -16,7 +16,7 @@
  *   --url=<地址>        已在运行的服务；需要它开着开发登录（devLogin），否则登录那一步过不去，脚本会在 results.json 里记下失败原因，不会假装成功
  *   --keep-engine-log   结束后不删临时目录
  *   --kit=<模式>        套件模式（见下）：地址栏带 &props=<模式>，不截清晰度矩阵
- *   --object=<物件编号> 套件模式看哪件物件，默认 kitchen:stove1；--stand=x,z 站在哪（默认 51,5.4，两个灶台之间靠南）
+ *   --object=<物件编号> 套件模式看哪件物件，默认 kitchen:stove1；--stand=x,z 站在哪（默认 49.9,4.7，左边灶台的右前方，人不挡着它）
  *   --states=idle,busy,done,fault   套件模式要切的状态
  *
  * 套件模式（T02a / T02b 的实机画面）：同一位居民走到 --stand，镜头 default / near / night 各开一次页面，
@@ -25,7 +25,7 @@
  *
  * 矩阵：
  *   渲染设置：scale1（?debug=1&scale=1.0，固定满分辨率）、auto（默认档，动态分辨率）、low（localStorage town3d.quality=low，固定 0.6）
- *   镜头：default（默认视角）、near（?zoom=6.5，最近的缩放）、night（?hour=21）、indoor（走进栖灯茶馆）
+ *   镜头：default（默认视角）、near（?zoom=6.5，最近的缩放）、night（?hour=21）、indoor（走进栖灯茶馆）；除了 night 都固定在正午（?hour=12），免得截图时镇上正好是夜里
  * 每个组合开一个全新的浏览器上下文、用同一个名字登录（开发登录同名就是同一位居民）；第一次进镇时记下站的位置，之后每个室外镜头先走回这个位置，所以各张图站位相同，进镇后先等 SETTLE_MS 让画面和动态分辨率稳下来，再量 SAMPLE_MS 的帧率，然后截图。
  * 截图时把界面（DOM）藏起来，只留 3D 画布；PNG 不压缩。
  *
@@ -33,11 +33,14 @@
  * Windows 上的进程处理：用 node 直接跑 tsx 的 cli.mjs（不经 .bin 里的 shell 包装），结束时 taskkill /T /F 杀整个进程树；其他系统自成进程组、杀组。
  * Playwright 不在仓库依赖里：和 client-e2e.mjs 一样，用 NODE_PATH 找（npm i -g playwright 或装进 NODE_PATH 指向的目录）。
  *
+ * 对照条：截完之后把图拼成给人看的 strip*.png（进仓库）。清晰度矩阵是每张图正中 480x300 的原始像素（不缩放），一行一个镜头、一列一种渲染设置；
+ * 套件模式是各状态的裁切图，白天（default、near）一张、夜里一张。原始整幅 PNG 和每个组合的 JSON 不进仓库（.gitignore），results.json 进。
+ *
  * 退出码：全部截成功 0；有组合失败 1；前置条件不满足 2。
  */
 import { spawn, execFileSync } from 'node:child_process';
 import { createRequire } from 'node:module';
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -56,7 +59,7 @@ const KEEP = ARGS.includes('--keep-engine-log');
 const URL_GIVEN = opt('url', '');
 const KIT = opt('kit', '');
 const KIT_OBJECT = opt('object', 'kitchen:stove1');
-const KIT_STAND = opt('stand', '51,5.4').split(',').map(Number);
+const KIT_STAND = opt('stand', '49.9,4.7').split(',').map(Number);
 const KIT_STATES = opt('states', 'idle,busy,done,fault').split(',').filter(Boolean);
 const OUT = resolve(opt('out', KIT ? join(ROOT, 'client', 'docs', 'T02', 'shots', KIT) : join(ROOT, 'client', 'docs', 'T01', 'shots')));
 const WHO = `拍照${randomBytes(2).toString('hex')}`; // 这一轮从头到尾同一位居民
@@ -74,10 +77,10 @@ const SETTINGS = {
   low: { query: '', quality: 'low', label: '低（固定 0.6）' },
 };
 const CAMERAS = {
-  default: { query: '', label: '默认视角' },
-  near: { query: `&zoom=${NEAR_ZOOM}`, label: '最近的缩放' },
+  default: { query: '&hour=12', label: '默认视角（正午）' },
+  near: { query: `&hour=12&zoom=${NEAR_ZOOM}`, label: '最近的缩放（正午）' },
   night: { query: '&hour=21', label: '夜里 21 点' },
-  indoor: { query: '', label: '室内（茶馆）', indoor: true },
+  indoor: { query: '&hour=12', label: '室内（茶馆，正午）', indoor: true },
 };
 const pick = (name, all) => {
   const want = opt(name, '').split(',').filter(Boolean);
@@ -203,6 +206,14 @@ async function loginPlay(page, name, query) {
   await page.fill('#nameInput', name);
   await page.click('#loginBtn');
   await page.waitForFunction(() => window.__town && window.__town.actors.length > 0 && document.body.dataset.phase === 'playing', null, { timeout: 60_000 });
+  // 同一位居民上一个页面刚关：控制权可能还挂在旧页面名下，这个页面是只读的。接管过来再继续（否则走不动）
+  await sleep(600);
+  if ((await page.evaluate(() => window.__town.mine)) === false) {
+    const clientId = await page.evaluate(() => window.TownHud.clientId());
+    const r = await page.context().request.post(`${BASE}/town/api/claim`, { data: { clientId } });
+    if (!r.ok()) throw new Error(`接管失败：${r.status()}`);
+    await page.waitForFunction(() => window.__town.mine === true, null, { timeout: 20_000 });
+  }
 }
 
 /** 走到一个点，等走完。参照 e2e/lib/chat.mjs 的 apiAct。已经在 0.3 米内就不动。 */
@@ -443,6 +454,24 @@ async function shootKit(browser, browserVersion, cKey) {
   return rows;
 }
 
+// ───────────────────────── 对照条 ─────────────────────────
+
+/** 把一格格图拼成一张：grid 是二维数组，每格 {file, label, crop}；crop 为真时取图正中 w x h 的原始像素，否则整张缩到 w x h。 */
+async function makeStrip(browser, grid, w, h, outFile) {
+  const cells = grid.map((row) => row.filter((c) => c && existsSync(join(OUT, c.file)))).filter((row) => row.length);
+  if (!cells.length) return;
+  const cols = Math.max(...cells.map((r) => r.length));
+  const page = await browser.newPage({ viewport: { width: cols * (w + 4) + 4, height: cells.length * (h + 4) + 4 }, deviceScaleFactor: 1 });
+  const cell = (c) => {
+    const src = `data:image/png;base64,${readFileSync(join(OUT, c.file)).toString('base64')}`;
+    const bg = c.crop ? `background:url(${src}) center center no-repeat` : `background:url(${src}) center / 100% 100% no-repeat`;
+    return `<div style="position:relative;width:${w}px;height:${h}px;${bg}"><span style="position:absolute;left:6px;top:4px;background:rgba(0,0,0,.65);padding:2px 6px">${c.label}</span></div>`;
+  };
+  await page.setContent(`<body style="margin:4px;background:#222;font:14px sans-serif;color:#eee">${cells.map((r) => `<div style="display:flex;gap:4px;margin-bottom:4px">${r.map(cell).join('')}</div>`).join('')}</body>`);
+  await page.screenshot({ path: join(OUT, outFile), type: 'png' });
+  await page.close();
+}
+
 // ───────────────────────── 主流程 ─────────────────────────
 
 async function main() {
@@ -463,6 +492,15 @@ async function main() {
     const version = browser.version();
     if (KIT) for (const c of pick('cameras', KIT_CAMERAS)) rows.push(...(await shootKit(browser, version, c)));
     else for (const s of settings) for (const c of cameras) rows.push(await shootOne(browser, version, s, c));
+    const okRow = (name) => rows.find((r) => r.name === name && r.ok);
+    if (KIT) {
+      const strip = (cams) => cams.map((c) => KIT_STATES.map((s) => (okRow(`kit-${c}-${s}`)?.crop ? { file: `kit-${c}-${s}-crop.png`, label: `${KIT_CAMERAS[c].label} / ${s}` } : null)));
+      await makeStrip(browser, strip(['default', 'near']), 560, 420, 'strip-day.png');
+      await makeStrip(browser, strip(['night']), 560, 420, 'strip-night.png');
+    } else {
+      const grid = cameras.map((c) => settings.map((s) => (okRow(`${s}-${c}`) ? { file: `${s}-${c}.png`, label: `${CAMERAS[c].label} / ${SETTINGS[s].label} / 比例 ${okRow(`${s}-${c}`).renderScale}`, crop: true } : null)));
+      await makeStrip(browser, grid, 480, 300, 'strip.png');
+    }
     writeFileSync(
       join(OUT, 'results.json'),
       JSON.stringify({ when: new Date().toISOString(), commit, base: BASE, headless: HEADLESS, softwareRendering: HEADLESS, window: [WIDTH, HEIGHT], deviceScaleFactor: DPR, browser: version, kit: KIT || null, rows }, null, 2),
