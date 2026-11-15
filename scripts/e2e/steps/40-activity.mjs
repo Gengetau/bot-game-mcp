@@ -1,12 +1,13 @@
 // C2：共同活动（一起喝茶、读书）。A 桌面 1440x900，B 手机 390x844 触摸，C 桌面 1000x700（旁观者，同时是读书的发起人）。
 // 步骤号都是数字（40.95 是「40.9 之后的一步」），文件内的子步骤按顺序互相依赖，只能整个文件一起跑。
 // 末尾有一段「怎么让它失败」，每条新断言按那里写的做过反向验证（没做出红灯的如实记录）。
+// C2b 补的几处（40.4 的选座前提、40.55 整步、40.6 的倒计时）说明在 client/docs/C2b.md。
 //
 // 时间：端到端起引擎时把共同活动缩短了（client-e2e.mjs 的 TOWN_PARAMS）：十分钟的喝茶约 45 秒、报名最长保留 25 秒。
 // 所以「开桌 + 加入」要在 25 秒内完成，走开前的提示、取消、开始之后的各项检查要在 45 秒内做完：每个子步骤都先做最要紧的断言，
 // 截图放在不赶时间的地方（第二桌凑齐之后、开始之前再截，开始之后只截一张傍晚的）。
 import { dockState, godotFeature, closeDock, rectOf, rectsOverlap, frames } from '../lib/ui.mjs';
-import { T1, T2, SHELF, T1_SEATS, T2_SEATS, SHELF_SEATS, nearestSeat, dist2, meView, objOf, forceAct, actionButtons, hasAction, findAction, tagTexts, toastTexts, act, pane, openActivity, clickObject, settle, goPlace, lowContrast, storageState, watchActions, actionsLog, reappeared } from '../lib/activity.mjs';
+import { T1, T2, SHELF, T1_SEATS, T2_SEATS, SHELF_SEATS, nearestSeat, dist2, meView, objOf, forceAct, actionButtons, hasAction, findAction, tagTexts, toastTexts, act, pane, openActivity, clickObject, settle, goPlace, lowContrast, storageState, watchActions, actionsLog, reappeared, watchRemain, remainLog, tickChanges } from '../lib/activity.mjs';
 
 export const meta = { id: 'activity', n: 40, title: '共同活动' };
 
@@ -57,6 +58,8 @@ export default async function run(h) {
   const lowAll = async (p) => (await lowContrast(p.page)).map((x) => `${x.role}「${x.text}」${x.ratio}（${x.px}）`);
   const iid = async (p) => objOf(await meView(p), T1)?.active?.id ?? null;
   const pickRec = async (p) => (await godotFeature(p.page, '_pick')) ?? null;
+  // B 在 40 到 40.3 等着的地方：茶桌 1 东侧。到四个座位的距离：东 1.79、南 2.82、北 3.53、西 4.15 米
+  const B_WAIT = { x: 9.8, z: 5.9 };
 
   // ───────────────────────── 40 进茶馆、初始 ─────────────────────────
   await step(40, '进茶馆、初始：「一起」页签在；两张茶桌空着；#actions 里没有共同活动按钮，没有桌牌', async () => {
@@ -91,8 +94,10 @@ export default async function run(h) {
       check((await tagTexts(p.page)).length === 0, `${p.label} 不应有桌牌：${JSON.stringify(await tagTexts(p.page))}`);
     }
     await closeDock(A.page);
-    // 为 40.1 的 E 键让路：E 选的是 8 米内最近的物件或居民，两个人叠在门口时最近的是对方。A 走到柜台前（离茶桌 2 约 6.4 米，离茶桌 1 与 B 都超过 8 米），B 走到西侧
-    await Promise.all([walkTo(A, 15.5, 11.2, 0.8, { avoidDock: true }), walkTo(B, 5, 10, 0.8, { avoidDock: true })]);
+    // 为 40.1 的 E 键让路：E 选的是 8 米内最近的物件或居民，两个人叠在门口时最近的是对方。A 走到柜台前（离茶桌 2 约 6.4 米，离茶桌 1 超过 8 米）。
+    // B 等在茶桌 1 的东侧（C2b 五）：离 A（约 7.8 米）比茶桌 2 远，E 仍选茶桌 2；离茶桌 1 中心约 2.9 米，够不着（40.3）；
+    // 镜头从南往北看，它不在 A 点茶桌 1 的视线上。A 从东边过来会坐东侧座位，于是 40.4 里 B 最近的座位正好是 A 坐着的那个
+    await Promise.all([walkTo(A, 15.5, 11.2, 0.8, { avoidDock: true }), walkTo(B, B_WAIT.x, B_WAIT.z, 0.8, { avoidDock: true })]);
   });
 
   // ───────────────────────── 40.1 E 键与点击选座 ─────────────────────────
@@ -215,13 +220,27 @@ export default async function run(h) {
 
   // ───────────────────────── 40.4 B 选座并加入 ─────────────────────────
   await step(40.4, 'B 选座并加入：走到与 A 不同的座位；出现「加入」；点它；服务器两人；A 收到「加入了」；桌牌「可开始 2/4」；A 有「开始」，B 没有；B 坐下', async () => {
+    // C2b（五）：先确认前提，B 出发时离 A 坐着的那个座位最近（差距至少 0.3 米）。这样「谁近去谁那」的选座会把 B 带到 A 身上，
+    // 只有「跳过有人的座位」才会去别处；以前 B 从西南角出发，最近的座位本来就空着，这条断言拦不住选座退化
+    const [pa0, pb0] = [await posOf(A), await posOf(B)];
+    const sa0 = nearestSeat(pa0, T1_SEATS);
+    const order = T1_SEATS.map((s) => ({ s, d: dist2(pb0, s) })).sort((x, y) => x.d - y.d);
+    check(sa0.d <= 0.5 && order[0].s === sa0.s && order[1].d - order[0].d >= 0.3, `前提：B 出发时最近的座位应是 A 坐着的那个：A ${JSON.stringify(pa0)} 座位 ${JSON.stringify(sa0.s)}，B ${JSON.stringify(pb0)} 各座位距离 ${JSON.stringify(order.map((o) => [o.s.x, o.s.z, +o.d.toFixed(2)]))}`);
     await clickObject(B, T1);
     await settle(h, B);
     const [pa, pb] = [await posOf(A), await posOf(B)];
     const sa = nearestSeat(pa, T1_SEATS);
     const sb = nearestSeat(pb, T1_SEATS);
     check(sb.d <= 0.5, `B 应站在茶桌 1 的某个座位上（离最近的座位 ${sb.d.toFixed(2)} 米）`);
-    check(dist2(pa, pb) >= 1.0 && sa.s !== sb.s, `A 和 B 应站在不同的座位上（相距 ${dist2(pa, pb).toFixed(2)} 米）`);
+    await rv('C2b#5 选座跳过有人的座位', async () => {
+      check(dist2(pa, pb) >= 1.0 && sa.s !== sb.s, `B 最近的座位上坐着 A，B 应去别的座位（现在相距 ${dist2(pa, pb).toFixed(2)} 米，A 的座位 ${JSON.stringify(sa.s)}，B 的座位 ${JSON.stringify(sb.s)}）`);
+      const free = order.filter((o) => o.s !== sa0.s);
+      check(dist2(pb0, sb.s) <= free[0].d + 0.3, `B 应去没人的座位里离出发点最近的那个：去了 ${JSON.stringify(sb.s)}（${dist2(pb0, sb.s).toFixed(2)} 米），最近的空座位 ${JSON.stringify(free[0].s)}（${free[0].d.toFixed(2)} 米）`);
+    }, async () => {
+      // 故意改坏选座时 B 会站到 A 身上：挪到南侧座位，后面的步骤（三个人三个座位）才走得下去
+      await clickWorld(B, T1_SEATS[1].x, T1_SEATS[1].z, { avoidDock: true });
+      await settle(h, B);
+    });
     const join = await until(async () => (await findAction(B.page, 'f:activity:join:')) ?? null, 15_000, 'B 的 #actions 里出现「加入」');
     const id = await iid(B);
     check(join.id === `f:activity:join:${id}` && join.text.includes('加入'), `加入按钮的编号应取自服务器：${join.id} 对 ${id}`);
@@ -329,6 +348,118 @@ export default async function run(h) {
     await settle(h, A);
   });
 
+  // ───────────────────────── 40.55 C2b：自己的桌子不拦；退出的人不再坐着 ─────────────────────────
+  await step(40.55, 'C2b：进行中在自己这一桌按 E、点自己的桌子不触发走开拦截（随后点地照样被拦）；用「停下手上的事」退出的人没有走动，两边都不再把他画成坐着', async () => {
+    // 上一步结束时 A 站在 (11, 8.5)，B 站在自己的座位上，没有活动。A 走回桌边的西侧座位（B 的点选盒只挡它正北面的地面），
+    // 然后 A 约人、B 加入、A 开始。按钮路和 40.2、40.4 相同，这里不重复断言按钮文字；本步骤要的是「进行中、两个人都坐着」
+    await clickWorld(A, T1_SEATS[3].x, T1_SEATS[3].z, { avoidDock: true });
+    await settle(h, A);
+    const [qa, qb] = [await posOf(A), await posOf(B)];
+    const [ta, tb] = [nearestSeat(qa, T1_SEATS), nearestSeat(qb, T1_SEATS)];
+    check(ta.d <= 0.5 && tb.d <= 0.5 && ta.s !== tb.s, `A、B 应各站在茶桌 1 的一个座位上：A ${JSON.stringify(qa)}（${ta.d.toFixed(2)} 米），B ${JSON.stringify(qb)}（${tb.d.toFixed(2)} 米）`);
+    const inv = await until(async () => (await findAction(A.page, `f:activity:invite:${T1}`)) ?? null, 15_000, 'A 出现「约人」');
+    await A.page.click(`#actions [data-action="${inv.id}"]`);
+    const join = await until(async () => (await findAction(B.page, 'f:activity:join:')) ?? null, 15_000, 'B 出现「加入」');
+    await B.page.tap(`#actions [data-action="${join.id}"]`);
+    await until(async () => (await meView(A)).interaction?.participants.length === 2, 10_000, '服务器上两人');
+    const begin = await until(async () => (await findAction(A.page, 'f:activity:begin:')) ?? null, 10_000, 'A 出现「开始」');
+    await A.page.click(`#actions [data-action="${begin.id}"]`);
+    const m0 = await until(async () => {
+      const m = await meView(A);
+      return m.interaction?.status === 'running' ? m : null;
+    }, 10_000, '服务器上状态变成 running');
+    const ends0 = m0.interaction.endsAt;
+    note(`40.55 开始后喝茶还剩 ${((ends0 - Date.now()) / 1000).toFixed(1)} 秒`);
+    // 屏障：两边的画面都已经把两个人画成坐着，并且各自知道自己在进行中的活动里（走开拦截生效的前提）
+    for (const p of [A, B]) {
+      await until(async () => {
+        const s = await sitting(p);
+        return s.includes(A.id) && s.includes(B.id);
+      }, 10_000, `${p.label} 的画面里 A、B 都坐着`);
+      await until(async () => (await act(p)).mine?.status === 'running', 10_000, `${p.label} 的页面知道自己在进行中的活动里`);
+    }
+
+    // ── C2b（二）：A（桌面）按 E，B（手机）点自己的桌子。人不会因此离开，所以这两下不过走开拦截：
+    // 不弹「没有这次的收获」、不计数、不留放行窗口；on_pick 接下它并说一句「约人、加入、开始请点按钮」。
+    // 屏障：on_pick 的记录号加一（这一下确实被处理了）之后才断言「没有」。
+    // A 在西侧座位：离桌子中心 1.25 米，离南侧的 B 1.77 米，E 选中的是桌子。B 在南侧：镜头从南往北看，桌子前面只有它自己（自己的点选盒不算）
+    await rv(
+      'C2b#2 自己这一桌的 E / 点击不过走开拦截',
+      async () => {
+        for (const [p, how, src, go] of [
+          [A, '按 E', 'key', () => A.page.keyboard.press('KeyE')],
+          [B, '点自己的桌子', 'tap', () => clickObject(B, T1)],
+        ]) {
+          const g0 = await act(p);
+          const n0 = actionsOf(p, 'navigate').length;
+          const k0 = (await pickRec(p))?.n ?? 0;
+          await go();
+          const rec = await until(async () => {
+            const r = await pickRec(p);
+            return r && r.n > k0 ? r : null;
+          }, 10_000, `${p.label} ${how}：on_pick 被问到（屏障：这一下已经处理完）`);
+          check(rec.kind === 'obj' && rec.id === T1 && rec.src === src && rec.taken === true, `${p.label} ${how}应选中自己的桌子并由「一起」接下：${JSON.stringify(rec)}`);
+          await waitToast(p, /请点按钮/, '「约人、加入、开始请点按钮」');
+          const g1 = await act(p);
+          check(g1.warned === g0.warned && g1.passed === g0.passed && g1.armed === false && g1.confirmedLeft === 0, `${p.label} ${how}不应过走开拦截（warned ${g0.warned} -> ${g1.warned}，passed ${g0.passed} -> ${g1.passed}，armed ${g1.armed}，confirmedLeft ${g1.confirmedLeft}）`);
+          check(!(await toastHas(p, /没有这次的收获/)), `${p.label} ${how}不应弹走开提示：${JSON.stringify(await toastTexts(p.page))}`);
+          check(actionsOf(p, 'navigate').length === n0, `${p.label} ${how}不应发出 navigate`);
+        }
+        const m = await meView(A);
+        check(m.interaction?.status === 'running' && m.interaction.participants.length === 2 && m.interaction.endsAt === ends0, `两个人都还在活动里：${JSON.stringify(m.interaction)}`);
+      },
+      async () => {
+        await sleep(6500); // 故意改坏（或旧代码）时这一下会被拦并开出 6 秒的窗口：等它过期，后面的断言才不被带歪
+      },
+    );
+    // 前面两下没有白白放行：A 随后点一下地面，仍然是「第一次」，被拦下并提示，计数加一，不发导航
+    const gA = await act(A);
+    const nA = actionsOf(A, 'navigate').length;
+    await clickWorld(A, 11, 8.5, { avoidDock: true });
+    await waitToast(A, /没有这次的收获/, '「没有这次的收获」（点地面照样被拦）');
+    const gA1 = await act(A);
+    check(gA1.warned === gA.warned + 1 && gA1.passed === gA.passed, `点地面应被拦一次（warned ${gA.warned} -> ${gA1.warned}，passed ${gA.passed} -> ${gA1.passed}）`);
+    check(actionsOf(A, 'navigate').length === nA, '被拦的这一下不应发出 navigate');
+
+    // ── C2b（一）：A 点「停下手上的事」。人没有走动，还站在座位上；服务器里只剩 B，活动照常继续 ──
+    const pa0 = await posOf(A);
+    const nL = A.w.actions.length;
+    await A.page.click('#leaveActBtn');
+    await until(() => A.w.actions.slice(nL).find((r) => r.type === 'leave_interaction' && r.status === 200), 10_000, 'A 的 leave_interaction 有回应');
+    const m1 = await until(async () => {
+      const m = await meView(B);
+      return m.interaction?.participants.length === 1 ? m : null;
+    }, 10_000, '服务器上参与者只剩 B');
+    check(m1.interaction.status === 'running' && m1.interaction.participants[0].id === B.id && m1.interaction.endsAt === ends0, `活动应照常继续：${JSON.stringify(m1.interaction)}`);
+    // 屏障：两边都已经知道这件事（A 自己的活动没了；B 收到「走开了」），之后才看坐姿
+    await until(async () => (await act(A)).mine === null, 10_000, 'A 的页面知道自己不在活动里了');
+    await waitToast(B, new RegExp(`${nameOf(A)}\\s*走开了`), `「${nameOf(A)} 走开了」`);
+    const pa1 = await posOf(A);
+    check(dist2(pa0, pa1) < 0.05 && nearestSeat(pa1, T1_SEATS).d <= 0.5, `A 没有走动，还站在座位上：${JSON.stringify(pa0)} -> ${JSON.stringify(pa1)}`);
+    await rv('C2b#1 退出的人不再画成坐着', async () => {
+      for (const p of [A, B]) {
+        await until(async () => {
+          const s = await sitting(p);
+          return s.includes(B.id) && !s.includes(A.id);
+        }, 8000, `${p.label} 的画面里：B 还坐着，A（已退出、还站在座位上）不再坐着`);
+      }
+    });
+
+    // 收尾：B 也退出（最后一个人离开，服务器以「大家都离开了」取消）。两边回到没有活动、没人坐着，40.6 从头再开一桌
+    await B.page.evaluate(() => window.TownHost.emit('ui', 'leave_activity', ''));
+    await until(async () => {
+      const m = await meView(B);
+      return m.interaction === null && objOf(m, T1).active === null ? m : null;
+    }, 10_000, '服务器上茶桌 1 没有活动了');
+    for (const p of [A, B]) {
+      await until(async () => (await act(p)).mine === null && (await godotTags(p)).length === 0, 10_000, `${p.label} 的页面里活动和桌牌都没了`);
+      await until(async () => {
+        const s = await sitting(p);
+        return !s.includes(A.id) && !s.includes(B.id);
+      }, 10_000, `${p.label} 的画面里没有人坐着`);
+    }
+  });
+
   // ───────────────────────── 40.6 角色互换，完整开始 ─────────────────────────
   await step(40.6, '角色互换，完整开始：C 先坐到桌边旁观；B 约人、A 加入、B 开始；服务器 running；桌牌「喝茶 · 2 人」；倒计时在走；C 看到「已开始」', async () => {
     C = await h.newPlayer(h.browsers[0], 'C2-C 桌面', { viewport: { width: 1000, height: 700 }, deviceScaleFactor: 1 }, { wsGate: true });
@@ -399,8 +530,17 @@ export default async function run(h) {
     check(typeof pA.bar === 'string' && pA.bar.endsWith('%'), `有 startedAt 时应画进度条：${JSON.stringify(pA.bar)}`);
     // 评审 ux#2：倒计时是进行中最关键的信息，不能是难读的浅暖棕
     await rv('ux#2 对比度（进行中、倒计时）', async () => check((await lowAll(A)).length === 0, `进行中的页签里有对比度不足 4.5:1 的文字（含倒计时）：${JSON.stringify(await lowAll(A))}`));
-    const r0 = (await pane(A)).remainMs;
-    await until(async () => (await pane(A)).remainMs < r0 - 1000, 8000, '倒计时在变小（页签开着，定时器在走）');
+    // C2b（五）：倒计时要由页面自己走。pane().remainMs 是调试函数当场算的，定时器坏了它照样变小；这里看画面上那一行字，
+    // 并且把「Godot 推来新状态时的整块重画」和「只有这一行变了」（每秒的定时器）分开，只数后一种
+    await rv('C2b#5 倒计时由页面定时器刷新', async () => {
+      await watchRemain(A.page);
+      const log = await until(async () => {
+        const l = await remainLog(A.page);
+        return tickChanges(l) >= 2 ? l : null;
+      }, 8000, '「还剩 mm:ss」那一行由页面自己的定时器改了至少两次（整块重画不算）');
+      const texts = log.filter((e) => !e.render).map((e) => e.text);
+      check(texts.every((t) => /\d\d:\d\d/.test(t)), `定时器写出的文字应带 mm:ss：${JSON.stringify(texts)}`);
+    });
     const chip = await B.page.$eval('#activityChip', (e) => ({ hidden: e.hidden, text: e.textContent }));
     check(!chip.hidden && chip.text.length > 0, `B 的活动条应在：${JSON.stringify(chip)}`);
     // 手机布局：抽屉里的按钮区与面板不相交、页签内容不横向滚动
@@ -428,32 +568,7 @@ export default async function run(h) {
 
   // ───────────────────────── 40.7 中途走开用键盘 ─────────────────────────
   await step(40.7, '中途走开用键盘（A）：按住 S 第一次被拦（提示「没有这次的收获」，方向帧不增加）；松开再按才走，A 退出，活动照常继续，B 看到「走开了」', async () => {
-    // 评审 ux#0 / lifecycle#3：A 坐在自己这一桌上按 E。E 在这里什么也做不了（约人、加入、开始走按钮），不能无声无息，
-    // 也不能让这一下白白消耗走开拦截的放行窗口（否则随后手滑点一下地面就无提示地走开了）。main 先问走开拦截再调 on_pick：
-    // 第一下 E 被拦（提示「没有这次的收获」），隔开再按一下放行，on_pick 吞掉它、说一句话、撤销放行。
-    await rv(
-      'ux#0 lifecycle#3 E 在自己的桌上',
-      async () => {
-        const eW0 = (await act(A)).warned;
-        const eP0 = (await act(A)).passed;
-        const nNav0 = actionsOf(A, 'navigate').length;
-        await A.page.keyboard.press('KeyE');
-        await waitToast(A, /没有这次的收获/, '「没有这次的收获」（第一下 E 被走开拦截拦下）');
-        const tE = Date.now();
-        while (Date.now() - tE < 500) await sleep(50);
-        const kE = (await pickRec(A))?.n ?? 0;
-        await A.page.keyboard.press('KeyE');
-        await until(async () => ((await pickRec(A))?.n ?? 0) > kE, 10_000, '第二下 E 放行后 on_pick 被问');
-        await waitToast(A, /请点按钮/, '「约人、加入、开始请点按钮」');
-        const aE = await act(A);
-        check(aE.confirmedLeft === 0 && aE.passed === eP0, `E 吞掉之后走开放行应撤销（confirmedLeft ${aE.confirmedLeft}，passed ${eP0} -> ${aE.passed}）`);
-        check(actionsOf(A, 'navigate').length === nNav0 && (await meView(A)).interaction?.status === 'running', 'E 不应让 A 走开或退出活动');
-        check(aE.warned === eW0 + 1, `E 之后被拦截的次数只加一（第一下）：${eW0} -> ${aE.warned}`);
-      },
-      async () => {
-        await sleep(6500); // 旧代码里 E 白白消耗了放行窗口：等它过期，免得后面的断言被它带歪
-      },
-    );
+    // 「在自己这一桌按 E」原先在这里（第一下被拦、第二下放行后由 on_pick 撤销）。C2b（二）之后这一下不过走开拦截，断言挪到 40.55
     const f0 = A.gate.dirFrames.length;
     const w0 = (await act(A)).warned;
     const p0 = (await act(A)).passed;
@@ -686,4 +801,9 @@ export default async function run(h) {
 /*
  * 怎么让它失败（反向验证清单；每条改动后只跑 --only=activity，改回来再跑一遍确认恢复）：
  *  见 client/docs/C2.md 的「反向验证记录」，每一条都写了改坏什么、哪一步红、实际结果。
+ *  C2b 补的几条（实际结果记在 client/docs/C2b.md）：
+ *   - activity_logic.gd 的 pick_seat 不再跳过有人的座位（occupied 恒为 false）-> 40.4「C2b#5 选座跳过有人的座位」红：B 走到 A 坐着的座位上
+ *   - together.js 的 ensureTimer 不起定时器 -> 40.6「C2b#5 倒计时由页面定时器刷新」红：那一行字只在整块重画时才变
+ *   - activity.gd 的 pick_stays 恒返回 false（回到「先拦后问」）-> 40.55「C2b#2」红：按 E 弹出走开提示，on_pick 没被问到
+ *   - main._update_sitting 改回「桌子上有活动就坐」-> 40.55「C2b#1」红：已退出的 A 还被画成坐着
  */

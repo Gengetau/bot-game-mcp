@@ -736,6 +736,101 @@ export default async function run(h) {
     note(`换人：${oldId} -> ${B.id}，列表为空`);
   });
 
+  // ───────────────────────── 20.96 离开之后迟到的回应（C2b） ─────────────────────────
+  // 20.95 当初偶发红的根子：在别处离开小镇时，页面一边查 /session，一边照常去要新的连接票；/session 先回、票后回的话，
+  // 一条 WebSocket 会在「已离开」的页面上连上并收到 hello。这里把两个回应都扣住，按「/session 先、票后」的顺序放行，稳定地造出那个时序。
+  await step(20.96, '离开之后迟到的回应：查「是不是离开了」期间不去要新的连接；/session 先回、连接票后回，已离开的页面上没有新的 WebSocket、不读 /me，「进入」还在，点了能回到镇上', async () => {
+    allowFailure(B.w, 'POST', /\/town\/api\/heartbeat$/, { min: 0, max: 2, why: '20.96：离开之后在途或到点的心跳可能 presence_lost' });
+    await until(async () => (await snap(B.page)).conn === 'ok', 30_000, 'B 的连接是好的（离开之前）');
+    const SESSION = /\/town\/api\/session$/;
+    const TICKET = /\/town\/api\/ws-ticket$/;
+    const held = { session: [], ticket: [] };
+    const seen = { session: 0, ticket: 0, me: 0, ws: 0 };
+    const onReq = (r) => {
+      if (/\/town\/api\/me(\?|$)/.test(r.url())) seen.me++;
+    };
+    const onWs = () => {
+      seen.ws++;
+    };
+    const holdSession = (route) => {
+      seen.session++;
+      held.session.push(route);
+    };
+    const holdTicket = (route) => {
+      seen.ticket++;
+      held.ticket.push(route);
+    };
+    const letGo = async (list) => {
+      for (const r of list.splice(0)) await r.continue().catch(() => {});
+    };
+    await B.page.route(SESSION, holdSession);
+    await B.page.route(TICKET, holdTicket);
+    B.page.on('request', onReq);
+    B.page.on('websocket', onWs);
+    let routed = true;
+    // 失败时也要放行：扣着不放的请求会让页面一直等，把后面的步骤一起拖死
+    const unhold = async () => {
+      if (!routed) return;
+      routed = false;
+      await B.page.unroute(SESSION, holdSession).catch(() => {});
+      await B.page.unroute(TICKET, holdTicket).catch(() => {});
+      await letGo(held.session);
+      await letGo(held.ticket);
+    };
+    try {
+      const sockets0 = B.gate.sockets.length;
+      const cid = await B.page.evaluate(() => window.TownHud.clientId());
+      const lr = await B.ctx.request.post(`${BASE}/town/api/leave`, { data: { clientId: cid } });
+      check(lr.ok(), `POST /leave 返回 ${lr.status()}`);
+      // 服务器用 4403 关掉连接，页面去查 /session（被扣住，暂时回不来）
+      await until(() => seen.session >= 1, 20_000, 'B 的页面发出了 /session（在查是不是离开了）');
+      check(await B.page.evaluate(() => document.body.dataset.phase === 'playing'), '查清楚之前页面还在 playing');
+      // 给「查的期间又去要一张票」留出时间：没修之前，连接一关的下一帧就会发 /ws-ticket。屏障：Godot 又跑了 30 次调试推送（3 秒以上）
+      await frames(B.page, 30, 60_000);
+      const ticketsDuringCheck = seen.ticket;
+      // /session 先回：页面进入「已离开」
+      await letGo(held.session);
+      await until(() => B.page.evaluate(() => document.body.dataset.phase === 'ready'), 20_000, 'B 页面进入「已离开」');
+      const meAtLeft = seen.me;
+      // 再放行迟到的票（修好之后根本没有这个请求）；等它的回应真的到了页面
+      if (held.ticket.length) {
+        const got = B.page.waitForResponse((r) => TICKET.test(r.url()), { timeout: 20_000 });
+        await letGo(held.ticket);
+        await got;
+      }
+      // 屏障：页面又画了 30 帧（Godot 的主循环跟着 requestAnimationFrame 走，迟到的票若被用上，这期间一定已经去连了），再和服务器走一个来回
+      await B.page.evaluate(() => new Promise((res) => {
+        let n = 0;
+        const f = () => (++n >= 30 ? res() : requestAnimationFrame(f));
+        requestAnimationFrame(f);
+      }));
+      const sj = await (await B.ctx.request.get(`${BASE}/town/api/session`)).json();
+      check(sj.loggedIn === true && sj.resident && sj.resident.present === false, `服务器上 B 应仍然登录着、不在场：${JSON.stringify(sj)}`);
+      check(seen.ws === 0 && B.gate.sockets.length === sockets0, `已离开之后不应有新的 WebSocket（页面新建 ${seen.ws} 条，经过闸门 ${B.gate.sockets.length - sockets0} 条）`);
+      check(seen.me === meAtLeft, `已离开之后不应再读 /me（多了 ${seen.me - meAtLeft} 次）`);
+      check(await B.page.evaluate(() => document.body.dataset.phase === 'ready'), '页面应仍停在「已离开」');
+      check(/离开了小镇/.test(await B.page.evaluate(() => document.getElementById('panelText').textContent)), '面板上应是「你已经离开了小镇」那句话');
+      check((await B.page.isVisible('#enterBtn')) && (await B.page.isEnabled('#enterBtn')), '「进入」按钮应仍然可见、可点');
+      check(!(await B.page.isVisible('#loginForm')), '不应被带回登录表单');
+      // 放在最后：前面几条在「期间要了票、但票没被用上」时也成立（第二道防线），这一条看的是第一道（查的期间根本不去要）
+      check(ticketsDuringCheck === 0 && seen.ticket === 0, `查「是不是离开了」期间和离开之后都不应去要新的连接票（期间 ${ticketsDuringCheck} 次，合计 ${seen.ticket} 次）`);
+      // 回得来：放开扣押，点「进入」。登录还在，不用重新取名
+      await unhold();
+      await B.page.click('#enterBtn');
+      await B.page.waitForFunction(() => window.__town && window.__town.actors.length > 0 && document.body.dataset.phase === 'playing', null, { timeout: 60_000 });
+      await until(async () => (await snap(B.page)).conn === 'ok', 30_000, '重新进入后连接恢复（收到 hello）');
+      check(B.gate.sockets.length > sockets0, '重新进入后应有新的 WebSocket');
+      check((await snap(B.page)).self === B.id, '重新进入的还是同一位居民');
+      const ack = await uiSay(B, uniq('回来了'));
+      check(ack && ack.ok === true, `重新进入后能照常说话：${JSON.stringify(ack)}`);
+      note(`查撤销期间 /session ${seen.session} 次、/ws-ticket ${seen.ticket} 次；已离开后新 WebSocket ${seen.ws} 条、/me ${seen.me - meAtLeft} 次`);
+    } finally {
+      B.page.off('request', onReq);
+      B.page.off('websocket', onWs);
+      await unhold();
+    }
+  });
+
   await h.release(A);
   await h.release(B);
 }
@@ -772,6 +867,10 @@ export default async function run(h) {
  *  - dock.css 去掉 side + data-kb 的规则：20.85（横屏软键盘下侧栏盖住输入栏）。
  *  - dock.js 的 submit 监听去掉 preventDefault（只剩 trySend）：20.2 起整页被真正提交而跳走，后面大片跟着红（点「说」超时）。
  *  - 00-chatkit.js 的 reset() 里去掉 wired.reset()：20.95（离开后最近发送记录应清空）。
+ *  - main.gd 的 _process 里去掉「查撤销期间不发起新的连接」（`and not revoke_checking`）：20.96 红在最后一条（查的期间要了 1 次票）；
+ *    前面几条仍然成立，因为 _start_ws_attempt 在票回来时发现会话代号变了，把票丢了（第二道防线）。
+ *  - 再把 _start_ws_attempt 里票回来之后的两处检查（会话代号、want_net）也去掉：20.96 红在「已离开之后不应有新的 WebSocket」。
+ *    （实测与否见 client/docs/C2b.md 的反向验证清单。）
  * 没有做出红灯的三条（如实记录）：
  *  - 00-chatkit.js 的 rebuild() 去掉按距底距离还原滚动：20.92 仍绿。Chromium 里 rebuild 是同步清空再重建，中途没有强制布局，scrollTop 不会被夹成 0；
  *    这条是对 Safari / Firefox 的防御，断言留作回归保护，真机待办见 client/docs/C1a.md。

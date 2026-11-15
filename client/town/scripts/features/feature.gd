@@ -102,6 +102,13 @@ func blocks_input() -> String:
 	return ""
 
 
+## 这一下选中的东西不会让我离开本功能管着的事（kind / pick_id 同 on_pick；按 E 而附近什么都没有时 kind 是 "none"）。
+## 返回 true：main 这一下不问本功能的 blocks_input（不提示、不计数），别的功能照问。默认 false：一律照问。
+## 只许在「随后 on_pick 和 main 的老路都确定不会发导航」时返回 true。
+func pick_stays(_kind: String, _pick_id: String) -> bool:
+	return false
+
+
 ## _update_tags 末尾，可追加或改 out
 func tags(_cam: Camera3D, _size: Vector2, _out: Array) -> void:
 	pass
