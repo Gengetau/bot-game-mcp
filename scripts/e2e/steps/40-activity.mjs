@@ -94,20 +94,20 @@ export default async function run(h) {
       check((await tagTexts(p.page)).length === 0, `${p.label} 不应有桌牌：${JSON.stringify(await tagTexts(p.page))}`);
     }
     await closeDock(A.page);
-    // 为 40.1 的 E 键让路：E 选的是 8 米内最近的物件或居民，两个人叠在门口时最近的是对方。A 走到茶馆东北角（17.5,3.5）：离茶桌 2 约 3.5 米、离掌柜约 5.9 米（C6 起 E 也会选 NPC，站在柜台前掌柜更近）、离茶桌 1 超过 8 米。
+    // 为 40.1 的 E 键让路：E 选的是 8 米内最近的物件或居民，两个人叠在门口时最近的是对方。A 走到柜台前（离茶桌 2 约 6.4 米，离茶桌 1 超过 8 米）。
     // B 等在茶桌 1 的东侧（C2b 五）：离 A（约 7.8 米）比茶桌 2 远，E 仍选茶桌 2；离茶桌 1 中心约 2.9 米，够不着（40.3）；
     // 镜头从南往北看，它不在 A 点茶桌 1 的视线上。A 从东边过来会坐东侧座位，于是 40.4 里 B 最近的座位正好是 A 坐着的那个
-    await Promise.all([walkTo(A, 17.5, 3.5, 0.8, { avoidDock: true }), walkTo(B, B_WAIT.x, B_WAIT.z, 0.8, { avoidDock: true })]);
+    await Promise.all([walkTo(A, 15.5, 11.2, 0.8, { avoidDock: true }), walkTo(B, B_WAIT.x, B_WAIT.z, 0.8, { avoidDock: true })]);
   });
 
   // ───────────────────────── 40.1 E 键与点击选座 ─────────────────────────
   await step(40.1, '选座：A 连按两下 E 只发一次导航并走到茶桌 2 的座位上；再点茶桌 1 走到没人站的座位；还没有活动，不坐，出现「约人」按钮', async () => {
     const p0 = await posOf(A);
-    check(dist2(p0, { x: 17.5, z: 3.5 }) < 1.5, `A 应在茶馆东北角：${JSON.stringify(p0)}`);
+    check(dist2(p0, { x: 15.5, z: 11.2 }) < 1.5, `A 应在柜台前：${JSON.stringify(p0)}`);
     await until(async () => (await snap(A.page)).nearValid === true, 15_000, 'A 的「够得着」状态有效');
     const n0 = actionsOf(A, 'navigate').length;
     const k0 = (await pickRec(A))?.n ?? 0;
-    // 连按两下 E：on_pick 要防重入，只发一次导航（A 在 (17.5,3.5)：茶桌 2 在 (14,5) 约 3.8 米，掌柜约 5.9 米，茶桌 1 与 B 都超过 8 米，所以 E 选中的是茶桌 2）
+    // 连按两下 E：on_pick 要防重入，只发一次导航（A 在 (15.5,11.2)：茶桌 2 在 (14,5) 约 6.4 米，茶桌 1 与 B 都超过 8 米，所以 E 选中的是茶桌 2）
     await A.page.keyboard.press('KeyE');
     await A.page.keyboard.press('KeyE');
     const rec = await until(async () => {

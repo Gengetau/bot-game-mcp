@@ -1,7 +1,7 @@
 // C6：NPC 的外观、名牌、点选与服务菜单（话题、买茶叶）。A 桌面 1440x900，B 手机 390x844 触摸。
 // 步骤号都是数字（80.1 就是「80 之后的一步」），文件内的子步骤按顺序互相依赖，只能整个文件一起跑。
 // 末尾有一段「怎么让它失败」，每条新断言都按那里写的做过反向验证（注明「实测」或「推演」）。
-import { poll, hitTest } from '../lib/ui.mjs';
+import { poll, hitTest, godotFeature } from '../lib/ui.mjs';
 import { apiAct, nearbyRows, expectReject } from '../lib/chat.mjs';
 import { peopleCard, clickActor, toastTexts, hit } from '../lib/people.mjs';
 import { menuState, godotNpc, bank, pageNpcs, serverNpcs, serverMe, bag, npcScreen, clickNpc, menuIs, menuClosed, ackAfter, lastAckN, clickTopic, clickBuy, MENU } from '../lib/npc.mjs';
@@ -13,7 +13,7 @@ const STROLL = 'npc:plaza_stroller';
 
 export default async function run(h) {
   const { check, note, until, sleep, step, shot, selfActor, dist, serverScene, snap, BASE } = h;
-  const { A, B } = await h.pair();
+  const { A, B } = await h.pair({ npcs: true }); // 旧步骤的页面默认不显示 NPC（D2）；这个文件的页面要看见它们
   const actionsOf = (p, type) => p.w.actions.filter((r) => r.type === type);
   const sceneOf = async (p) => selfActor(await serverScene(p));
   const waitIdle = (p, ms = 60_000) => until(async () => !(await sceneOf(p)).nav, ms, `${p.label} 走完`, 500);
@@ -363,6 +363,113 @@ export default async function run(h) {
     await A.page.click('#peopleCard .people-x');
   });
 
+  // ───────────────────────── 84.1 E 键按使用站位算物件的远近（D1） ─────────────────────────
+  await step(84.1, 'E 键选物件按「离它最近的使用站位」算远近：站在书架最东边的站位上、闲逛者站在读书的落脚点（离我比书架中心更近）时按 E，选中的是书架；单测里同样的位置没有站位则选人', async () => {
+    await closeMenu(A);
+    const SHELF = 'bookshop:shelf';
+    const SPOT = { x: 30.25, z: 3.75 }; // 书架的使用站位（最东边那个）
+    const READ = { x: 32.25, z: 3.75 }; // 闲逛者读书的落脚点
+    const standing = async () => {
+      const n = await npcPos(A, STROLL);
+      return !!n && !n.nav && Math.hypot(n.x - READ.x, n.z - READ.z) < 0.3;
+    };
+    const pickRec = async () => (await godotFeature(A.page, '_pick')) ?? null;
+    // 一律不接管（hub 不问任何功能）：只看 E 选中了什么；旧行为会开始读书，最后收拾掉
+    await A.page.evaluate(() => window.__town.pickStub('-'));
+    try {
+      await until(async () => ((await godotFeature(A.page, '_stub')) ?? '') === '-', 10_000, '假接管状态变成「-」');
+      const r0 = await apiAct(A, { type: 'navigate', to: SPOT });
+      check(r0.status === 200, `A 走到书架的站位：${JSON.stringify(r0.body)}`);
+      await waitIdle(A);
+      let rec = null;
+      let gaps = null;
+      // 闲逛者在三个落脚点之间轮转，每站停 20 到 40 秒：等它停到读书的落脚点，立刻按 E；按完它还停着才算数（否则这一轮不作数，重来）
+      for (let attempt = 0; attempt < 4 && !rec; attempt++) {
+        await until(standing, 240_000, '闲逛者走到书架旁读书的落脚点并停下', 700);
+        await until(async () => (await snap(A.page)).nearValid === true, 15_000, 'A 的「够得着」状态有效');
+        const me = await sceneOf(A);
+        const stroller = await npcPos(A, STROLL);
+        const shelf = (await snap(A.page)).objects.find((o) => o.id === SHELF);
+        gaps = { toShelfCenter: dist(me, shelf), toStroller: dist(me, stroller), toSpot: dist(me, SPOT) };
+        check(gaps.toSpot < 0.8, `A 应站在书架的站位上：${JSON.stringify(gaps)}`);
+        check(gaps.toStroller < gaps.toShelfCenter, `前提：闲逛者比书架中心离我更近（只按中心算会选到它）：${JSON.stringify(gaps)}`);
+        const n0 = (await pickRec())?.n ?? 0;
+        await A.page.keyboard.press('KeyE');
+        const r = await until(async () => { const x = await pickRec(); return x && x.n > n0 ? x : null; }, 20_000, 'on_pick 记录出现');
+        if (await standing()) rec = r; // 按的时候和按完之后它都还在落脚点上
+        else {
+          note('这一轮闲逛者在按 E 的过程中走开了，重来');
+          await apiAct(A, { type: 'leave_interaction' }).catch(() => {});
+        }
+      }
+      check(rec, '四轮都没等到闲逛者稳稳停在读书的落脚点上');
+      note(`D1：${JSON.stringify(gaps)}，选中记录 ${JSON.stringify(rec)}`);
+      check(rec.kind === 'obj' && rec.id === SHELF, `站在书架的站位上按 E 应选书架（不是闲逛者）：${JSON.stringify(rec)}`);
+      // 收拾：旧行为会开始读书
+      await apiAct(A, { type: 'leave_interaction' }).catch(() => {});
+    } finally {
+      await A.page.evaluate(() => window.__town.pickStub('')).catch(() => {});
+    }
+  });
+
+  // ───────────────────────── 84.2 调试开关：隐藏 NPC（D2） ─────────────────────────
+  await step(84.2, '隐藏 NPC 的调试开关：默认页面（旧步骤用的）看不到 NPC，显示 NPC 的页面同一时刻看得到；运行时切到隐藏，NPC、名牌消失、开着的菜单关掉，切回来又出现；不带 ?debug=1 的页面无视这个全局量', async () => {
+    await closeMenu(A);
+    // 显示 NPC 的页面（A）：服务器、页面里都有两个
+    check((await serverNpcs(A)).length === 2, '服务器场景里应有两个 NPC');
+    await until(async () => (await pageNpcs(A.page)).length === 2, 20_000, 'A 的画面里有两个 NPC');
+    // 默认页面 D：和旧步骤的页面一样（newPlayer 默认隐藏）
+    const D = await h.newPlayer(h.browsers[0], 'N-D 默认隐藏 NPC', { viewport: { width: 1440, height: 900 }, deviceScaleFactor: 1 }, { wsGate: true });
+    try {
+      await h.login(D, `阿默${h.rnd()}`);
+      // 屏障：D 的快照里已经看得到 A（居民和 NPC 在同一份快照里），而服务器此刻有两个 NPC、A 的页面也在显示它们
+      await until(async () => (await snap(D.page)).actors.some((x) => x.id === A.id), 30_000, 'D 的画面里看到 A');
+      check((await serverNpcs(D)).length === 2 && (await pageNpcs(A.page)).length === 2, '同一时刻：服务器和显示 NPC 的页面里都有两个 NPC');
+      await sleep(1500); // 再让几份快照过去
+      check((await pageNpcs(D.page)).length === 0, `默认页面里 __town.npcs 应为空：${JSON.stringify((await pageNpcs(D.page)).map((n) => n.id))}`);
+      check((await D.page.evaluate(() => document.querySelectorAll('#tags .tag.npc').length)) === 0, '默认页面里不该有 NPC 的名牌');
+      check(await D.page.evaluate(() => window.__townHideNpcs === true), '默认页面的全局量应已设为隐藏');
+      check((await serverNpcs(D)).length === 2, 'NPC 仍然在服务器上（只是这个页面不画）');
+    } finally {
+      await h.release(D);
+    }
+    // 运行时切换：A 站在掌柜身旁，菜单开着
+    await goNear(A, KEEPER, 1.4);
+    await until(async () => (await snap(A.page)).nearValid === true, 15_000, 'A 的「够得着」状态有效');
+    await A.page.keyboard.press('KeyE');
+    await menuIs(until, A, KEEPER, 20_000);
+    await A.page.evaluate(() => window.__town.hideNpcs(true));
+    await until(async () => (await pageNpcs(A.page)).length === 0, 15_000, '切到隐藏后 __town.npcs 变空');
+    await menuClosed(until, A, 15_000); // 菜单跟着 NPC 一起没了
+    await until(async () => (await A.page.evaluate(() => document.querySelectorAll('#tags .tag.npc').length)) === 0, 15_000, '切到隐藏后 NPC 的名牌消失');
+    check((await A.page.evaluate(() => window.__townHideNpcs)) === true, '切换入口应同时写回页面全局量（刷新后还是隐藏）');
+    check((await serverNpcs(A)).length === 2, '服务器上的 NPC 一个没少');
+    await A.page.evaluate(() => window.__town.hideNpcs(false));
+    await until(async () => (await pageNpcs(A.page)).length === 2, 15_000, '切回显示后 NPC 又出现');
+    check(!(await menuState(A.page)).open, '切回显示后菜单不会自己重新打开');
+    // 不带 ?debug=1 的页面：全局量设了也无视，NPC 照常显示（没有 __town，只能看名牌）
+    const E = await h.newPlayer(h.browsers[0], 'N-E 无调试', { viewport: { width: 1440, height: 900 }, deviceScaleFactor: 1 }, { wsGate: false });
+    try {
+      await E.page.goto(`${BASE}/town/3d/`);
+      await E.page.waitForSelector('#enterBtn:not([hidden])', { timeout: 120_000 });
+      await E.page.click('#enterBtn');
+      await E.page.waitForSelector('#nameInput', { state: 'visible', timeout: 30_000 });
+      await E.page.fill('#nameInput', `阿明${h.rnd()}`);
+      await E.page.click('#loginBtn');
+      await E.page.waitForFunction(() => document.body.dataset.phase === 'playing', null, { timeout: 60_000 });
+      check(await E.page.evaluate(() => window.__townHideNpcs === true && typeof window.__town === 'undefined'), '前提：全局量设了隐藏，且这个页面没有测试口（没带 ?debug=1）');
+      const tagUp = () => E.page.evaluate(() => document.querySelectorAll('#tags .tag.npc').length > 0);
+      let seen = await until(tagUp, 20_000, 'E 画面里出现 NPC 的名牌', 500).catch(() => false);
+      if (!seen) {
+        await goNear(E, KEEPER, 3.5);
+        seen = await until(tagUp, 40_000, 'E 走到掌柜旁后画面里出现 NPC 的名牌', 500);
+      }
+      check(seen, '不带 ?debug=1 的页面应无视隐藏开关，照常显示 NPC 的名牌');
+    } finally {
+      await h.release(E);
+    }
+  });
+
   // ───────────────────────── 85 活动中被挡 ─────────────────────────
   await step(85, '共同活动中点 NPC：被「走开」确认拦下，不开菜单、不发 ask_npc、不发 navigate；提示条出现', async () => {
     // A 在茶馆里坐到茶桌 1 约人：此后 _mine 非空，点 NPC 属于「会让我走开」的输入
@@ -439,7 +546,7 @@ export default async function run(h) {
   // ───────────────────────── 88 傍晚 ─────────────────────────
   await step(88, '傍晚（&hour=19.5）：第三个页面进入，NPC 的牌在夜色里仍在；白天、傍晚各留一张截图', async () => {
     await shot(A.page, '80-desktop-day');
-    const C = await h.newPlayer(h.browsers[0], 'N-C 傍晚', { viewport: { width: 1440, height: 900 }, deviceScaleFactor: 1 }, { wsGate: true });
+    const C = await h.newPlayer(h.browsers[0], 'N-C 傍晚', { viewport: { width: 1440, height: 900 }, deviceScaleFactor: 1 }, { wsGate: true, npcs: true });
     await h.login(C, `阿暮${h.rnd()}`, { query: '&hour=19.5' });
     const hour = await C.page.evaluate(() => window.__town.hour);
     check(Math.abs(hour - 19.5) < 0.6, `C 应在傍晚：${hour}`);
