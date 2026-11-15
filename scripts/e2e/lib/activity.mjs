@@ -188,3 +188,28 @@ export function reappeared(log, prefix) {
   }
   return n;
 }
+
+/**
+ * 「我的这一桌」里剩余时间那一行的变化记录：先 watchRemain 挂观察器，再 remainLog 取。每批 DOM 变化记一条 {t, text, render}。
+ * render 为真：同一批里人名单也被重建了，是整块重画（Godot 推来了新状态）；为假：只有剩余时间这一行变了，是页面自己的每秒定时器。
+ * 两种变化分属不同的任务，观察器的一次回调不会把它们混在一起。
+ */
+export const watchRemain = (page) =>
+  page.evaluate(() => {
+    const root = document.querySelector('#dock [data-pane="activity"]');
+    const remain = root.querySelector('[data-role="remain"]');
+    const people = root.querySelector('[data-role="people"]');
+    window.__remLog = [{ t: performance.now(), text: remain.textContent, render: true }];
+    window.__remObs?.disconnect();
+    window.__remObs = new MutationObserver((list) => {
+      const render = list.some((m) => m.target === people || people.contains(m.target));
+      const touched = list.some((m) => m.target === remain || remain.contains(m.target));
+      if (render || touched) window.__remLog.push({ t: performance.now(), text: remain.textContent, render });
+    });
+    const opt = { childList: true, subtree: true, characterData: true };
+    window.__remObs.observe(remain, opt);
+    window.__remObs.observe(people, opt);
+  });
+export const remainLog = (page) => page.evaluate(() => window.__remLog ?? []);
+/** 只由定时器引起的文字变化次数：这一条不是整块重画，而且文字和上一条不同。 */
+export const tickChanges = (log) => log.filter((e, i) => i > 0 && !e.render && e.text !== log[i - 1].text).length;
