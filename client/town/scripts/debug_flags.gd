@@ -27,11 +27,20 @@ static func props_mode_of(debug_on: bool, search: String) -> String:
 	return ""
 
 
+## ?debug=1&props=kitchen：把灶台指到厨房的标准工位样件（assets/kits/kitchen/stove_station/，T02b）。样件在实际镜头下过关、
+## 主人点头之前不进默认的外观表，只能这样看。文件不存在时 art.gd 的 scene_path 会当没有这个条目。
+const KITCHEN_PROPS := {
+	"prop.stove": {"scene": "res://assets/kits/kitchen/stove_station/stove_station.tscn"},
+}
+
+const PROP_MODES := {"sample": SAMPLE_PROPS, "kitchen": KITCHEN_PROPS}
+
+
 ## 把调试用的外观条目叠到 kinds 上（原地改），返回被覆盖的键。mode 不认识就什么都不做。
 static func apply_props(kinds: Dictionary, mode: String) -> Array:
 	var out: Array = []
-	if mode == "sample":
-		for k in SAMPLE_PROPS:
-			kinds[k] = (SAMPLE_PROPS[k] as Dictionary).duplicate(true)
-			out.append(k)
+	var table: Dictionary = PROP_MODES.get(mode, {})
+	for k in table:
+		kinds[k] = (table[k] as Dictionary).duplicate(true)
+		out.append(k)
 	return out

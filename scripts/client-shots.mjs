@@ -15,11 +15,18 @@
  *   --headless          无头（bundled Chromium，软件渲染）
  *   --url=<地址>        已在运行的服务；需要它开着开发登录（devLogin），否则登录那一步过不去，脚本会在 results.json 里记下失败原因，不会假装成功
  *   --keep-engine-log   结束后不删临时目录
+ *   --kit=<模式>        套件模式（见下）：地址栏带 &props=<模式>，不截清晰度矩阵
+ *   --object=<物件编号> 套件模式看哪件物件，默认 kitchen:stove1；--stand=x,z 站在哪（默认 51,5.4，两个灶台之间靠南）
+ *   --states=idle,busy,done,fault   套件模式要切的状态
+ *
+ * 套件模式（T02a / T02b 的实机画面）：同一位居民走到 --stand，镜头 default / near / night 各开一次页面，
+ * 每次把 --object 依次强行切到各个状态（window.__town.setPropState），等动画走一会儿再截图：一张整幅、一张以物件为中心的裁切。
+ * 输出默认在 client/docs/T02/shots/<模式>/，数据进 results.json（每行带 __town.props 里这件物件的读数）。
  *
  * 矩阵：
  *   渲染设置：scale1（?debug=1&scale=1.0，固定满分辨率）、auto（默认档，动态分辨率）、low（localStorage town3d.quality=low，固定 0.6）
  *   镜头：default（默认视角）、near（?zoom=6.5，最近的缩放）、night（?hour=21）、indoor（走进栖灯茶馆）
- * 每个组合开一个全新的浏览器上下文、用同名规则登录（出生位置相同），进镇后先等 SETTLE_MS 让画面和动态分辨率稳下来，再量 SAMPLE_MS 的帧率，然后截图。
+ * 每个组合开一个全新的浏览器上下文、用同一个名字登录（开发登录同名就是同一位居民）；第一次进镇时记下站的位置，之后每个室外镜头先走回这个位置，所以各张图站位相同，进镇后先等 SETTLE_MS 让画面和动态分辨率稳下来，再量 SAMPLE_MS 的帧率，然后截图。
  * 截图时把界面（DOM）藏起来，只留 3D 画布；PNG 不压缩。
  *
  * 引擎的启动、临时配置、开发登录进镇：参照 scripts/client-e2e.mjs（startEngine / login），这里另写一份，没有改动它。
@@ -47,7 +54,13 @@ const opt = (name, dflt) => {
 const HEADLESS = ARGS.includes('--headless');
 const KEEP = ARGS.includes('--keep-engine-log');
 const URL_GIVEN = opt('url', '');
-const OUT = resolve(opt('out', join(ROOT, 'client', 'docs', 'T01', 'shots')));
+const KIT = opt('kit', '');
+const KIT_OBJECT = opt('object', 'kitchen:stove1');
+const KIT_STAND = opt('stand', '51,5.4').split(',').map(Number);
+const KIT_STATES = opt('states', 'idle,busy,done,fault').split(',').filter(Boolean);
+const OUT = resolve(opt('out', KIT ? join(ROOT, 'client', 'docs', 'T02', 'shots', KIT) : join(ROOT, 'client', 'docs', 'T01', 'shots')));
+const WHO = `拍照${randomBytes(2).toString('hex')}`; // 这一轮从头到尾同一位居民
+let HOME = null; // 第一次进镇时站的位置（室外镜头都回到这里）
 const WIDTH = Number(opt('width', 1440));
 const HEIGHT = Number(opt('height', 900));
 const DPR = Number(opt('dpr', 1));
@@ -192,7 +205,38 @@ async function loginPlay(page, name, query) {
   await page.waitForFunction(() => window.__town && window.__town.actors.length > 0 && document.body.dataset.phase === 'playing', null, { timeout: 60_000 });
 }
 
-/** 走进茶馆：navigate 到 tea_house（服务器的地点编号），等走完。参照 e2e/lib/chat.mjs 的 apiAct。 */
+/** 走到一个点，等走完。参照 e2e/lib/chat.mjs 的 apiAct。已经在 0.3 米内就不动。 */
+async function walkTo(page, ctx, to) {
+  const here = await page.evaluate(() => {
+    const t = window.__town;
+    const me = t.actors.find((a) => a.id === t.self);
+    return me ? { x: me.x, z: me.z } : null;
+  });
+  if (here && Math.hypot(here.x - to.x, here.z - to.z) < 0.3) return;
+  const clientId = await page.evaluate(() => window.TownHud.clientId());
+  const me = await (await ctx.request.get(`${BASE}/town/api/me?clientId=${encodeURIComponent(clientId)}`)).json();
+  const r = await ctx.request.post(`${BASE}/town/api/actions`, {
+    data: {
+      clientId,
+      requestId: `shots-${rnd()}-${Date.now()}`,
+      actionWindow: me.actionWindow,
+      expected: { contextVersion: me.context?.version, controlEpoch: me.control?.epoch, activityId: me.context?.activityId ?? null },
+      action: { type: 'navigate', to: { x: to.x, z: to.z } },
+    },
+  });
+  if (r.status() !== 200) throw new Error(`navigate 到 ${JSON.stringify(to)} 失败：${r.status()} ${JSON.stringify(await r.json().catch(() => null))}`);
+  await page.waitForFunction(
+    ([x, z]) => {
+      const t = window.__town;
+      const a = t.actors.find((q) => q.id === t.self);
+      return a && !a.moving && Math.hypot(a.x - x, a.z - z) < 1.2;
+    },
+    [to.x, to.z],
+    { timeout: 120_000, polling: 500 },
+  );
+}
+
+/** 走进茶馆：navigate 到 tea_house（服务器的地点编号），等走完。 */
 async function walkIntoTeahouse(page, ctx) {
   const clientId = await page.evaluate(() => window.TownHud.clientId());
   const me = await (await ctx.request.get(`${BASE}/town/api/me?clientId=${encodeURIComponent(clientId)}`)).json();
@@ -281,10 +325,20 @@ async function shootOne(browser, browserVersion, sKey, cKey) {
         /* 取不到就用默认 */
       }
     }, S.quality);
-    await loginPlay(page, `拍照${rnd()}`, S.query + C.query);
+    await loginPlay(page, WHO, S.query + C.query);
+    if (!HOME) {
+      HOME = await page.evaluate(() => {
+        const t = window.__town;
+        const me = t.actors.find((a) => a.id === t.self);
+        return { x: me.x, z: me.z };
+      });
+    }
     if (C.indoor) {
       await walkIntoTeahouse(page, ctx);
       await sleep(2500); // 屋顶淡出
+    } else {
+      await walkTo(page, ctx, HOME); // 上一个组合可能把人留在了茶馆里
+      await sleep(1500);
     }
     await sleep(SETTLE_MS);
     const stat = await measure(page);
@@ -317,6 +371,78 @@ async function shootOne(browser, browserVersion, sKey, cKey) {
   return row;
 }
 
+// ───────────────────────── 套件模式 ─────────────────────────
+
+const KIT_CAMERAS = { default: CAMERAS.default, near: CAMERAS.near, night: CAMERAS.night };
+
+async function shootKit(browser, browserVersion, cKey) {
+  const C = KIT_CAMERAS[cKey];
+  const ctx = await browser.newContext({ viewport: { width: WIDTH, height: HEIGHT }, deviceScaleFactor: DPR });
+  const page = await ctx.newPage();
+  const rows = [];
+  const errors = [];
+  page.on('console', (m) => {
+    if (m.type() === 'error') errors.push(m.text().slice(0, 300));
+  });
+  page.on('pageerror', (e) => errors.push(String(e).slice(0, 300)));
+  try {
+    await page.addInitScript(() => {
+      try {
+        localStorage.setItem('town3d.quality', 'high');
+      } catch {
+        /* 取不到就用默认 */
+      }
+    });
+    await loginPlay(page, WHO, `&props=${encodeURIComponent(KIT)}&scale=1.0${C.query}`);
+    await walkTo(page, ctx, { x: KIT_STAND[0], z: KIT_STAND[1] });
+    await sleep(SETTLE_MS);
+    const gpu = await gpuString(page);
+    await page.addStyleTag({ content: '#hud, #dock, #dockBtn, #panel, .toast, #tags, #actions { visibility: hidden !important; }' });
+    for (const st of KIT_STATES) {
+      const tag = `kit-${cKey}-${st}`;
+      const row = { name: tag, kit: KIT, object: KIT_OBJECT, camera: cKey, cameraLabel: C.label, state: st, file: `${tag}.png`, crop: `${tag}-crop.png`, ok: false };
+      try {
+        if ((await page.evaluate(() => typeof window.__town.setPropState)) !== 'function') throw new Error('window.__town.setPropState 不是函数');
+        await page.evaluate(([i, s]) => window.__town.setPropState(i, s), [KIT_OBJECT, st]);
+        await page.waitForFunction(([i, s]) => (window.__town.props || []).some((p) => p.id === i && p.state === s), [KIT_OBJECT, st], { timeout: 10_000, polling: 200 }).catch(() => {
+          throw new Error(`${KIT_OBJECT} 没有切到 ${st}（props 里没有这件物件，或它没有这个状态）`);
+        });
+        await sleep(1200); // 让循环动画走一会儿
+        const info = await page.evaluate((i) => {
+          const t = window.__town;
+          const me = t.actors.find((a) => a.id === t.self);
+          const o = (t.objects || []).find((q) => q.id === i);
+          return {
+            prop: (t.props || []).find((p) => p.id === i) ?? null, renderScale: t.renderScale, renderSize: t.renderSize, canvasSize: t.canvasSize,
+            zoom: t.zoom, hour: t.hour, fps: t.fps, self: me ? { x: +me.x.toFixed(2), z: +me.z.toFixed(2) } : null, screen: o ? { x: o.sx, y: o.sy } : null,
+          };
+        }, KIT_OBJECT);
+        await page.screenshot({ path: join(OUT, row.file), type: 'png' });
+        if (info.screen && Number.isFinite(info.screen.x)) {
+          const w = Math.min(560, WIDTH);
+          const h = Math.min(420, HEIGHT);
+          const x = Math.max(0, Math.min(WIDTH - w, Math.round(info.screen.x - w / 2)));
+          const y = Math.max(0, Math.min(HEIGHT - h, Math.round(info.screen.y - h * 0.62)));
+          await page.screenshot({ path: join(OUT, row.crop), type: 'png', clip: { x, y, width: w, height: h } });
+        } else row.crop = null;
+        Object.assign(row, info, { ok: true, gpu, browser: browserVersion, headless: HEADLESS, softwareRendering: HEADLESS || /swiftshader|llvmpipe|software/i.test(gpu), commit, window: [WIDTH, HEIGHT] });
+      } catch (e) {
+        row.error = e instanceof Error ? e.message : String(e);
+      }
+      console.log(`${row.ok ? '✓' : '✗'} ${tag}${row.ok ? `  状态 ${row.prop?.state}  ${row.fps} 帧` : `  ${row.error}`}`);
+      rows.push(row);
+    }
+    await page.evaluate((i) => window.__town.setPropState && window.__town.setPropState(i, ''), KIT_OBJECT).catch(() => {});
+  } catch (e) {
+    rows.push({ name: `kit-${cKey}`, camera: cKey, ok: false, error: e instanceof Error ? e.message : String(e) });
+    console.log(`✗ kit-${cKey}  ${rows.at(-1).error}`);
+  } finally {
+    await ctx.close().catch(() => {});
+  }
+  if (errors.length) rows.push({ name: `kit-${cKey}-console`, camera: cKey, ok: false, error: `页面有 ${errors.length} 条错误：${errors.slice(0, 5).join(' | ')}` });
+  return rows;
+}
+
 // ───────────────────────── 主流程 ─────────────────────────
 
 async function main() {
@@ -325,7 +451,7 @@ async function main() {
     process.exit(2);
   }
   const settings = pick('settings', SETTINGS);
-  const cameras = pick('cameras', CAMERAS);
+  const cameras = KIT ? [] : pick('cameras', CAMERAS);
   const { chromium } = loadPlaywright();
   mkdirSync(OUT, { recursive: true });
   if (!URL_GIVEN) await startEngine();
@@ -335,10 +461,11 @@ async function main() {
   const rows = [];
   try {
     const version = browser.version();
-    for (const s of settings) for (const c of cameras) rows.push(await shootOne(browser, version, s, c));
+    if (KIT) for (const c of pick('cameras', KIT_CAMERAS)) rows.push(...(await shootKit(browser, version, c)));
+    else for (const s of settings) for (const c of cameras) rows.push(await shootOne(browser, version, s, c));
     writeFileSync(
       join(OUT, 'results.json'),
-      JSON.stringify({ when: new Date().toISOString(), commit, base: BASE, headless: HEADLESS, softwareRendering: HEADLESS, window: [WIDTH, HEIGHT], deviceScaleFactor: DPR, browser: version, rows }, null, 2),
+      JSON.stringify({ when: new Date().toISOString(), commit, base: BASE, headless: HEADLESS, softwareRendering: HEADLESS, window: [WIDTH, HEIGHT], deviceScaleFactor: DPR, browser: version, kit: KIT || null, rows }, null, 2),
     );
   } finally {
     await browser.close().catch(() => {});
