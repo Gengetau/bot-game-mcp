@@ -5,7 +5,7 @@
 import { McpServer, ResourceTemplate } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
-import { GameError } from '../core/errors.js';
+import { GameError, invalidAction } from '../core/errors.js';
 import type { GameManager } from '../core/manager.js';
 import type { ActionInput, Identity } from '../core/types.js';
 import type { Authenticator, SessionContext } from './auth.js';
@@ -370,17 +370,23 @@ export function createMcpServer(deps: ServerDeps, ctx: SessionContext): McpServe
     {
       title: '我的视角',
       description:
-        '查看你在对局中的视角：你的身份/词语/骰子等私密信息(you)、公开局面(public)、新事件(new_events)、待办(todo, your_turn)。wait_seconds>0 时会等到轮到你（或游戏结束）再返回。裁判调用时返回主持信息。',
+        '查看你在对局中的视角：你的身份/词语/骰子等私密信息(you)、公开局面(public)、新事件(new_events)、待办(todo, your_turn)。wait_seconds>0 时会等到轮到你（或游戏结束）再返回。裁判调用时返回主持信息。剧本杀等有长篇材料的游戏：默认视图是摘要加目录 you.sections，详情用 section（和可选的 page）按需取，find:关键词 按关键词找；带 section 时只返回那一段，不等待、不推进新事件。',
       inputSchema: {
         game_id: gameIdOpt,
         wait_seconds: waitSeconds,
         wake_on: z.enum(['turn', 'any']).optional().describe('等待时：turn=轮到我才返回（默认）；any=有任何你看得见的新事件就返回（别人的私密事件不算）'),
         full_log: z.boolean().optional().describe('返回你可见的全部历史事件（默认只返回上次查看后的新事件）'),
         cursor: z.string().optional().describe('栖灯镇：上次视图返回的 cursor。带上它会附带之后的新事件（一次最多 50 条；返回 more=true 时用返回的 cursor 接着取）；配合 wait_seconds 可以等到有新事件再返回'),
+        section: z.string().max(80).optional().describe('要取的段，名字见 you.sections 目录（例如 "role:3"、"act:2"、"truth"、"find:关键词"）。带它时只返回这一段，忽略 wait_seconds / wake_on / full_log / cursor。'),
+        page: z.number().int().min(1).max(200).optional().describe('分页取段时的页码，从 1 开始，默认 1。'),
       },
       readOnly: true,
     },
     async (a, extra) => {
+      if (a.section !== undefined) {
+        if (town && inTown(a.game_id)) throw invalidAction('你现在在小镇里。取对局里的剧本段要带 game_id（对局编号）。');
+        return manager.getSection(me(), a.game_id, a.section, a.page ?? 1);
+      }
       if (town && inTown(a.game_id)) return townView(town, ctx, me(), a, extra.signal);
       const wait = Math.min(a.wait_seconds ?? 0, MAX_WAIT_SECONDS) * 1000;
       return manager.waitView(me(), a.game_id, wait, { fullLog: a.full_log, wakeOn: a.wake_on }, extra.signal);

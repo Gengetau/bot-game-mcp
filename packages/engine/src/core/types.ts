@@ -279,6 +279,18 @@ export interface ActionMeta {
   fromWeb?: boolean;
 }
 
+/** 分段视图里的一段（get_my_view 带 section 时返回）。 */
+export interface ViewSection {
+  /** 规范段名（目录里的写法） */
+  section: string;
+  title: string;
+  page: number;
+  pages: number;
+  chars: number;
+  text: string;
+  hits?: { section: string; where: string; snippet: string }[];
+}
+
 /** 人类指令解析结果。 */
 export type ParsedCommand = ActionInput | null;
 

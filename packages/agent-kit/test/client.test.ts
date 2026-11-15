@@ -86,6 +86,21 @@ describe('agent-kit 客户端', () => {
     }
   });
 
+  it('getMyViewSection 只发 game_id、section、page（page 没给就不带）', async () => {
+    const calls: { name: string; args: Record<string, unknown> }[] = [];
+    const c: any = Object.create(BotGameClient.prototype);
+    c.call = async (name: string, args: Record<string, unknown>) => {
+      calls.push({ name, args });
+      return { ok: true };
+    };
+    await (c as BotGameClient).getMyViewSection('JB-1', 'role:3', 2);
+    await (c as BotGameClient).getMyViewSection('JB-1', 'find:钥匙');
+    expect(calls).toEqual([
+      { name: 'get_my_view', args: { game_id: 'JB-1', section: 'role:3', page: 2 } },
+      { name: 'get_my_view', args: { game_id: 'JB-1', section: 'find:钥匙' } },
+    ]);
+  });
+
   it('prompts/player-zh.md 和代码里的提示词一致', () => {
     const md = readFileSync(new URL('../prompts/player-zh.md', import.meta.url), 'utf8');
     expect(md.trim()).toBe(playerPrompt({ toolPrefix: '{p}' }).trim());

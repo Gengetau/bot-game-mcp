@@ -32,6 +32,7 @@ import {
   type PhaseState,
   type Player,
   type Seat,
+  type ViewSection,
 } from './types.js';
 
 export interface GameEnv {
@@ -103,6 +104,38 @@ export abstract class BaseGame<S = any, O = any> {
   abstract advance(): void;
   abstract privateView(seat: Seat): Record<string, unknown>;
   abstract publicView(): Record<string, unknown>;
+
+  // 以下是 AI 座位 MCP 视图的可选钩子（默认实现保证别的游戏的返回形状不变）。真人座位网页、观战、小镇嵌入局仍用 privateView / publicView。
+
+  /** AI 座位的 MCP 视图（可以有长度预算）。默认就是 privateView。 */
+  agentView(seat: Seat): Record<string, unknown> {
+    return this.privateView(seat);
+  }
+
+  /** AI 座位 MCP 视图里的 public（DM 和玩家要的可以不同，所以带座位）。默认就是 publicView。 */
+  agentPublicView(_seat: Seat): Record<string, unknown> {
+    return this.publicView();
+  }
+
+  /** 这个游戏有没有分段视图（get_my_view 的 section 参数）。默认 false。 */
+  hasViewSections(): boolean {
+    return false;
+  }
+
+  /** 按需取的段（纯读，不得改 rec、不取随机数）。null = 没有这一段或这个座位看不到（不区分）。 */
+  viewSection(_seat: Seat, _section: string, _page: number): ViewSection | null {
+    return null;
+  }
+
+  /** AI 座位的事件文字整理：只改文字，不增删事件、不改编号、不改 kind。默认原样。 */
+  agentEventText(_seat: Seat, ev: { seq: number; kind: string; text: string; own: boolean; image: boolean }): string {
+    return ev.text;
+  }
+
+  /** AI 座位没有待办（todo 为空）时的 hint；null = 用通用的 playerHint。 */
+  agentHint(_seat: Seat): string | null {
+    return null;
+  }
 
   /** 超时默认动作（托管）。默认什么都不做（视为放弃）。 */
   protected timeoutDefault(_seat: Seat, _req: PendingRequest): void {}

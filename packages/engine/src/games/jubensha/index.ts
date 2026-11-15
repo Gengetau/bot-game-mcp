@@ -14,9 +14,45 @@ import { commonOptionShape, commonOptionsHelp, secondsOption } from '../../core/
 import type { GameDefinition } from '../../core/registry.js';
 import { shuffle } from '../../core/rng.js';
 import { cleanSpeech, formatDuration, isEndSpeech, isSkipWord, normalizeText, resolveSeat, splitTrailingEnd, stripTrailing } from '../../core/text.js';
-import type { ActionInput, ActionMeta, ActionSpec, PendingRequest, Seat } from '../../core/types.js';
+import type { ActionInput, ActionMeta, ActionSpec, PendingRequest, Seat, ViewSection } from '../../core/types.js';
 import type { AssetStore } from '../../core/assets.js';
 import { actRounds, packAssets, type PackClue, type PackQuestion, type ScriptLibrary, type ScriptPack } from './pack.js';
+import {
+  CAST_PUBLIC_INLINE,
+  DM_CLUES_LISTED,
+  DM_FAQ_INLINE,
+  DM_NOTES_INLINE,
+  DM_TRUTH_INLINE,
+  IMAGES_INLINE,
+  MY_Q_LISTED,
+  OPEN_Q_LISTED,
+  Q_TEXT_INLINE,
+  PLAYER_CARDS_INLINE,
+  PLAYER_SCRIPT_INLINE,
+  PUBLIC_TRUTH_INLINE,
+  QUIZ_PUBLIC_INLINE,
+  SECTION_PAGE,
+  SHARED_CLUE_INLINE,
+  SHARED_STUB_CHARS,
+  SHARED_TOTAL_INLINE,
+  clip,
+  findIn,
+  fitFromNewest,
+  getViewCall,
+  paginate,
+  parseEventKind,
+  parseSection,
+  pointerLine,
+  PLAYER_ACTS_INLINE,
+  PLAYER_CONFESSION_INLINE,
+  PLACE_TITLES_LISTED,
+  SEARCH_LOG_LISTED,
+  capCaptions,
+  sectionName,
+  stub,
+  type FindSource,
+  type SectionRef,
+} from './view-limits.js';
 
 export { directoryLibrary, emptyLibrary, memoryLibrary, packAssets, packSchema, packWarnings, parsePack } from './pack.js';
 export type { PackClue, PackQuestion, PackSummary, ScriptLibrary, ScriptPack } from './pack.js';
@@ -176,13 +212,14 @@ const RULES = `## 剧本杀
 
 **真人指令**：发言直接在群里说，说完发「过」；读完剧本发「读完」；投票「投3」「弃票」；提问私聊裁判「问DM 你的问题」。搜证私聊裁判「搜 地点」「搜 3号」「深入 线索名」「搜完了」；公开线索「公开 线索名」；问卷私聊裁判「1 3号」「2 b」（题号 + 答案）。
 **bot 指令**：发言 \`speak({"text":"…"})\`；结束发言 \`act({"action":"end_speech"})\`；读完 \`act({"action":"ready"})\`；投票 \`act({"action":"vote","target":3})\`；提问 \`act({"action":"ask","text":"…"})\`。搜证 \`act({"action":"search","text":"地点"})\` 或 \`act({"action":"search","target":3})\`；深入 \`act({"action":"deep","text":"线索id"})\`；结束搜证 \`act({"action":"skip"})\`；公开 \`act({"action":"share","text":"线索id"})\`；答题 \`act({"action":"answer_q","text":"1:a"})\`（一次一题）。
-**DM 指令**（DM 是 AI 时）：群里说话 \`speak\`；私下回答 \`act({"action":"answer","target":3,"text":"…"})\`；提前进入下一环节 \`act({"action":"next"})\`；延长当前环节 \`act({"action":"extend","number":2})\`（分钟，每个环节最多 2 次，每次 1~5 分钟）；发线索 \`act({"action":"give","target":3,"text":"线索id"})\`（真人 DM 私聊「给3 线索名」）。`;
+**DM 指令**（DM 是 AI 时）：群里说话 \`speak\`；私下回答 \`act({"action":"answer","target":3,"text":"…"})\`；提前进入下一环节 \`act({"action":"next"})\`；延长当前环节 \`act({"action":"extend","number":2})\`（分钟，每个环节最多 2 次，每次 1~5 分钟）；发线索 \`act({"action":"give","target":3,"text":"线索id"})\`（真人 DM 私聊「给3 线索名」）。查资料：\`get_my_view({"section":"role:3"})\` / \`"find:关键词"\`（先看 you.sections 目录；\`act({"action":"lookup","text":"3"})\` 仍可用）。`;
 
 const TIPS = `- 你扮演剧本里的角色：用角色的口吻说话，按自己的剧本行事。剧本里要求隐瞒的事可以隐瞒、可以说谎（凶手尤其如此），但不要编造剧本外的关键事实。
-- 每一幕先读新解锁的剧本（get_my_view 的 you.acts），再参与讨论；讨论时回应别人、追问疑点，不要一个人连续发长篇。
+- 每一幕先读新解锁的剧本（get_my_view 的 you.acts；被截断的幕和过长的人物剧本，用 get_my_view({"section":"act:2"}) / ({"section":"script","page":2}) 取），再参与讨论；讨论时回应别人、追问疑点，不要一个人连续发长篇。
 - 拿不准的规则或剧情细节可以私下问 DM（act ask），但 DM 不会替你推理。
 - 有搜证时，先想清楚要查什么再花点数；搜到的卡在 you.search.my_cards。对破案有用的卡可以在讨论时 share 公开，但凶手可以选择藏着自己不利的卡。
 - 投票（或问卷）前梳理时间线和动机，投你认为的凶手。问卷一次答一题：act({"action":"answer_q","text":"题号:选项key"})。
+- 想核对剧本里的某个词：get_my_view({"section":"find:关键词"}) 只在你自己的材料里找，别人的剧本你看不到。
 - 这是演出：对局里的身份、罪行和关系都属于剧本角色，不是你自己的经历。`;
 
 /**
@@ -351,12 +388,13 @@ export function createJubenshaDefinition(
         this.tellImages(s, r.images, 'script_img');
       }
       if (host) {
-        this.tell(
-          host,
-          `🎬 你是本局 DM。真相、主持手册和角色表在 get_my_view 的 you 里（只有你能看到）；各角色剧本、各幕私密内容、线索全文用 act lookup 按需查。` +
-            `你可以在群里串场、私下回答提问（answer）、提前进入下一环节（next）、延长讨论（extend）；不能透露真相，也不能替玩家推理。`,
-          { kind: 'dm_brief', category: 'role' },
-        );
+        const tail = `你可以在群里串场、私下回答提问（answer）、提前进入下一环节（next）、延长讨论（extend）；不能透露真相，也不能替玩家推理。`;
+        // 真人 DM 没有 get_my_view 和 act 工具：完整剧本在他的座位网页里
+        const brief =
+          this.player(host).kind === 'human'
+            ? `🎬 你是本局 DM。完整剧本、真相和主持手册在你的座位网页里（只有你能看到）。${tail}`
+            : `🎬 你是本局 DM。你的视图（get_my_view 的 you）里有待答提问、角色表、凶手和目录 you.sections；主持手册、真相、FAQ 太长时只给开头，全文、各角色剧本、各幕私密内容、线索全文用 get_my_view({"section":…}) 按需取，不知道在哪一段就用 "find:关键词"。开局先读一遍主持手册。${tail}`;
+        this.tell(host, brief, { kind: 'dm_brief', category: 'role' });
       }
       if (pack.intro) this.announceLong(`📖 ${pack.intro}`, 'narration');
       this.announceImages(pack.intro_images, 'narration');
@@ -1147,57 +1185,288 @@ export function createJubenshaDefinition(
         case 'lookup':
           return this.dmLookup(String(input.text ?? input.target ?? ''), Number(input.number ?? 1));
         default:
-          throw invalidAction('DM 可执行：speech（发言）、answer（私下回答）、give（发线索，target+text）、next（进入下一环节）、extend（延长，number=分钟）、lookup（查资料，text=座位号/act:N/clue:id/questionnaire/images）。');
+          throw invalidAction('DM 可执行：speech（发言）、answer（私下回答）、give（发线索，target+text）、next（进入下一环节）、extend（延长，number=分钟）、lookup（查资料，text=座位号/act:N/clue:id/questionnaire/images；也可用 get_my_view 的 section 取，见 you.sections）。');
       }
     }
 
-    /** DM 按需查资料：只回给 DM 本人（act 的返回值），不进任何日志 */
+    // ───────────────────────── 分段（按需取）─────────────────────────
+    // 取段是纯读：不写 rec、不取随机数。可见范围 = 现在整份视图里能看到的（DM：DM 视图 + 旧 lookup 能看的；玩家：只有自己的材料）。
+
+    /** 本局有 DM 且 seat 就是 DM（host === 0 是程序主持，没有人是 DM） */
+    private isDmSeat(seat: Seat): boolean {
+      return this.state.host !== 0 && seat === this.state.host;
+    }
+
+    private confessing(seat: Seat): boolean {
+      const r = this.roleOf(seat);
+      const ended = this.rec.status === 'ended';
+      return Boolean(r && r.confession && this.isCulprit(seat) && (ended || this.rec.log.some((e) => e.kind.startsWith('confession:') && e.audience.type === 'seats' && e.audience.seats.includes(seat))));
+    }
+
+    private captionBlock(ids: string[]): string {
+      return ids.length ? `\n\n【图片说明】\n${this.imageCaptions(ids).map((x) => `🖼 ${x}`).join('\n')}` : '';
+    }
+
+    private dmRoleBody(seat: Seat): { title: string; body: string } {
+      const s = this.state;
+      const r = this.roleOf(seat)!;
+      const acts = s.pack.acts
+        .slice(0, s.unlocked)
+        .map((a, i) => (a.private[r.key] ? `\n\n【第 ${i + 1} 幕·${a.title}·私密】\n${a.private[r.key]}` : ''))
+        .join('');
+      return {
+        title: `${seat}号 ${this.player(seat).name} 扮演【${r.name}】${this.isCulprit(seat) ? '（凶手）' : ''}`,
+        body: `【公开介绍】${r.public}\n\n【角色剧本】\n${r.script}${acts}${r.confession ? `\n\n【认罪书】\n${r.confession}` : ''}`,
+      };
+    }
+
+    private dmActBody(i: number): { title: string; body: string } {
+      const s = this.state;
+      const a = s.pack.acts[i]!;
+      const priv = this.playerSeats()
+        .map((x) => {
+          const r = this.roleOf(x)!;
+          return a.private[r.key] ? `\n\n【${x}号 ${r.name}·私密】\n${a.private[r.key]}` : '';
+        })
+        .join('');
+      return { title: `第 ${i + 1} 幕「${a.title}」${i < s.unlocked ? '' : '（还没解锁）'}`, body: `【公开】\n${a.public || '（无）'}${priv}` };
+    }
+
+    private dmClueBody(c: PackClue): { title: string; body: string } {
+      return { title: `线索【${c.title}】(${c.id})${c.at ? ` @${this.placeName(c.at)}` : ''}`, body: c.text };
+    }
+
+    private dmQuestionnaireBody(): { title: string; body: string } {
+      const q = this.state.pack.questionnaire;
+      return { title: '问卷', body: q.map((x, i) => `${i + 1}. ${x.question}\n   答案：${JSON.stringify(x.answer)}　选项：${JSON.stringify(x.options)}`).join('\n') || '（这个剧本没有问卷）' };
+    }
+
+    private dmImagesBody(): { title: string; body: string } {
+      return { title: '图片说明', body: this.state.pack.images.map((x) => `${x.id}：${x.caption}`).join('\n') || '（这个剧本没有图片）' };
+    }
+
+    private dmFaqBody(): string {
+      return this.state.pack.faq.map((f, i) => `${i + 1}. 关键词：${f.keywords.join('、')}\n   答：${f.answer}`).join('\n');
+    }
+
+    private dmCluesBody(): string {
+      const sx = this.state.search;
+      return this.state.pack.clues
+        .map((c) => {
+          const holders = sx?.holders[c.id] ?? [];
+          return `${c.id}｜${c.title}｜${c.at ? this.placeName(c.at) : '（无位置）'}｜持有人：${holders.length ? holders.map((h) => `${h}号`).join('、') : '无'}${sx?.shared.some((x) => x.id === c.id) ? '｜已公开' : ''}｜全文 ${c.text.length} 字${c.round !== undefined ? `｜第 ${c.round} 轮` : ''}${this.clueOn(c) ? '' : '｜本局难度不发'}`;
+        })
+        .join('\n');
+    }
+
+    private dmQuestionsBody(): string {
+      const open = this.state.qa.filter((x) => x.a === undefined);
+      return open.map((x, i) => `${i + 1}. ${x.from}号【${this.roleOf(x.from)?.name ?? ''}】问：${x.q}`).join('\n') || '（没有待答提问）';
+    }
+
+    /** DM 能取的段；null = 没有这一段（不存在）。lookup 别名和 viewSection 共用。 */
+    private dmSectionBody(ref: SectionRef): { title: string; body: string } | null {
+      const s = this.state;
+      switch (ref.kind) {
+        case 'host_notes':
+          return { title: '主持手册', body: s.pack.host_notes };
+        case 'truth':
+          return { title: '真相全文', body: s.pack.truth };
+        case 'faq':
+          return { title: '预置答疑', body: this.dmFaqBody() };
+        case 'role':
+          return this.playerSeats().includes(ref.n) ? this.dmRoleBody(ref.n) : null;
+        case 'act':
+          return ref.n >= 1 && ref.n <= s.pack.acts.length ? this.dmActBody(ref.n - 1) : null;
+        case 'clue': {
+          const c = s.pack.clues.find((x) => x.id === ref.id);
+          return c ? this.dmClueBody(c) : null;
+        }
+        case 'clues':
+          return s.pack.clues.length ? { title: '线索清单', body: this.dmCluesBody() } : null;
+        case 'questionnaire':
+          return s.pack.questionnaire.length ? this.dmQuestionnaireBody() : null;
+        case 'images':
+          return s.pack.images.length ? this.dmImagesBody() : null;
+        case 'questions':
+          return { title: '待答提问', body: this.dmQuestionsBody() };
+        default:
+          return null;
+      }
+    }
+
+    /** DM 的全部材料（按目录顺序），find 只在这里找 */
+    private dmFindSources(): FindSource[] {
+      const s = this.state;
+      const out: FindSource[] = [
+        { section: 'host_notes', where: '主持手册', text: s.pack.host_notes },
+        { section: 'truth', where: '真相', text: s.pack.truth },
+        { section: 'faq', where: '预置答疑', text: this.dmFaqBody() },
+      ];
+      for (const x of this.playerSeats()) {
+        const r = this.roleOf(x)!;
+        out.push({ section: `role:${x}`, where: `${x}号【${r.name}】角色剧本`, text: `${r.public}\n${r.script}${r.confession ? `\n${r.confession}` : ''}` });
+      }
+      s.pack.acts.forEach((a, i) => {
+        out.push({ section: `act:${i + 1}`, where: `第 ${i + 1} 幕·公开`, text: a.public });
+        for (const x of this.playerSeats()) {
+          const r = this.roleOf(x)!;
+          if (a.private[r.key]) out.push({ section: `act:${i + 1}`, where: `第 ${i + 1} 幕·${x}号私密`, text: a.private[r.key]! });
+        }
+      });
+      for (const c of s.pack.clues) out.push({ section: `clue:${c.id}`, where: `线索【${c.title}】`, text: `${c.title}\n${c.text}` });
+      if (s.pack.questionnaire.length) out.push({ section: 'questionnaire', where: '问卷', text: this.dmQuestionnaireBody().body });
+      if (s.pack.images.length) out.push({ section: 'images', where: '图片说明', text: this.dmImagesBody().body });
+      return out;
+    }
+
+    private playerClueVisible(seat: Seat, id: string): PackClue | null {
+      const c = this.clueById(id);
+      if (!c || !this.state.search) return null;
+      return this.holds(seat, id) || this.state.search.shared.some((x) => x.id === id) ? c : null;
+    }
+
+    private playerQuestionsBody(seat: Seat): string {
+      const mine = this.state.qa.filter((x) => x.from === seat);
+      return mine.map((x, i) => `${i + 1}. 问：${x.q}\n   答：${x.a ?? '（等待 DM 回答）'}`).join('\n') || '（你还没有提过问题）';
+    }
+
+    private placesBody(seat: Seat): string {
+      return this.places(seat)
+        .map((p) => {
+          const left = this.remaining(p.key, seat);
+          return `${p.name}（剩 ${left.length} 张）：${left.map((c) => c.title).join('、') || '无'}`;
+        })
+        .join('\n');
+    }
+
+    private hasPlacesSection(seat: Seat): boolean {
+      return Boolean(this.state.search && !this.blind && this.places(seat).length);
+    }
+
+    /** 玩家能取的段：只读 seat 自己的角色、自己已解锁的幕、自己持有或已公开的卡 */
+    private playerSectionBody(seat: Seat, ref: SectionRef): { title: string; body: string } | null {
+      const s = this.state;
+      const r = this.roleOf(seat);
+      if (!r) return null;
+      switch (ref.kind) {
+        case 'script':
+          return { title: '我的人物剧本', body: `${r.script}${this.captionBlock(r.images)}` };
+        case 'act': {
+          if (ref.n < 1 || ref.n > s.unlocked) return null;
+          const a = s.pack.acts[ref.n - 1]!;
+          return { title: `第 ${ref.n} 幕「${a.title}」我的私密内容`, body: `${a.private[r.key] ?? '（本幕没有新剧本）'}${this.captionBlock(a.private_images[r.key] ?? [])}` };
+        }
+        case 'confession':
+          return this.confessing(seat) ? { title: '我的认罪书', body: r.confession } : null;
+        case 'clue': {
+          const c = this.playerClueVisible(seat, ref.id);
+          return c ? { title: `线索【${c.title}】`, body: `${c.text || '（这张卡没有文字）'}${this.captionBlock(c.images)}` } : null;
+        }
+        case 'questions':
+          return { title: '我的提问和回答', body: this.playerQuestionsBody(seat) };
+        case 'places':
+          return this.hasPlacesSection(seat) ? { title: '各地点剩余卡背标题', body: this.placesBody(seat) } : null;
+        default:
+          return null;
+      }
+    }
+
+    /** 玩家自己的材料（find 只在这里找，不读任何别人的东西） */
+    private playerFindSources(seat: Seat): FindSource[] {
+      const s = this.state;
+      const r = this.roleOf(seat);
+      if (!r) return [];
+      const out: FindSource[] = [{ section: 'script', where: '我的人物剧本', text: r.script }];
+      s.pack.acts.slice(0, s.unlocked).forEach((a, i) => {
+        if (a.private[r.key]) out.push({ section: `act:${i + 1}`, where: `第 ${i + 1} 幕·我的私密内容`, text: a.private[r.key]! });
+      });
+      if (this.confessing(seat)) out.push({ section: 'confession', where: '我的认罪书', text: r.confession });
+      for (const c of s.pack.clues) {
+        if (this.playerClueVisible(seat, c.id)) out.push({ section: `clue:${c.id}`, where: `线索【${c.title}】`, text: `${c.title}\n${c.text}` });
+      }
+      return out;
+    }
+
+    override hasViewSections(): boolean {
+      return true;
+    }
+
+    override viewSection(seat: Seat, section: string, page: number): ViewSection | null {
+      const ref = parseSection(section);
+      if (!ref) return null;
+      const dm = this.isDmSeat(seat);
+      if (!dm && !this.roleOf(seat)) return null;
+      if (ref.kind === 'find') {
+        const hits = findIn(dm ? this.dmFindSources() : this.playerFindSources(seat), ref.q);
+        const text = hits.length ? hits.map((h, i) => `${i + 1}. 【${h.where}】（${h.section}）${h.snippet}`).join('\n') : '没找到。换个词，或直接看目录里的段。';
+        return { section: sectionName(ref), title: `按关键词找「${cleanSpeech(ref.q, 40)}」`, page: 1, pages: 1, chars: text.length, text, hits };
+      }
+      const got = dm ? this.dmSectionBody(ref) : this.playerSectionBody(seat, ref);
+      if (!got) return null;
+      return { section: sectionName(ref), title: got.title, ...paginate(got.body, page) };
+    }
+
+    /** 目录 you.sections：chars / pages 是当前真实值；玩家的目录只统计本座位自己能取的段 */
+    private sectionsOf(seat: Seat): Record<string, unknown>[] {
+      const s = this.state;
+      const item = (ref: SectionRef, title: string, body: string, use?: string) => ({
+        section: sectionName(ref),
+        title: title.slice(0, 30),
+        chars: body.length,
+        pages: Math.max(1, Math.ceil(body.length / SECTION_PAGE)),
+        ...(use ? { use } : {}),
+      });
+      const find = { section: 'find:关键词', title: '按关键词找', use: '问题里有具体的词，不知道在哪一段' };
+      if (this.isDmSeat(seat)) {
+        const out: Record<string, unknown>[] = [];
+        if (s.pack.host_notes) out.push(item({ kind: 'host_notes' }, '主持手册', s.pack.host_notes, '开局先读一遍；回答前对照'));
+        out.push(item({ kind: 'truth' }, '真相全文', s.pack.truth, '只用来核对，不能说出来'));
+        if (s.pack.faq.length) out.push(item({ kind: 'faq' }, '预置答疑', this.dmFaqBody(), '玩家问规则、常见问题前'));
+        for (const x of this.playerSeats()) out.push(item({ kind: 'role', n: x }, `${x}号 ${this.player(x).name}【${this.roleOf(x)!.name}】`, this.dmRoleBody(x).body));
+        s.pack.acts.forEach((a, i) => out.push(item({ kind: 'act', n: i + 1 }, `第 ${i + 1} 幕 ${a.title}${i < s.unlocked ? '' : '（未解锁）'}`, this.dmActBody(i).body)));
+        if (s.pack.clues.length) out.push(item({ kind: 'clues' }, '线索清单', this.dmCluesBody(), '要 give 线索，或问题涉及线索；全文用 clue:线索id'));
+        if (s.pack.questionnaire.length) out.push(item({ kind: 'questionnaire' }, '问卷题与答案', this.dmQuestionnaireBody().body, '问卷阶段答疑'));
+        if (s.pack.images.length) out.push(item({ kind: 'images' }, '图片说明', this.dmImagesBody().body, '问题涉及图'));
+        if (s.qa.some((x) => x.a === undefined)) out.push(item({ kind: 'questions' }, '待答提问', this.dmQuestionsBody(), 'open_questions_more 出现时，或想一次看全'));
+        out.push(find);
+        return out;
+      }
+      const r = this.roleOf(seat);
+      if (!r) return [];
+      const out: Record<string, unknown>[] = [item({ kind: 'script' }, '我的人物剧本', this.playerSectionBody(seat, { kind: 'script' })!.body, 'you.script 被截断时看后面的页')];
+      s.pack.acts.slice(0, s.unlocked).forEach((a, i) => out.push(item({ kind: 'act', n: i + 1 }, `第 ${i + 1} 幕 ${a.title}`, this.playerSectionBody(seat, { kind: 'act', n: i + 1 })!.body)));
+      if (this.confessing(seat)) out.push(item({ kind: 'confession' }, '我的认罪书', r.confession, '被截断时看'));
+      for (const c of this.held(seat)) out.push(item({ kind: 'clue', id: c.id }, c.title, this.playerSectionBody(seat, { kind: 'clue', id: c.id })!.body));
+      out.push(item({ kind: 'questions' }, '我的提问和回答', this.playerQuestionsBody(seat), 'my_questions_more 出现时看全部'));
+      if (this.hasPlacesSection(seat)) out.push(item({ kind: 'places' }, '各地点剩余卡背', this.placesBody(seat), 'cards_more 出现时看全部'));
+      out.push({ ...find, use: '想核对剧本里的某个词（只找你自己的材料）' });
+      return out;
+    }
+
+    /** lookup（DM 的 act）是 get_my_view 取段的别名：text 映射成段名，走同一份取材和分页。文字保持原样。 */
     private dmLookup(what: string, page: number): string {
       const s = this.state;
       const q = what.trim().replace(/号$/, '');
-      let title: string;
-      let body: string;
+      let ref: SectionRef;
       const seat = Number(q);
-      if (/^\d+$/.test(q) && this.playerSeats().includes(seat)) {
-        const r = this.roleOf(seat)!;
-        title = `${seat}号 ${this.player(seat).name} 扮演【${r.name}】${this.isCulprit(seat) ? '（凶手）' : ''}`;
-        const acts = s.pack.acts
-          .slice(0, s.unlocked)
-          .map((a, i) => (a.private[r.key] ? `\n\n【第 ${i + 1} 幕·${a.title}·私密】\n${a.private[r.key]}` : ''))
-          .join('');
-        body = `【公开介绍】${r.public}\n\n【角色剧本】\n${r.script}${acts}${r.confession ? `\n\n【认罪书】\n${r.confession}` : ''}`;
-      } else if (/^act[:：]?\d+$/i.test(q)) {
+      if (/^\d+$/.test(q) && this.playerSeats().includes(seat)) ref = { kind: 'role', n: seat };
+      else if (/^act[:：]?\d+$/i.test(q)) {
         const i = Number(q.replace(/\D/g, '')) - 1;
-        const a = s.pack.acts[i];
-        if (!a) throw invalidAction(`没有第 ${i + 1} 幕（共 ${s.pack.acts.length} 幕）。`);
-        title = `第 ${i + 1} 幕「${a.title}」${i < s.unlocked ? '' : '（还没解锁）'}`;
-        const priv = this.playerSeats()
-          .map((x) => {
-            const r = this.roleOf(x)!;
-            return a.private[r.key] ? `\n\n【${x}号 ${r.name}·私密】\n${a.private[r.key]}` : '';
-          })
-          .join('');
-        body = `【公开】\n${a.public || '（无）'}${priv}`;
+        if (!s.pack.acts[i]) throw invalidAction(`没有第 ${i + 1} 幕（共 ${s.pack.acts.length} 幕）。`);
+        ref = { kind: 'act', n: i + 1 };
       } else if (/^clue[:：]/i.test(q)) {
         const id = q.replace(/^clue[:：]/i, '').trim();
         const c = s.pack.clues.find((x) => x.id === id || x.title === id);
         if (!c) throw invalidAction(`没有线索 ${id}。`);
-        title = `线索【${c.title}】(${c.id})${c.at ? ` @${this.placeName(c.at)}` : ''}`;
-        body = c.text;
-      } else if (/^questionnaire$/i.test(q) || q === '问卷') {
-        title = '问卷';
-        body = s.pack.questionnaire.map((x, i) => `${i + 1}. ${x.question}\n   答案：${JSON.stringify(x.answer)}　选项：${JSON.stringify(x.options)}`).join('\n') || '（这个剧本没有问卷）';
-      } else if (/^images$/i.test(q) || q === '图片') {
-        title = '图片说明';
-        body = s.pack.images.map((x) => `${x.id}：${x.caption}`).join('\n') || '（这个剧本没有图片）';
-      } else {
-        throw invalidAction(`lookup 的 text 可以是：座位号（如 "3"）、"act:1"、"clue:线索id"、"questionnaire"、"images"。玩家座位：${this.playerSeats().join('、')}。`);
-      }
-      const PAGE = 6000;
-      const pages = Math.max(1, Math.ceil(body.length / PAGE));
-      const p = Math.min(pages, Math.max(1, Math.trunc(page) || 1));
-      const chunk = body.slice((p - 1) * PAGE, p * PAGE);
-      return `📖 ${title}${pages > 1 ? `（第 ${p}/${pages} 页${p < pages ? `，下一页加 "number":${p + 1}` : ''}）` : ''}\n${chunk}`;
+        ref = { kind: 'clue', id: c.id };
+      } else if (/^questionnaire$/i.test(q) || q === '问卷') ref = { kind: 'questionnaire' };
+      else if (/^images$/i.test(q) || q === '图片') ref = { kind: 'images' };
+      else throw invalidAction(`lookup 的 text 可以是：座位号（如 "3"）、"act:1"、"clue:线索id"、"questionnaire"、"images"。玩家座位：${this.playerSeats().join('、')}。`);
+      const body =
+        ref.kind === 'questionnaire' ? this.dmQuestionnaireBody() : ref.kind === 'images' ? this.dmImagesBody() : this.dmSectionBody(ref)!;
+      const pg = paginate(body.body, page);
+      return `📖 ${body.title}${pg.pages > 1 ? `（第 ${pg.page}/${pg.pages} 页${pg.page < pg.pages ? `，下一页加 "number":${pg.page + 1}` : ''}）` : ''}\n${pg.text}`;
     }
 
     protected override timeoutDefault(seat: Seat, _req: PendingRequest): void {
@@ -1208,31 +1477,42 @@ export function createJubenshaDefinition(
 
     // ───────────────────────── 视角 ─────────────────────────
 
-    privateView(seat: Seat): Record<string, unknown> {
+    /**
+     * 完整视图：真人座位网页（webSeatView）和小镇嵌入局用。真人 DM 在网页上看全部剧本（人在读，不受 token 限制）。
+     * 真人 DM 没有 get_my_view 和 act 工具，所以这里的 note / dm_actions 不提 lookup / section。
+     */
+    private fullView(seat: Seat): Record<string, unknown> {
       const s = this.state;
       const ended = this.rec.status === 'ended';
       if (seat === s.host) {
         const ph = this.phase;
-        // 只给精简版：整本剧本塞进视角会有好几万字，bot 读不了（2026-11-08 JB-ATT6：DM 视角超过 7 万字）。
-        // 角色剧本、各幕私密内容、问卷、图片说明、线索全文用 lookup 按需查。
         return {
           role: 'DM',
-          note: '你是 DM：不扮演角色，不能透露真相、不能替玩家推理。可以串场、私下回答提问、掌握节奏。回答前需要细节就用 lookup 查（只有你看得到）。',
+          note: '你是 DM：不扮演角色，不能透露真相、不能替玩家推理。可以串场、私下回答提问、掌握节奏。',
           dm_actions: [
             'speak({"text":"…"}) 在群里说话',
             'act({"action":"answer","target":3,"text":"…"}) 私下回答 3 号的提问',
             'act({"action":"next"}) 提前结束当前的自我介绍/阅读/讨论环节',
             'act({"action":"extend","number":2}) 把当前阅读/搜证/讨论环节延长 2 分钟（每环节最多 2 次）',
             ...(s.search ? ['act({"action":"give","target":3,"text":"线索id"}) 把一张已开放的线索交给 3 号（不花点数）'] : []),
-            `act({"action":"lookup","text":"3"}) 查 3 号的角色剧本（含已解锁各幕的私密内容）；text 也可以是 "act:1"（第 1 幕全部内容）${s.search ? '、"clue:线索id"（线索全文）' : ''}${s.pack.questionnaire.length ? '、"questionnaire"（问卷和答案）' : ''}${s.pack.images.length ? '、"images"（图片说明）' : ''}；内容长时加 "number":2 看第 2 页`,
           ],
           open_questions: s.qa.filter((x) => x.a === undefined).map((x) => ({ from: x.from, role: this.roleOf(x.from)?.name, question: x.q })),
           current: ph ? { key: ph.key, title: ph.title, seconds_left: ph.deadline === null ? null : Math.max(0, Math.round((ph.deadline - this.now()) / 1000)) } : null,
           host_notes: s.pack.host_notes,
           truth: s.pack.truth,
           culprits: this.playerSeats().filter((x) => this.isCulprit(x)).map((x) => ({ seat: x, role: this.roleOf(x)!.name })),
-          cast: this.playerSeats().map((x) => ({ seat: x, name: this.player(x).name, role: this.roleOf(x)!.name })),
-          acts: s.pack.acts.map((a, i) => ({ act: i + 1, title: a.title, unlocked: i < s.unlocked })),
+          cast: this.playerSeats().map((x) => {
+            const r = this.roleOf(x)!;
+            return { seat: x, name: this.player(x).name, role: r.name, script: r.script, confession: r.confession || undefined };
+          }),
+          acts: s.pack.acts.map((a, i) => ({
+            title: a.title,
+            unlocked: i < s.unlocked,
+            public: a.public,
+            private: a.private,
+            ...(a.public_images.length || Object.keys(a.private_images).length ? { public_images: a.public_images, private_images: a.private_images } : {}),
+          })),
+          ...(s.pack.images.length ? { images: s.pack.images.map((x) => ({ id: x.id, caption: x.caption })) } : {}),
           faq: s.pack.faq,
           ...(s.search
             ? {
@@ -1243,13 +1523,16 @@ export function createJubenshaDefinition(
                     id: c.id,
                     title: c.title,
                     at: c.at ? this.placeName(c.at) : undefined,
+                    round: c.round,
+                    cost: c.cost,
+                    text: c.text,
                     holders: s.search!.holders[c.id] ?? [],
-                    ...(s.search!.shared.some((x) => x.id === c.id) ? { shared: true } : {}),
+                    shared: s.search!.shared.some((x) => x.id === c.id),
                   })),
                 },
               }
             : {}),
-          ...(s.pack.questionnaire.length ? { questionnaire: `${s.pack.questionnaire.length} 道题，用 lookup "questionnaire" 查看`, ...(ph?.key === 'quiz' ? { quiz_answers: ph.data.answers } : {}) } : {}),
+          ...(s.pack.questionnaire.length ? { questionnaire: s.pack.questionnaire, quiz_answers: ph?.key === 'quiz' ? ph.data.answers : s.quiz?.answers } : {}),
         };
       }
       const r = this.roleOf(seat);
@@ -1272,22 +1555,146 @@ export function createJubenshaDefinition(
       };
     }
 
-    private searchView(seat: Seat): Record<string, unknown> {
+    privateView(seat: Seat): Record<string, unknown> {
+      return this.fullView(seat);
+    }
+
+    /** 待答提问：最早的在前，只列 OPEN_Q_LISTED 条（open_questions 和 open_questions_look 用同一份） */
+    private openQuestions(): QA[] {
+      return this.state.qa.filter((x) => x.a === undefined);
+    }
+
+    /** AI 座位的 MCP 视图：摘要 + 目录，长文截成开头一段并写明去哪取全（预算见 view-limits.ts）。 */
+    override agentView(seat: Seat): Record<string, unknown> {
+      const s = this.state;
+      const sections = this.sectionsOf(seat);
+      if (seat === s.host) {
+        const ph = this.phase;
+        const open = this.openQuestions();
+        const listed = open.slice(0, OPEN_Q_LISTED);
+        // 线索清单：先放「现在可以 give 的」，不超过上限时不重排
+        const clueList = s.pack.clues.filter((c) => this.clueOn(c));
+        let clues = clueList;
+        if (clueList.length > DM_CLUES_LISTED) {
+          const giveable = (c: PackClue) => (c.round === undefined || (s.search?.opened ?? []).includes(c.round)) && !(s.search?.holders[c.id]?.length);
+          clues = [...clueList.filter(giveable), ...clueList.filter((c) => !giveable(c))].slice(0, DM_CLUES_LISTED);
+        }
+        // FAQ：按条放到字数上限，至少放第一条
+        const faqShown: JubenshaState['pack']['faq'] = [];
+        let faqUsed = 0;
+        for (const f of s.pack.faq) {
+          const n = f.answer.length + f.keywords.join('').length;
+          if (faqShown.length > 0 && faqUsed + n > DM_FAQ_INLINE) break;
+          faqShown.push(f);
+          faqUsed += n;
+        }
+        return {
+          role: 'DM',
+          note: '你是 DM：不扮演角色，不能透露真相、不能替玩家推理。可以串场、私下回答提问、掌握节奏。回答前先看 you.open_questions 和并列的 you.open_questions_look（每个提问该看哪几段），需要细节就用 get_my_view({"section":…}) 取（只有你看得到）；不知道在哪一段就用 "find:关键词"。',
+          dm_actions: [
+            'speak({"text":"…"}) 在群里说话',
+            'act({"action":"answer","target":3,"text":"…"}) 私下回答 3 号的提问',
+            'act({"action":"next"}) 提前结束当前的自我介绍/阅读/讨论环节',
+            'act({"action":"extend","number":2}) 把当前阅读/搜证/讨论环节延长 2 分钟（每环节最多 2 次）',
+            ...(s.search ? ['act({"action":"give","target":3,"text":"线索id"}) 把一张已开放的线索交给 3 号（不花点数）'] : []),
+            `get_my_view({"section":"role:3"}) 查 3 号的角色剧本（含已解锁各幕的私密内容）；section 也可以是 "act:1"（第 1 幕全部内容）、"host_notes"、"truth"、"faq"${s.search ? '、"clues"（线索清单）、"clue:线索id"（线索全文）' : ''}${s.pack.questionnaire.length ? '、"questionnaire"（问卷和答案）' : ''}${s.pack.images.length ? '、"images"（图片说明）' : ''}；"find:钥匙" 在所有材料里按关键词找；内容长时加 "page":2 看下一页（先看 you.sections 目录）。老写法 act({"action":"lookup","text":"3"}) 仍可用，效果相同`,
+          ],
+          open_questions: listed.map((x) => ({ from: x.from, role: this.roleOf(x.from)?.name, question: clip(x.q, Q_TEXT_INLINE, `全文：${getViewCall('questions')}`) })),
+          ...(open.length > listed.length ? { open_questions_more: open.length - listed.length } : {}),
+          ...(open.length
+            ? { open_questions_look: listed.map((x) => ({ from: x.from, look: [`role:${x.from}`, ...(s.act >= 0 && s.act < s.pack.acts.length ? [`act:${s.act + 1}`] : [])] })) }
+            : {}),
+          current: ph ? { key: ph.key, title: ph.title, seconds_left: ph.deadline === null ? null : Math.max(0, Math.round((ph.deadline - this.now()) / 1000)) } : null,
+          host_notes: clip(s.pack.host_notes, DM_NOTES_INLINE, `全文：${getViewCall('host_notes')}`),
+          truth: clip(s.pack.truth, DM_TRUTH_INLINE, `全文：${getViewCall('truth')}`),
+          culprits: this.playerSeats().filter((x) => this.isCulprit(x)).map((x) => ({ seat: x, role: this.roleOf(x)!.name })),
+          cast: this.playerSeats().map((x) => ({ seat: x, name: this.player(x).name, role: this.roleOf(x)!.name })),
+          acts: s.pack.acts.map((a, i) => ({ act: i + 1, title: a.title, unlocked: i < s.unlocked })),
+          faq: faqShown,
+          ...(faqShown.length < s.pack.faq.length ? { faq_more: s.pack.faq.length - faqShown.length } : {}),
+          ...(s.search
+            ? {
+                search: {
+                  points_left: Object.fromEntries(this.playerSeats().map((x) => [x, s.search!.left[String(x)] ?? 0])),
+                  opened_rounds: [...s.search.opened],
+                  clues: clues.map((c) => ({
+                    id: c.id,
+                    title: c.title,
+                    at: c.at ? this.placeName(c.at) : undefined,
+                    holders: s.search!.holders[c.id] ?? [],
+                    ...(s.search!.shared.some((x) => x.id === c.id) ? { shared: true } : {}),
+                  })),
+                  ...(clueList.length > DM_CLUES_LISTED ? { clues_total: clueList.length, clues_more: clueList.length - DM_CLUES_LISTED } : {}),
+                },
+              }
+            : {}),
+          ...(s.pack.questionnaire.length ? { questionnaire: `${s.pack.questionnaire.length} 道题，用 lookup "questionnaire" 查看`, ...(ph?.key === 'quiz' ? { quiz_answers: ph.data.answers } : {}) } : {}),
+          sections,
+        };
+      }
+      const r = this.roleOf(seat);
+      if (!r) return {};
+      const full = this.fullView(seat) as Record<string, any>;
+      const img = { left: IMAGES_INLINE };
+      const out: Record<string, unknown> = { ...full };
+      out.role = { ...full.role, public: clip(r.public, CAST_PUBLIC_INLINE, '全文见开局公告（get_game_log）') };
+      out.script = clip(r.script, PLAYER_SCRIPT_INLINE, `全文：${getViewCall('script')}`);
+      // 各幕：从最新一幕往前放到预算，放不下的只留前 200 字；图片说明也是最新的先放
+      const acts = full.acts as { title: string; text: string; images?: string[] }[];
+      const fits = fitFromNewest(acts.map((a) => a.text.length), PLAYER_ACTS_INLINE);
+      const actImgs = new Array<string[] | undefined>(acts.length);
+      if (full.script_images) out.script_images = capCaptions(full.script_images, getViewCall('script'), img);
+      for (let i = acts.length - 1; i >= 0; i--) if (acts[i]!.images) actImgs[i] = capCaptions(acts[i]!.images!, getViewCall(`act:${i + 1}`), img);
+      out.acts = acts.map((a, i) => ({
+        ...a,
+        text: fits[i] ? a.text : stub(a.text, `全文：${getViewCall(`act:${i + 1}`)}`),
+        ...(actImgs[i] ? { images: actImgs[i] } : {}),
+      }));
+      if (typeof full.confession === 'string') out.confession = clip(full.confession, PLAYER_CONFESSION_INLINE, `全文：${getViewCall('confession')}`);
+      const qs = full.my_questions as unknown[];
+      if (qs.length > MY_Q_LISTED) {
+        out.my_questions = qs.slice(-MY_Q_LISTED);
+        out.my_questions_more = qs.length - MY_Q_LISTED;
+      }
+      const where = `全文：${getViewCall('questions')}`;
+      out.my_questions = ((out.my_questions ?? qs) as { question: string; answer: string }[]).map((x) => (x.question.length > Q_TEXT_INLINE || x.answer.length > Q_TEXT_INLINE ? { question: clip(x.question, Q_TEXT_INLINE, where), answer: clip(x.answer, Q_TEXT_INLINE, where) } : x));
+      if (s.search) out.search = this.searchView(seat, img);
+      out.sections = sections;
+      return out;
+    }
+
+    /** img 给了就按 AI 座位的预算处理（卡面、图片说明、地点卡背标题）；不给是完整版（网页、小镇） */
+    private searchView(seat: Seat, img?: { left: number }): Record<string, unknown> {
       const sx = this.sx;
       const searching = this.phase?.key === 'search';
+      const lim = Boolean(img);
+      const held = this.held(seat);
+      const fits = lim ? fitFromNewest(held.map((c) => c.text.length), PLAYER_CARDS_INLINE) : held.map(() => true);
+      const cardImgs = new Array<string[] | undefined>(held.length);
+      for (let i = held.length - 1; i >= 0; i--) {
+        const c = held[i]!;
+        if (c.images.length) cardImgs[i] = lim ? capCaptions(this.imageCaptions(c.images), getViewCall(`clue:${c.id}`), img!) : this.imageCaptions(c.images);
+      }
       return {
         points_left: sx.left[String(seat)] ?? 0,
         ...(searching ? { this_round: this.allowance(seat) } : {}),
         places: this.places(seat).map((p) => {
           if (this.blind) return { key: p.key, name: p.name };
           const left = this.remaining(p.key, seat);
-          return { key: p.key, name: p.name, left: left.length, cards: left.map((c) => c.title) };
+          const titles = left.map((c) => c.title);
+          return {
+            key: p.key,
+            name: p.name,
+            left: left.length,
+            cards: lim ? titles.slice(0, PLACE_TITLES_LISTED) : titles,
+            ...(lim && titles.length > PLACE_TITLES_LISTED ? { cards_more: titles.length - PLACE_TITLES_LISTED } : {}),
+          };
         }),
-        my_cards: this.held(seat).map((c) => ({
+        my_cards: held.map((c, i) => ({
           id: c.id,
           title: c.title,
-          text: c.text,
-          ...(c.images.length ? { images: this.imageCaptions(c.images) } : {}),
+          text: fits[i] ? c.text : stub(c.text, `全文：${getViewCall(`clue:${c.id}`)}`),
+          ...(cardImgs[i] ? { images: cardImgs[i] } : {}),
           shared: sx.shared.some((x) => x.id === c.id),
           ...(this.deepKids(seat, c).length ? { can_deep: true } : {}),
         })),
@@ -1362,6 +1769,61 @@ export function createJubenshaDefinition(
             : {}),
         ...(ended ? { truth: s.pack.truth, culprits: this.playerSeats().filter((x) => this.isCulprit(x)) } : {}),
       };
+    }
+
+    /**
+     * AI 座位的 public：只截本来就公开的字段（公开内容开局和公布时已随公告事件发过一次，get_game_log 里有原文）。
+     * 全都没超限时与 publicView() 逐字节相同；publicView()（网页、观战）不变。
+     */
+    override agentPublicView(_seat: Seat): Record<string, unknown> {
+      const pv = this.publicView() as Record<string, any>;
+      const more = '未显示的部分见 get_game_log 里对应的公开事件';
+      const out: Record<string, unknown> = { ...pv };
+      if (Array.isArray(pv.cast)) out.cast = pv.cast.map((c: any) => (c.public.length > CAST_PUBLIC_INLINE ? { ...c, public: clip(c.public, CAST_PUBLIC_INLINE, more) } : c));
+      if (pv.search?.shared) {
+        const shared = pv.search.shared as { text: string; images?: string[] }[];
+        let used = 0;
+        const imgLeft = { left: IMAGES_INLINE };
+        const fixed = new Array<any>(shared.length);
+        for (let i = shared.length - 1; i >= 0; i--) {
+          const x = shared[i]!;
+          let text = clip(x.text, SHARED_CLUE_INLINE, more);
+          if (used + text.length <= SHARED_TOTAL_INLINE) used += text.length;
+          else text = `${x.text.slice(0, SHARED_STUB_CHARS)}…（共 ${x.text.length} 字，${more}）`;
+          fixed[i] = {
+            ...x,
+            text,
+            ...(x.images ? { images: capCaptions(x.images, 'get_game_log 里对应的公开事件', imgLeft) } : {}),
+          };
+        }
+        out.search = { ...pv.search, shared: fixed };
+        const log = pv.search.log as unknown[];
+        if (log.length > SEARCH_LOG_LISTED) out.search = { ...(out.search as object), log: log.slice(-SEARCH_LOG_LISTED), log_more: log.length - SEARCH_LOG_LISTED };
+      }
+      if (Array.isArray(pv.questionnaire) && JSON.stringify(pv.questionnaire).length > QUIZ_PUBLIC_INLINE) {
+        out.questionnaire = pv.questionnaire.map(({ options: _o, ...q }: any) => q);
+      }
+      if (typeof pv.truth === 'string' && pv.truth.length > PUBLIC_TRUTH_INLINE) {
+        out.truth = `${pv.truth.slice(0, PUBLIC_TRUTH_INLINE)}\n…（共 ${pv.truth.length} 字；全文在 new_events 的 truth 事件或 get_game_log）`;
+      }
+      return out;
+    }
+
+    /** 只有 DM 且有待答提问时：提示去看哪几段（计数只发给 DM 本人） */
+    override agentHint(seat: Seat): string | null {
+      if (!this.isDmSeat(seat) || this.rec.status !== 'running') return null;
+      const n = this.openQuestions().length;
+      return n > 0 ? `有 ${n} 条待答提问：先看 you.open_questions_look 里该看的段，再用 act({"action":"answer","target":座位号,"text":"…"}) 回答。` : null;
+    }
+
+    /**
+     * AI 座位的事件整理：只把「发给本座位、you 里一定有、取段随时取得到」的人物剧本 / 幕私密 / 认罪书 / 线索卡文字
+     * 换成一行指引。别人的事件、公开事件、图片事件、发言和提问一律不动（own === false 即使是结束后公开的复盘也不改）。
+     */
+    override agentEventText(_seat: Seat, ev: { seq: number; kind: string; text: string; own: boolean; image: boolean }): string {
+      if (!ev.own || ev.image) return ev.text;
+      const ref = parseEventKind(ev.kind);
+      return ref ? pointerLine(ref) : ev.text;
     }
 
     // ───────────────────────── 真人指令 / 模拟 ─────────────────────────
