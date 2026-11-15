@@ -188,6 +188,36 @@ describe('MCP over in-memory transport', () => {
     expect(bad.isError).toBe(true);
     expect(bad.content[0]!.text).toMatch(/未知游戏类型/);
   });
+
+  it('get_my_view 的 section：没有分段视图的游戏明确拒绝，参数超长被架构拒绝，且不改变游标', async () => {
+    const deps = inMemoryDeps('open');
+    const ids: Identity[] = [
+      { id: '900', name: '裁判' },
+      { id: '101', name: 'A' },
+      { id: '102', name: 'B' },
+    ];
+    const clients: Client[] = [];
+    for (const id of ids) {
+      const c = await connect(deps, { identity: null, fixed: false, transport: 'memory' });
+      await call(c, 'login', { qq_id: id.id, nickname: id.name });
+      clients.push(c);
+    }
+    const [ref, a, b] = clients as [Client, Client, Client];
+    const created = await call(ref, 'create_game', { game_type: 'number_bomb', group_id: '515151', join_as: 'referee', options: { max: 30 } });
+    const gameId: string = created.summary.game_id;
+    await call(a, 'join_game', { game_id: gameId, join_as: 'player', self_post: false });
+    await call(b, 'join_game', { game_id: gameId, join_as: 'player' });
+    await call(ref, 'start_game', { game_id: gameId });
+
+    const refused = (await a.callTool({ name: 'get_my_view', arguments: { game_id: gameId, section: 'role:1' } })) as ToolResult;
+    expect(refused.isError).toBe(true);
+    expect(refused.content[0]!.text).toMatch(/没有分段视图/);
+    const tooLong = (await a.callTool({ name: 'get_my_view', arguments: { game_id: gameId, section: 'x'.repeat(81) } })) as ToolResult;
+    expect(tooLong.isError).toBe(true);
+    // 取段是纯读：之后默认视图照常
+    const view = await call(a, 'get_my_view', { game_id: gameId });
+    expect(view.you).toBeTruthy();
+  });
 });
 
 describe('HTTP transports', () => {

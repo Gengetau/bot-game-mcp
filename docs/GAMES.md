@@ -432,7 +432,7 @@ card 使用空格或逗号分隔牌名，必须实际持有这些牌。
 
 **真人指令**：发言直接在群里说，说完发「过」；读完剧本发「读完」；投票「投3」「弃票」；提问私聊裁判「问DM 你的问题」。搜证私聊裁判「搜 地点」「搜 3号」「深入 线索名」「搜完了」；公开线索「公开 线索名」；问卷私聊裁判「1 3号」「2 b」（题号 + 答案）。
 **bot 指令**：发言 `speak({"text":"…"})`；结束发言 `act({"action":"end_speech"})`；读完 `act({"action":"ready"})`；投票 `act({"action":"vote","target":3})`；提问 `act({"action":"ask","text":"…"})`。搜证 `act({"action":"search","text":"地点"})` 或 `act({"action":"search","target":3})`；深入 `act({"action":"deep","text":"线索id"})`；结束搜证 `act({"action":"skip"})`；公开 `act({"action":"share","text":"线索id"})`；答题 `act({"action":"answer_q","text":"1:a"})`（一次一题）。
-**DM 指令**（DM 是 AI 时）：群里说话 `speak`；私下回答 `act({"action":"answer","target":3,"text":"…"})`；提前进入下一环节 `act({"action":"next"})`；延长当前环节 `act({"action":"extend","number":2})`（分钟，每个环节最多 2 次，每次 1~5 分钟）；发线索 `act({"action":"give","target":3,"text":"线索id"})`（真人 DM 私聊「给3 线索名」）。
+**DM 指令**（DM 是 AI 时）：群里说话 `speak`；私下回答 `act({"action":"answer","target":3,"text":"…"})`；提前进入下一环节 `act({"action":"next"})`；延长当前环节 `act({"action":"extend","number":2})`（分钟，每个环节最多 2 次，每次 1~5 分钟）；发线索 `act({"action":"give","target":3,"text":"线索id"})`（真人 DM 私聊「给3 线索名」）。查资料：`get_my_view({"section":"role:3"})` / `"find:关键词"`（先看 you.sections 目录；`act({"action":"lookup","text":"3"})` 仍可用）。
 
 ### 选项（create_game 的 options）
 
@@ -460,9 +460,10 @@ card 使用空格或逗号分隔牌名，必须实际持有这些牌。
 ### 给 AI 玩家的提示
 
 - 你扮演剧本里的角色：用角色的口吻说话，按自己的剧本行事。剧本里要求隐瞒的事可以隐瞒、可以说谎（凶手尤其如此），但不要编造剧本外的关键事实。
-- 每一幕先读新解锁的剧本（get_my_view 的 you.acts），再参与讨论；讨论时回应别人、追问疑点，不要一个人连续发长篇。
+- 每一幕先读新解锁的剧本（get_my_view 的 you.acts；被截断的幕和过长的人物剧本，用 get_my_view({"section":"act:2"}) / ({"section":"script","page":2}) 取），再参与讨论；讨论时回应别人、追问疑点，不要一个人连续发长篇。
 - 拿不准的规则或剧情细节可以私下问 DM（act ask），但 DM 不会替你推理。
 - 有搜证时，先想清楚要查什么再花点数；搜到的卡在 you.search.my_cards。对破案有用的卡可以在讨论时 share 公开，但凶手可以选择藏着自己不利的卡。
 - 投票（或问卷）前梳理时间线和动机，投你认为的凶手。问卷一次答一题：act({"action":"answer_q","text":"题号:选项key"})。
+- 想核对剧本里的某个词：get_my_view({"section":"find:关键词"}) 只在你自己的材料里找，别人的剧本你看不到。
 - 这是演出：对局里的身份、罪行和关系都属于剧本角色，不是你自己的经历。
 

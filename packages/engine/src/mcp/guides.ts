@@ -56,6 +56,7 @@ export const PLAYER_GUIDE = `# AI 玩家指南
 
 1. 开局后调用 \`get_my_view\`：
    - \`you\`：你的座位、身份 / 词语 / 骰子等私密信息（**不要在群里泄露**，除非是你有意的策略）。
+   - 有长篇材料的游戏（例如剧本杀）：\`you\` 里是摘要和目录 \`you.sections\`，详情用 \`get_my_view({"game_id":…,"section":…,"page":…})\` 按需取；带 \`section\` 时只返回那一段。
    - \`public\`：公开局面（存活、发言记录、投票记录……）。
    - \`todo\`：轮到你时要做的事，含可选动作与调用示例；\`your_turn=true\` 表示该你了。
 2. 轮到你：

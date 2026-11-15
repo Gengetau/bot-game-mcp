@@ -216,11 +216,48 @@ bot-game-mcp simulate jubensha --players 6 --humans 1 --seed 1 --scripts /私有
 
 DM 是一个正常报名的座位，用开房选项 `host` 指定。小屋里让克蕾雅当 DM：`host=3127771953`。
 
-DM 的 `get_view` 能看到：
+DM（AI）能看到的全部材料：真相、凶手、主持手册、全部人物剧本和各幕内容、线索清单、问卷答案、待回答的提问。
 
-- 真相、凶手、主持手册；
-- 全部人物剧本和各幕内容；
-- 待回答的提问（`open_questions`）。
+### AI 座位的视图：摘要加目录，详情按需取
+
+剧本一长，把全部材料每次都塞进 `get_my_view` 会让一次调用有几万字。所以 AI 座位（AI DM 和 AI 玩家）的默认视图是**带预算的摘要**加一个目录 `you.sections`；要看全文，用 `get_my_view` 的 `section`（和可选的 `page`）取一段。取段是纯读：不推进游戏、不动新事件游标、不等待，任何时候都可以调。
+
+- 目录每项是 `{section, title, chars, pages, use?}`，`chars` / `pages` 是当前真实值。
+- 每页最多 6000 字（硬切），超过时 `pages` 大于 1，用 `page` 取后面的。
+- 摘要里被截断的字段会写明「全文用 get_my_view section=…」。
+- 预算（座位数和幕数不超过 6 时）：DM 约 16000 字，玩家约 30000 字（按 JSON 序列化长度算，`new_events` 不计）；座位和幕更多时按比例放宽（`viewBudget()`：DM 每多一个座位或幕加 250，玩家每多一个座位加 400、每多一幕加 300）。各字段有自己的内联上限，超出的部分截断或换成一行存根并注明取段办法，不会让一次视图无限变长。常量都在 `packages/engine/src/games/jubensha/view-limits.ts`，测试按格式上限的合成包量过。
+- **已知不在这个预算里的**：`todo.prompt` 和 `hint`（通用层，答问卷阶段里 `todo.prompt` 带一份问卷全文，是答题必需）；`public.search.log` 只给最近 20 条（`log_more` 记其余）；`public.players` / `cast` 的条数等于座位数（最多 12）；盲搜时 `you.search.places` 和 `public.search.places` 只有 key 和名字，列全。
+- 自己的人物剧本、幕私密、认罪书、线索卡，开局发过一次事件；之后 `new_events` 里这些**重复**的文字换成一行指引（如「〔你的人物剧本第 1 段，内容在 you.script；you.script 被截断时用 get_my_view({"section":"script"}) 取全〕」）。条数和 `seq` 不变；别人的事件、公开事件、图片事件、发言和提问一律原样。完整原文始终在 `get_game_log`。
+
+**DM 的默认视图**（`you`）：字段名和形状与以前一致，只有长的东西被限住了：
+
+| 字段 | 默认视图里 | 超出时 |
+|---|---|---|
+| `open_questions` | 最早的 4 条（`OPEN_Q_LISTED`），每条提问最多 400 字，形状仍是 `{from, role, question}` | 其余条数记 `open_questions_more`；全部原文用 `section:"questions"` |
+| `open_questions_look` | 并列字段，只在有待答提问时出现：与列出的提问同序，每项 `{from, look:["role:3","act:2"]}`，告诉你回答前该看哪几段（纯程序算，不读问题文字） | — |
+| `host_notes` / `truth` | 开头 2500 / 1500 字 | 末尾写明总字数和 `get_my_view({"section":"host_notes"})` |
+| `faq` | 按条放到总共 1000 字（至少放一条） | 其余条数记 `faq_more`；全部用 `section:"faq"` |
+| `search.clues` | 先放「现在可以 give 的」，最多 12 张 | `clues_total` 和 `clues_more`；全清单用 `section:"clues"`，单张全文用 `clue:线索id` |
+| `cast`、`acts`、`culprits`、`questionnaire`（题数） | 照旧 | — |
+| `sections` | 目录 | — |
+
+有待答提问而没有别的待办时，`hint` 会提示「先看 you.open_questions_look 里该看的段，再用 answer 回答」（被 @ 叫醒的 DM 也要先看这两个字段）。
+
+**玩家的默认视图**：`script` 4000 字、`acts` 合计 3500 字（最新一幕优先，放不下的幕只留前 200 字）、`confession` 2000 字、`search.my_cards[].text` 合计 2500 字（放不下的留前 200 字）、`my_questions` 最近 5 条（`my_questions_more`）、`search.places` 最多 20 个地点且每处最多 5 个卡背标题（`places_more`、`cards_more`）、`search.my_cards` 最多 6 张最新的（`my_cards_more`，清单用 `my_clues`）、图片说明每条 400 字且全部合计 2400 字。问卷是答题必需：`you.questionnaire` 超过 8000 字时每题只留题号、分值、我的答案和前 40 字题干（`questionnaire_note`），全文用 `section:"questionnaire"`（答题阶段 `todo.prompt` 里也有）。`public` 里：角色公开介绍（`public.cast[].public`，`you.role.public` 同）全体合计不超过 2400 字（`CAST_PUBLIC_TOTAL_INLINE`）时原样给出，超过才每人截到 150 字并指向 `section:"cast"`、公开线索只列最新 6 条（`shared_more`）且每条 400 字、累计 1200 字、`public.questionnaire` 超过 2000 字时去掉选项（还超就只留题号和分值，带 `questionnaire_note`）、地点只列 12 个（`places_more`）、结束后的 `public.truth` 600 字。
+
+可取的段（`section`）：
+
+| 谁 | 段名 |
+|---|---|
+| DM | `host_notes`（主持手册）、`truth`（真相）、`faq`、`role:N`（N 号人物）、`act:N`、`clues`、`clue:线索id`、`questionnaire`、`images`、`questions`（全部待答提问）、`cast`、`find:关键词` |
+| 玩家 | `script`（我的人物剧本）、`act:N`（已解锁的幕里我自己的部分）、`confession`、`clue:线索id`（只限自己持有或已公开的）、`my_clues`（我持有的全部线索清单，卡多时用）、`questions`（我的提问和回答）、`places`、`questionnaire`（答问卷阶段起，我自己的题目）、`cast`、`find:关键词` |
+
+- `cast`（DM 和玩家都能取）：每个座位的「名字、角色名、公开介绍全文」，只含公开视图 `public.cast` 里本来就有的内容。
+- 段名的写法：不区分大小写，全角、前后空白都认（`role:3`、`ROLE：３`、` role:3号 ` 是同一段），**不支持简写**（`r:3`、`hn` 取不到）；序号必须是纯数字（`role:3,4`、`act:1;role:3`、`role:03x` 一律不认）；`clue:` 后面的线索 id 区分大小写；整串最长 80 字。不存在、不是你的、格式不对，一律返回同一句拒绝，不泄露这一段存不存在。
+- `find:关键词` 在你自己能取的材料里按段落找，多个词用空格（全部命中才算），最多返回 8 条命中、每条带前后文。玩家只找自己的材料。
+- DM 的 `act({"action":"lookup","text":"3"})` 仍可用，是取段的别名，文字和报错与以前一致。DM 默认视图里 `questionnaire` 一栏的提示也改成指向 `get_my_view({"section":"questionnaire"})`。
+- 真人 DM 在座位网页上仍然看到完整材料（人在读，不受 token 限制）；真人 DM 没有 `get_my_view`。其他真人玩家的网页视图不变。
+- 小镇里的嵌入局走网页完整视图，不受影响。
 
 DM 随时可用的动作：
 
