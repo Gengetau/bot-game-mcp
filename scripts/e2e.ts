@@ -1726,12 +1726,16 @@ async function main(): Promise<number> {
   };
   process.on('exit', cleanupSync);
   // 看门狗：本进程即使被 SIGKILL，也会在 1 秒内杀掉记录在案的子进程并删除临时目录（只处理自己创建的 pid 文件和目录）
-  reaper = spawn(
-    'sh',
-    ['-c', 'while kill -0 "$1" 2>/dev/null; do sleep 1; done; if [ -f "$2/children.pids" ]; then while read -r p; do [ -n "$p" ] && kill -9 "$p" 2>/dev/null; done < "$2/children.pids"; fi; rm -rf "$2"', 'e2e-reaper', String(process.pid), tmp],
-    { detached: true, stdio: 'ignore' },
-  );
-  reaper.unref();
+  // Windows 上跳过：Git Bash 的 kill 认的是 MSYS 进程号，不认 Node 给的 Windows 进程号，
+  // `kill -0` 会立刻失败，看门狗马上执行 rm -rf 把还在用的临时目录删掉。Windows 上只保留正常退出时的清理。
+  if (process.platform !== 'win32') {
+    reaper = spawn(
+      'sh',
+      ['-c', 'while kill -0 "$1" 2>/dev/null; do sleep 1; done; if [ -f "$2/children.pids" ]; then while read -r p; do [ -n "$p" ] && kill -9 "$p" 2>/dev/null; done < "$2/children.pids"; fi; rm -rf "$2"', 'e2e-reaper', String(process.pid), tmp],
+      { detached: true, stdio: 'ignore' },
+    );
+    reaper.unref();
+  }
   const onSignal = (sig: NodeJS.Signals) => {
     console.error(`\n收到 ${sig}，清理后退出`);
     cleanupSync();
