@@ -5,6 +5,8 @@ extends Node3D
 enum Phase { BOOT, READY, BUSY, LOGIN, ERROR, PLAYING }
 
 const API := "/town/api"
+const PickLogic := preload("res://scripts/pick_logic.gd")
+const DebugFlags := preload("res://scripts/debug_flags.gd")
 const ActLogic := preload("res://scripts/features/activity_logic.gd")  # 只用里面的纯函数（谁算坐着）
 ## 点按判定的移动阈值，单位是 CSS 像素；实际比较时乘 devicePixelRatio 换成画布的物理像素
 ## （Godot 网页端的触摸/鼠标坐标是物理像素，高分屏手机上固定数值会把正常点按判成拖动）
@@ -149,6 +151,7 @@ var _had_hello: bool = false
 
 func _ready() -> void:
 	bridge.setup()
+	hide_npcs = DebugFlags.hide_npcs(bridge.debug, bridge.hide_npcs_flag())  # 启动时读页面全局量（刷新、重新登录都撑得住）
 	add_child(world)
 	add_child(rig)
 	add_child(actors_root)
@@ -247,6 +250,8 @@ func _on_ui(ev: String, arg: String) -> void:
 		"interact":
 			# arg 是来源：键盘 E 不带参数（"key"）；将来手机的「互动」按钮发 emit('interact', 'button')，走同一个入口
 			_do_interact(arg if arg != "" else "key")
+		"debug_hide_npcs":
+			_set_hide_npcs(arg == "1")
 		"debug_pick_stub":
 			if bridge.debug:
 				features.set_pick_stub(arg)
@@ -842,6 +847,20 @@ func _on_renewed(msg: Dictionary) -> void:
 # ───────────────────────── 场景同步 ─────────────────────────
 
 
+## 调试开关：隐藏 NPC（只在 ?debug=1 下才可能为真；服务器照旧有 NPC，只是这个页面不画、不选、不弹菜单）
+var hide_npcs: bool = false
+var _last_scene: Dictionary = {}  # 最近一份被采用的快照：运行时切开关时重放
+
+
+func _set_hide_npcs(on: bool) -> void:
+	var v: bool = DebugFlags.hide_npcs(bridge.debug, on)
+	if v == hide_npcs:
+		return
+	hide_npcs = v
+	if not _last_scene.is_empty():
+		_on_scene(_last_scene)  # 同一份快照再走一遍：serverTime 相等不算旧，NPC 随之出现或被清掉
+
+
 func _on_scene(msg: Dictionary) -> void:
 	if phase != Phase.PLAYING and phase != Phase.BUSY:
 		return
@@ -902,9 +921,11 @@ func _on_scene(msg: Dictionary) -> void:
 			if switched or not rig_ready:
 				rig.snap(Vector3(act.disp.x, 0.0, act.disp.y))
 				rig_ready = true
+	_last_scene = msg
 	# NPC（场景快照里单独的 npcs 字段，公共场景才有；私宅和小游戏里没有）：并进同一张角色表，补 kind = "npc"。
+	# 调试开关（?debug=1 且页面设了隐藏）：npcs 当成空的，已有的 NPC 角色走下面「快照里没有了」的同一条清理路径（D2，见 C6.md）
 	# 位置、折线、插值和居民同一套（服务器给什么就按什么插值，不预测）；要当「居民」用的地方都按 kind 筛掉 NPC（见 client/docs/C6.md 的清单）
-	for n in msg.get("npcs", []):
+	for n in ([] if hide_npcs else msg.get("npcs", [])):
 		if not (n is Dictionary):
 			continue
 		var nid: String = str(n.get("id", ""))
@@ -934,6 +955,7 @@ var rig_ready: bool = false
 
 
 func _clear_actors() -> void:
+	_last_scene = {}
 	for id in actors.keys():
 		(actors[id] as TActor).queue_free()
 	actors.clear()
@@ -1346,28 +1368,18 @@ func _dir_hint(msg: String) -> void:
 ## E 键会选中什么：INTERACT_RANGE 之内离我最近的物件或别的居民。只看本地的位置，不读网络。
 ## 返回 {"kind", "id"}；什么都没有（或还没有自己的角色）时 kind 是 "none"
 func _nearest_pick(sa: TActor) -> Dictionary:
-	var best_kind: String = "none"
-	var best_id: String = ""
 	if sa == null:
-		return {"kind": best_kind, "id": best_id}
-	var me := Vector2(sa.disp.x, sa.disp.y)
-	var best_d: float = INTERACT_RANGE
+		return {"kind": "none", "id": ""}
+	# 只准备输入，挑选本身在 pick_logic.gd（纯函数）：物件按「中心和每个使用站位里最近的」算远近（D1）
+	var objs: Array = []
 	for ob in world.scene_objects(cur_scene):
-		var d: float = me.distance_to(Vector2((ob["pos"] as Vector3).x, (ob["pos"] as Vector3).z))
-		if d < best_d:
-			best_d = d
-			best_kind = "obj"
-			best_id = str(ob["id"])
+		objs.append({"id": str(ob["id"]), "center": ob.get("center", Vector2((ob["pos"] as Vector3).x, (ob["pos"] as Vector3).z)), "anchors": ob.get("anchors", [])})
+	var others: Array = []
 	for id in actors:
 		if id == self_id:
 			continue
-		var a: TActor = actors[id]
-		var d2: float = me.distance_to(a.disp)
-		if d2 < best_d:
-			best_d = d2
-			best_kind = "actor"
-			best_id = id
-	return {"kind": best_kind, "id": best_id}
+		others.append({"id": id, "pos": (actors[id] as TActor).disp})
+	return PickLogic.nearest(Vector2(sa.disp.x, sa.disp.y), objs, others, INTERACT_RANGE)
 
 
 func _do_interact(src: String = "key") -> void:

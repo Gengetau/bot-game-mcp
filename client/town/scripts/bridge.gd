@@ -45,6 +45,13 @@ func setup() -> void:
 			debug_hour = float(kv.substr(5))
 
 
+## 页面全局量 window.__townHideNpcs 是否设了（调试用；端到端的 addInitScript 设）。是否生效由 debug_flags.gd 判断：不带 ?debug=1 一律无视
+func hide_npcs_flag() -> bool:
+	if not web or hud == null:
+		return false
+	return bool(hud.debugHideNpcs())
+
+
 func ws_origin() -> String:
 	if origin.begins_with("https://"):
 		return "wss://" + origin.substr(8)
