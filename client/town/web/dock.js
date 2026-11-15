@@ -76,6 +76,8 @@
       var h = 0;
       if (isOpen && layout === 'drawer') h = dock.offsetHeight + kb;
       document.documentElement.style.setProperty('--dock-h', h + 'px');
+      updateTabFade();
+      if (window.TownLayout) window.TownLayout.invalidate(); // 底栏被顶高 / 落回了：版式变了
     });
   }
   if (window.ResizeObserver) {
@@ -232,7 +234,30 @@
     var right = t.offsetLeft + t.offsetWidth + 2 - (box.clientWidth - 44);
     if (left < box.scrollLeft) box.scrollLeft = Math.max(0, left);
     else if (right > box.scrollLeft) box.scrollLeft = right;
+    updateTabFade();
   }
+  /* 页签条还能往左 / 往右滚时，那一侧给一个渐隐加小箭头（V1）；滚到头就消失。两块都是 #dock 的子元素，盖在页签条上、不收指针 */
+  var fadeL = document.createElement('i');
+  var fadeR = document.createElement('i');
+  fadeL.id = 'dockFadeL';
+  fadeR.id = 'dockFadeR';
+  fadeL.hidden = true;
+  fadeR.hidden = true;
+  dock.appendChild(fadeL);
+  dock.appendChild(fadeR);
+  function updateTabFade() {
+    var box = $('dockTabs');
+    if (!box) return;
+    var max = box.scrollWidth - box.clientWidth;
+    var l = max > 2 && box.scrollLeft > 2;
+    var r = max > 2 && box.scrollLeft < max - 2;
+    if (fadeL.hidden === l) fadeL.hidden = !l;
+    if (fadeR.hidden === r) fadeR.hidden = !r;
+  }
+  (function () {
+    var box = $('dockTabs');
+    if (box) box.addEventListener('scroll', updateTabFade, { passive: true });
+  })();
   function setActive(id) {
     if (!mods[id] || id === activeId) return;
     var prev = activeMod();
@@ -422,6 +447,7 @@
       m.tab = t;
       box.appendChild(t);
     });
+    updateTabFade();
   }
 
   /* ── host 对象 ── */
@@ -722,6 +748,9 @@
     close: close,
     isOpen: function () {
       return isOpen;
+    },
+    kbHeight: function () {
+      return kb;
     },
     debug: debug,
     freeRect: freeRect,

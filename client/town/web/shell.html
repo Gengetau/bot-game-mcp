@@ -51,10 +51,12 @@
     </div>
 
     <div id="toasts" role="status" aria-live="polite"></div>
+    <!-- 只读时的提示：横幅已经说了「现在只读」，提示条只说怎么拿回来（hud.js 的 toast 遇到含「只读」的提示就换成这一句） -->
+    <span id="roToastText" hidden>点上方「接管」，把你的居民拿回这里。</span>
   </div>
 
   <!-- 键位提示：只在有物理键盘和鼠标的设备上显示（hud.js 判断），界面文字都放在这里 -->
-  <div id="keyHint" class="chip" hidden aria-hidden="true"><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> 或方向键 移动 <span class="sep">·</span> <kbd>E</kbd> 互动 <span class="sep">·</span> <kbd>Esc</kbd> 停下 <span class="sep">·</span> <kbd>Enter</kbd> 聊天</div>
+  <div id="keyHint" class="chip" hidden aria-hidden="true" data-mode="full"><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd><span class="kh-t">或方向键 移动</span><span class="sep">·</span><kbd>E</kbd><span class="kh-t">互动</span><span class="sep">·</span><kbd>Esc</kbd><span class="kh-t">停下</span><span class="sep">·</span><kbd>Enter</kbd><span class="kh-t">聊天</span></div>
 
   <div id="bottombar">
     <div id="destMenu" hidden></div>
@@ -93,8 +95,10 @@
 <!--TOWN:TEMPLATES-->
 
 <script src="$GODOT_URL"></script>
+<script src="fit.js"></script>
 <script src="hud.js"></script>
 <script src="dock.js"></script>
+<script src="layout.js"></script>
 <script src="town-modules.js"></script>
 <script src="boot.js"></script>
 </body>

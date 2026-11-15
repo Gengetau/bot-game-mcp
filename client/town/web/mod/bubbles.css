@@ -6,7 +6,7 @@
 .tag.b {
   background: var(--d-paper); color: var(--d-ink); border: 1px solid var(--d-wood); border-radius: 10px; padding: 3px 9px;
   font-size: 13px; line-height: 1.35; text-shadow: none; white-space: normal; max-width: min(60vw, 220px); overflow: visible; text-align: left;
-  unicode-bidi: plaintext; overflow-wrap: anywhere; margin-top: -26px; opacity: 1; box-shadow: 0 1px 0 rgba(60, 40, 20, 0.25);
+  unicode-bidi: plaintext; overflow-wrap: anywhere; text-wrap: pretty; margin-top: -26px; opacity: 1; box-shadow: 0 1px 0 rgba(60, 40, 20, 0.25);
   animation: bubbleIn 0.14s ease-out;
 }
 .tag.b::after {

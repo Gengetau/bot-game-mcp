@@ -17,5 +17,5 @@ for f in "$PROJ"/web/*; do
   esac
 done
 node "$ROOT/client/tools/assemble.mjs" "$OUT" "$PROJ/web"
-BROTLI_QUALITY="${BROTLI_QUALITY:-9}" node "$ROOT/client/tools/compress.mjs" "$OUT" hud.js hud.css dock.js dock.css boot.js town-modules.js town-modules.css
+BROTLI_QUALITY="${BROTLI_QUALITY:-9}" node "$ROOT/client/tools/compress.mjs" "$OUT" hud.js hud.css dock.js dock.css fit.js layout.js boot.js town-modules.js town-modules.css
 echo "[web-only] 完成：$OUT"
