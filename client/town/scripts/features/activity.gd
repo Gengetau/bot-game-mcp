@@ -623,7 +623,7 @@ func debug() -> Dictionary:
 	var sit: Array = []
 	var acts: Dictionary = ctx.actors()
 	for aid in acts:
-		if (acts[aid] as TActor).sitting:
+		if (acts[aid] as TActor).sitting and (acts[aid] as TActor).kind != "npc":  # NPC 坐长椅不算「参加活动的人坐着」
 			sit.append(str(aid))
 	var tg: Array = []
 	for t in _tags:

@@ -248,7 +248,28 @@ func c4_person_reach() -> float:
 # ─────────────────────────────────────────────────────────────────────────
 
 
-# ───────────────────────── C6 分区（预留，空）─────────────────────────
+# ───────────────────────── C6 分区 ─────────────────────────
+## 浮层卡一次只开一张（居民卡、NPC 菜单……）：功能开卡时 claim（上一张卡的主人会收到 on_card_yield 并自己收起），关卡时 release。
+func card_claim(fid: String) -> void:
+	m.features.claim_card(fid)
+
+
+func card_release(fid: String) -> void:
+	m.features.release_card(fid)
+
+
+## 刷新 /me 并等它读完：正有一次在读时先等它结束再读一份新的（免得拿一份买卖之前发出的旧视图盖掉刚更新的货架）。必须 return await。
+func c6_refresh_me_fresh() -> bool:
+	var guard: int = 0
+	while m.me_busy and guard < 150:
+		await m.get_tree().process_frame
+		guard += 1
+	return await m._refresh_me()
+
+
+## 走到某个 NPC 身边（和点它时 main 的调用一致：navigate {approach}）。返回 false 表示没发出（被拦下、对方不在场景里）
+func c6_approach(actor_id: String) -> bool:
+	return c4_approach(actor_id)
 # ─────────────────────────────────────────────────────────────────────────
 
 

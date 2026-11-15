@@ -902,6 +902,26 @@ func _on_scene(msg: Dictionary) -> void:
 			if switched or not rig_ready:
 				rig.snap(Vector3(act.disp.x, 0.0, act.disp.y))
 				rig_ready = true
+	# NPC（场景快照里单独的 npcs 字段，公共场景才有；私宅和小游戏里没有）：并进同一张角色表，补 kind = "npc"。
+	# 位置、折线、插值和居民同一套（服务器给什么就按什么插值，不预测）；要当「居民」用的地方都按 kind 筛掉 NPC（见 client/docs/C6.md 的清单）
+	for n in msg.get("npcs", []):
+		if not (n is Dictionary):
+			continue
+		var nid: String = str(n.get("id", ""))
+		if nid == "":
+			continue
+		seen[nid] = true
+		var nact: TActor = actors.get(nid)
+		var nd: Dictionary = (n as Dictionary).duplicate()
+		nd["kind"] = "npc"
+		if nact == null:
+			nact = TActor.new()
+			nact.role = str(n.get("role", ""))
+			actors_root.add_child(nact)
+			nact.setup(nid, str(n.get("name", "")), "npc", false)
+			actors[nid] = nact
+		nact.role = str(n.get("role", nact.role))
+		nact.apply(nd, now)
 	for id in actors.keys():
 		if not seen.has(id):
 			(actors[id] as TActor).queue_free()
@@ -1496,7 +1516,8 @@ func _on_tap(p: Vector2) -> void:
 		if id == self_id:
 			continue
 		var a: TActor = actors[id]
-		var box := AABB(Vector3(a.disp.x - 0.5, 0.0, a.disp.y - 0.5), Vector3(1.0, 1.9, 1.0))
+		var half: float = 0.35 if a.kind == "npc" else 0.5  # NPC 的点选盒按模型轮廓收紧（居民的偏大是已知问题，留给美术第二轮）
+		var box := AABB(Vector3(a.disp.x - half, 0.0, a.disp.y - half), Vector3(half * 2.0, 1.9, half * 2.0))
 		var hit = box.intersects_ray(o, n)
 		if hit is Vector3:
 			var t: float = o.distance_to(hit)
@@ -1661,6 +1682,10 @@ func _process(dt: float) -> void:
 ## 只看「桌子上有活动」不够：用「停下手上的事」退出的人还站在座位上，路过的人也可能正好停在空座位上，他们都不该被画成坐着。
 ## 每帧每人只查 seat_people 这张表（_apply_me 时从 here.objects 算好），不在这里翻 here.objects。
 func _update_sitting(a: TActor) -> void:
+	if a.kind == "npc":
+		# NPC 的坐姿只看服务器给的 pose（sit）；不查茶桌座位表（那是居民的）
+		a.set_sitting(a.pose == "sit" and not a.moving)
+		return
 	if a.moving:
 		return
 	var spot: Dictionary = world.sit_spot(cur_scene, a.disp)
@@ -1827,6 +1852,8 @@ func _update_tags() -> void:
 	var tags: Array = []
 	for id in actors:
 		var a: TActor = actors[id]
+		if a.kind == "npc":
+			continue  # NPC 的名牌由 npc.gd 的 tags() 钩子加（带身份标记、让位逻辑）
 		var wp := Vector3(a.disp.x, 2.05, a.disp.y)
 		if cam.is_position_behind(wp):
 			continue
@@ -1865,9 +1892,13 @@ func _push_debug() -> void:
 	var size: Vector2 = get_viewport().get_visible_rect().size
 	var cam: Camera3D = rig.cam
 	var al: Array = []
+	var nl: Array = []  # NPC 单放：__town.actors 仍然只有居民（旧的端到端到处在数它）
 	for id in actors:
 		var a: TActor = actors[id]
 		var sp: Vector2 = cam.unproject_position(Vector3(a.disp.x, 1.0, a.disp.y))
+		if a.kind == "npc":
+			nl.append({"id": id, "name": a.actor_name, "x": a.disp.x, "z": a.disp.y, "moving": a.moving, "nx": sp.x / size.x, "ny": sp.y / size.y, "pose": a.pose, "role": a.role, "sitting": a.sitting, "outfit": a.outfit})
+			continue
 		al.append({"id": id, "name": a.actor_name, "x": a.disp.x, "z": a.disp.y, "moving": a.moving, "nx": sp.x / size.x, "ny": sp.y / size.y})
 	var ol: Array = []
 	for ob in world.scene_objects(cur_scene):
@@ -1895,6 +1926,7 @@ func _push_debug() -> void:
 		"selected": selected_obj,
 		"nearValid": near_valid,
 		"actors": al,
+		"npcs": nl,
 		"objects": ol,
 		"vp": m,
 		"zoom": rig.dist,
