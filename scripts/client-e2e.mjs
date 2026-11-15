@@ -120,8 +120,10 @@ const AI_KEY = `bgk_e2e_${rnd()}${rnd()}${rnd()}`;
  *  - letterDeliveryDelayMs 4000：信 4 秒进信箱（默认 60 秒）。
  *  - activityLobbyTtlMs 25000：小游戏 / 共同活动开了桌没人来，25 秒后自动散（默认 10 分钟）。旧步骤不凑桌；凑人的步骤要在 25 秒内完成「开桌 + 加入」。
  * 旧的 1 到 15 步里只有步骤 6 开了一次读书（马上点「停下」），不依赖时长；其余步骤不涉及信件和报名。
+ *  - npcStayMinMs / npcStayMaxMs 20000 / 40000（C6）：NPC 在每个落脚点停留的时间（默认 60 到 180 秒）。拉到 20~40 秒，让「它从一处换到另一处」在一个步骤的时间里能被看到；
+ *    NPC 的位置只由日程定，e2e 不依赖它在哪里，每次都读 scene.npcs 现取。
  */
-const TOWN_PARAMS = Object.freeze({ interactionTimeScale: 0.075, letterDeliveryDelayMs: 4000, activityLobbyTtlMs: 25_000 });
+const TOWN_PARAMS = Object.freeze({ interactionTimeScale: 0.075, letterDeliveryDelayMs: 4000, activityLobbyTtlMs: 25_000, npcStayMinMs: 20_000, npcStayMaxMs: 40_000 });
 let engine = null;
 const engineTail = [];
 let BASE = '';
@@ -609,7 +611,7 @@ async function walkTo(p, x, z, tol = 0.8, opts = {}) {
  */
 async function clearSpot(p, cands) {
   const sc = await serverScene(p);
-  const others = sc.actors.filter((a) => a.id !== sc.self);
+  const others = [...sc.actors.filter((a) => a.id !== sc.self), ...(sc.npcs ?? [])]; // NPC 的点选盒也会挡住身后的地面（C6）
   const blocked = (c) => others.some((a) => Math.abs(c.x - a.x) < 1.2 && c.z - a.z > -3.2 && c.z - a.z < 1.2);
   const hit = cands.find((c) => !blocked(c));
   check(hit, `候选落点都被别的居民挡住：${JSON.stringify(others.map((a) => [a.x.toFixed(1), a.z.toFixed(1)]))}`);
