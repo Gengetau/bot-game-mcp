@@ -311,12 +311,14 @@ export default async function run(h) {
 /*
  * 怎么让它失败（临时改动 -> 应当变红的子步骤；改完一定改回来）
  * 【实测过】（结果见 client/docs/V1.md「反向验证」）
- *  1. 00-chatkit.css 的 .chat-pane .scope 改成 position:absolute（盖在列表上）-> 97「第一行不应被页头盖住」。
- *  2. hud.css 里把 #controls button 的背景改回半透明（rgba(...,0.4)）-> 97.2 对比度不达标。
- *  3. bubbles.css 去掉 text-wrap: pretty -> 97.3 最后一行只有 1 个字。
- *  4. hud.js 的 toast() 去掉「只读」换句 -> 97.4 提示条重复。
- *  5. dock.js 的 updateTabFade 里 r 永远 false -> 97.5 最左「只有右侧提示」。
+ *  1. 00-chatkit.css 的 .chat-pane .scope 改成 position:absolute（盖在列表上）-> 97「第一行（上沿 563）不应被页头（下沿 587）盖住」。
+ *  2. town.css 去掉抽屉里静音钮的 height:40px -> 97.1「mute 36 像素」。
+ *  3. hud.css 的 #controls button:disabled 把 opacity:1 改回 0.4（原来的样子）-> 97.2「stopBtn(禁用) 1.67」。
+ *  4. bubbles.css 去掉 text-wrap: pretty -> 97.3「16 字、31 字、46 字：最后一行 1 个字」。
+ *  5. hud.js 的 toast() 里「只读」换句的正则改成匹配不上 -> 97.4「#stack 里含『只读』的可见元素有两个」。
+ *  6. dock.js 的 updateTabFade 里 r 永远 false -> 97.5「最左：只有右侧提示」超时。
+ *  7. game.css 里矮屏侧栏开着时收起 .game-players 的那条改成 display:flex -> 97.6「scrollHeight 231 对 clientHeight 203」。
  * 【只是推演】
  *  - 97.1 的 6 行：town.css 里抽屉模式把 .rules 恢复显示 -> 列表高度不够 6 行。
- *  - 97.6：game.css 去掉横屏矮屏的 @media 规则 -> 面板压到提示条或出滚动条。
+ *  - 97.2 的「启用 >= 4.5」：把启用底色改成浅色 -> 对比度掉下来（测量代码同 96.4 的 contrastOf，已在 96.4 上见过会红）。
  */

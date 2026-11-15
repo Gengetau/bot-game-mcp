@@ -159,10 +159,11 @@ export default async function run(h) {
 /*
  * 怎么让它失败（临时改动 -> 应当变红的子步骤；改完一定改回来）
  * 【实测过】（结果见 client/docs/V1.md「反向验证」）
- *  1. hud.js 的 setTags 里不调 TownFit.layoutTags（直接按原位置摆）-> 96 / 96.2 的「不与自己名牌相交」或「重叠不超过 5%」。
- *  2. fit.js 的 layoutTags 里让 z、p、o 也不淡出（hideable 全改 false）-> 96「自己的名牌与 p/z/o 相交」。
- *  3. hud.css 的 .tag.z 去掉垫底（background 透明）-> 96.4 对比度不足。
+ *  1. hud.js 的 setTags 在 TownFit.layoutTags 之后把结果换成原位置、全部显示（等于没有避让）
+ *     -> 96「s『阿桌…』与 p『家门』重叠 64%；自己的名牌与 p『家门』相交」、96.2「z『檐下书屋』超出视口」。
+ *  2. hud.css 的 .tag.p 底色改成浅色（rgba(250,245,220,0.9)）-> 96.4「ratio 1.33」。
+ *     注意：.tag.z 的深色垫底改回原来的透明并不会让 96.4 变红，因为 .tag 基类本来就有深色底；z 上这条垫底是冗余的保险，不是 96.4 在测的东西。
  * 【只是推演】
- *  - 96.3：去掉 fit.js 里的滞回（HOLD、TOL）-> 并排走时偏移来回跳，跳变次数超过 2。
+ *  - 96.3：去掉 fit.js 里的滞回（HOLD、TOL）-> 并排走时偏移来回跳，跳变次数超过 2（fit.test.mjs 里有对应的纯函数断言）。
  *  - 96.1：气泡的避让由 bubbles.gd 的 layout 负责，把 bubbles.gd 里把名牌当障碍的那段去掉 -> 气泡压名牌。
  */

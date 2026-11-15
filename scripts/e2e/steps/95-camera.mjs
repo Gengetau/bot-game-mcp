@@ -281,12 +281,15 @@ export default async function run(h) {
 
 /*
  * 怎么让它失败（临时改动 -> 应当变红的子步骤；改完一定改回来）
- * 【实测过】（结果见 client/docs/V1.md「反向验证」）
- *  1. rig.gd 的 _update() 里把 off 固定成零（镜头不让位）-> 95「依次打开每个页签」：自己的投影点不在可见矩形内。
- *  2. layout.js 的 measure() 去掉「msg !== lastSent」判断、并让 hud.js 每帧调一次 TownLayout.invalidate（每帧发版式）-> 95.3「站着不动 3 秒版式消息应为 0」。
- *  3. layout.js 里 keyHintMode 的 obstacles 去掉 #controls（让提示条不躲按钮行）-> 95.5「提示条不应与 #controls 相交」。
- *  4. layout.js 里 off: inGame 改成 off: false -> 95.6「局中提示条不应出现移动」。
+ * 【实测过】（四处一起改，一遍里看到下面这些红；结果见 client/docs/V1.md「反向验证」）
+ *  1. layout.js 的 measure() 把发给 Godot 的矩形固定成整个视口（{l:0,t:0,r:1,b:1}，镜头不让位）
+ *     -> 95「自己的投影点应在可见矩形内」（nearby 页签：(195, 464) 对 t=46 b=393）、95.1、95.2、95.4（冻结不出来，因为目标点没动过）。
+ *  2. layout.js 去掉「msg !== lastSent」判断，并加一个每 100 毫秒调一次 invalidate 的定时器（等于每帧发版式）
+ *     -> 95.3「站着不动 3 秒：Godot 收到的版式消息应为 0 条新增：76 -> 81」。
+ *     （只在 hud.js 的 setTags 里调 invalidate 看不出来：站着不动时 Godot 不推牌，这条路径本来就不跑。）
+ *  3. layout.js 里 actions、controls 不再并入提示条的障碍 -> 95.5「901 宽 面板关（full 版）：提示条不应与 #controls 相交」。
+ *  4. layout.js 里 fitKeyHint 的 off: inGame 改成 off: false -> 95.6「局中提示条隐藏」超时。
  * 【只是推演】
  *  - 95.1 的「太小不追」：view_logic.gd 的 MIN_H 改成 0 -> 目标点被追到一个极小的矩形里，gy 变了；单测里也有对应的一条（client/tests/view_logic_test.gd）。
- *  - 95.4：rig.gd 的 ground_offset 用错宽高比 -> 冻结时投影点反推回去与点的世界坐标不符（单测的相机对照也会红）。
+ *  - 95.4 的「同一个像素对应的地面变了」：rig.gd 的 ground_offset 用错宽高比 -> 冻结时投影点反推回去与点的世界坐标不符（单测的相机对照也会红）。
  */
