@@ -37,7 +37,7 @@ export default async function run(h) {
       check(p.kind === 'stove' && p.state === 'idle' && !p.forced, `${p.id} 应是 idle、没被强行指定：${JSON.stringify(p)}`);
       check(STATES.every((s) => p.states.includes(s)), `${p.id} 应有四个状态：${JSON.stringify(p.states)}`);
     }
-    check(typeof (await A.page.evaluate(() => window.__town.setPropState)) === 'function', 'window.__town.setPropState 应是函数（boot.js 在 debug 下挂）');
+    check(typeof (await A.page.evaluate(() => window.__town.setPropState)) === 'function', 'window.__town.setPropState 应是函数（hud.js 在 debug 下挂）');
   });
 
   await step(100.1, '强行切四种状态并截图；__town.props 跟着变，forced 为真；解除后回到服务端数据（idle）', async () => {
@@ -94,5 +94,5 @@ export default async function run(h) {
 //  - client/town/scripts/world.gd 的 sync_object_states 里去掉 `if not _prop_forced.has(oid)`：100.2「服务端刷新不应把强行状态盖回去」红。
 //  - client/town/scripts/bridge.gd 里把 props_mode_of 的第一个参数改成恒真：100.3 里不带 props=sample 的那一遍不受影响，
 //    但不带 debug=1 的最后一条（__town 应为 null）靠 hud.js 的 DEBUG 开关，和样件无关；这条只证明调试面不外露。
-//  - client/town/web/boot.js 去掉 setPropState 的访问器：100 的「setPropState 应是函数」红。
+//  - client/town/web/hud.js 的 debugSet 里去掉 setPropState：100 的「setPropState 应是函数」红。
 //  - client/town/assets/kits/sample/station_sample/manifest.json 改坏：不影响这个文件（运行时不读清单），由 npm run client:assets:check 红。

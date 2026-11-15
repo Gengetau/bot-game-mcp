@@ -667,6 +667,10 @@
       window.__townHideNpcs = !!on;
       emit('debug_hide_npcs', on ? '1' : '0');
     };
+    /* 调试：强行指定带状态物件的外观（服务端数据刷新不会盖回去）；状态名传空串解除。只在 ?debug=1 下有，main.gd 也只在 debug 下认。见 client/docs/T02a.md */
+    d.setPropState = function (id, state) {
+      emit('debug_prop_state', JSON.stringify([String(id), state === undefined || state === null ? '' : String(state)]));
+    };
     d.dock = window.TownDock ? window.TownDock.debug() : {};
     window.__town = d;
   }

@@ -1980,7 +1980,7 @@ func _push_debug() -> void:
 	bridge.hud_debug(JSON.stringify(d))
 
 
-## 调试钩子 window.__town.setPropState(物件编号, 状态名)（boot.js 在 ?debug=1 下挂上，发 debug_prop_state 事件）：强行指定带状态物件的外观；状态名为空解除。
+## 调试钩子 window.__town.setPropState(物件编号, 状态名)（hud.js 的 debugSet 在 ?debug=1 下挂上，发 debug_prop_state 事件）：强行指定带状态物件的外观；状态名为空解除。
 func _debug_prop_state(arg: String) -> void:
 	var parsed = JSON.parse_string(arg)
 	if parsed is Array and (parsed as Array).size() >= 2:

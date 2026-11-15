@@ -117,28 +117,6 @@
   var hourFmt = {};
   window.TownHost = host;
 
-  /* 调试钩子 window.__town.setPropState(物件编号, 状态名)：只在 ?debug=1 下有。window.__town 是 hud.js 每 100 毫秒整个换一遍的对象，
-   * 函数挂不住，所以这里用访问器：每次被赋新值时补上这个函数，它发 ui 事件 debug_prop_state 给 Godot（main.gd），强行切带状态物件的外观；
-   * 状态名传空串解除、回到服务端数据。 */
-  if (/[?&]debug=1(?:&|$)/.test(location.search)) {
-    var dbgTown;
-    Object.defineProperty(window, '__town', {
-      configurable: true,
-      enumerable: true,
-      get: function () {
-        return dbgTown;
-      },
-      set: function (d) {
-        if (d && typeof d === 'object') {
-          d.setPropState = function (id, state) {
-            host.emit('ui', 'debug_prop_state', JSON.stringify([String(id), state === undefined || state === null ? '' : String(state)]));
-          };
-        }
-        dbgTown = d;
-      },
-    });
-  }
-
   document.addEventListener('visibilitychange', function () {
     host.emit('vis', document.visibilityState === 'visible' ? '1' : '0');
     /* 切到后台：按设置把声音整个挂起（回前台由下面的 unlockAudio 恢复，不会叠播） */
