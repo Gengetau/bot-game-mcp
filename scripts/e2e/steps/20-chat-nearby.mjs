@@ -831,6 +831,170 @@ export default async function run(h) {
     }
   });
 
+  // ───────────────────────── 20.97 换人之后迟到的 /me（C2b 评审补） ─────────────────────────
+  // 会话代号守着的另一条路：上一位居民发出的 /me 还在路上，这台设备换了人（离开、清登录、重新取名进入），新居民已经在镇上了那份回应才到。
+  // 不对代号的话 main._apply_me 会把上一位的视图整份套到新居民身上：自己的编号、名字、here、手上的活动。
+  // 做法：扣住上一位页面发出的那份 /me，换人，等新居民站稳，再把上一位的视图原文当作那份迟到的回应放回去
+  // （不能直接放行：换人之后登录 Cookie 已经是新居民的，放行拿回来的会是新居民自己的视图）。
+  // 两处要留神的时间：
+  //  - 页面自己的请求 15 秒超时（boot.js 的 fetchJson）。扣住的那份得在这之前放回，否则页面先把它取消，「请求失败」会记进全程检查。
+  //    所以扣住满 11 秒还没轮到放回，就由定时器先放回（这一趟不算数），换一位居民再来一趟，最多三趟。
+  //  - 新居民自己的 /me 若排在迟到的回应之后到，会把被套错的状态又盖回去，红灯就看不稳。所以放回之前先等新居民自己发出的 /me 都回来，
+  //    放回之后到观察结束之间新居民再发的 /me 先扣着，观察完再放行。
+  await step(20.97, '换人之后迟到的 /me：上一位居民发出、还在路上的 /me 在新居民进来之后才回，不被套用（页面里的自己仍是新居民，自己的名牌还在）；之后新居民自己的 /me 和发话照常', async () => {
+    allowFailure(B.w, 'POST', /\/town\/api\/heartbeat$/, { min: 0, max: 3, why: '20.97：离开瞬间在途的心跳可能 presence_lost（最多换三次人）' });
+    const ME = /\/town\/api\/me(\?|$)/;
+    const HOLD_MAX_MS = 11_000;
+    const selfTag = () => B.page.evaluate(() => [...document.querySelectorAll('#tags .tag.s')].map((e) => ({ id: e.getAttribute('data-id'), text: e.textContent })));
+    let mode = 'pass'; // pass：全部放行；first：扣住第一份（上一位的）；park：全部扣着（观察期间新居民自己的）
+    let late = null; // 这一趟被扣住的那一份：body 是上一位的视图原文，route 在扣住时填上，done 记是谁放回的
+    const parked = [];
+    const flying = new Set(); // 放行出去、还没回来的 /me
+    let through = 0;
+    const pass = (route) => {
+      through++;
+      flying.add(route.request());
+      route.continue().catch(() => {});
+    };
+    const giveBack = async (how) => {
+      const l = late;
+      if (!l || !l.route || l.done) return false;
+      l.done = how;
+      clearTimeout(l.timer);
+      await l.route.fulfill({ status: 200, contentType: 'application/json; charset=utf-8', body: l.body }).catch(() => {});
+      return true;
+    };
+    const onMe = (route) => {
+      if (mode === 'first' && late && !late.route) {
+        late.route = route;
+        late.at = Date.now();
+        late.timer = setTimeout(() => void giveBack('slow'), HOLD_MAX_MS);
+        return;
+      }
+      if (mode === 'park') {
+        parked.push(route);
+        return;
+      }
+      pass(route);
+    };
+    const onEnd = (req) => {
+      flying.delete(req);
+    };
+    await B.page.route(ME, onMe);
+    B.page.on('requestfinished', onEnd);
+    B.page.on('requestfailed', onEnd);
+    let routed = true;
+    // 失败时也要收拾：扣着不放的请求会让页面的「正在读 /me」一直挂着，满 15 秒还会变成一条「请求失败」
+    const unhold = async () => {
+      mode = 'pass';
+      await giveBack('cleanup');
+      for (const r of parked.splice(0)) pass(r);
+      if (!routed) return;
+      routed = false;
+      B.page.off('requestfinished', onEnd);
+      B.page.off('requestfailed', onEnd);
+      await B.page.unroute(ME, onMe).catch(() => {});
+    };
+    const nearSpot = async () => {
+      const me = selfActor(await serverScene(B));
+      return h.clearSpot(B, [
+        { x: me.x + 2.5, z: me.z },
+        { x: me.x - 2.5, z: me.z },
+        { x: me.x, z: me.z + 2.5 },
+        { x: me.x, z: me.z - 2.5 },
+      ]);
+    };
+    // 一趟：扣住上一位的 /me → 换人 → 新居民站稳 → 放回 → 观察。太慢（定时器先放回了）返回 slow，由外面换一位再来
+    const attempt = async () => {
+      const oldId = B.id;
+      const cid = await B.page.evaluate(() => window.TownHud.clientId());
+      // 上一位的视图原文（稍后原样当作迟到的回应）。它确实是上一位自己的，页面此刻也认为自己是这一位
+      const oldText = await (await B.ctx.request.get(`${BASE}/town/api/me?clientId=${encodeURIComponent(cid)}`)).text();
+      const oldMe = JSON.parse(oldText);
+      check(oldMe?.me?.id === oldId && (await snap(B.page)).self === oldId, `前提：取到的是上一位自己的视图（${oldMe?.me?.id} 对 ${oldId}）`);
+      const mine = { body: oldText, route: null, at: 0, timer: null, done: '' };
+      late = mine;
+      mode = 'first';
+      // 让上一位的页面发出一次 /me：走一小段，停下之后页面会读一次（被扣住，回不来）
+      const spot = await nearSpot();
+      await walkTo(B, spot.x, spot.z, 1.2, { avoidDock: true });
+      await until(() => mine.route !== null, 30_000, '上一位的页面发出了 /me（已扣住）', 50);
+      // 换人：上一位离开（接口代发），页面回到「已离开」；清掉登录 Cookie，再进入时重新取名
+      const lr = await B.ctx.request.post(`${BASE}/town/api/leave`, { data: { clientId: cid } });
+      check(lr.ok(), `POST /leave 返回 ${lr.status()}`);
+      await until(() => B.page.evaluate(() => document.body.dataset.phase === 'ready'), 20_000, 'B 页面回到「已离开」', 50);
+      await B.ctx.clearCookies();
+      await B.page.click('#enterBtn');
+      await B.page.waitForSelector('#nameInput', { state: 'visible', timeout: 30_000 });
+      const nm = `阿迟${rnd()}`;
+      await B.page.fill('#nameInput', nm);
+      await B.page.click('#loginBtn');
+      await B.page.waitForFunction(() => window.__town && window.__town.actors.length > 0 && document.body.dataset.phase === 'playing', null, { timeout: 60_000 });
+      await until(async () => ((await snap(B.page)).self || oldId) !== oldId, 30_000, '快照里的自己换成了新居民', 100);
+      const newId = (await snap(B.page)).self;
+      check(newId && newId !== oldId, `换名重进应是另一位居民：${oldId} -> ${newId}`);
+      B.id = newId;
+      // 屏障：新居民自己的名牌画出来了（后面要看它还在不在），新居民自己发出的 /me 都已经回来
+      const tag0 = await until(async () => {
+        const t = await selfTag();
+        return t.length === 1 && t[0].id === newId ? t[0] : null;
+      }, 15_000, '新居民自己的名牌画出来了', 100);
+      check(tag0.text.includes(nm), `自己的名牌应写新居民的名字：${JSON.stringify(tag0)}（新名字 ${nm}）`);
+      await until(() => flying.size === 0, 15_000, '新居民自己发出的 /me 都已经回来', 50);
+      // 从这里到 giveBack 之间没有 await：定时器和新的 /me 都插不进来
+      if (mine.done) return { slow: true, oldId, newId };
+      mode = 'park';
+      const heldMs = Date.now() - mine.at;
+      const got = B.page.waitForResponse((r) => r.request() === mine.route.request(), { timeout: 20_000 });
+      await giveBack('ok');
+      await got;
+      // 屏障加观察：回应已经到了页面；之后 Godot 又推了多次调试数据，其间页面里的「自己」一次都没变成别人。
+      // 这段时间新居民自己的 /me 都被扣着，被套错的话没有东西会把它盖回去
+      const tObs = Date.now();
+      let pushes = 0;
+      let flipped = null;
+      while (flipped === null && pushes < 30 && Date.now() - tObs < 8000) {
+        await frames(B.page, 3, 30_000);
+        pushes += 3;
+        const s = await snap(B.page);
+        if (s.self !== newId) flipped = s.self || '（空）';
+      }
+      const tag1 = await selfTag();
+      const phase1 = await B.page.evaluate(() => document.body.dataset.phase);
+      const parkedN = parked.length;
+      mode = 'pass';
+      for (const r of parked.splice(0)) pass(r);
+      check(flipped === null, `迟到的 /me 不应被套用：页面里的自己变成了 ${flipped}（上一位 ${oldId}，新居民 ${newId}）`);
+      check(pushes >= 9, `观察不成立：放回之后 Godot 只推了 ${pushes} 次调试数据`);
+      check(tag1.length === 1 && tag1[0].id === newId && tag1[0].text.includes(nm), `自己的名牌应仍是新居民的：${JSON.stringify(tag1)}`);
+      check(phase1 === 'playing', `页面应仍在镇上（迟到的回应不把人带回登录或「已离开」），实际 ${phase1}`);
+      return { slow: false, oldId, newId, heldMs, pushes, parkedN };
+    };
+    try {
+      let res = null;
+      for (let n = 1; n <= 3 && (res === null || res.slow); n++) {
+        res = await attempt();
+        if (res.slow) note(`第 ${n} 趟太慢：扣住的 /me 满 ${HOLD_MAX_MS / 1000} 秒时新居民还没站稳，已由定时器先放回（这一趟不算），换一位再来`);
+      }
+      check(!res.slow, `三趟都没能在 ${HOLD_MAX_MS / 1000} 秒内换完人：这台机器此刻太慢，这一步要的时序造不出来（不是功能失败）`);
+      const newId = res.newId;
+      // 新居民自己的连接、读取和动作照常：连接是好的；走一小段，又读了 /me；说一句话有回执
+      await until(async () => (await snap(B.page)).conn === 'ok', 30_000, '新居民的连接是好的（收到 hello）');
+      const t1 = through;
+      const spot2 = await nearSpot();
+      await walkTo(B, spot2.x, spot2.z, 1.2, { avoidDock: true });
+      await until(() => through > t1 && flying.size === 0, 30_000, '新居民走动之后页面照常读了 /me，并且读回来了', 50);
+      await frames(B.page, 3, 30_000);
+      check((await snap(B.page)).self === newId, '走动之后页面里的自己仍是新居民');
+      await unhold();
+      const ack = await uiSay(B, uniq('新来的'));
+      check(ack && ack.ok === true, `新居民能照常说话：${JSON.stringify(ack)}`);
+      note(`换人 ${res.oldId} -> ${newId}；扣住的 /me 在发出 ${res.heldMs} 毫秒后放回（上限 ${HOLD_MAX_MS} 毫秒，页面自己的超时 15 秒）；放回后观察了 ${res.pushes} 次调试推送，其间扣着新居民自己的 /me ${res.parkedN} 份；迟到的回应没有被套用`);
+    } finally {
+      await unhold();
+    }
+  });
+
   await h.release(A);
   await h.release(B);
 }
@@ -870,6 +1034,7 @@ export default async function run(h) {
  *  - main.gd 的 _process 里去掉「查撤销期间不发起新的连接」（`and not revoke_checking`）：20.96 红在最后一条（查的期间要了 1 次票）；
  *    前面几条仍然成立，因为 _start_ws_attempt 在票回来时发现会话代号变了，把票丢了（第二道防线）。
  *  - 再把 _start_ws_attempt 里票回来之后的两处检查（会话代号、want_net）也去掉：20.96 红在「已离开之后不应有新的 WebSocket」。
+ *  - main.gd 的 _refresh_me 里去掉回来之后核对会话代号的那一处（`if gen != sess_gen: return false`）：20.97 红在「迟到的 /me 不应被套用」（页面里的自己变成了上一位）。
  *    （实测与否见 client/docs/C2b.md 的反向验证清单。）
  * 没有做出红灯的三条（如实记录）：
  *  - 00-chatkit.js 的 rebuild() 去掉按距底距离还原滚动：20.92 仍绿。Chromium 里 rebuild 是同步清空再重建，中途没有强制布局，scrollTop 不会被夹成 0；

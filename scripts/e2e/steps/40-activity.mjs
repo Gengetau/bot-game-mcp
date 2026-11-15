@@ -422,6 +422,10 @@ export default async function run(h) {
     check(actionsOf(A, 'navigate').length === nA, '被拦的这一下不应发出 navigate');
 
     // ── C2b（一）：A 点「停下手上的事」。人没有走动，还站在座位上；服务器里只剩 B，活动照常继续 ──
+    // 余量：从这里到本步骤最后一条坐姿断言，活动都得还在进行（正常两三秒走完，其间各处等待最长 8 到 10 秒）。
+    // 机器慢到剩下不足 12 秒时在这里明说，不让后面的断言因为「活动到点结算了」红得莫名其妙
+    const leftMs = ends0 - Date.now();
+    check(leftMs >= 12_000, `退出之前喝茶应至少还剩 12 秒，实际 ${(leftMs / 1000).toFixed(1)} 秒（前面几下太慢，这一步后半段的前提不成立）`);
     const pa0 = await posOf(A);
     const nL = A.w.actions.length;
     await A.page.click('#leaveActBtn');
