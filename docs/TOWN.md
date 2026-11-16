@@ -324,7 +324,7 @@ packages/engine/town/             旧的网页前端（静态文件；会被 God
 
 | type | data | 什么时候 |
 |---|---|---|
-| `you_arrived` | `{space, name, target}` | 我这一趟走到了 |
+| `you_arrived` | `{space, name, target}` | 我这一趟走到了。事件的 `at` 是应到时刻；结算可能晚一拍（调度器每秒一次，或下一条命令顺手结清），所以人到点停下之后马上又出发的话，上一趟的 `you_arrived` 会排在新 `navigate` 的回执之后。分辨办法：上一趟的 `at` 一定小于新回执里的 `navigation.arriveAt`，新这一趟自己的不小于它（三维客户端的 `nav_route.gd` 就这么做） |
 | `nav_stopped` | `{reason, target, space}` | 我这一趟没走完就停了（键盘方向输入的松手、到期不发）。`reason`：`lease`（没人续租）、`control`（控制权换手）、`blocked`（到门口进不去 / 接下来的路走不通）、`activity`（进了一局小游戏）、`eject`（被请出门） |
 | `arrived` / `left` | `{resident, space}` | 有人走进 / 走出我所在的区域。没有坐标，也不说从哪来、到哪去 |
 | `presence` | `{resident, present, space}` | 身边的人上线 / 离线 |

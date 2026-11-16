@@ -66,7 +66,8 @@ export const menuIs = async (until, p, id, ms = 30_000) => {
     const g = await godotNpc(p).catch(() => null);
     const pos = await p.page.evaluate((i) => { const t = window.__town; const me = (t?.actors ?? []).find((x) => x.id === t.self); const n = (t?.npcs ?? []).find((x) => x.id === i); return { me: me && [me.x, me.z, me.moving], npc: n && [n.x, n.z, n.moving] }; }, id).catch(() => null);
     const nav = (p.w?.actions ?? []).filter((r) => r.type === 'navigate').at(-1) ?? null; // 最后一条 navigate：是走向这个 NPC（approach），还是点到了地面
-    throw new Error(`${e.message}；Godot：${JSON.stringify(g)}；页面位置：${JSON.stringify(pos)}；最后一条 navigate：${JSON.stringify(nav)}`);
+    const pick = await godotFeature(p.page, '_pick').catch(() => null); // 最近一次点选选中了什么（点到地面不会有新记录）
+    throw new Error(`${e.message}；Godot：${JSON.stringify(g)}；最近一次点选：${JSON.stringify(pick)}；页面位置：${JSON.stringify(pos)}；最后一条 navigate：${JSON.stringify(nav)}`);
   }
 };
 
