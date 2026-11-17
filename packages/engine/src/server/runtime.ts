@@ -14,6 +14,7 @@ import { driveAssets, localAssets, type AssetStore, type ServiceAccount } from '
 import { directoryLibrary, type ScriptLibrary } from '../games/jubensha/index.js';
 import { Authenticator } from '../mcp/auth.js';
 import { VERSION } from '../version.js';
+import { createCity, type CityService } from '../city/index.js';
 import { createWorld, type WorldService } from '../world/index.js';
 import { stderrLog } from './log.js';
 
@@ -27,6 +28,8 @@ export interface Runtime {
   scripts?: ScriptLibrary;
   /** 持续世界「栖灯镇」（配置里 town.enabled 才有） */
   world?: WorldService;
+  /** 东京城市世界（配置里 city.enabled 才有） */
+  city?: CityService;
   version: string;
   startedAt: number;
   /** 停止计时器并写盘 */
@@ -84,6 +87,23 @@ export function createRuntime(config: BotGameConfig, log: (msg: string) => void 
       (e) => log(`[town] 启动恢复失败：${e instanceof Error ? e.stack : String(e)}`),
     );
   }
+  const city = config.city.enabled
+    ? createCity({
+        dbPath: config.city.dbFile,
+        params: config.city.params,
+        house: config.city.house.map((m) => ({ actorId: m.actorId, name: m.name, ...(m.bio ? { bio: m.bio } : {}), qqIds: m.qqIds })),
+        log,
+        ...(config.seed ? { rng: new SeededRng(`${config.seed}:city`) } : {}),
+        ...(config.city.weather ? {} : { fetchWeather: null }),
+      })
+    : undefined;
+  if (city) {
+    if (!config.city.bridgeKey) log('东京城市世界没有配置桥接密钥（city.bridgeKey）：桥接接口不开放，小屋的室友进不了城');
+    void city.start().then(
+      () => log(`东京城市世界已就绪：${config.city.dbFile}（室友 ${config.city.house.length} 位）`),
+      (e) => log(`[city] 启动恢复失败：${e instanceof Error ? e.stack : String(e)}`),
+    );
+  }
   const auth = new Authenticator(resolveAuth(config), manager, log);
   manager.isKeyedAgent = (id) => auth.hasKeyFor(id);
   const timer = setInterval(() => {
@@ -94,6 +114,7 @@ export function createRuntime(config: BotGameConfig, log: (msg: string) => void 
     }
     // 小镇的调度和桌游的计时各走各的：一边出错不影响另一边
     world?.tick();
+    city?.tick();
   }, 1000);
   timer.unref();
   // 清理已结束对局的云盘图片副本
@@ -114,6 +135,7 @@ export function createRuntime(config: BotGameConfig, log: (msg: string) => void 
     settings,
     ...(scripts ? { scripts } : {}),
     ...(world ? { world } : {}),
+    ...(city ? { city } : {}),
     version: VERSION,
     startedAt: Date.now(),
     close() {
@@ -121,6 +143,7 @@ export function createRuntime(config: BotGameConfig, log: (msg: string) => void 
       if (sweeper) clearInterval(sweeper);
       manager.flush();
       world?.close();
+      city?.close();
     },
   };
 }

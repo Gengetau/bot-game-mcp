@@ -1,0 +1,31 @@
+{
+  "version": 1,
+  "items": [
+    {
+      "kernel": {
+        "kind": "food",
+        "item": "cookie"
+      },
+      "engine_type": "cookie",
+      "stack": true,
+      "edible": true
+    }
+  ],
+  "effects": [
+    {
+      "engine_kind": "ate",
+      "engine_type": "cookie",
+      "kernel_effect": "snack"
+    },
+    {
+      "engine_kind": "drank",
+      "engine_type": "coffee",
+      "kernel_effect": "drink_coffee"
+    },
+    {
+      "engine_kind": "walked",
+      "min_minutes": 15,
+      "kernel_effect": "walk_15m"
+    }
+  ]
+}

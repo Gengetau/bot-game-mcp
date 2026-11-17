@@ -115,6 +115,33 @@ export const configSchema = z.object({
       adminOnlyTickets: z.boolean().default(false),
     })
     .default({ enabled: false, dbFile: './data/town.db', publicUrl: null, devLogin: false, clientDir: null, params: {}, adminOnlyTickets: false }),
+  /**
+   * 东京城市世界（/city/）：小屋的室友经外出访问进城、外部 bot 经 MCP 进城的持续城市。默认不开。
+   * 数据存在独立的 SQLite 文件里，和栖灯镇的库完全分开。说明见 docs/CITY.md。
+   */
+  city: z
+    .object({
+      enabled: z.boolean().default(false),
+      dbFile: z.string().default('./data/city.db'),
+      /** 覆盖默认参数（见 src/city/params.ts）。时区在开服后不能改 */
+      params: z.record(z.string(), z.unknown()).default({}),
+      /** 桥接密钥：小屋内核调 /city/bridge/v1 时带的 Bearer。不配就不挂桥接接口。也可以用环境变量 BOTGAME_CITY_BRIDGE_KEY */
+      bridgeKey: z.string().min(24, '桥接密钥至少 24 个字符').optional(),
+      /** 是否向 open-meteo 抓实时天气；false 时一直用合成天气（标注为 fallback） */
+      weather: z.boolean().default(true),
+      /** 小屋的室友：actorId 是内核里的编号；qqIds 是她在 QQ 侧的 bot 身份 id（这些身份在城里只能看，不能进城） */
+      house: z
+        .array(
+          z.object({
+            actorId: z.string().regex(/^[a-z][a-z0-9_-]{0,31}$/),
+            name: z.string().min(1).max(16),
+            bio: z.string().max(80).optional(),
+            qqIds: z.array(z.string().min(1)).default([]),
+          }),
+        )
+        .default([]),
+    })
+    .default({ enabled: false, dbFile: './data/city.db', params: {}, weather: true, house: [] }),
   refereeStaleSeconds: z.number().int().min(10).default(120),
   lobbyTtlMinutes: z.number().int().min(1).default(120),
   idleGameTtlMinutes: z.number().int().min(5).default(360),
@@ -160,6 +187,12 @@ export function loadConfig(path?: string, env: NodeJS.ProcessEnv = process.env):
     if (env.BOTGAME_TOWN_URL) raw.town.publicUrl = env.BOTGAME_TOWN_URL;
     if (env.BOTGAME_TOWN_CLIENT_DIR !== undefined) raw.town.clientDir = env.BOTGAME_TOWN_CLIENT_DIR || null;
     if (env.BOTGAME_TOWN_DEV_LOGIN !== undefined) raw.town.devLogin = env.BOTGAME_TOWN_DEV_LOGIN === '1' || env.BOTGAME_TOWN_DEV_LOGIN === 'true';
+  }
+  if (env.BOTGAME_CITY !== undefined || env.BOTGAME_CITY_DB || env.BOTGAME_CITY_BRIDGE_KEY) {
+    raw.city = { ...(raw.city ?? {}) };
+    if (env.BOTGAME_CITY !== undefined) raw.city.enabled = env.BOTGAME_CITY === '1' || env.BOTGAME_CITY === 'true';
+    if (env.BOTGAME_CITY_DB) raw.city.dbFile = env.BOTGAME_CITY_DB;
+    if (env.BOTGAME_CITY_BRIDGE_KEY) raw.city.bridgeKey = env.BOTGAME_CITY_BRIDGE_KEY;
   }
   if (env.BOTGAME_SCRIPTS_DIR !== undefined) raw.scriptsDir = env.BOTGAME_SCRIPTS_DIR || null;
   if (env.BOTGAME_ASSETS_DIR !== undefined) raw.assetsDir = env.BOTGAME_ASSETS_DIR || null;

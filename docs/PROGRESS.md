@@ -1,5 +1,49 @@
 # 开发进度与测试记录
 
+## 2026-11-17：东京城市化第一期——引擎侧（城市模块、桥接协议 v1、外部 bot 入口）
+
+**上下文压缩后先读这一节。** 依据是主人给的《东京城市化第一期 · 引擎侧规格（小屋内核 × 城市引擎，v0.3）》（不在仓库里）。引擎这一侧的工作清单 E1～E12 和共同起点 D0（机器可读的桥接 schema）、D1（映射表）、D2（测试环境：假内核客户端）都做了，在分支 `claude/new-session-21h9ag`。**没有部署，没有动服务器；上线的每一步都要先问主人**（规格 7.3）。说明和接口契约见 `docs/CITY.md`。
+
+### 做了什么
+
+- **城市是独立模块** `packages/engine/src/city/`，自己的 `CityService`、自己的 SQLite 文件（`city.db`，表结构 v1），不动 `town.db`。为此 `world/db.ts` 的 `TownDb` 加了一个可选的表结构参数（默认还是小镇的，小镇行为不变）。城里没有坐标和导航：位置只到地点，行程是持久化的定时任务（一段一段走，重启后接着走）。
+- **E1**（`e3fef2c`，已单独提交）：小镇的 `requireReach` 不再只认 town 场景，在所有场景里按编号找物件，哪儿都查不到的编号一律拒绝；物件编号跨场景唯一（`test/world/reach-scenes.test.ts`）。
+- **目录**（`catalog.ts`，版本 `tokyo-p1.0`）：赤羽、池袋、新宿三个区域，十来个地点（车站、广场、便利店、河岸、喫茶店、书店、公园、露台、面包店、文具店），三段电车。每条数据带来源标注；店铺全是虚构的。不公开的交接点 `akabane:ai-house:entrance` 只在桥接接口里出现。
+- **桥接协议** `/city/bridge/v1`（`visits.ts`、`http.ts`，Bearer 密钥，没配密钥整组路由 404）：prepare、commit、abort、查询、return-request、release、outbox（长轮询）、weather、reconcile、catalog，以及代行的 act / view / wait（要带 `visit_id` 和当前的 `domain_epoch`）。回执永久保存：同一个请求号同样内容返回原回执，换内容 409。访问状态：prepared → active → returning → settled → closed / reconcile，另有 aborted。
+- **账本**（`ledger.ts`）：复式、原因键唯一（`visit:<id>:in`、`visit:<id>:out`、`trip:<trip_id>:leg:<n>`、`grant:first-entry:<principal_id>`），所有账户余额之和恒为 0。回程车费按当前位置动态预留，花钱花不到预留的部分；自动回程的时刻 = 最晚到家时刻 − 回家路程 − 5 分钟。
+- **外部 bot**（`residents.ts`、`actions.ts`、`mcp/city.ts`）：从新宿站或池袋站进城，首次发 ¥200,000（只发一次），同时在城最多 30 个，在场租约 10 分钟；动作 `travel`、`say`、`buy`、`consume`、`give`、`go_home`；每小时 60 个、每天 400 个动作，聊天每分钟 6 句，被叫醒额度突发 10、每小时 30。MCP 和小镇共用工具名：`enter_world {world_id:"tokyo"}` 之后这个会话走城市。六位室友在 QQ 侧的密钥直接进城得到 `ENTRY_VIA_HOME_ONLY`。
+- **天气**（`weather.ts`）：open-meteo，30 分钟一次，状态 ok / stale / fallback；合成天气不下雨；两个天气事件（开始下雨、河岸的傍晚）只由实时数据触发，每区每天最多一次。
+- **视图**（`views.ts`）：公开视图、地点现场、本人视图；文字页面 `/city/`。
+- **对账**（`reconcile.ts`）：每天 4 点（世界时区）和每次访问交回之后跑，只出报告，不自动修。
+- **协议文件**：`docs/city/bridge-v1.schema.json`（JSON Schema 2020-12，有测试拿真实的请求、回执、outbox 记录去校验）、`docs/city/mappings.json`（和代码里的映射表逐字节一致，有测试）。
+
+### 测试结果（2026-11-17，本分支，Linux 容器，Node 22）
+
+- `npm run typecheck`：通过。
+- `npm test`：94 个测试文件、1892 个测试全部通过。其中城市是 `packages/engine/test/city/` 下 7 个文件、75 个测试：
+  - `s1.test.ts`：主用例 S1（妮娅带 ¥20,000 和一件零食去池袋的喫茶店，遇到外部 bot，买一杯咖啡喝掉，回家，交回，对账干净）；
+  - `faults.test.ts`：F1～F12、F15、F16 的引擎部分和出门前的检查（26 个）；
+  - `world.test.ts`：目录、外部 bot、小屋门口不外泄、天气（含 F14）；
+  - `http.test.ts`：公开页面、桥接鉴权、经 HTTP 的完整一趟、长轮询；
+  - `mcp-city.test.ts`：MCP 入口，只开城市和城市小镇同开两种情况；
+  - `bridge-schema.test.ts`、`mappings.test.ts`：协议文件和实现对得上。
+- `npm run docs`：`docs/GAMES.md`、`docs/TOOLS.md` 无变化。
+- `npm run build && npm run e2e`：端到端全部通过（种子 594653693，86 秒）。
+- **没有做的验证**：没有连真实的小屋内核（内核侧还没有实现，用的是测试里的假内核）；没有在服务器上跑；open-meteo 的真实抓取只测了解析和失败退回，没有在测试里打外网。
+
+### 要告诉主人的几件事
+
+1. **票价**：赤羽–新宿 ¥260 查证过；赤羽–池袋、池袋–新宿两段的 ¥200 是估计值，没有查证。页面和目录里都标了「模拟值」。要改就改 `catalog.ts` 并换 `FARE_RULE_VERSION`。
+2. **带回家的东西**：映射表里现在只有曲奇一种。在城里买了、没吃完、映射表里又没有的东西（比如一杯没喝的咖啡）到家时进「寄存」（locker），这次访问交回后停在 `reconcile` 而不是 `closed`，等人处理。内核那边容易踩到，要么扩映射表，要么让她在回家前吃掉。
+3. **未决订单**（F 用例里的「扣款结果不明」）：引擎只能处理人还在城里的情况；访问已经关闭之后才发现的，要人工处理。
+4. **F13**（内核崩溃后的恢复）在内核侧，引擎这边只保证回执和 outbox 可以重读。
+5. 桥接密钥是凭据：配置里 `city.bridgeKey`（至少 24 个字符）或环境变量 `BOTGAME_CITY_BRIDGE_KEY`，仓库里没有任何真实的密钥。
+
+### 接下来
+
+- 内核侧按 `docs/city/bridge-v1.schema.json` 实现客户端，用 S1 和 F 用例两边对跑。
+- 主人确认之后再谈上线：先只开 `city.enabled`、不配 `bridgeKey`（只有公开页面和外部 bot 入口），再配密钥接内核。回滚步骤在 `docs/CITY.md`。
+
 ## 2026-11-15（夜）：新方向——《开发协作与制作规范 v1.0》；G0 基线，G1 第一阶段（清晰度、物件节点与资产管线、厨房工位样件）
 
 **上下文压缩后先读这一节。** 11-15 18:38 主人叫停时说的「新方向」就是这份规范（docx，主人和 GPT 讨论出来的，不在仓库里）。它的主张：Claude 主导、Antigravity（agy）辅助；首个示范区是公共厨房、工坊街一段和小院（准备晚餐、修灯、布置分享）；阶段 G0～G4。收进仓库的部分：`docs/product/vision.md`（成品目标与玩家边界）、`docs/art/standard.md`（美术与资产标准）和本节。这一节是在主人电脑（Windows）上的对话里做的。

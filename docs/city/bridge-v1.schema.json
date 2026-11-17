@@ -1,0 +1,1101 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://bot-game-mcp/city/bridge-v1.schema.json",
+  "title": "东京城市世界 · 桥接协议 city-bridge/1",
+  "description": "小屋内核与东京城市引擎之间的桥接接口（服务器到服务器，前缀 /city/bridge/v1，Bearer 密钥）。本文件描述引擎当前实现的请求、回执、outbox 记录、结算清单和失败码。通用约定：1）request_id 必须匹配 ^[\\w.:-]{8,160}$，重试用同一个；2）payload_hash 可选，是「请求体去掉 request_id 和 payload_hash 之后」的规范化 JSON（键按字典序、无空白）的 SHA-256 十六进制，对不上返回 400 BAD_REQUEST / payload_hash_mismatch；3）桥接回执永久保存：同一个 request_id + 同样的内容返回原回执并带 replayed: true，同一个 request_id + 不同内容返回 409 CONFLICT / request_conflict；4）执行失败不留回执，修正后可以用同一个 request_id 再试；5）所有时间是 UTC 毫秒整数；6）outbox 按 seq 递增，内核按 record_id 去重。",
+  "type": "object",
+  "x-protocol": "city-bridge/1",
+  "x-endpoints": [
+    {
+      "method": "GET",
+      "path": "/city/bridge/v1/catalog",
+      "request": null,
+      "response": { "$ref": "#/$defs/Catalog" },
+      "errors": ["UNAUTHENTICATED", "RATE_LIMITED"]
+    },
+    {
+      "method": "POST",
+      "path": "/city/bridge/v1/visits/prepare",
+      "request": { "$ref": "#/$defs/PrepareRequest" },
+      "response": { "$ref": "#/$defs/PrepareReceipt" },
+      "errors": ["BAD_REQUEST", "UNAUTHENTICATED", "NOT_FOUND", "CONFLICT", "PRECONDITION_FAILED", "VERSION_MISMATCH", "RATE_LIMITED", "RECOVERING"]
+    },
+    {
+      "method": "POST",
+      "path": "/city/bridge/v1/visits/{visit_id}/commit",
+      "request": { "$ref": "#/$defs/CommitRequest" },
+      "response": { "$ref": "#/$defs/CommitReceipt" },
+      "errors": ["BAD_REQUEST", "UNAUTHENTICATED", "NOT_FOUND", "CONFLICT", "STALE_DOMAIN_EPOCH", "RATE_LIMITED", "RECOVERING"]
+    },
+    {
+      "method": "POST",
+      "path": "/city/bridge/v1/visits/{visit_id}/abort",
+      "request": { "$ref": "#/$defs/AbortRequest" },
+      "response": { "$ref": "#/$defs/AbortReceipt" },
+      "errors": ["BAD_REQUEST", "UNAUTHENTICATED", "CONFLICT", "RATE_LIMITED", "RECOVERING"]
+    },
+    {
+      "method": "GET",
+      "path": "/city/bridge/v1/visits/{visit_id}",
+      "request": null,
+      "response": { "$ref": "#/$defs/VisitDescription" },
+      "errors": ["UNAUTHENTICATED", "NOT_FOUND", "RATE_LIMITED"]
+    },
+    {
+      "method": "POST",
+      "path": "/city/bridge/v1/visits/{visit_id}/return-request",
+      "request": { "$ref": "#/$defs/ReturnRequest" },
+      "response": { "$ref": "#/$defs/ReturnRequestReceipt" },
+      "errors": ["BAD_REQUEST", "UNAUTHENTICATED", "NOT_FOUND", "CONFLICT", "RATE_LIMITED", "RECOVERING"]
+    },
+    {
+      "method": "POST",
+      "path": "/city/bridge/v1/visits/{visit_id}/release",
+      "request": { "$ref": "#/$defs/ReleaseRequest" },
+      "response": { "$ref": "#/$defs/ReleaseReceipt" },
+      "errors": ["BAD_REQUEST", "UNAUTHENTICATED", "NOT_FOUND", "CONFLICT", "VISIT_NOT_ACTIVE", "STALE_DOMAIN_EPOCH", "RATE_LIMITED", "RECOVERING"]
+    },
+    {
+      "method": "GET",
+      "path": "/city/bridge/v1/outbox",
+      "query": {
+        "after": "上一次返回的 next_after，非负整数，默认 0",
+        "limit": "1..200，默认 50",
+        "wait_ms": "长轮询毫秒数，0..50000，默认 0"
+      },
+      "request": null,
+      "response": { "$ref": "#/$defs/OutboxPage" },
+      "errors": ["BAD_REQUEST", "UNAUTHENTICATED", "RATE_LIMITED"]
+    },
+    {
+      "method": "GET",
+      "path": "/city/bridge/v1/weather",
+      "request": null,
+      "response": { "$ref": "#/$defs/WeatherResponse" },
+      "errors": ["UNAUTHENTICATED", "RATE_LIMITED"]
+    },
+    {
+      "method": "GET",
+      "path": "/city/bridge/v1/reconcile",
+      "request": null,
+      "response": { "$ref": "#/$defs/ReconcileResponse" },
+      "errors": ["UNAUTHENTICATED", "RATE_LIMITED"]
+    },
+    {
+      "method": "POST",
+      "path": "/city/bridge/v1/visits/{visit_id}/act",
+      "request": { "$ref": "#/$defs/ActRequest" },
+      "response": { "$ref": "#/$defs/ActReceipt" },
+      "errors": ["BAD_REQUEST", "UNAUTHENTICATED", "NOT_FOUND", "CONFLICT", "PRECONDITION_FAILED", "STALE_DOMAIN_EPOCH", "VISIT_NOT_ACTIVE", "RATE_LIMITED", "RECOVERING"]
+    },
+    {
+      "method": "GET",
+      "path": "/city/bridge/v1/visits/{visit_id}/view",
+      "query": { "domain_epoch": "当前动作权代次（必填）" },
+      "request": null,
+      "response": { "$ref": "#/$defs/VisitView" },
+      "errors": ["UNAUTHENTICATED", "NOT_FOUND", "STALE_DOMAIN_EPOCH", "VISIT_NOT_ACTIVE", "RATE_LIMITED"]
+    },
+    {
+      "method": "GET",
+      "path": "/city/bridge/v1/visits/{visit_id}/wait",
+      "query": {
+        "domain_epoch": "当前动作权代次（必填）",
+        "cursor": "上一次返回的 cursor；不给则只返回当前游标",
+        "wait_ms": "长轮询毫秒数，0..50000"
+      },
+      "request": null,
+      "response": { "$ref": "#/$defs/VisitWait" },
+      "errors": ["UNAUTHENTICATED", "NOT_FOUND", "STALE_DOMAIN_EPOCH", "VISIT_NOT_ACTIVE", "RATE_LIMITED"]
+    }
+  ],
+  "$defs": {
+    "RequestId": {
+      "description": "桥接请求号，格式 ^[\\w.:-]{8,160}$（约定形如 visit:<visit_id>:d<n>:a<n>）。重试用同一个。回执永久保存。",
+      "type": "string",
+      "pattern": "^[\\w.:-]{8,160}$"
+    },
+    "VisitId": {
+      "description": "访问号，由内核生成。",
+      "type": "string",
+      "pattern": "^[\\w.:-]{4,80}$"
+    },
+    "PayloadHash": {
+      "description": "SHA-256 十六进制：请求体去掉 request_id 和 payload_hash 之后的规范化 JSON（键按字典序、无空白）。可选；给了就必须对得上，否则 400 BAD_REQUEST / payload_hash_mismatch。",
+      "type": "string"
+    },
+    "Yen": {
+      "description": "日元整数。",
+      "type": "integer"
+    },
+    "TimeMs": {
+      "description": "UTC 毫秒时间戳。",
+      "type": "integer"
+    },
+    "PlaceId": {
+      "description": "地点编号，形如 ikebukuro:kissa-tomoshibi；小屋门口是 akabane:ai-house:entrance。",
+      "type": "string",
+      "minLength": 1
+    },
+    "AreaId": {
+      "type": "string",
+      "enum": ["akabane", "ikebukuro", "shinjuku"]
+    },
+    "KernelItem": {
+      "description": "内核侧的资源种类（映射表的 kernel 一侧）。",
+      "type": "object",
+      "properties": {
+        "kind": { "type": "string" },
+        "item": { "type": "string" }
+      },
+      "required": ["kind", "item"]
+    },
+    "VisitState": {
+      "description": "访问状态。引擎库里不会停在 settling（到门口、生成结算、写 visit_settled 在同一个事务里），但它是协议里的合法状态名。",
+      "type": "string",
+      "enum": ["prepared", "active", "returning", "settling", "settled", "closed", "reconcile", "aborted"]
+    },
+    "VisitPlan": {
+      "type": "object",
+      "properties": {
+        "destination": { "$ref": "#/$defs/PlaceId" },
+        "start_at_ms": { "$ref": "#/$defs/TimeMs" },
+        "return_by_ms": { "$ref": "#/$defs/TimeMs" }
+      },
+      "required": ["destination", "start_at_ms", "return_by_ms"]
+    },
+
+    "PrepareRequest": {
+      "description": "POST /visits/prepare：建待接收记录。随身钱包和物品此时还没有激活。",
+      "type": "object",
+      "properties": {
+        "request_id": { "$ref": "#/$defs/RequestId" },
+        "payload_hash": { "$ref": "#/$defs/PayloadHash" },
+        "protocol": { "const": "city-bridge/1" },
+        "vocab_version": { "description": "内核词表版本，只记录（最多 80 字符）。", "type": "string" },
+        "mappings_version": { "description": "必须等于引擎的映射表版本，否则 422 VERSION_MISMATCH / mappings_version。", "type": "integer" },
+        "visit_id": { "$ref": "#/$defs/VisitId" },
+        "actor_id": { "description": "内核里的室友身份，要在引擎的身份映射里。", "type": "string", "minLength": 1 },
+        "carry": {
+          "type": "object",
+          "properties": {
+            "yen": { "description": "带出的钱：0 到一千万日元。", "type": "integer", "minimum": 0, "maximum": 10000000 },
+            "items": {
+              "description": "带出的物品，最多 20 项；种类必须在映射表里（否则 422 PRECONDITION_FAILED / item_not_mapped）。",
+              "type": "array",
+              "maxItems": 20,
+              "items": {
+                "type": "object",
+                "properties": {
+                  "ref": { "description": "内核资源 ID，同一次访问内不重复。", "type": "string", "pattern": "^\\S{1,160}$" },
+                  "kernel": { "$ref": "#/$defs/KernelItem" },
+                  "qty": { "type": "integer", "minimum": 1, "maximum": 99 }
+                },
+                "required": ["ref", "kernel", "qty"]
+              }
+            }
+          },
+          "required": ["yen"]
+        },
+        "plan": {
+          "type": "object",
+          "properties": {
+            "destination": { "$ref": "#/$defs/PlaceId" },
+            "start_at_ms": { "$ref": "#/$defs/TimeMs" },
+            "return_by_ms": { "description": "必须晚于 start_at_ms 和现在。", "$ref": "#/$defs/TimeMs" }
+          },
+          "required": ["destination", "start_at_ms", "return_by_ms"]
+        },
+        "source_hold_ref": { "description": "内核侧冻结（T1）的引用，只记录（最多 160 字符）。", "type": "string" }
+      },
+      "required": ["request_id", "protocol", "mappings_version", "visit_id", "actor_id", "carry", "plan"]
+    },
+    "CommitRequest": {
+      "description": "POST /visits/{id}/commit：激活随身钱包和物品，动作权交给城市，并按计划自动排一段到目的地的行程。",
+      "type": "object",
+      "properties": {
+        "request_id": { "$ref": "#/$defs/RequestId" },
+        "payload_hash": { "$ref": "#/$defs/PayloadHash" },
+        "transfer_id": { "description": "这次交接的编号，全局唯一；换了 request_id 重发同一次交接（同 transfer_id 同 domain_epoch）返回当时的回执。", "$ref": "#/$defs/RequestId" },
+        "domain_epoch": { "description": "城市接手后的动作权代次，必须大于这位室友已记录的代次。", "type": "integer", "minimum": 1 }
+      },
+      "required": ["request_id", "transfer_id", "domain_epoch"]
+    },
+    "AbortRequest": {
+      "description": "POST /visits/{id}/abort：只在 commit 之前有效。没见过的 visit_id 也会记下，之后迟到的 prepare 会被拒绝（409 / visit_aborted）。",
+      "type": "object",
+      "properties": {
+        "request_id": { "$ref": "#/$defs/RequestId" },
+        "payload_hash": { "$ref": "#/$defs/PayloadHash" },
+        "reason": { "description": "最多 120 字符，只记录。", "type": "string" }
+      },
+      "required": ["request_id"]
+    },
+    "ReturnRequest": {
+      "description": "POST /visits/{id}/return-request：内核要求她回家。已经在回家路上或已经到家就什么都不做（payload.started = false）。",
+      "type": "object",
+      "properties": {
+        "request_id": { "$ref": "#/$defs/RequestId" },
+        "payload_hash": { "$ref": "#/$defs/PayloadHash" },
+        "reason": { "description": "缺省或空白时记为 requested；写进 return_started 的 reason 时加前缀 kernel:。", "type": "string" }
+      },
+      "required": ["request_id"]
+    },
+    "ReleaseRequest": {
+      "description": "POST /visits/{id}/release：内核已应用结算。扣回随身钱包，动作权记为家域，访问关闭。",
+      "type": "object",
+      "properties": {
+        "request_id": { "$ref": "#/$defs/RequestId" },
+        "payload_hash": { "$ref": "#/$defs/PayloadHash" },
+        "settlement_id": { "description": "结算清单的编号，对不上 409 / settlement_mismatch。", "type": "string" },
+        "domain_epoch": { "description": "家域的新代次，必须大于城里那一代（commit 时用的）。", "type": "integer", "minimum": 1 }
+      },
+      "required": ["request_id", "settlement_id", "domain_epoch"]
+    },
+    "ActRequest": {
+      "description": "POST /visits/{id}/act：内核的适配器替她做一件事。必须带当前的 domain_epoch。",
+      "type": "object",
+      "properties": {
+        "request_id": { "$ref": "#/$defs/RequestId" },
+        "payload_hash": { "$ref": "#/$defs/PayloadHash" },
+        "domain_epoch": { "type": "integer", "minimum": 1 },
+        "action": { "$ref": "#/$defs/Action" }
+      },
+      "required": ["request_id", "domain_epoch", "action"]
+    },
+
+    "Action": {
+      "description": "城里的动作，按 type 区分。回家路上只接受 say 和 go_home。",
+      "oneOf": [
+        { "$ref": "#/$defs/ActionTravel" },
+        { "$ref": "#/$defs/ActionSay" },
+        { "$ref": "#/$defs/ActionBuy" },
+        { "$ref": "#/$defs/ActionConsume" },
+        { "$ref": "#/$defs/ActionGive" },
+        { "$ref": "#/$defs/ActionGoHome" }
+      ]
+    },
+    "ActionTravel": {
+      "description": "去一个公开地点（不能是小屋门口）。",
+      "type": "object",
+      "properties": {
+        "type": { "const": "travel" },
+        "to": { "$ref": "#/$defs/PlaceId" }
+      },
+      "required": ["type", "to"]
+    },
+    "ActionSay": {
+      "description": "在当前地点说一句话；文本会被净化，空文本 400 / text_empty，超长 400 / text_too_long。",
+      "type": "object",
+      "properties": {
+        "type": { "const": "say" },
+        "text": { "type": "string", "minLength": 1 }
+      },
+      "required": ["type", "text"]
+    },
+    "ActionBuy": {
+      "type": "object",
+      "properties": {
+        "type": { "const": "buy" },
+        "sku": { "type": "string", "minLength": 1 },
+        "qty": { "type": "integer", "minimum": 1, "maximum": 9 }
+      },
+      "required": ["type", "sku"]
+    },
+    "ActionConsume": {
+      "description": "吃或喝：item_id（背包行编号）或 item（物品类型）二选一。",
+      "type": "object",
+      "properties": {
+        "type": { "const": "consume" },
+        "item_id": { "type": "string" },
+        "item": { "type": "string" },
+        "qty": { "type": "integer", "minimum": 1, "maximum": 9 }
+      },
+      "required": ["type"],
+      "anyOf": [{ "required": ["item_id"] }, { "required": ["item"] }]
+    },
+    "ActionGive": {
+      "description": "把东西给同一地点的另一位居民：to 是对方的 resident_id；item_id / item 二选一。",
+      "type": "object",
+      "properties": {
+        "type": { "const": "give" },
+        "to": { "type": "string", "minLength": 1 },
+        "item_id": { "type": "string" },
+        "item": { "type": "string" },
+        "qty": { "type": "integer", "minimum": 1, "maximum": 9 }
+      },
+      "required": ["type", "to"],
+      "anyOf": [{ "required": ["item_id"] }, { "required": ["item"] }]
+    },
+    "ActionGoHome": {
+      "description": "开始回家（只有从小屋出来的室友能用）。",
+      "type": "object",
+      "properties": {
+        "type": { "const": "go_home" }
+      },
+      "required": ["type"]
+    },
+
+    "Receipt": {
+      "description": "桥接回执。永久保存；同一个 request_id + 同样内容重发返回原回执并带 replayed: true，内容不同返回 409 CONFLICT / request_conflict。state 是处理完之后访问的状态。",
+      "type": "object",
+      "properties": {
+        "receipt_id": { "type": "string", "minLength": 1 },
+        "request_id": { "$ref": "#/$defs/RequestId" },
+        "visit_id": { "$ref": "#/$defs/VisitId" },
+        "state": { "$ref": "#/$defs/VisitState" },
+        "accepted_at_ms": { "$ref": "#/$defs/TimeMs" },
+        "payload": { "type": "object" },
+        "replayed": { "const": true }
+      },
+      "required": ["receipt_id", "request_id", "visit_id", "state", "accepted_at_ms", "payload"]
+    },
+    "PrepareReceipt": {
+      "allOf": [{ "$ref": "#/$defs/Receipt" }, { "properties": { "state": { "const": "prepared" }, "payload": { "$ref": "#/$defs/PreparePayload" } } }]
+    },
+    "CommitReceipt": {
+      "allOf": [{ "$ref": "#/$defs/Receipt" }, { "properties": { "state": { "const": "active" }, "payload": { "$ref": "#/$defs/CommitPayload" } } }]
+    },
+    "AbortReceipt": {
+      "allOf": [{ "$ref": "#/$defs/Receipt" }, { "properties": { "state": { "const": "aborted" }, "payload": { "$ref": "#/$defs/AbortPayload" } } }]
+    },
+    "ReturnRequestReceipt": {
+      "allOf": [{ "$ref": "#/$defs/Receipt" }, { "properties": { "payload": { "$ref": "#/$defs/ReturnRequestPayload" } } }]
+    },
+    "ReleaseReceipt": {
+      "allOf": [{ "$ref": "#/$defs/Receipt" }, { "properties": { "state": { "enum": ["closed", "reconcile"] }, "payload": { "$ref": "#/$defs/ReleasePayload" } } }]
+    },
+    "ActReceipt": {
+      "allOf": [{ "$ref": "#/$defs/Receipt" }, { "properties": { "payload": { "$ref": "#/$defs/ActPayload" } } }]
+    },
+
+    "PreparePayload": {
+      "type": "object",
+      "properties": {
+        "city_catalog_version": { "type": "string" },
+        "mappings_version": { "type": "integer" },
+        "carry_yen": { "$ref": "#/$defs/Yen" },
+        "items": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "ref": { "type": "string" },
+              "engine_type": { "type": "string" },
+              "qty": { "type": "integer", "minimum": 1 }
+            },
+            "required": ["ref", "engine_type", "qty"]
+          }
+        },
+        "plan": { "$ref": "#/$defs/VisitPlan" }
+      },
+      "required": ["city_catalog_version", "mappings_version", "carry_yen", "items", "plan"]
+    },
+    "CommitPayload": {
+      "type": "object",
+      "properties": {
+        "transfer_id": { "type": "string" },
+        "domain_epoch": { "type": "integer", "minimum": 1 },
+        "purse_yen": { "description": "随身钱包余额（刚交接时等于带出的钱）。", "$ref": "#/$defs/Yen" },
+        "return_reserve_yen": { "description": "回程车费预留额：行程成功排上时按目的地算，否则按小屋门口（0）。", "$ref": "#/$defs/Yen" },
+        "items": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "ref": { "type": "string" },
+              "engine_type": { "type": "string" },
+              "qty": { "type": "integer", "minimum": 1 },
+              "engine_item_id": { "type": "string" }
+            },
+            "required": ["ref", "engine_type", "qty", "engine_item_id"]
+          }
+        },
+        "trip": {
+          "description": "按计划自动排的行程；排不上（目的地关门、满了）为 null，同时有 plan_blocked。",
+          "oneOf": [
+            { "type": "null" },
+            {
+              "type": "object",
+              "properties": {
+                "trip_id": { "type": "string" },
+                "to": { "$ref": "#/$defs/PlaceId" },
+                "ends_at_ms": { "$ref": "#/$defs/TimeMs" }
+              },
+              "required": ["trip_id", "to", "ends_at_ms"]
+            }
+          ]
+        },
+        "plan_blocked": { "description": "行程排不上的原因（错误的 reason 或 code）。", "type": "string" },
+        "original_receipt_id": { "description": "只在「换了 request_id 重发同一次交接」时出现：当时回执的编号。", "type": "string" },
+        "original_request_id": { "description": "同上：当时回执的 request_id。", "type": "string" }
+      },
+      "required": ["transfer_id", "domain_epoch", "purse_yen", "return_reserve_yen", "items", "trip"]
+    },
+    "AbortPayload": {
+      "type": "object",
+      "properties": {
+        "known": { "description": "false = 引擎没见过这个 visit_id，只是记下以后拒绝它。", "type": "boolean" }
+      },
+      "required": ["known"]
+    },
+    "ReturnRequestPayload": {
+      "type": "object",
+      "properties": {
+        "started": { "description": "true = 这次请求让她开始回家；false = 已经在回家路上或已经到家。", "type": "boolean" }
+      },
+      "required": ["started"]
+    },
+    "ReleasePayload": {
+      "type": "object",
+      "properties": {
+        "settlement_id": { "type": "string" },
+        "purse_final_yen": { "description": "从随身钱包扣回桥接账户的钱。", "$ref": "#/$defs/Yen" },
+        "home_epoch": { "type": "integer", "minimum": 1 },
+        "reconcile_ok": { "description": "关闭之后引擎自己跑的对账有没有发现错误。", "type": "boolean" }
+      },
+      "required": ["settlement_id", "purse_final_yen", "home_epoch", "reconcile_ok"]
+    },
+    "ActPayload": {
+      "description": "动作结果；形状随动作而不同，只有 status 稳定。completed：已完成；accepted：已受理（travel、go_home）；pending：结果未知，钱已锁住等对账（buy，reason = outcome_unknown）。常见字段：travel → trip；say → message_id、heard_by；buy → order_id、item、paid_yen、purse_yen；consume → consumed、effect_id；give → given、to；go_home → returning。",
+      "type": "object",
+      "properties": {
+        "status": { "type": "string", "enum": ["accepted", "completed", "pending"] }
+      },
+      "required": ["status"],
+      "additionalProperties": true
+    },
+
+    "Leg": {
+      "type": "object",
+      "properties": {
+        "n": { "type": "integer" },
+        "mode": { "type": "string", "enum": ["walk", "train"] },
+        "from": { "$ref": "#/$defs/PlaceId" },
+        "to": { "$ref": "#/$defs/PlaceId" },
+        "line": { "type": "string" },
+        "minutes": { "type": "number" },
+        "fare_yen": { "$ref": "#/$defs/Yen" },
+        "depart_at_ms": { "$ref": "#/$defs/TimeMs" },
+        "arrive_at_ms": { "$ref": "#/$defs/TimeMs" },
+        "rule_version": { "type": "string" },
+        "source": { "const": "simulated" }
+      },
+      "required": ["n", "mode", "from", "to", "minutes", "fare_yen", "depart_at_ms", "arrive_at_ms", "rule_version", "source"]
+    },
+    "TripView": {
+      "description": "act 的 travel 结果里的 trip（和居民视图里的行程同形）。",
+      "type": "object",
+      "properties": {
+        "trip_id": { "type": "string" },
+        "purpose": { "type": "string", "enum": ["travel", "return"] },
+        "from": { "$ref": "#/$defs/PlaceId" },
+        "to": { "$ref": "#/$defs/PlaceId" },
+        "status": { "type": "string", "enum": ["running", "arrived", "stopped", "cancelled", "diverted"] },
+        "started_at_ms": { "$ref": "#/$defs/TimeMs" },
+        "ends_at_ms": { "$ref": "#/$defs/TimeMs" },
+        "fare_yen": { "$ref": "#/$defs/Yen" },
+        "minutes": { "type": "number" },
+        "leg_index": { "type": "integer" },
+        "legs": { "type": "array", "items": { "$ref": "#/$defs/Leg" } },
+        "source": { "const": "simulated" },
+        "rule_version": { "type": "string" }
+      },
+      "required": ["trip_id", "purpose", "from", "to", "status", "started_at_ms", "ends_at_ms", "fare_yen", "minutes", "leg_index", "legs", "source", "rule_version"]
+    },
+
+    "VisitDescription": {
+      "description": "GET /visits/{id}：状态和全部交接类回执（故障恢复用）。单条 act 回执不在列表里，用同一个 request_id 重发就能取回。引擎没见过、只记了 abort 的 visit_id 返回简版（known: false）。",
+      "oneOf": [{ "$ref": "#/$defs/VisitDescriptionFull" }, { "$ref": "#/$defs/VisitDescriptionAbortedUnknown" }]
+    },
+    "VisitDescriptionFull": {
+      "type": "object",
+      "properties": {
+        "visit_id": { "$ref": "#/$defs/VisitId" },
+        "actor_id": { "type": "string" },
+        "state": { "$ref": "#/$defs/VisitState" },
+        "protocol": { "const": "city-bridge/1" },
+        "city_catalog_version": { "type": "string" },
+        "mappings_version": { "type": "integer" },
+        "vocab_version": { "type": ["string", "null"] },
+        "transfer_id": { "type": ["string", "null"] },
+        "domain_epoch": { "type": ["integer", "null"] },
+        "carry_yen": { "$ref": "#/$defs/Yen" },
+        "plan": { "$ref": "#/$defs/VisitPlan" },
+        "return_by_ms": { "$ref": "#/$defs/TimeMs" },
+        "return_reason": { "type": ["string", "null"] },
+        "location": {
+          "description": "只在 active / returning 时出现。",
+          "oneOf": [
+            {
+              "type": "object",
+              "properties": {
+                "in_transit": { "const": true },
+                "to": { "$ref": "#/$defs/PlaceId" },
+                "eta_ms": { "$ref": "#/$defs/TimeMs" }
+              },
+              "required": ["in_transit", "to", "eta_ms"]
+            },
+            {
+              "type": "object",
+              "properties": { "place": { "$ref": "#/$defs/PlaceId" } },
+              "required": ["place"]
+            }
+          ]
+        },
+        "purse_yen": { "description": "只在 active / returning 时出现。", "$ref": "#/$defs/Yen" },
+        "settlement": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/Settlement" }] },
+        "times": {
+          "type": "object",
+          "properties": {
+            "prepared_at_ms": { "$ref": "#/$defs/TimeMs" },
+            "committed_at_ms": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/TimeMs" }] },
+            "returning_at_ms": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/TimeMs" }] },
+            "settled_at_ms": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/TimeMs" }] },
+            "released_at_ms": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/TimeMs" }] },
+            "aborted_at_ms": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/TimeMs" }] }
+          },
+          "required": ["prepared_at_ms", "committed_at_ms", "returning_at_ms", "settled_at_ms", "released_at_ms", "aborted_at_ms"]
+        },
+        "receipts": { "type": "array", "items": { "$ref": "#/$defs/ReceiptWithOp" } }
+      },
+      "required": ["visit_id", "actor_id", "state", "protocol", "city_catalog_version", "mappings_version", "vocab_version", "transfer_id", "domain_epoch", "carry_yen", "plan", "return_by_ms", "return_reason", "settlement", "times", "receipts"]
+    },
+    "VisitDescriptionAbortedUnknown": {
+      "type": "object",
+      "properties": {
+        "visit_id": { "$ref": "#/$defs/VisitId" },
+        "state": { "const": "aborted" },
+        "known": { "const": false },
+        "receipts": { "type": "array", "items": { "$ref": "#/$defs/ReceiptWithOp" } }
+      },
+      "required": ["visit_id", "state", "known", "receipts"]
+    },
+    "ReceiptWithOp": {
+      "description": "GET /visits/{id} 里的回执：原回执加上 op（不含 act）。",
+      "allOf": [
+        { "$ref": "#/$defs/Receipt" },
+        {
+          "properties": { "op": { "type": "string", "enum": ["prepare", "commit", "abort", "return-request", "release"] } },
+          "required": ["op"]
+        }
+      ]
+    },
+
+    "OutboxPage": {
+      "description": "GET /outbox 的一页。records 按 seq 递增；下次用 next_after 当 after；没有新记录时 next_after 等于传入的 after。",
+      "type": "object",
+      "properties": {
+        "records": { "type": "array", "items": { "$ref": "#/$defs/OutboxRecord" } },
+        "next_after": { "type": "integer", "minimum": 0 },
+        "more": { "type": "boolean" }
+      },
+      "required": ["records", "next_after", "more"]
+    },
+    "OutboxRecord": {
+      "description": "outbox 记录，按 kind 区分 payload。record_id 全局唯一，内核按它去重；payload 里一律有 actor_id。",
+      "oneOf": [
+        { "$ref": "#/$defs/OutboxVisitProgress" },
+        { "$ref": "#/$defs/OutboxBodyEffect" },
+        { "$ref": "#/$defs/OutboxEncounter" },
+        { "$ref": "#/$defs/OutboxPurchase" },
+        { "$ref": "#/$defs/OutboxDecisionWake" },
+        { "$ref": "#/$defs/OutboxReturnStarted" },
+        { "$ref": "#/$defs/OutboxVisitSettled" }
+      ]
+    },
+    "OutboxBase": {
+      "type": "object",
+      "properties": {
+        "seq": { "description": "递增序号，全局。", "type": "integer", "minimum": 1 },
+        "visit_id": { "$ref": "#/$defs/VisitId" },
+        "kind": { "type": "string" },
+        "record_id": { "description": "形如 <visit_id>:e<n>（visit_settled 是 <visit_id>:settled；body_effect 的 record_id 等于 effect_id）。", "type": "string", "minLength": 1 },
+        "occurred_at_ms": { "description": "事件发生的时刻（行程事件是原定的到达时刻），不是写入时刻。", "$ref": "#/$defs/TimeMs" }
+      },
+      "required": ["seq", "visit_id", "kind", "record_id", "occurred_at_ms", "payload"]
+    },
+    "OutboxVisitProgress": {
+      "allOf": [{ "$ref": "#/$defs/OutboxBase" }, { "properties": { "kind": { "const": "visit_progress" }, "payload": { "$ref": "#/$defs/VisitProgressPayload" } } }]
+    },
+    "OutboxBodyEffect": {
+      "allOf": [{ "$ref": "#/$defs/OutboxBase" }, { "properties": { "kind": { "const": "body_effect" }, "payload": { "$ref": "#/$defs/BodyEffectPayload" } } }]
+    },
+    "OutboxEncounter": {
+      "allOf": [{ "$ref": "#/$defs/OutboxBase" }, { "properties": { "kind": { "const": "encounter" }, "payload": { "$ref": "#/$defs/EncounterPayload" } } }]
+    },
+    "OutboxPurchase": {
+      "allOf": [{ "$ref": "#/$defs/OutboxBase" }, { "properties": { "kind": { "const": "purchase" }, "payload": { "$ref": "#/$defs/PurchasePayload" } } }]
+    },
+    "OutboxDecisionWake": {
+      "allOf": [{ "$ref": "#/$defs/OutboxBase" }, { "properties": { "kind": { "const": "decision_wake" }, "payload": { "$ref": "#/$defs/DecisionWakePayload" } } }]
+    },
+    "OutboxReturnStarted": {
+      "allOf": [{ "$ref": "#/$defs/OutboxBase" }, { "properties": { "kind": { "const": "return_started" }, "payload": { "$ref": "#/$defs/ReturnStartedPayload" } } }]
+    },
+    "OutboxVisitSettled": {
+      "allOf": [{ "$ref": "#/$defs/OutboxBase" }, { "properties": { "kind": { "const": "visit_settled" }, "payload": { "$ref": "#/$defs/Settlement" } } }]
+    },
+
+    "VisitProgressPayload": {
+      "description": "行程进度。各 phase 的字段：departed / left_place → place、to、eta_ms、purpose；boarded → line（可能为 null）、from、to、eta_ms、fare_yen；arrived_station / arrived_place → place（arrived_place 绕路时还有 diverted_from、reason）；stopped → place、reason。text 是给人看的一句位置说明。",
+      "type": "object",
+      "properties": {
+        "actor_id": { "type": "string" },
+        "phase": { "type": "string", "enum": ["departed", "left_place", "boarded", "arrived_station", "arrived_place", "stopped"] },
+        "text": { "type": "string" },
+        "place": { "$ref": "#/$defs/PlaceId" },
+        "to": { "$ref": "#/$defs/PlaceId" },
+        "from": { "$ref": "#/$defs/PlaceId" },
+        "eta_ms": { "$ref": "#/$defs/TimeMs" },
+        "purpose": { "type": "string", "enum": ["travel", "return"] },
+        "line": { "type": ["string", "null"] },
+        "fare_yen": { "$ref": "#/$defs/Yen" },
+        "reason": { "type": "string" },
+        "diverted_from": { "$ref": "#/$defs/PlaceId" }
+      },
+      "required": ["actor_id", "phase", "text"],
+      "allOf": [
+        { "if": { "properties": { "phase": { "enum": ["departed", "left_place"] } } }, "then": { "required": ["place", "to", "eta_ms", "purpose"] } },
+        { "if": { "properties": { "phase": { "const": "boarded" } } }, "then": { "required": ["line", "from", "to", "eta_ms", "fare_yen"] } },
+        { "if": { "properties": { "phase": { "enum": ["arrived_station", "arrived_place"] } } }, "then": { "required": ["place"] } },
+        { "if": { "properties": { "phase": { "const": "stopped" } } }, "then": { "required": ["place", "reason"] } }
+      ],
+      "additionalProperties": true
+    },
+    "BodyEffectPayload": {
+      "description": "身体效果：吃了什么、走了多久。引擎不替她算身体，内核按 effect_id 去重、按自己的规则结算。kernel_effect 为 null 表示映射表里没有对应效果，由内核决定忽略。",
+      "type": "object",
+      "properties": {
+        "actor_id": { "type": "string" },
+        "effect_id": { "description": "<visit_id>:e<n>，等于这条记录的 record_id。", "type": "string" },
+        "engine_kind": { "type": "string", "enum": ["ate", "drank", "walked"] },
+        "engine_type": { "description": "ate / drank 才有。", "type": "string" },
+        "qty": { "description": "ate / drank 才有。", "type": "integer", "minimum": 1 },
+        "minutes": { "description": "walked 才有：这一条代表的步行分钟数（映射表的 min_minutes）。", "type": "integer", "minimum": 1 },
+        "kernel_effect": { "type": ["string", "null"] }
+      },
+      "required": ["actor_id", "effect_id", "engine_kind", "kernel_effect"],
+      "additionalProperties": true
+    },
+    "EncounterPayload": {
+      "description": "第一次当面交谈：她和某位居民在同一个地点各说过一句，每次访问每个人只记一次。只带对方的显示名和地点，不带对方的私有信息。",
+      "type": "object",
+      "properties": {
+        "actor_id": { "type": "string" },
+        "with": {
+          "type": "object",
+          "properties": { "name": { "type": "string" } },
+          "required": ["name"]
+        },
+        "place": { "$ref": "#/$defs/PlaceId" },
+        "place_name": { "type": "string" },
+        "area": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/AreaId" }] }
+      },
+      "required": ["actor_id", "with", "place", "place_name", "area"],
+      "additionalProperties": true
+    },
+    "PurchasePayload": {
+      "description": "随身钱包的一笔支出（yen 为负）或收入，只做投影和当天账目展示，不改内核余额。买东西的明细在 order_id / place / sku / type / qty；电车票的明细在 line / from / to / rule_version / source；人工确认一笔结果未知的订单时多一个 resolved: true。",
+      "type": "object",
+      "properties": {
+        "actor_id": { "type": "string" },
+        "what": { "type": "string" },
+        "yen": { "$ref": "#/$defs/Yen" },
+        "purse_yen": { "description": "这一笔之后随身钱包的余额。", "$ref": "#/$defs/Yen" },
+        "order_id": { "type": "string" },
+        "place": { "$ref": "#/$defs/PlaceId" },
+        "sku": { "type": "string" },
+        "type": { "type": "string" },
+        "qty": { "type": "integer", "minimum": 1 },
+        "line": { "type": ["string", "null"] },
+        "from": { "$ref": "#/$defs/PlaceId" },
+        "to": { "$ref": "#/$defs/PlaceId" },
+        "rule_version": { "type": "string" },
+        "source": { "type": "string" },
+        "resolved": { "type": "boolean" }
+      },
+      "required": ["actor_id", "what", "yen", "purse_yen"],
+      "additionalProperties": true
+    },
+    "DecisionWakePayload": {
+      "description": "城里发生了值得她做决定的事。reason 是固定的几种唤醒原因；调用方带来的细分原因放在 why 里（例如 trip_stopped 的 insufficient_fare、diverted 的 place_closed、plan_blocked 的 place_closed）。其余字段随 reason 而不同：arrived / diverted / trip_stopped → place；heard_chat → from.name、place；gift_received → from.name、item、place；plan_blocked → destination、message；rain → area。",
+      "type": "object",
+      "properties": {
+        "actor_id": { "type": "string" },
+        "reason": { "type": "string", "enum": ["arrived", "diverted", "trip_stopped", "plan_blocked", "heard_chat", "gift_received", "rain"] },
+        "why": { "type": "string" },
+        "place": { "$ref": "#/$defs/PlaceId" },
+        "area": { "$ref": "#/$defs/AreaId" },
+        "destination": { "$ref": "#/$defs/PlaceId" },
+        "message": { "type": "string" },
+        "from": {
+          "type": "object",
+          "properties": { "name": { "type": "string" } },
+          "required": ["name"]
+        },
+        "item": {
+          "type": "object",
+          "properties": {
+            "type": { "type": "string" },
+            "name": { "type": "string" },
+            "qty": { "type": "integer", "minimum": 1 }
+          },
+          "required": ["type", "name", "qty"]
+        }
+      },
+      "required": ["actor_id", "reason"],
+      "additionalProperties": true
+    },
+    "ReturnStartedPayload": {
+      "description": "开始回家。reason：return_by（到点）、self（她自己决定）、kernel:<内核给的原因>。from 是出发的地点，在路上时是这一段的目的地，都没有时为 null。",
+      "type": "object",
+      "properties": {
+        "actor_id": { "type": "string" },
+        "reason": { "type": "string", "maxLength": 120 },
+        "from": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/PlaceId" }] }
+      },
+      "required": ["actor_id", "reason", "from"],
+      "additionalProperties": true
+    },
+    "Settlement": {
+      "description": "结算清单：到达小屋门口时在同一个事务里生成，一旦写入不再改。visit_settled 的 payload 就是它。内核据此应用结算，再 release。",
+      "type": "object",
+      "properties": {
+        "settlement_id": { "type": "string" },
+        "visit_id": { "$ref": "#/$defs/VisitId" },
+        "actor_id": { "type": "string" },
+        "cutoff_seq": { "description": "这次访问在 visit_settled 之前的最后一条 outbox 记录的 seq。", "type": "integer", "minimum": 0 },
+        "carry_yen": { "$ref": "#/$defs/Yen" },
+        "purse_final_yen": { "description": "能带回家的钱；被结果未知的交易锁住的部分留在城里等对账。", "$ref": "#/$defs/Yen" },
+        "items": {
+          "description": "每件物品的去向：back 回家；locker 城里得到的、映射表里没有的，留在寄存包裹；consumed / given / sold 已经用掉、送人、卖掉。只有 back 且是城里得到、映射表里有的才带 kernel。",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "engine_item_id": { "type": "string" },
+              "origin_ref": { "description": "带出来的物品是内核资源 ID；城里得到的为 null。", "type": ["string", "null"] },
+              "type": { "type": "string" },
+              "qty": { "type": "integer", "minimum": 1 },
+              "fate": { "type": "string", "enum": ["back", "consumed", "given", "sold", "locker"] },
+              "kernel": { "$ref": "#/$defs/KernelItem" }
+            },
+            "required": ["engine_item_id", "origin_ref", "type", "qty", "fate"]
+          }
+        },
+        "consumed": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "type": { "type": "string" },
+              "qty": { "type": "integer", "minimum": 1 },
+              "effect_id": { "type": ["string", "null"] },
+              "origin_ref": { "type": ["string", "null"] }
+            },
+            "required": ["type", "qty", "effect_id", "origin_ref"]
+          }
+        },
+        "given": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "type": { "type": "string" },
+              "qty": { "type": "integer", "minimum": 1 },
+              "origin_ref": { "type": ["string", "null"] },
+              "to": { "description": "收到的人的显示名。", "type": "string" }
+            },
+            "required": ["type", "qty", "origin_ref", "to"]
+          }
+        },
+        "pending": {
+          "description": "结果未知、还在等对账的订单；非空时 release 之后访问进入 reconcile。",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "order_id": { "type": "string" },
+              "what": { "type": "string" },
+              "yen": { "$ref": "#/$defs/Yen" },
+              "place": { "$ref": "#/$defs/PlaceId" }
+            },
+            "required": ["order_id", "what", "yen", "place"]
+          }
+        },
+        "spend_summary": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "what": { "type": "string" },
+              "yen": { "description": "支出为负。", "$ref": "#/$defs/Yen" }
+            },
+            "required": ["what", "yen"]
+          }
+        },
+        "settled_at_ms": { "$ref": "#/$defs/TimeMs" }
+      },
+      "required": ["settlement_id", "visit_id", "actor_id", "cutoff_seq", "carry_yen", "purse_final_yen", "items", "consumed", "given", "pending", "spend_summary", "settled_at_ms"]
+    },
+
+    "HourlyPoint": {
+      "type": "object",
+      "properties": {
+        "at_ms": { "$ref": "#/$defs/TimeMs" },
+        "code": { "description": "WMO 天气代码。", "type": "integer" },
+        "temp_c": { "type": "number" },
+        "precip_mm": { "type": "number" }
+      },
+      "required": ["at_ms", "code", "temp_c", "precip_mm"]
+    },
+    "WeatherSnapshot": {
+      "description": "一片区域的天气快照。status：ok 实时；stale 沿用上一次；fallback 合成天气（source = synthetic，永远不下雨）。",
+      "type": "object",
+      "properties": {
+        "area": { "$ref": "#/$defs/AreaId" },
+        "observed_at_ms": { "$ref": "#/$defs/TimeMs" },
+        "fetched_at_ms": { "$ref": "#/$defs/TimeMs" },
+        "code": { "type": "integer" },
+        "temp_c": { "type": "number" },
+        "precip_mm": { "type": "number" },
+        "rain": { "type": "boolean" },
+        "source": { "type": "string" },
+        "status": { "type": "string", "enum": ["ok", "stale", "fallback"] },
+        "text": { "type": "string" },
+        "hourly": { "type": "array", "items": { "$ref": "#/$defs/HourlyPoint" } }
+      },
+      "required": ["area", "observed_at_ms", "fetched_at_ms", "code", "temp_c", "precip_mm", "rain", "source", "status", "text", "hourly"]
+    },
+    "WeatherResponse": {
+      "description": "GET /weather：三片区域的天气快照（还没有快照的区域不出现）。",
+      "type": "object",
+      "properties": {
+        "at_ms": { "$ref": "#/$defs/TimeMs" },
+        "attribution": { "type": "string" },
+        "areas": { "type": "array", "items": { "$ref": "#/$defs/WeatherSnapshot" } }
+      },
+      "required": ["at_ms", "attribution", "areas"]
+    },
+
+    "ReconcileFinding": {
+      "type": "object",
+      "properties": {
+        "level": { "type": "string", "enum": ["error", "info"] },
+        "code": { "type": "string" },
+        "detail": { "type": "object" }
+      },
+      "required": ["level", "code", "detail"]
+    },
+    "ReconcileReport": {
+      "description": "引擎一侧的对账报告。只报告，不自动修；ok = 没有 error 级别的发现。",
+      "type": "object",
+      "properties": {
+        "report_id": { "type": "integer", "minimum": 1 },
+        "ran_at_ms": { "$ref": "#/$defs/TimeMs" },
+        "trigger": { "type": "string" },
+        "ok": { "type": "boolean" },
+        "findings": { "type": "array", "items": { "$ref": "#/$defs/ReconcileFinding" } }
+      },
+      "required": ["report_id", "ran_at_ms", "trigger", "ok", "findings"]
+    },
+    "ReconcileResponse": {
+      "description": "GET /reconcile：最近 10 份对账报告，新的在前。",
+      "type": "object",
+      "properties": {
+        "reports": { "type": "array", "items": { "$ref": "#/$defs/ReconcileReport" } }
+      },
+      "required": ["reports"]
+    },
+
+    "MappingsTable": {
+      "description": "物品与效果映射表，和 docs/city/mappings.json 同内容。",
+      "type": "object",
+      "properties": {
+        "version": { "type": "integer" },
+        "items": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "kernel": { "$ref": "#/$defs/KernelItem" },
+              "engine_type": { "type": "string" },
+              "stack": { "type": "boolean" },
+              "edible": { "type": "boolean" }
+            },
+            "required": ["kernel", "engine_type", "stack", "edible"]
+          }
+        },
+        "effects": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "engine_kind": { "type": "string", "enum": ["ate", "drank", "walked"] },
+              "engine_type": { "type": "string" },
+              "min_minutes": { "type": "integer", "minimum": 1 },
+              "kernel_effect": { "type": "string" }
+            },
+            "required": ["engine_kind", "kernel_effect"]
+          }
+        }
+      },
+      "required": ["version", "items", "effects"]
+    },
+    "Catalog": {
+      "description": "GET /catalog：目录版本、映射表、地点和票价（内核做出门前的检查用）。places[].homeward 是从这个地点回到交接点要的车费和时间。",
+      "type": "object",
+      "properties": {
+        "protocol": { "const": "city-bridge/1" },
+        "city_catalog_version": { "type": "string" },
+        "fare_rule_version": { "type": "string" },
+        "mappings": { "$ref": "#/$defs/MappingsTable" },
+        "handover_node": { "description": "交接地点：小屋门口。", "$ref": "#/$defs/PlaceId" },
+        "item_types": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "type": { "type": "string" },
+              "name": { "type": "string" },
+              "kind": { "type": "string", "enum": ["food", "drink", "thing"] }
+            },
+            "required": ["type", "name", "kind"]
+          }
+        },
+        "places": {
+          "description": "公开地点（不含小屋门口这样的隐藏节点）。",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": { "$ref": "#/$defs/PlaceId" },
+              "name": { "type": "string" },
+              "area": { "$ref": "#/$defs/AreaId" },
+              "type": { "type": "string", "enum": ["station", "cafe", "shop", "park", "plaza", "riverside", "promenade", "entrance"] },
+              "hours": {
+                "description": "营业时间（世界时区的 HH:MM），null = 全天；close 小于 open 表示跨过午夜。",
+                "oneOf": [
+                  { "type": "null" },
+                  {
+                    "type": "object",
+                    "properties": { "open": { "type": "string" }, "close": { "type": "string" } },
+                    "required": ["open", "close"]
+                  }
+                ]
+              },
+              "rain": { "type": "string", "enum": ["none", "notice", "closed"] },
+              "homeward": {
+                "description": "从这里回小屋门口的预留车费和耗时。",
+                "type": "object",
+                "properties": {
+                  "fare_yen": { "$ref": "#/$defs/Yen" },
+                  "minutes": { "type": "number" }
+                },
+                "required": ["fare_yen", "minutes"]
+              },
+              "goods": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "sku": { "type": "string" },
+                    "type": { "type": "string" },
+                    "name": { "type": "string" },
+                    "price_yen": { "$ref": "#/$defs/Yen" }
+                  },
+                  "required": ["sku", "type", "name", "price_yen"]
+                }
+              }
+            },
+            "required": ["id", "name", "area", "type", "hours", "rain", "homeward", "goods"]
+          }
+        },
+        "transit": {
+          "description": "电车边（双向），票价和耗时都是模拟值。",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "from": { "$ref": "#/$defs/PlaceId" },
+              "to": { "$ref": "#/$defs/PlaceId" },
+              "line": { "type": "string" },
+              "minutes": { "type": "number" },
+              "fare_yen": { "$ref": "#/$defs/Yen" },
+              "source": { "const": "simulated" }
+            },
+            "required": ["from", "to", "line", "minutes", "fare_yen", "source"]
+          }
+        }
+      },
+      "required": ["protocol", "city_catalog_version", "fare_rule_version", "mappings", "handover_node", "item_types", "places", "transit"]
+    },
+
+    "VisitView": {
+      "description": "GET /visits/{id}/view：等同居民的 get_my_view，外加 visit_id 和 state。视图本身的字段由居民视图定义，这里不展开。",
+      "type": "object",
+      "properties": {
+        "visit_id": { "$ref": "#/$defs/VisitId" },
+        "state": { "$ref": "#/$defs/VisitState" }
+      },
+      "required": ["visit_id", "state"],
+      "additionalProperties": true
+    },
+    "VisitWait": {
+      "description": "GET /visits/{id}/wait：等同居民的 world_wait。events[] 是展平的居民事件（type、at_ms 加事件自己的字段）；resync = true 表示游标过期，从返回的 cursor 重新开始。",
+      "type": "object",
+      "properties": {
+        "visit_id": { "$ref": "#/$defs/VisitId" },
+        "state": { "$ref": "#/$defs/VisitState" },
+        "events": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "type": { "type": "string" },
+              "at_ms": { "$ref": "#/$defs/TimeMs" }
+            },
+            "required": ["type", "at_ms"],
+            "additionalProperties": true
+          }
+        },
+        "cursor": { "type": "string" },
+        "more": { "type": "boolean" },
+        "resync": { "const": true }
+      },
+      "required": ["visit_id", "state", "events", "cursor", "more"]
+    },
+
+    "Error": {
+      "description": "失败响应。HTTP 状态：BAD_REQUEST 400、UNAUTHENTICATED 401、FORBIDDEN 403、NOT_FOUND 404、CONFLICT 409、PRECONDITION_FAILED 422、RATE_LIMITED 429、RECOVERING 503、REQUEST_EXPIRED 410、ENTRY_VIA_HOME_ONLY 403、STALE_DOMAIN_EPOCH 409、VISIT_NOT_ACTIVE 409、VERSION_MISMATCH 422、INTERNAL 500。只有 RECOVERING、RATE_LIMITED、INTERNAL 用同一个 request_id 重试有意义；其余重试也没用。「不存在」和「无权访问」统一成 NOT_FOUND。reason 是机器可读的细分原因（insufficient_funds、place_closed、request_conflict ……）；还可能带若干附加字段（expected、last_epoch、domain_epoch、state、visit_id、retryAfterMs ……）。",
+      "type": "object",
+      "properties": {
+        "error": { "$ref": "#/$defs/ErrorCode" },
+        "message": { "type": "string" },
+        "reason": { "type": "string" }
+      },
+      "required": ["error", "message"],
+      "additionalProperties": true
+    },
+    "ErrorCode": {
+      "type": "string",
+      "enum": [
+        "BAD_REQUEST",
+        "UNAUTHENTICATED",
+        "FORBIDDEN",
+        "NOT_FOUND",
+        "CONFLICT",
+        "PRECONDITION_FAILED",
+        "RATE_LIMITED",
+        "RECOVERING",
+        "REQUEST_EXPIRED",
+        "ENTRY_VIA_HOME_ONLY",
+        "STALE_DOMAIN_EPOCH",
+        "VISIT_NOT_ACTIVE",
+        "VERSION_MISMATCH",
+        "INTERNAL"
+      ]
+    }
+  }
+}
