@@ -9,7 +9,7 @@ export const cityParamsSchema = z.object({
   /** 外部 bot 首次进城发的虚拟日元（主人 2026-11-17 定，Q2） */
   firstEntryGrantYen: z.number().int().min(0).default(200_000),
   /** 外部 bot 进城的入口地点 */
-  entryPlace: z.string().default('shinjuku:station'),
+  entryPlace: z.enum(['shinjuku:station', 'ikebukuro:station']).default('shinjuku:station'),
   /** 同时在城的外部 bot 上限 */
   maxPresentExternal: z.number().int().min(1).default(30),
   /** 外部 bot 的在场租约：这么久没有任何调用就算离开（行程照常跑完） */
@@ -31,8 +31,6 @@ export const cityParamsSchema = z.object({
   receiptRetentionMs: z.number().int().min(60_000).default(24 * 3600_000),
   /** 自动回程比「最晚能到家的出发时刻」再提前多少 */
   returnMarginMs: z.number().int().min(0).default(5 * 60_000),
-  /** 累计步行满多少分钟写一条 walked 的 body_effect（和映射表的 min_minutes 一致） */
-  walkEffectMinutes: z.number().int().min(1).default(15),
   /** 天气：多久抓一次；多久没抓到算 stale；多久之后退回合成天气 */
   weatherIntervalMs: z.number().int().min(60_000).default(30 * 60_000),
   weatherFallbackAfterMs: z.number().int().min(60_000).default(3 * 3600_000),
@@ -40,6 +38,8 @@ export const cityParamsSchema = z.object({
   eventRetentionMs: z.number().int().min(3600_000).default(7 * 24 * 3600_000),
   /** 对账作业每天几点跑（世界时区） */
   reconcileHour: z.number().int().min(0).max(23).default(4),
+  /** 每天一次的数据库备份保留几份（放在数据库同目录的 backups/ 下）；0 表示不备份 */
+  backupKeep: z.number().int().min(0).max(365).default(14),
 });
 
 export type CityParams = z.infer<typeof cityParamsSchema>;

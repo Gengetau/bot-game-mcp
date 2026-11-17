@@ -68,12 +68,18 @@ export function ledger(
   }
   if (sum !== 0) throw new Error(`账目不平：${causeKey}`);
   if (c.db.get('SELECT 1 AS x FROM ledger_transactions WHERE cause_key = ?', causeKey)) return false;
-  const { lastInsertRowid } = c.db.run('INSERT INTO ledger_transactions(cause_key, kind, label, visit_id, created_at) VALUES (?,?,?,?,?)', causeKey, kind, label, visitId, c.now());
-  for (const [account, delta] of entries) {
+  // 先把每个账户的净变动算清、查够不够，再写交易头：调用方就算接住了「钱不够」，原因键也不会被一笔没发生的交易占掉
+  const net = new Map<string, number>();
+  for (const [account, delta] of entries) net.set(account, (net.get(account) ?? 0) + delta);
+  for (const [account, delta] of net) {
     if (delta === 0) continue;
     const acct = c.db.get<{ kind: string; balance: number; held: number }>('SELECT kind, balance, held FROM accounts WHERE account_id = ?', account);
     if (!acct) throw new Error(`没有这个账户：${account}`);
     if (acct.kind !== 'system' && acct.balance + delta < acct.held) throw cityPrecondition('钱不够。', 'insufficient_funds');
+  }
+  const { lastInsertRowid } = c.db.run('INSERT INTO ledger_transactions(cause_key, kind, label, visit_id, created_at) VALUES (?,?,?,?,?)', causeKey, kind, label, visitId, c.now());
+  for (const [account, delta] of entries) {
+    if (delta === 0) continue;
     c.db.run('UPDATE accounts SET balance = balance + ?, revision = revision + 1 WHERE account_id = ?', delta, account);
     c.db.run('INSERT INTO ledger_entries(transaction_id, account_id, delta) VALUES (?,?,?)', lastInsertRowid, account, delta);
   }

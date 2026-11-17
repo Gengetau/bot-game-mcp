@@ -64,7 +64,7 @@ export async function startHttpServer(rt: Runtime, log: (msg: string) => void = 
     return { ok: true, key, ctx: { identity: identity ?? null, fixed: Boolean(identity), transport: 'http' } };
   }
 
-  const deps = { manager, auth, version: rt.version, log, ...(rt.world ? { town: { world: rt.world, auth, trustedIds: config.refereeIds, ...townPolicy(config.town) } } : {}), ...(rt.city ? { city: { city: rt.city } } : {}) };
+  const deps = { manager, auth, version: rt.version, log, ...(rt.world ? { town: { world: rt.world, auth, trustedIds: config.refereeIds, ...townPolicy(config.town) } } : {}), ...(rt.city ? { city: { city: rt.city, ...(config.city.allowedAgents ? { allowedAgents: config.city.allowedAgents } : {}) } } : {}) };
 
   /**
    * 接回重启前的会话：用原来的会话 ID 新建一个已初始化的传输。

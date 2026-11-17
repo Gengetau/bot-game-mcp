@@ -26,12 +26,12 @@ const B: Identity = { id: '7001', name: '小B' };
 const C: Identity = { id: '7002', name: '小C' };
 const NIA_QQ: Identity = { id: '3001', name: '妮娅' };
 
-function makeEnv(opts: { town?: boolean } = {}): { t: CityTest; connect: (who: Identity, fixed?: boolean) => Promise<Client> } {
+function makeEnv(opts: { town?: boolean; allowed?: string[] } = {}): { t: CityTest; connect: (who: Identity, fixed?: boolean) => Promise<Client> } {
   const t = makeCity();
   const manager = new GameManager({ registry: createRegistry(), rng: new SeededRng('mcp-city') });
   const auth = new Authenticator({ mode: 'keys', adminKeys: [], agents: AGENTS }, manager);
   const town = opts.town ? makeTown() : null;
-  const deps = { manager, auth, version: 'test', city: { city: t.c }, ...(town ? { town: { world: town.w, auth, trustedIds: [] } } : {}) };
+  const deps = { manager, auth, version: 'test', city: { city: t.c, ...(opts.allowed ? { allowedAgents: opts.allowed } : {}) }, ...(town ? { town: { world: town.w, auth, trustedIds: [] } } : {}) };
   const connect = async (who: Identity, fixed = true) => {
     const ctx: SessionContext = { identity: who, fixed, transport: 'memory' };
     const server = createMcpServer(deps, ctx);
@@ -182,5 +182,37 @@ describe('和栖灯镇共用工具名', () => {
     expect(tools.find((x) => x.name === 'world_act')!.description).toContain('travel');
     const guide = await b.readResource({ uri: 'botgame://guide/city' });
     expect(String((guide.contents[0] as { text: string }).text)).toContain('enter_world');
+  });
+});
+
+describe('城市准入名单', () => {
+  it('配了名单：名单外的身份进不了城，也不留下任何记录；公开视图照常；室友的密钥仍然是 ENTRY_VIA_HOME_ONLY', async () => {
+    const { t, connect } = makeEnv({ allowed: ['7001'] });
+    const b = await connect(B);
+    const c = await connect(C);
+    expect((await call(b, 'enter_world', { world_id: 'tokyo', name: '小B' })).created).toBe(true);
+    const refused = await fails(c, 'enter_world', { world_id: 'tokyo', name: '小C' });
+    expect(refused).toMatchObject({ code: 'FORBIDDEN', reason: 'not_admitted' });
+    expect(t.c.db.scalar("SELECT COUNT(*) FROM principals WHERE subject = '7002'")).toBe(0);
+    expect((await call(c, 'world_query', { what: 'public', world_id: 'tokyo' })).world_id).toBe('tokyo');
+    expect((await fails(c, 'world_query', { what: 'residents', world_id: 'tokyo' })).code).toBe('FORBIDDEN');
+    const nia = await connect(NIA_QQ);
+    expect((await fails(nia, 'enter_world', { world_id: 'tokyo' })).code).toBe('ENTRY_VIA_HOME_ONLY');
+  });
+
+  it('后来才被移出名单的居民：不能再行动', async () => {
+    const open = makeEnv();
+    const b = await open.connect(B);
+    await call(b, 'enter_world', { world_id: 'tokyo', name: '小B' });
+    // 同一个城市，换一份名单（相当于改配置后重启）
+    const manager = new GameManager({ registry: createRegistry(), rng: new SeededRng('mcp-city-2') });
+    const auth = new Authenticator({ mode: 'keys', adminKeys: [], agents: AGENTS }, manager);
+    const server = createMcpServer({ manager, auth, version: 'test', city: { city: open.t.c, allowedAgents: [] } }, { identity: B, fixed: true, transport: 'memory' });
+    const [x, y] = InMemoryTransport.createLinkedPair();
+    const client = new Client({ name: 'test-client', version: '1.0.0' });
+    await server.connect(y);
+    await client.connect(x);
+    expect((await fails(client, 'world_act', { request_id: rid(), action: { type: 'say', text: '还在吗' } })).code).toBe('FORBIDDEN');
+    expect((await fails(client, 'get_my_view')).code).not.toBe('INTERNAL');
   });
 });

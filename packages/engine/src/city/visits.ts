@@ -400,6 +400,8 @@ export function prepareVisit(c: CityService, body: Record<string, unknown>): Bri
       plan.return_by_ms,
       now,
     );
+    // 兜底：内核 prepare 之后再也没来（既不 commit 也不 abort），到最晚回家时刻这条记录自动作废，不挡她下一次出门
+    c.schedule('visit_prepared_expire', `prep:${visitId}`, plan.return_by_ms, { visitId });
     return { state: 'prepared', payload: { city_catalog_version: CITY_CATALOG_VERSION, mappings_version: MAPPINGS.version, carry_yen: carry.yen, items: items.map((i) => ({ ref: i.ref, engine_type: i.engine_type, qty: i.qty })), plan: storedPlan } };
   });
 }
@@ -588,5 +590,12 @@ export function installVisits(c: CityService): void {
   c.jobHandlers.set('visit_return', (payload, _job, now) => {
     const visit = visitById(c, String(payload.visitId));
     if (visit && visit.state === 'active') beginReturn(c, visit, 'return_by', now);
+  });
+  // prepare 之后一直没有交接：到最晚回家时刻自动作废。迟到的 commit 会得到 409 visit_aborted，内核按取消处理（释放冻结）
+  c.jobHandlers.set('visit_prepared_expire', (payload, _job, now) => {
+    const visit = visitById(c, String(payload.visitId));
+    if (!visit || visit.state !== 'prepared') return;
+    c.db.run("UPDATE visits SET state = 'aborted', aborted_at = ?, return_reason = 'expired' WHERE visit_id = ?", now, visit.visit_id);
+    c.log(`[city] 访问 ${visit.visit_id}（${visit.actor_id}）prepare 之后一直没有交接，已自动作废`);
   });
 }

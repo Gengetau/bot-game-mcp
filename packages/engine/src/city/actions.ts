@@ -191,12 +191,16 @@ function perform(c: CityService, r: CityResident, action: unknown, at: number, v
     case 'give':
       return doGive(c, r, a, at, visit);
     case 'go_home':
-      if (!visit) throw cityBadRequest('只有从小屋出来的室友能用 go_home。', 'house_only');
+      // 外部 bot 没有这个动作，也不该从报错里知道有它
+      if (!visit) throw unknownAction(false);
       return { status: 'accepted', returning: beginReturn(c, visit, 'self', at) || visitById(c, visit.visit_id)?.state === 'returning' };
     default:
-      throw cityBadRequest(`不认识的动作。能做的有：${CITY_ACTIONS.join(' / ')}。`, 'unknown_action');
+      throw unknownAction(visit !== null);
   }
 }
+
+const unknownAction = (house: boolean): CityError =>
+  cityBadRequest(`不认识的动作。能做的有：${CITY_ACTIONS.filter((x) => house || x !== 'go_home').join(' / ')}。`, 'unknown_action');
 
 // ───────────────────────── 外部 bot 的入口 ─────────────────────────
 
@@ -205,6 +209,8 @@ export function cityCommand(c: CityService, residentId: string, requestId: unkno
   if (typeof requestId !== 'string' || !REQUEST_ID_RE.test(requestId)) throw cityBadRequest('需要 request_id（8~80 个字符，只能是字母、数字、下划线和 . : -）。每个新动作一个新的，重试用同一个。');
   const hash = sha256(stableStringify(action ?? null));
   c.metrics.commands++;
+  // 过了限流检查、真的去试了的动作，失败也算一次（整笔回滚之后单独记）：不然不断发失败的动作就不受上限约束
+  let attempted: string | null = null;
   try {
     return c.commit(() => {
       const now = c.now();
@@ -221,6 +227,7 @@ export function cityCommand(c: CityService, residentId: string, requestId: unkno
       const subject = r.principal_id;
       rateCheck(c, subject, 'act', c.params.externalActsPerHour, 3600_000, now);
       rateCheck(c, subject, 'act', c.params.externalActsPerDay, 86_400_000, now);
+      attempted = subject;
       const result = perform(c, r, action, now, null, subject);
       rateNote(c, subject, 'act', now);
       const until = now + c.params.presenceLeaseMs;
@@ -231,7 +238,17 @@ export function cityCommand(c: CityService, residentId: string, requestId: unkno
       return response;
     });
   } catch (e) {
-    if (e instanceof CityError) c.metrics.rejected++;
+    if (e instanceof CityError) {
+      c.metrics.rejected++;
+      const subject: string | null = attempted;
+      if (subject !== null) {
+        try {
+          c.commit(() => rateNote(c, subject, 'act', c.now()));
+        } catch {
+          /* 记不上就算了：数据库不可写时本来也做不了动作 */
+        }
+      }
+    }
     throw e;
   }
 }

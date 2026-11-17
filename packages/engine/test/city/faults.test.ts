@@ -1,17 +1,19 @@
 /**
  * 故障用例 F1–F16 里属于引擎的部分（规格 6.2），用假内核客户端跑。
- * F13（下雨没伞不让出门）是内核在 T1 之前拦的，引擎这边只负责给出同一份天气，见 weather.test.ts。
+ * F13（下雨没伞不让出门）是内核在 T1 之前拦的，引擎没有对应的测试；F14（天气不可用）在 world.test.ts。
  */
-import { mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   BRIDGE,
+  SHOPS,
   abortVisit,
   cityPrincipal,
   commitVisit,
   latestReconcile,
+  ledger,
   prepareVisit,
   publicCityView,
   releaseVisit,
@@ -514,6 +516,29 @@ describe('F15：外部 bot 的动作上限', () => {
     expect(b.act({ type: 'say', text: '又能说了' }).status).toBe('completed');
   });
 
+  it('失败的动作也算一次：不断发做不成的动作同样会被限速', () => {
+    const t = makeCity();
+    const b = t.bot('小B', { entry: 'ikebukuro:station' });
+    for (let i = 0; i < 60; i++) rejects(() => b.act({ type: 'buy', sku: 'nothing' }), 'PRECONDITION_FAILED', 'no_such_good');
+    rejects(() => b.act({ type: 'buy', sku: 'nothing' }), 'RATE_LIMITED', 'act');
+    // 被限速的那一次本身不再累计；重放不算
+    expect(t.c.db.scalar("SELECT COUNT(*) FROM rate_log WHERE bucket = 'act'")).toBe(60);
+    expect(t.balance(`acct:${b.id}`)).toBe(200_000);
+  });
+
+  it('外部 bot 的报错里没有 go_home，也没有「小屋」', () => {
+    const t = makeCity();
+    const b = t.bot('小B');
+    for (const type of ['go_home', 'fly']) {
+      const e = rejects(() => b.act({ type }), 'BAD_REQUEST', 'unknown_action');
+      expect(e.message.includes('go_home') || e.message.includes('小屋')).toBe(false);
+    }
+    // 室友那边照常列出 go_home
+    const k = t.kernel('nia');
+    k.depart({ yen: 3000, to: 'akabane:ekimae-plaza' });
+    expect(rejects(() => k.act({ type: 'fly' }), 'BAD_REQUEST', 'unknown_action').message).toContain('go_home');
+  });
+
   it('聊天每分钟 6 句', () => {
     const t = makeCity();
     const b = t.bot('小B');
@@ -566,5 +591,98 @@ describe('出门前的检查', () => {
     rejects(() => prepareVisit(t.c, other.prepareBody({ yen: 1, to: KISSA, visitId: 'v-nia-other' })), 'CONFLICT', 'visit_open');
     // 另一位室友不受影响
     expect(t.kernel('claire').depart({ yen: 1000, to: 'akabane:ekimae-plaza' }).state).toBe('active');
+  });
+});
+
+describe('备份', () => {
+  it('每个世界日一份一致备份，放在数据库旁边的 backups/ 下；同一天不重复；backupKeep=0 不备份', () => {
+    const dbPath = tmpDb();
+    const t = makeCity({ dbPath });
+    const k = t.kernel('nia');
+    k.depart({ yen: 3000, to: 'akabane:ekimae-plaza' });
+    const dir = join(dirname(dbPath), 'backups');
+    t.c.tick();
+    expect(readdirSync(dir)).toEqual(['city-2026-11-17.db']);
+    t.c.tick();
+    expect(readdirSync(dir)).toHaveLength(1);
+    t.clock.advance(24 * HOUR);
+    t.c.tick();
+    expect(readdirSync(dir).sort()).toEqual(['city-2026-11-17.db', 'city-2026-11-18.db']);
+    t.c.close();
+
+    const off = makeCity({ dbPath: tmpDb(), params: { backupKeep: 0 } });
+    off.c.tick();
+    expect(existsSync(join(dirname(off.c.db.path), 'backups'))).toBe(false);
+    off.c.close();
+  });
+});
+
+describe('兜底', () => {
+  it('prepare 之后内核再也没来：到最晚回家时刻自动作废，不挡下一次出门；迟到的 commit 得到 409', () => {
+    const t = makeCity();
+    const k = t.kernel('nia');
+    const first = k.prepareBody({ yen: 5000, to: KISSA, returnIn: 2 * HOUR });
+    prepareVisit(t.c, first);
+    const stuck = k.visitId;
+    // 还没过期：同一位室友不能再 prepare
+    rejects(() => prepareVisit(t.c, k.prepareBody({ yen: 5000, to: KISSA })), 'CONFLICT', 'visit_open');
+    t.run(2 * HOUR);
+    expect(t.c.db.get('SELECT state, return_reason FROM visits WHERE visit_id = ?', stuck)).toEqual({ state: 'aborted', return_reason: 'expired' });
+    rejects(() => commitVisit(t.c, stuck, { request_id: `${stuck}:commit`, transfer_id: `tr-${stuck}`, domain_epoch: 1 }), 'CONFLICT', 'visit_aborted');
+    // 钱和物品没动过
+    expect(t.balance(BRIDGE)).toBe(0);
+    // 下一次出门照常
+    expect(k.depart({ yen: 5000, to: 'akabane:ekimae-plaza' }).state).toBe('active');
+    expect(runReconcile(t.c, 'test').findings).toEqual([]);
+  });
+
+  it('已经交接的访问不受这个过期作业影响', () => {
+    const t = makeCity();
+    const k = t.kernel('nia');
+    k.depart({ yen: 5000, to: 'akabane:ekimae-plaza', returnIn: 2 * HOUR });
+    t.run(3 * HOUR);
+    expect(k.describe().state).toBe('settled');
+  });
+
+  it('到站、到点回家这两类作业不会被搁置：连续失败之后退避着重试，修好了就接上；对账会报', () => {
+    const t = makeCity();
+    const k = t.kernel('nia');
+    k.depart({ yen: 5000, to: 'akabane:ekimae-plaza' });
+    const real = t.c.jobHandlers.get('trip_leg')!;
+    t.c.jobHandlers.set('trip_leg', () => {
+      throw new Error('模拟的故障');
+    });
+    t.clock.advance(15 * MIN);
+    for (let i = 0; i < 6; i++) t.c.runDue();
+    const job = t.c.db.get("SELECT status, attempts, due_at FROM scheduled_jobs WHERE kind = 'trip_leg' AND status = 'pending'")!;
+    expect(job).toMatchObject({ status: 'pending', attempts: 5 });
+    expect(Number(job.due_at)).toBe(t.clock.t + MIN);
+    expect(runReconcile(t.c, 'test').findings.map((f) => f.code)).toContain('stuck_jobs');
+    // 别的作业类型照旧搁置
+    t.c.commit(() => t.c.schedule('no_such_kind', 'x:1', t.clock.t));
+    for (let i = 0; i < 6; i++) t.c.runDue();
+    expect(t.c.db.get("SELECT status FROM scheduled_jobs WHERE kind = 'no_such_kind'")).toEqual({ status: 'failed' });
+    t.c.db.run("DELETE FROM scheduled_jobs WHERE kind = 'no_such_kind'");
+    // 修好之后接上，她到了
+    t.c.jobHandlers.set('trip_leg', real);
+    t.run(2 * MIN);
+    expect(k.view().location).toEqual({ place: 'akabane:ekimae-plaza' });
+    expect(runReconcile(t.c, 'test').findings).toEqual([]);
+  });
+
+  it('账本：钱不够的那一笔不占原因键', () => {
+    const t = makeCity();
+    const b = t.bot('小B');
+    const acct = `acct:${b.id}`;
+    rejects(() => t.c.commit(() => {
+      try {
+        ledger(t.c, 'test:once', 'purchase', '买不起', [[acct, -999_999], [SHOPS, 999_999]]);
+      } catch (e) {
+        expect(t.c.db.scalar("SELECT COUNT(*) FROM ledger_transactions WHERE cause_key = 'test:once'")).toBe(0);
+        throw e;
+      }
+    }), 'PRECONDITION_FAILED', 'insufficient_funds');
+    expect(t.c.commit(() => ledger(t.c, 'test:once', 'purchase', '买得起', [[acct, -100], [SHOPS, 100]]))).toBe(true);
+    expect(t.balance(acct)).toBe(199_900);
   });
 });

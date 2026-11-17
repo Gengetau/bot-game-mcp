@@ -33,6 +33,14 @@ import type { SessionContext } from './auth.js';
 
 export interface CityDeps {
   city: CityService;
+  /** 城市准入名单（config.city.allowedAgents）。不配就不限制；配了只有名单里的身份能进城和行动 */
+  allowedAgents?: readonly string[];
+}
+
+function requireAdmitted(deps: CityDeps, me: Identity): void {
+  if (deps.allowedAgents && !deps.allowedAgents.includes(me.id)) {
+    throw new CityError('FORBIDDEN', '这座城市现在只对名单里的 bot 开放，你的身份不在名单上。公开视图（world_query what="public"）可以看；想进城请联系这台服务器的主人，不要重试。', 'not_admitted');
+  }
 }
 
 type ToolConfig = { title: string; description: string; inputSchema: z.ZodRawShape; readOnly?: boolean; destructive?: boolean; idempotent?: boolean };
@@ -104,6 +112,7 @@ function setCitySession(ctx: SessionContext, on: boolean): void {
 function residentOf(deps: CityDeps, ctx: SessionContext, me: Identity): CityResident {
   const c = deps.city;
   if (isHouseIdentity(c, me.id)) throw new CityError('ENTRY_VIA_HOME_ONLY', '这位是小屋的室友：她在城里的事由小屋那边代行，这把密钥在城里只能看。');
+  requireAdmitted(deps, me);
   const principal = findPrincipal(c, me, { selfClaimed: !ctx.fixed });
   const r = principal ? c.residentOfPrincipal(principal.principal_id) : undefined;
   if (!r) throw new CityError('UNAUTHENTICATED', '还没有进过城。先 enter_world（world_id="tokyo"）。', 'no_resident');
@@ -120,6 +129,8 @@ const wrap = async <T>(fn: () => T | Promise<T>): Promise<T> => {
 
 function enter(deps: CityDeps, ctx: SessionContext, me: Identity, a: { name?: string; bio?: string; entry?: string }): unknown {
   const c = deps.city;
+  // 顺序：室友的 QQ 身份先得到 ENTRY_VIA_HOME_ONLY；不在名单上的身份在登记主体之前就拒绝，什么都不写
+  if (!isHouseIdentity(c, me.id)) requireAdmitted(deps, me);
   const principal = cityPrincipal(c, me, { selfClaimed: !ctx.fixed });
   const out = enterCity(c, principal, { ...(a.name !== undefined ? { name: a.name } : c.residentOfPrincipal(principal.principal_id) ? {} : { name: me.name }), ...(a.bio !== undefined ? { bio: a.bio } : {}), ...(a.entry !== undefined ? { entry: a.entry } : {}) });
   setCitySession(ctx, true);

@@ -10,6 +10,7 @@ import {
   applyWeather,
   cityDirectory,
   enterCity,
+  ensureHouseMembers,
   eventsToday,
   isRaining,
   leaveCity,
@@ -19,9 +20,10 @@ import {
   refreshWeather,
   validateCatalog,
   weatherOf,
+  type HouseMemberConfig,
   type WeatherReading,
 } from '../../src/city/index.js';
-import { HOUR, KISSA, MIN, T0, makeCity, rejects, type CityTest } from './helpers.js';
+import { HOUR, HOUSE, KISSA, MIN, T0, makeCity, rejects, type CityTest } from './helpers.js';
 
 const reading = (area: string, code: number, precip = 0, at = T0): WeatherReading => ({ area: area as WeatherReading['area'], observed_at_ms: at, code, temp_c: 14.5, precip_mm: precip, hourly: [] });
 const setWeather = (t: CityTest, codes: Record<string, number>): void => {
@@ -121,7 +123,7 @@ describe('外部 bot', () => {
     rejects(() => b.act({ type: 'travel', to: 'ikebukuro:station' }), 'PRECONDITION_FAILED', 'already_here');
     rejects(() => b.act({ type: 'travel', to: 'nowhere:at-all' }), 'NOT_FOUND', 'no_such_place');
     rejects(() => b.act({ type: 'fly' }), 'BAD_REQUEST', 'unknown_action');
-    rejects(() => b.act({ type: 'go_home' }), 'BAD_REQUEST', 'house_only');
+    rejects(() => b.act({ type: 'go_home' }), 'BAD_REQUEST', 'unknown_action');
   });
 
   it('到了才发现满了：留在最近的车站', () => {
@@ -188,6 +190,31 @@ describe('小屋门口不公开', () => {
     t.run(31 * MIN);
     const v2: any = publicCityView(t.c);
     expect(v2.areas.find((a: any) => a.id === 'ikebukuro').places.find((p: any) => p.id === KISSA).here).toEqual([{ id: t.residentOf('nia'), name: '妮娅' }]);
+  });
+});
+
+describe('小屋的室友', () => {
+  it('后加进配置的室友和城里已有的居民重名：不卡住启动，先用带编号的名字', () => {
+    const t = makeCity({ house: [HOUSE[0]!] });
+    t.bot('克蕾雅');
+    (t.c.house as HouseMemberConfig[]).push(HOUSE[1]!);
+    t.c.commit(() => ensureHouseMembers(t.c));
+    const claire = t.c.mustResident(t.residentOf('claire'));
+    expect(claire.name).not.toBe('克蕾雅');
+    expect(claire.name).toContain('claire');
+    // 再跑一次是幂等的
+    t.c.commit(() => ensureHouseMembers(t.c));
+    expect(t.c.db.scalar("SELECT COUNT(*) FROM residents WHERE origin = 'house'")).toBe(2);
+    // 她照样能出门
+    const k = t.kernel('claire');
+    expect(k.depart({ yen: 3000, to: 'akabane:ekimae-plaza' }).state).toBe('active');
+  });
+
+  it('留在门口时（计划去不了）：视图里说得清她能做什么', () => {
+    const t = makeCity();
+    const k = t.kernel('nia');
+    k.depart({ yen: 300, to: KISSA });
+    expect(k.view().can).toEqual(['say', 'travel', 'go_home']);
   });
 });
 
@@ -261,6 +288,21 @@ describe('天气', () => {
     t.clock.advance(24 * HOUR);
     setWeather(t, {});
     setWeather(t, { akabane: 61 });
+    expect(eventsToday(t.c).map((e) => e.kind)).toEqual(['rain_started']);
+  });
+
+  it('第一次拿到实况时已经在下雨：不算「开始下雨」（上一份是合成天气，没法比较）；之后停了再下才算', () => {
+    const t = makeCity();
+    expect(weatherOf(t.c, 'akabane')?.status).toBe('fallback');
+    setWeather(t, { akabane: 63 });
+    expect(isRaining(t.c, 'akabane')).toBe(true);
+    expect(eventsToday(t.c)).toEqual([]);
+    // 雨天不开放的地方照样按实况关着
+    const b = t.bot('路人', { entry: 'ikebukuro:station' });
+    b.go('akabane:station');
+    rejects(() => b.act({ type: 'travel', to: 'akabane:arakawa-riverbank' }), 'PRECONDITION_FAILED', 'place_closed_rain');
+    setWeather(t, {});
+    setWeather(t, { akabane: 63 });
     expect(eventsToday(t.c).map((e) => e.kind)).toEqual(['rain_started']);
   });
 

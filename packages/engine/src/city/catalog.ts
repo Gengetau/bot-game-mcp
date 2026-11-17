@@ -42,7 +42,7 @@ export const SOURCES: readonly SourceReference[] = [
     id: 'sim-fares',
     kind: 'simulated',
     title: '模拟票价（参考 JR 东日本 2026-03-14 运价改定后的幹線运价档）',
-    note: '赤羽—新宿 10.3 km 在 11–15 km 档，公开报道为 ¥260；赤羽—池袋 5.5 km、池袋—新宿 4.8 km 在 4–6 km 档，按改定幅度估为 ¥200，没有逐一核对官方运价表。一律按纸质车票的整十日元算，不是实时运价，标注为 simulated。',
+    note: '赤羽—新宿 10.3 km（不足 1 km 进位，按 11 km 算）在 11–15 km 档，公开报道为 ¥260；赤羽—池袋 5.5 km、池袋—新宿 4.8 km 在 4–6 km 档，按改定幅度估为 ¥200，没有逐一核对官方运价表。一律按纸质车票的整十日元算，不是实时运价，标注为 simulated。',
     url: 'https://trafficnews.jp/post/136618',
     retrieved: '2026-11-17',
   },

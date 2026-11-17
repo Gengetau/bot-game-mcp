@@ -79,10 +79,16 @@ export function ensureHouseMembers(c: CityService): void {
       }
       continue;
     }
-    if (nameTaken(c, name)) throw new Error(`小屋室友的名字和城里已有的居民重名：${name}`);
-    const principal = upsertPrincipal(c, 'ai-house', m.actorId, name);
+    // 名字被城里已有的居民占了（以后才加进配置的室友）：不让服务卡在启动上，先用带编号的名字，主人改配置后下次启动会改回来
+    let shown = name;
+    if (nameTaken(c, shown)) {
+      shown = cleanName(`${name}·${m.actorId}`) || m.actorId;
+      for (let n = 2; nameTaken(c, shown); n++) shown = cleanName(`${m.actorId}${n}`);
+      c.log(`[city] 室友 ${m.actorId} 的名字「${name}」已经被城里的居民用了，暂时显示为「${shown}」`);
+    }
+    const principal = upsertPrincipal(c, 'ai-house', m.actorId, shown);
     const residentId = c.id('res');
-    c.db.run("INSERT INTO residents(resident_id, principal_id, name, bio, origin, in_city, created_at, last_seen_at) VALUES (?,?,?,?,'house',0,?,?)", residentId, principal.principal_id, name, bio, now, now);
+    c.db.run("INSERT INTO residents(resident_id, principal_id, name, bio, origin, in_city, created_at, last_seen_at) VALUES (?,?,?,?,'house',0,?,?)", residentId, principal.principal_id, shown, bio, now, now);
     c.db.run('INSERT INTO house_members(actor_id, resident_id, last_epoch, created_at) VALUES (?,?,0,?)', m.actorId, residentId, now);
     ensurePurse(c, residentId);
   }

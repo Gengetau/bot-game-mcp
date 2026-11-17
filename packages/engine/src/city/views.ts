@@ -194,7 +194,7 @@ export function selfView(c: CityService, r: CityResident): Record<string, unknow
     };
   });
   const pending = c.db.all<Row>("SELECT order_id, type, yen FROM orders WHERE resident_id = ? AND status = 'pending' ORDER BY created_at", r.resident_id).map((o) => ({ order_id: String(o.order_id), what: itemName(String(o.type)), yen: Number(o.yen) }));
-  const actions = !inCity ? [] : visit?.state === 'returning' ? ['say'] : trip ? [] : [...(place(r.place_id ?? '')?.actions ?? ['travel']), ...(visit ? ['go_home'] : [])];
+  const actions = !inCity ? [] : visit?.state === 'returning' ? ['say'] : trip ? [] : [...(r.place_id === HOUSE_ENTRANCE ? ['say', 'travel'] : (place(r.place_id ?? '')?.actions ?? ['travel'])), ...(visit ? ['go_home'] : [])];
   return {
     world_id: c.worldId,
     at_ms: now,

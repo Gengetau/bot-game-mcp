@@ -236,7 +236,8 @@ export function applyWeather(c: CityService, readings: readonly WeatherReading[]
     if (next.status !== 'ok') continue; // 事件只由真的抓到的天气驱动
 
     // ① 转雨：之前有快照而且不在下雨，现在下雨了
-    if (next.rain && prev && Number(prev.rain) === 0) {
+    // 「开始下雨」要有前后两份实况作比较：上一份是合成天气（不下雨）时，雨可能早就在下了，不算刚开始
+    if (next.rain && prev && Number(prev.rain) === 0 && String(prev.status) !== 'fallback') {
       const ev = addEvent(c, 'rain_started', a.id, null, `${a.name}下雨了`, `${a.name}一带开始下雨。露天的地方会淋到；荒川河岸这样雨天不开放的地点暂时不能再进。`, at, at + 60 * 60_000);
       if (ev) {
         events.push(ev);

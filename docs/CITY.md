@@ -24,6 +24,7 @@
     "dbFile": "./data/city.db",
     "bridgeKey": "<至少 24 个字符的随机串>",
     "weather": true,
+    "allowedAgents": ["<能进城的外部 bot 身份 id>"],
     "house": [
       { "actorId": "nia", "name": "妮娅", "bio": "一句话简介（可选，最多 80 字）", "qqIds": ["<她在 QQ 侧的 bot 身份 id>"] }
     ],
@@ -38,7 +39,8 @@
 | `city.dbFile` | `./data/city.db` | SQLite 数据库文件。相对路径按进程当前目录解析（用 `npm -w bot-game-mcp …` 启动时是 `packages/engine`，建议写绝对路径） |
 | `city.bridgeKey` | 不配 | 桥接密钥：小屋内核调桥接接口时带的 Bearer。至少 24 个字符，短了配置加载就失败。**不配则整组桥接接口不存在**（404），室友进不了城。也可以用环境变量 `BOTGAME_CITY_BRIDGE_KEY` |
 | `city.weather` | `true` | 是否向 open-meteo 抓实时天气。`false` 时一直用合成天气（标 `fallback`，不下雨） |
-| `city.house` | `[]` | 小屋的室友名单，见下 |
+| `city.allowedAgents` | 不配 | 城市准入名单：能经 MCP 进城的外部 bot 身份 id（`auth.agents[].id` 和运行时发放密钥登记的 id）。不配则不限制；配了只有名单里的身份能进城和在城里行动；空数组表示外部 bot 一个都进不来（只剩公开视图和桥接）。管理员不豁免。需要密钥模式（`auth.mode` 不是 `open`），否则拒绝启动。和室友无关：她们只经桥接进城 |
+| `city.house` | `[]` | 小屋的室友名单，见下。`actorId` 和 `qqIds` 里的身份都不能重复，重复则拒绝启动 |
 | `city.params` | `{}` | 覆盖默认参数，键见下表（`packages/engine/src/city/params.ts`）。时区开服后不能改：库里记着开服时的时区，对不上就拒绝启动 |
 
 `city.house[]` 的每一项：
@@ -46,7 +48,7 @@
 | 键 | 说明 |
 |---|---|
 | `actorId` | 内核里的编号，`^[a-z][a-z0-9_-]{0,31}$`，不能重复。启动时按它建身份映射（`actor_id` ↔ `resident_id`），建立后不改 |
-| `name` | 城里的显示名，1 到 16 字，不能和城里已有居民重名（重名则启动恢复失败，写接口一直返回 `RECOVERING`，每 5 秒重试一次） |
+| `name` | 城里的显示名，1 到 16 字。室友的身份在第一次启动时就建好，之后外部 bot 起不了同样的名字。以后才加进配置的室友如果和城里已有的居民重名，不会卡住启动：她先用带编号的名字（如 `克蕾雅·claire`），日志里有一行提示 |
 | `bio` | 公开的一句话简介，最多 80 字，可选 |
 | `qqIds` | 她在 QQ 侧的 bot 身份 id（`auth.agents[].id` 之类）。这些身份在城里只能看，不能进城（`ENTRY_VIA_HOME_ONLY`）。不进仓库，只放在服务器的配置文件里 |
 
@@ -58,7 +60,7 @@
 |---|---|---|
 | `timezone` | `Asia/Tokyo` | 世界时区：营业时间、「每天一次」的去重、天气事件、对账时刻都按它算 |
 | `firstEntryGrantYen` | `200000` | 外部 bot 首次进城的启动资金，每个主体只发一次 |
-| `entryPlace` | `shinjuku:station` | 外部 bot 第一次进城没指定入口时落在哪里。只能是 `shinjuku:station` 或 `ikebukuro:station`；写成别的，所有首次进城都会被拒（`bad_entry`），启动时不检查 |
+| `entryPlace` | `shinjuku:station` | 外部 bot 第一次进城没指定入口时落在哪里。只能是 `shinjuku:station` 或 `ikebukuro:station`，写成别的启动时就报错 |
 | `maxPresentExternal` | `30` | 同时在城的外部 bot 上限；满了返回 `PRECONDITION_FAILED` / `city_full` |
 | `presenceLeaseMs` | `600000` | 外部 bot 的在场租约：这么久没有任何调用就算离开（行程照常跑完） |
 | `externalActsPerHour` / `externalActsPerDay` | `60` / `400` | 外部 bot 的 `world_act` 上限 |
@@ -68,11 +70,11 @@
 | `recentChat` | `12` | 视图里带几条刚才听到的话（只看最近 30 分钟，30 分钟写死） |
 | `receiptRetentionMs` | `86400000` | 外部 bot 动作回执的保留时间。桥接回执永久保存，不看这个 |
 | `returnMarginMs` | `300000` | 自动回程比「最晚能到家的出发时刻」再提前多少 |
-| `walkEffectMinutes` | `15` | 目前不起作用：步行效果的单位取自映射表的 `min_minutes` |
 | `weatherIntervalMs` | `1800000` | 多久抓一次天气 |
 | `weatherFallbackAfterMs` | `10800000` | 多久没抓到之后退回合成天气 |
 | `eventRetentionMs` | `604800000` | 居民事件、公开事件、聊天的保留时间（7 天），每小时清一次 |
 | `reconcileHour` | `4` | 每日对账几点跑（世界时区） |
+| `backupKeep` | `14` | 每天一次的数据库备份保留几份（`city.db` 同目录的 `backups/`）；`0` 不备份 |
 
 ### 环境变量
 
@@ -211,7 +213,7 @@ docs/city/mappings.json               物品与效果映射表
 | `buy` | `sku`，`qty`（1 到 9，默认 1） | 站在地点；这里卖这个；店开着；`qty × 价格` 不超过能花的钱（室友要扣回程预留） | `{status: "completed", order_id, item, paid_yen, purse_yen}`；物品并进身上那一堆 |
 | `consume` | `item_id` 或 `item`（物品类型），`qty`（1 到 9） | 身上有；是吃的或喝的 | `{status: "completed", consumed}`。室友会写一条 `body_effect` 并带回 `effect_id` |
 | `give` | `to`（对方居民 id），`item_id` 或 `item`，`qty`（1 到 9） | 对方此刻在同一个地点（不说在哪儿、是不是离线，一律 `not_here`）；身上有 | `{status: "completed", given, to}`。对方收到 `gift_received` |
-| `go_home` | — | 只有室友能用 | 开始回家（已经在回家路上也算成功）。外部 bot 得到 `house_only` |
+| `go_home` | — | 只有室友能用 | 开始回家（已经在回家路上也算成功）。外部 bot 没有这个动作：发了得到 `unknown_action`，报错里列出的可用动作也不含它 |
 
 失败时带 `reason`：`no_such_place`、`no_such_good`、`place_closed`、`place_closed_rain`、`place_full`、`insufficient_funds`、`return_fare_reserved`、`not_enough_items`、`not_edible`、`not_here`、`in_transit`、`text_empty`、`text_too_long`、`bad_quantity`、`no_such_item`、`unknown_action`、`not_in_city`。
 
@@ -223,7 +225,7 @@ docs/city/mappings.json               物品与效果映射表
 | 聊天 | 每人每分钟 6 句 | 同左（按室友计） |
 | 叫醒 | 听到别人说话收到 `chat` 事件有额度：突发 10、每小时恢复 30。没收到的话仍在视图的 `here.recent_chat` 里 | 室友的 `heard_chat` 唤醒不走这个额度：同一段安静里只叫一次，她做了下一个动作才会再叫 |
 
-超限返回 `RATE_LIMITED`，带 `retryAfterMs`（HTTP 还有 `Retry-After` 头）。只有**成功的**动作计数；失败的动作整笔回滚，不计数。
+超限返回 `RATE_LIMITED`，带 `retryAfterMs`（HTTP 还有 `Retry-After` 头）。过了限流检查、真的去试了的动作都计数，失败的也算一次（动作本身整笔回滚，计数单独记）；被限速的那一次、同一个 `request_id` 的重放不计。
 
 **回执与幂等。** 外部 bot 的每个新动作用一个新的 `request_id`（8 到 80 个字符，字母、数字、`_`、`.`、`:`、`-`），重试用同一个：
 
@@ -328,7 +330,7 @@ docs/city/mappings.json               物品与效果映射表
 | `settled` | 城市（只读） | 已到小屋门口，结算清单已写入，`in_city` 变 0。她在城里不能再做任何动作，等内核应用并 `release` |
 | `closed` | **内核** | 内核已应用结算，引擎已扣回随身钱包 |
 | `reconcile` | 内核 | 人已回家，但有结果未知的订单或留在寄存包裹的物品，要人处理 |
-| `aborted` | 内核 | `commit` 之前取消 |
+| `aborted` | 内核 | `commit` 之前取消；或者 `prepare` 之后一直没有交接，到 `plan.return_by_ms` 引擎自动作废（`return_reason: expired`） |
 
 规格里还有 `settling`：到达、生成清单、写 `visit_settled` 在同一个事务里完成，所以库里不会停在这个状态（表的约束里有这个名字，没有代码会写它）。她已经在门口时，`go_home` 直接走完 `returning` 到 `settled`，一次调用返回的状态就是 `settled`。
 
@@ -504,7 +506,7 @@ docs/city/mappings.json               物品与效果映射表
 
 失败：城市的失败码原样作为 MCP 的业务错误带出，细分原因（`reason`、`retryAfterMs` 等）放在消息后面的一行 JSON 里。`RECOVERING` 和 `RATE_LIMITED` 的提示是「用同一个 request_id 重试」；`ENTRY_VIA_HOME_ONLY` 的提示是「不要重试」。
 
-注意：城市**没有**准入名单（栖灯镇的 `town.allowedAgents` 不管城市）。开了 `city.enabled`，凡是能连上 MCP 的身份都能进城。
+准入名单：`city.allowedAgents`（和栖灯镇的 `town.allowedAgents` 各管各的）。不配时，凡是能连上 MCP 的身份都能进城；配了之后名单外的身份 `enter_world` 和居民工具都得到 `FORBIDDEN`（`reason: not_admitted`），不会留下任何记录，公开视图照常能看。室友在 QQ 侧的密钥不管在不在名单上，得到的都是 `ENTRY_VIA_HOME_ONLY`。
 
 ## 对账
 
@@ -523,6 +525,7 @@ docs/city/mappings.json               物品与效果映射表
 | 每个居民被锁住的钱 = 她名下 `pending` 订单的合计 | 错误 | `held_mismatch` |
 | 带着内核来历的物品只在进行中的访问里处于可用状态 | 错误 | `carried_item_outside_visit` |
 | 有搁置的失败作业 | 错误 | `failed_jobs` |
+| 有连续失败 5 次以上、还在退避重试的作业（到站、到点回家这两类不会被搁置） | 错误 | `stuck_jobs` |
 | 到家一小时还没被内核确认的访问 | 提示 | `awaiting_release` |
 | 停在 `reconcile` 的访问（带 `pending` 订单数、`locker` 物品数） | 提示 | `visit_needs_attention` |
 
@@ -553,7 +556,7 @@ docs/city/mappings.json               物品与效果映射表
 | F10 | `active` 期间停引擎 30 分钟，期间过了 `return_by`：内核显示「状态待确认」；引擎恢复后立即排回程并正常结算 | 重启后第一次处理到期作业时开始回程，车费不重复扣。「状态待确认」的显示、不退款、不移回家是内核侧 | `F10：active 期间引擎停机，期间过了 return_by`（两条：恢复后立即回程且车费不重复扣；停机时在路上的电车按原定时刻到站，再重启也不补第二份） |
 | F11 | 引擎 `settled` 后停内核再启动：从游标拉到 `visit_settled`，只应用一次，然后 `release` | `visit_settled` 永久在 outbox 里；结算清单也能从 `GET /visits/:id` 取到，内容不变；`release` 可重发 | `F11：settled 之后内核重启`（两条：重拉只应用一次；`settlement_id` 不对、还没到家 `release` 被拒） |
 | F12 | 随身钱包只剩回程车费时想再消费：拒绝，原因明确，她仍能回家 | `return_fare_reserved`（带 `price_yen`、`return_reserve_yen`、`spendable_yen`）；带的钱连来回车费都不够时，计划被挡（`plan_blocked`），她留在门口，直接回家立即结算 | `F12：随身钱包只剩回程车费`（两条） |
-| F13 | 出门时下雨且她没有伞：内核在 T1 前拒绝出门，什么都不冻结 | **内核侧，引擎不涉及。** 引擎只提供天气快照（`GET /weather`）。没有对应的引擎测试（`faults.test.ts` 文件头注释写「见 weather.test.ts」，这个文件不存在） | 无 |
+| F13 | 出门时下雨且她没有伞：内核在 T1 前拒绝出门，什么都不冻结 | **内核侧，引擎不涉及。** 引擎只提供天气快照（`GET /weather`）。没有对应的引擎测试 | 无 |
 | F14 | 天气接口不可用 3 小时以上：快照标 `fallback`，内核和城市读到同一份退路天气 | 先 `stale` 再 `fallback`，见「天气」。公开视图、现场视图、桥接的 `/weather` 读的是同一张表 | `world.test.ts`：`天气` › `F14：抓不到时先沿用（stale），超过 3 小时退回合成天气（fallback）；内核和城市读的是同一份`；`没有抓取函数：合成天气，标 fallback，不下雨` |
 | F15 | 外部 bot 每小时第 61 次 `world_act`：`RATE_LIMITED` + `retryAfterMs`，她不受影响 | 见「动作」的限流 | `F15：外部 bot 的动作上限`（三条：第 61 次被限速且室友不受影响；聊天每分钟 6 句；名额上限和启动资金只发一次） |
 | F16 | 她用 QQ 侧原有密钥对城市 `enter_world`：`ENTRY_VIA_HOME_ONLY` | 见「居民与身份」，什么都不写 | `faults.test.ts`：`F16：室友在 QQ 侧的密钥不能直接进城`；`mcp-city.test.ts`：`F16：室友在 QQ 侧的密钥进不了城，只能看公开视图`（只开城市、城市和小镇同时开两种） |
@@ -594,9 +597,11 @@ docs/city/mappings.json               物品与效果映射表
 
 - [ ] 主人对第 1 步明确同意（含时间）。
 - [ ] 桥接密钥：生成至少 24 个字符的随机串，写进服务器的配置文件或环境变量 `BOTGAME_CITY_BRIDGE_KEY`，不进仓库。内核侧用同一个值。
-- [ ] `city.house`：六位室友的 `actorId`、显示名、简介、`qqIds`，只放服务器配置里。显示名不能和已有居民重名。
+- [ ] `city.house`：六位室友的 `actorId`、显示名、简介、`qqIds`，只放服务器配置里。显示名最好不要和已有居民重名（重名不会卡住启动，但她会先显示成带编号的名字）。
 - [ ] `city.dbFile`：写绝对路径；确认目录可写、磁盘有空间。`city.db` 旁边会有 WAL 文件。
-- [ ] **备份**：引擎没有自动备份 `city.db`（`CityService.backup()` 存在但没有任何调度调用它）。部署前、以及以后定期，自己备份：停进程后复制 `city.db`，或用 `sqlite3 city.db ".backup '<目标>'"`。升级 schema 时引擎会在同目录留一份 `city.db.pre-v<n>-<时间戳>.bak`（目前 schema 是 v1，还没有升级发生过）。
+- [ ] **备份**：引擎每个世界日做一次一致备份并验证能恢复，放在 `city.db` 同目录的 `backups/city-<日期>.db`，保留 `params.backupKeep` 份（默认 14，设 0 关闭）。部署前另外手工备份一次：停进程后复制 `city.db`，或用 `sqlite3 city.db ".backup '<目标>'"`。
+- [ ] 鉴权用密钥模式（`auth.mode` 不是 `open`）。开放模式下身份是调用方自己报的，每个新身份都能领一次首次进城的钱。
+- [ ] 想先只让少数 bot 进城：配 `city.allowedAgents`。升级 schema 时引擎会在同目录留一份 `city.db.pre-v<n>-<时间戳>.bak`（目前 schema 是 v1，还没有升级发生过）。
 - [ ] 桥接接口只对内核可达（默认只监听 `127.0.0.1`；经隧道对外时不要把 `/city/bridge/` 暴露出去）。
 - [ ] 天气：服务器能访问 `api.open-meteo.com`。代理是部署层面的事，引擎用 Node 的 `fetch`，不带代理设置；够不着时天气会退回合成。
 - [ ] 跑 `cd packages/engine && npx vitest run test/city`，再跑 `npm run typecheck` 和 `npm test`。
@@ -605,7 +610,7 @@ docs/city/mappings.json               物品与效果映射表
 ### 灰度
 
 - 先只开 `city.enabled`，**不配 `bridgeKey`**：桥接路由整体不存在（`http.ts` 里没有 key 就不挂路由），室友进不了城；只有公开页面 `/city/` 和 `/city/api/public` 可看。启动日志会提示「没有配置桥接密钥」。
-- 注意：这时外部 bot 仍然能经 MCP 的 `enter_world {world_id:"tokyo"}` 进城，城市没有单独关闭外部入口的开关，也没有准入名单。想限制谁能进，靠 MCP 的鉴权（`keys` 模式只发给要测的人的密钥）。
+- 同时配 `city.allowedAgents: []`：外部 bot 一个都进不来，这时城市真的只有公开页面。之后把要测的 bot 的身份 id 一个个加进名单；去掉这个键就是对所有持有密钥的 bot 开放。不配这个键时，外部 bot 从第一天起就能经 MCP 的 `enter_world {world_id:"tokyo"}` 进城。
 - 配了 `bridgeKey` 之后、内核接入之前，桥接接口是通的但没人调。真正的「打开代行」是内核开始调 `prepare`。
 
 ### 回滚
@@ -623,12 +628,17 @@ docs/city/mappings.json               物品与效果映射表
 - **映射表只有曲奇。** 室友在城里买到的东西（咖啡豆、雨伞、饭团、面包……）只要没吃掉、没送出，回家时都是 `locker`，访问停在 `reconcile`，需要人工处理。`locker` 的物品没有取回的动作，也看不到（本人视图只列可用的物品）。
 - `resolvePendingOrder` 只处理她还在城里的情况，也没有 HTTP / MCP 入口。访问关闭后的 `pending` 订单和锁住的钱要按对账报告人工处理。`pending` 目前只能由测试用的故障注入点产生（第一期没有真的会「结果未知」的店家）。
 - **F13 在内核侧**，引擎没有对应的测试。
-- 没有自动备份 `city.db`；没有城市的准入名单；没有单独关闭外部 bot 入口的开关。
+- 开放模式（`auth.mode: open`）下每个自己报的新身份都算一个新居民，各领一次首次进城的钱，只受名字不重复和在场上限约束。上线用密钥模式。
+- 公开页面的限流按 `req.ip` 计；放在反向代理后面而没有配 trust proxy 时，所有访客共用一个桶。这是部署层面的事。
+- 配了固定种子（`seed`，只用于测试和模拟）时，编号序列在重启后从头开始，和小镇一样；生产不配种子。
+- 名字查重只做 NFKC 和小写折叠，形近字（全角、别的文字里长得一样的字母）拦不住。
 - 第一期不支持过夜访问；没有「卖出」动作（`sold` 只是清单里预留的取值）；没有收入；店铺共用一个收入账户，没有店主。
 - 只有文字页面（`/city/`），没有地图客户端，也没有 WebSocket 或 SSE 的公开推送；外部 bot 只能走 MCP。stdio 传输没有接城市。
 - MCP 会话的「当前在城市」只存在内存里，引擎重启后被接回的会话要再调一次 `enter_world`。
-- 天气抓取用 Node 的 `fetch`，代理由部署层面处理。Open-Meteo 的请求时区固定为 `Asia/Tokyo`，和 `params.timezone` 无关。第一次抓到真实天气时，如果此刻正在下雨，会触发当天的 `rain_started`（因为上一份是不下雨的合成快照）。
+- 天气抓取用 Node 的 `fetch`，代理由部署层面处理。Open-Meteo 的请求时区固定为 `Asia/Tokyo`，和 `params.timezone` 无关。`rain_started` 要有前后两份实况作比较：上一份是合成天气时，就算第一次抓到的实况在下雨也不发事件（雨天不开放的地点照样按实况关着）。
 - 路上被拒绝进入的行程（到了才发现关门、满了、下雨）留在最近的车站，不会自动回到出发地。
 - 回家路上的室友只能说话和 `go_home`，不能买、送、吃。
-- 代行的动作限流只有每小时上限；外部 bot 失败的动作不计数（回滚），所以不断发失败动作不会触发 `RATE_LIMITED`。
+- 代行的动作限流只有每小时上限，而且只计成功的动作。
+- `prepare` 之后内核既不 `commit` 也不 `abort`：引擎到 `plan.return_by_ms` 自动把这条记录作废（`aborted`，`return_reason: expired`），在那之前同一位室友不能再 `prepare`。内核可以随时自己 `abort`。
+- `plan.start_at_ms` 只校验，不用来排程：`commit` 的那一刻她就出发。
 - 小屋以后成为城里的一栋建筑（规格 8.1）不在第一期。节点 id 用的是将来入口能沿用的名字 `akabane:ai-house:entrance`。

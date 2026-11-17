@@ -88,6 +88,8 @@ export function runReconcile(c: CityService, trigger: string): ReconcileReport {
 
     const failedJobs = c.db.scalar("SELECT COUNT(*) FROM scheduled_jobs WHERE status = 'failed'");
     if (failedJobs > 0) err('failed_jobs', { count: failedJobs });
+    const stuckJobs = c.db.scalar("SELECT COUNT(*) FROM scheduled_jobs WHERE status = 'pending' AND attempts >= 5");
+    if (stuckJobs > 0) err('stuck_jobs', { count: stuckJobs });
 
     const ok = !findings.some((f) => f.level === 'error');
     const { lastInsertRowid } = c.db.run('INSERT INTO reconcile_reports(ran_at, trigger, ok, findings_json) VALUES (?,?,?,?)', now, trigger, ok ? 1 : 0, JSON.stringify(findings));
@@ -119,4 +121,18 @@ export function installReconcile(c: CityService): void {
     scheduleDaily(c, now);
   });
   c.hooks.recover.push((now) => scheduleDaily(c, now));
+
+  // 每个世界日做一次一致备份（在事务之外）。备份失败只记日志，不影响城市运行
+  c.hooks.tick.push((now) => {
+    if (c.db.inMemory || c.params.backupKeep <= 0) return;
+    const today = c.today(now);
+    if (c.db.getMeta('last_backup_date') === today) return;
+    try {
+      const out = c.backup();
+      if (out) c.log(`[city] 已备份到 ${out.path}（${Math.round(out.bytes / 1024)} KiB，${Math.round(out.ms)} ms，已验证可恢复）`);
+    } catch (e) {
+      c.log(`[city] 备份失败：${e instanceof Error ? e.message : String(e)}`);
+    }
+    c.db.tx(() => c.db.setMeta('last_backup_date', today));
+  });
 }

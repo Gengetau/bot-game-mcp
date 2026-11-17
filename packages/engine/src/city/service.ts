@@ -94,6 +94,9 @@ export interface CityStreamRead {
 
 const ID_ALPHABET = '23456789abcdefghjkmnpqrstuvwxyz';
 const MAX_JOB_ATTEMPTS = 5;
+/** 这几类作业搁置了就有人永远停在路上或回不了家：失败到上限后不标 failed，改成退避着一直重试（对账会报 stuck_jobs） */
+const MUST_COMPLETE_JOBS = new Set(['trip_leg', 'visit_return']);
+const JOB_BACKOFF_MS = [60_000, 5 * 60_000, 15 * 60_000, 60 * 60_000];
 
 export class CityService {
   readonly db: TownDb;
@@ -476,13 +479,18 @@ export class CityService {
         if (this.status === 'degraded') break;
         const msg = e instanceof Error ? e.message : String(e);
         const attempts = job.attempts + 1;
+        const exhausted = attempts >= MAX_JOB_ATTEMPTS;
+        const keep = exhausted && MUST_COMPLETE_JOBS.has(job.kind);
+        // 退避只推迟「下次什么时候再试」；处理器拿到的仍是作业原定的时刻（payload 里），事件时间不受影响
+        const retryAt = keep ? this.now() + JOB_BACKOFF_MS[Math.min(attempts - MAX_JOB_ATTEMPTS, JOB_BACKOFF_MS.length - 1)]! : null;
         try {
           this.db.tx(() => {
             this.db.run(
-              "UPDATE scheduled_jobs SET attempts = ?, last_error = ?, status = ? WHERE job_id = ? AND status = 'pending'",
+              "UPDATE scheduled_jobs SET attempts = ?, last_error = ?, status = ?, due_at = COALESCE(?, due_at) WHERE job_id = ? AND status = 'pending'",
               attempts,
               msg.slice(0, 300),
-              attempts >= MAX_JOB_ATTEMPTS ? 'failed' : 'pending',
+              exhausted && !keep ? 'failed' : 'pending',
+              retryAt,
               job.job_id,
             );
           });
@@ -490,9 +498,9 @@ export class CityService {
           /* 数据库不可写：下次 tick 再试 */
         }
         this.metrics.jobRetries++;
-        if (attempts >= MAX_JOB_ATTEMPTS) {
+        if (exhausted) {
           this.metrics.jobFailures++;
-          this.log(`[city] 作业 ${job.kind}#${job.job_id} 重试 ${attempts} 次仍失败，已搁置：${msg}`);
+          this.log(`[city] 作业 ${job.kind}#${job.job_id} 重试 ${attempts} 次仍失败，${keep ? `${Math.round((retryAt! - this.now()) / 60_000)} 分钟后再试` : '已搁置'}：${msg}`);
         }
       }
     }
@@ -574,6 +582,6 @@ export class CityService {
   backup(dest?: string): { path: string; bytes: number; ms: number } | null {
     if (this.db.inMemory) return null;
     const target = dest ?? join(dirname(this.db.path), 'backups', `city-${this.today()}.db`);
-    return this.db.backup(target, dest ? 0 : 14);
+    return this.db.backup(target, dest ? 0 : this.params.backupKeep);
   }
 }
