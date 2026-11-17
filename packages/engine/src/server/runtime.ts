@@ -14,6 +14,8 @@ import { driveAssets, localAssets, type AssetStore, type ServiceAccount } from '
 import { directoryLibrary, type ScriptLibrary } from '../games/jubensha/index.js';
 import { Authenticator } from '../mcp/auth.js';
 import { VERSION } from '../version.js';
+import { createCity, type CityService } from '../city/index.js';
+import { createWorld, type WorldService } from '../world/index.js';
 import { stderrLog } from './log.js';
 
 export interface Runtime {
@@ -24,6 +26,10 @@ export interface Runtime {
   settings: Settings;
   /** 剧本杀的剧本库（没配 scriptsDir 时为空） */
   scripts?: ScriptLibrary;
+  /** 持续世界「栖灯镇」（配置里 town.enabled 才有） */
+  world?: WorldService;
+  /** 东京城市世界（配置里 city.enabled 才有） */
+  city?: CityService;
   version: string;
   startedAt: number;
   /** 停止计时器并写盘 */
@@ -60,6 +66,44 @@ export function createRuntime(config: BotGameConfig, log: (msg: string) => void 
     defaultOptions: config.defaultOptions,
     ...(config.webUrl ? { webUrl: config.webUrl } : {}),
   });
+  const world = config.town.enabled
+    ? createWorld({
+        dbPath: config.town.dbFile,
+        registry: manager.registry,
+        params: config.town.params,
+        publicUrl: config.town.publicUrl,
+        devLogin: config.town.devLogin,
+        log,
+        ...(config.seed ? { seed: config.seed } : {}),
+      })
+    : undefined;
+  if (world) {
+    if (config.town.allowedAgents) log(`栖灯镇准入名单已启用：${config.town.allowedAgents.length} 个身份可以经 MCP 进镇`);
+    if (config.town.adminOnlyTickets) log('栖灯镇的真人登录票据只有管理员能签');
+    if (config.town.devLogin) log('⚠️  栖灯镇开了本机试玩登录（town.devLogin）：任何人输入名字就能进入，只应用于本机或可信内网！');
+    // 启动恢复：按停机前的检查点追赶到期事务；完成前小镇的写接口返回 recovering
+    void world.start().then(
+      () => log(`栖灯镇已就绪：${config.town.dbFile}`),
+      (e) => log(`[town] 启动恢复失败：${e instanceof Error ? e.stack : String(e)}`),
+    );
+  }
+  const city = config.city.enabled
+    ? createCity({
+        dbPath: config.city.dbFile,
+        params: config.city.params,
+        house: config.city.house.map((m) => ({ actorId: m.actorId, name: m.name, ...(m.bio ? { bio: m.bio } : {}), qqIds: m.qqIds })),
+        log,
+        ...(config.seed ? { rng: new SeededRng(`${config.seed}:city`) } : {}),
+        ...(config.city.weather ? {} : { fetchWeather: null }),
+      })
+    : undefined;
+  if (city) {
+    if (!config.city.bridgeKey) log('东京城市世界没有配置桥接密钥（city.bridgeKey）：桥接接口不开放，小屋的室友进不了城');
+    void city.start().then(
+      () => log(`东京城市世界已就绪：${config.city.dbFile}（室友 ${config.city.house.length} 位）`),
+      (e) => log(`[city] 启动恢复失败：${e instanceof Error ? e.stack : String(e)}`),
+    );
+  }
   const auth = new Authenticator(resolveAuth(config), manager, log);
   manager.isKeyedAgent = (id) => auth.hasKeyFor(id);
   const timer = setInterval(() => {
@@ -68,6 +112,9 @@ export function createRuntime(config: BotGameConfig, log: (msg: string) => void 
     } catch (e) {
       log(`[tick] ${e instanceof Error ? e.stack : String(e)}`);
     }
+    // 小镇的调度和桌游的计时各走各的：一边出错不影响另一边
+    world?.tick();
+    city?.tick();
   }, 1000);
   timer.unref();
   // 清理已结束对局的云盘图片副本
@@ -87,12 +134,16 @@ export function createRuntime(config: BotGameConfig, log: (msg: string) => void 
     auth,
     settings,
     ...(scripts ? { scripts } : {}),
+    ...(world ? { world } : {}),
+    ...(city ? { city } : {}),
     version: VERSION,
     startedAt: Date.now(),
     close() {
       clearInterval(timer);
       if (sweeper) clearInterval(sweeper);
       manager.flush();
+      world?.close();
+      city?.close();
     },
   };
 }

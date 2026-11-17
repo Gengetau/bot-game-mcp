@@ -1,0 +1,640 @@
+{
+  "when": "2026-11-15T14:39:53.371Z",
+  "commit": "cadc949",
+  "base": "http://127.0.0.1:64716",
+  "headless": false,
+  "softwareRendering": false,
+  "window": [
+    1440,
+    900
+  ],
+  "deviceScaleFactor": 1,
+  "browser": "157.0.8103.52",
+  "kit": null,
+  "rows": [
+    {
+      "name": "scale1-default",
+      "setting": "scale1",
+      "settingLabel": "固定满分辨率（scale=1.0）",
+      "camera": "default",
+      "cameraLabel": "默认视角（正午）",
+      "file": "scale1-default.png",
+      "ok": true,
+      "renderScale": 1,
+      "renderSize": [
+        1440,
+        900
+      ],
+      "canvasSize": [
+        1440,
+        900
+      ],
+      "qualityMode": "auto",
+      "shadows": "high",
+      "drs": 1,
+      "drsFloor": 0.5,
+      "drsCeil": 1,
+      "scaleCapped": false,
+      "zoom": 17,
+      "hour": 12,
+      "scene": "town",
+      "self": {
+        "x": 32,
+        "z": 30.25
+      },
+      "devicePixelRatio": 1,
+      "innerSize": [
+        1440,
+        900
+      ],
+      "fpsAvg": 28.5,
+      "fpsMin": 6.6,
+      "worstFrameMs": 151.9,
+      "godotFpsAvg": 38.8,
+      "godotFpsMin": 13,
+      "gpu": "Google Inc. (AMD) | ANGLE (AMD, AMD Radeon 780M Graphics (0x000015BF) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+      "browser": "157.0.8103.52",
+      "headless": false,
+      "softwareRendering": false,
+      "commit": "cadc949",
+      "window": [
+        1440,
+        900
+      ],
+      "settleMs": 8000,
+      "sampleMs": 5000
+    },
+    {
+      "name": "scale1-near",
+      "setting": "scale1",
+      "settingLabel": "固定满分辨率（scale=1.0）",
+      "camera": "near",
+      "cameraLabel": "最近的缩放（正午）",
+      "file": "scale1-near.png",
+      "ok": true,
+      "renderScale": 1,
+      "renderSize": [
+        1440,
+        900
+      ],
+      "canvasSize": [
+        1440,
+        900
+      ],
+      "qualityMode": "auto",
+      "shadows": "high",
+      "drs": 1,
+      "drsFloor": 0.5,
+      "drsCeil": 1,
+      "scaleCapped": false,
+      "zoom": 6.5,
+      "hour": 12,
+      "scene": "town",
+      "self": {
+        "x": 32,
+        "z": 30.25
+      },
+      "devicePixelRatio": 1,
+      "innerSize": [
+        1440,
+        900
+      ],
+      "fpsAvg": 50.7,
+      "fpsMin": 20.6,
+      "worstFrameMs": 48.6,
+      "godotFpsAvg": 48.3,
+      "godotFpsMin": 41,
+      "gpu": "Google Inc. (AMD) | ANGLE (AMD, AMD Radeon 780M Graphics (0x000015BF) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+      "browser": "157.0.8103.52",
+      "headless": false,
+      "softwareRendering": false,
+      "commit": "cadc949",
+      "window": [
+        1440,
+        900
+      ],
+      "settleMs": 8000,
+      "sampleMs": 5000
+    },
+    {
+      "name": "scale1-night",
+      "setting": "scale1",
+      "settingLabel": "固定满分辨率（scale=1.0）",
+      "camera": "night",
+      "cameraLabel": "夜里 21 点",
+      "file": "scale1-night.png",
+      "ok": true,
+      "renderScale": 1,
+      "renderSize": [
+        1440,
+        900
+      ],
+      "canvasSize": [
+        1440,
+        900
+      ],
+      "qualityMode": "auto",
+      "shadows": "high",
+      "drs": 1,
+      "drsFloor": 0.5,
+      "drsCeil": 1,
+      "scaleCapped": false,
+      "zoom": 17,
+      "hour": 21,
+      "scene": "town",
+      "self": {
+        "x": 32,
+        "z": 30.25
+      },
+      "devicePixelRatio": 1,
+      "innerSize": [
+        1440,
+        900
+      ],
+      "fpsAvg": 57.1,
+      "fpsMin": 32.8,
+      "worstFrameMs": 30.5,
+      "godotFpsAvg": 57.1,
+      "godotFpsMin": 55,
+      "gpu": "Google Inc. (AMD) | ANGLE (AMD, AMD Radeon 780M Graphics (0x000015BF) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+      "browser": "157.0.8103.52",
+      "headless": false,
+      "softwareRendering": false,
+      "commit": "cadc949",
+      "window": [
+        1440,
+        900
+      ],
+      "settleMs": 8000,
+      "sampleMs": 5000
+    },
+    {
+      "name": "scale1-indoor",
+      "setting": "scale1",
+      "settingLabel": "固定满分辨率（scale=1.0）",
+      "camera": "indoor",
+      "cameraLabel": "室内（茶馆，正午）",
+      "file": "scale1-indoor.png",
+      "ok": true,
+      "renderScale": 1,
+      "renderSize": [
+        1440,
+        900
+      ],
+      "canvasSize": [
+        1440,
+        900
+      ],
+      "qualityMode": "auto",
+      "shadows": "high",
+      "drs": 1,
+      "drsFloor": 0.5,
+      "drsCeil": 1,
+      "scaleCapped": false,
+      "zoom": 17,
+      "hour": 12,
+      "scene": "town",
+      "self": {
+        "x": 11,
+        "z": 10.25
+      },
+      "devicePixelRatio": 1,
+      "innerSize": [
+        1440,
+        900
+      ],
+      "fpsAvg": 59.8,
+      "fpsMin": 32.8,
+      "worstFrameMs": 30.5,
+      "godotFpsAvg": 59.8,
+      "godotFpsMin": 59,
+      "gpu": "Google Inc. (AMD) | ANGLE (AMD, AMD Radeon 780M Graphics (0x000015BF) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+      "browser": "157.0.8103.52",
+      "headless": false,
+      "softwareRendering": false,
+      "commit": "cadc949",
+      "window": [
+        1440,
+        900
+      ],
+      "settleMs": 8000,
+      "sampleMs": 5000
+    },
+    {
+      "name": "auto-default",
+      "setting": "auto",
+      "settingLabel": "自动（动态分辨率）",
+      "camera": "default",
+      "cameraLabel": "默认视角（正午）",
+      "file": "auto-default.png",
+      "ok": true,
+      "renderScale": 1,
+      "renderSize": [
+        1440,
+        900
+      ],
+      "canvasSize": [
+        1440,
+        900
+      ],
+      "qualityMode": "auto",
+      "shadows": "high",
+      "drs": 1,
+      "drsFloor": 0.5,
+      "drsCeil": 1,
+      "scaleCapped": false,
+      "zoom": 17,
+      "hour": 12,
+      "scene": "town",
+      "self": {
+        "x": 32,
+        "z": 30.25
+      },
+      "devicePixelRatio": 1,
+      "innerSize": [
+        1440,
+        900
+      ],
+      "fpsAvg": 57.1,
+      "fpsMin": 32.8,
+      "worstFrameMs": 30.5,
+      "godotFpsAvg": 57.5,
+      "godotFpsMin": 55,
+      "gpu": "Google Inc. (AMD) | ANGLE (AMD, AMD Radeon 780M Graphics (0x000015BF) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+      "browser": "157.0.8103.52",
+      "headless": false,
+      "softwareRendering": false,
+      "commit": "cadc949",
+      "window": [
+        1440,
+        900
+      ],
+      "settleMs": 8000,
+      "sampleMs": 5000
+    },
+    {
+      "name": "auto-near",
+      "setting": "auto",
+      "settingLabel": "自动（动态分辨率）",
+      "camera": "near",
+      "cameraLabel": "最近的缩放（正午）",
+      "file": "auto-near.png",
+      "ok": true,
+      "renderScale": 1,
+      "renderSize": [
+        1440,
+        900
+      ],
+      "canvasSize": [
+        1440,
+        900
+      ],
+      "qualityMode": "auto",
+      "shadows": "high",
+      "drs": 1,
+      "drsFloor": 0.5,
+      "drsCeil": 1,
+      "scaleCapped": false,
+      "zoom": 6.5,
+      "hour": 12,
+      "scene": "town",
+      "self": {
+        "x": 32,
+        "z": 30.25
+      },
+      "devicePixelRatio": 1,
+      "innerSize": [
+        1440,
+        900
+      ],
+      "fpsAvg": 58.9,
+      "fpsMin": 32.8,
+      "worstFrameMs": 30.5,
+      "godotFpsAvg": 58.6,
+      "godotFpsMin": 57,
+      "gpu": "Google Inc. (AMD) | ANGLE (AMD, AMD Radeon 780M Graphics (0x000015BF) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+      "browser": "157.0.8103.52",
+      "headless": false,
+      "softwareRendering": false,
+      "commit": "cadc949",
+      "window": [
+        1440,
+        900
+      ],
+      "settleMs": 8000,
+      "sampleMs": 5000
+    },
+    {
+      "name": "auto-night",
+      "setting": "auto",
+      "settingLabel": "自动（动态分辨率）",
+      "camera": "night",
+      "cameraLabel": "夜里 21 点",
+      "file": "auto-night.png",
+      "ok": true,
+      "renderScale": 1,
+      "renderSize": [
+        1440,
+        900
+      ],
+      "canvasSize": [
+        1440,
+        900
+      ],
+      "qualityMode": "auto",
+      "shadows": "high",
+      "drs": 1,
+      "drsFloor": 0.5,
+      "drsCeil": 1,
+      "scaleCapped": false,
+      "zoom": 17,
+      "hour": 21,
+      "scene": "town",
+      "self": {
+        "x": 32,
+        "z": 30.25
+      },
+      "devicePixelRatio": 1,
+      "innerSize": [
+        1440,
+        900
+      ],
+      "fpsAvg": 57.3,
+      "fpsMin": 32.9,
+      "worstFrameMs": 30.4,
+      "godotFpsAvg": 57,
+      "godotFpsMin": 55,
+      "gpu": "Google Inc. (AMD) | ANGLE (AMD, AMD Radeon 780M Graphics (0x000015BF) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+      "browser": "157.0.8103.52",
+      "headless": false,
+      "softwareRendering": false,
+      "commit": "cadc949",
+      "window": [
+        1440,
+        900
+      ],
+      "settleMs": 8000,
+      "sampleMs": 5000
+    },
+    {
+      "name": "auto-indoor",
+      "setting": "auto",
+      "settingLabel": "自动（动态分辨率）",
+      "camera": "indoor",
+      "cameraLabel": "室内（茶馆，正午）",
+      "file": "auto-indoor.png",
+      "ok": true,
+      "renderScale": 1,
+      "renderSize": [
+        1440,
+        900
+      ],
+      "canvasSize": [
+        1440,
+        900
+      ],
+      "qualityMode": "auto",
+      "shadows": "high",
+      "drs": 1,
+      "drsFloor": 0.5,
+      "drsCeil": 1,
+      "scaleCapped": false,
+      "zoom": 17,
+      "hour": 12,
+      "scene": "town",
+      "self": {
+        "x": 11,
+        "z": 10.25
+      },
+      "devicePixelRatio": 1,
+      "innerSize": [
+        1440,
+        900
+      ],
+      "fpsAvg": 59.9,
+      "fpsMin": 32.9,
+      "worstFrameMs": 30.4,
+      "godotFpsAvg": 59.6,
+      "godotFpsMin": 59,
+      "gpu": "Google Inc. (AMD) | ANGLE (AMD, AMD Radeon 780M Graphics (0x000015BF) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+      "browser": "157.0.8103.52",
+      "headless": false,
+      "softwareRendering": false,
+      "commit": "cadc949",
+      "window": [
+        1440,
+        900
+      ],
+      "settleMs": 8000,
+      "sampleMs": 5000
+    },
+    {
+      "name": "low-default",
+      "setting": "low",
+      "settingLabel": "低（固定 0.6）",
+      "camera": "default",
+      "cameraLabel": "默认视角（正午）",
+      "file": "low-default.png",
+      "ok": true,
+      "renderScale": 0.6,
+      "renderSize": [
+        864,
+        540
+      ],
+      "canvasSize": [
+        1440,
+        900
+      ],
+      "qualityMode": "low",
+      "shadows": "low",
+      "drs": 1,
+      "drsFloor": 0.5,
+      "drsCeil": 1,
+      "scaleCapped": false,
+      "zoom": 17,
+      "hour": 12,
+      "scene": "town",
+      "self": {
+        "x": 32,
+        "z": 30.25
+      },
+      "devicePixelRatio": 1,
+      "innerSize": [
+        1440,
+        900
+      ],
+      "fpsAvg": 52.6,
+      "fpsMin": 27.5,
+      "worstFrameMs": 36.4,
+      "godotFpsAvg": 52.4,
+      "godotFpsMin": 49,
+      "gpu": "Google Inc. (AMD) | ANGLE (AMD, AMD Radeon 780M Graphics (0x000015BF) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+      "browser": "157.0.8103.52",
+      "headless": false,
+      "softwareRendering": false,
+      "commit": "cadc949",
+      "window": [
+        1440,
+        900
+      ],
+      "settleMs": 8000,
+      "sampleMs": 5000
+    },
+    {
+      "name": "low-near",
+      "setting": "low",
+      "settingLabel": "低（固定 0.6）",
+      "camera": "near",
+      "cameraLabel": "最近的缩放（正午）",
+      "file": "low-near.png",
+      "ok": true,
+      "renderScale": 0.6,
+      "renderSize": [
+        864,
+        540
+      ],
+      "canvasSize": [
+        1440,
+        900
+      ],
+      "qualityMode": "low",
+      "shadows": "low",
+      "drs": 1,
+      "drsFloor": 0.5,
+      "drsCeil": 1,
+      "scaleCapped": false,
+      "zoom": 6.5,
+      "hour": 12,
+      "scene": "town",
+      "self": {
+        "x": 32,
+        "z": 30.25
+      },
+      "devicePixelRatio": 1,
+      "innerSize": [
+        1440,
+        900
+      ],
+      "fpsAvg": 54.6,
+      "fpsMin": 32.9,
+      "worstFrameMs": 30.4,
+      "godotFpsAvg": 54.8,
+      "godotFpsMin": 50,
+      "gpu": "Google Inc. (AMD) | ANGLE (AMD, AMD Radeon 780M Graphics (0x000015BF) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+      "browser": "157.0.8103.52",
+      "headless": false,
+      "softwareRendering": false,
+      "commit": "cadc949",
+      "window": [
+        1440,
+        900
+      ],
+      "settleMs": 8000,
+      "sampleMs": 5000
+    },
+    {
+      "name": "low-night",
+      "setting": "low",
+      "settingLabel": "低（固定 0.6）",
+      "camera": "night",
+      "cameraLabel": "夜里 21 点",
+      "file": "low-night.png",
+      "ok": true,
+      "renderScale": 0.6,
+      "renderSize": [
+        864,
+        540
+      ],
+      "canvasSize": [
+        1440,
+        900
+      ],
+      "qualityMode": "low",
+      "shadows": "low",
+      "drs": 1,
+      "drsFloor": 0.5,
+      "drsCeil": 1,
+      "scaleCapped": false,
+      "zoom": 17,
+      "hour": 21,
+      "scene": "town",
+      "self": {
+        "x": 32,
+        "z": 30.25
+      },
+      "devicePixelRatio": 1,
+      "innerSize": [
+        1440,
+        900
+      ],
+      "fpsAvg": 40.7,
+      "fpsMin": 27.3,
+      "worstFrameMs": 36.6,
+      "godotFpsAvg": 40.9,
+      "godotFpsMin": 38,
+      "gpu": "Google Inc. (AMD) | ANGLE (AMD, AMD Radeon 780M Graphics (0x000015BF) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+      "browser": "157.0.8103.52",
+      "headless": false,
+      "softwareRendering": false,
+      "commit": "cadc949",
+      "window": [
+        1440,
+        900
+      ],
+      "settleMs": 8000,
+      "sampleMs": 5000
+    },
+    {
+      "name": "low-indoor",
+      "setting": "low",
+      "settingLabel": "低（固定 0.6）",
+      "camera": "indoor",
+      "cameraLabel": "室内（茶馆，正午）",
+      "file": "low-indoor.png",
+      "ok": true,
+      "renderScale": 0.6,
+      "renderSize": [
+        864,
+        540
+      ],
+      "canvasSize": [
+        1440,
+        900
+      ],
+      "qualityMode": "low",
+      "shadows": "low",
+      "drs": 1,
+      "drsFloor": 0.5,
+      "drsCeil": 1,
+      "scaleCapped": false,
+      "zoom": 17,
+      "hour": 12,
+      "scene": "town",
+      "self": {
+        "x": 11,
+        "z": 10.25
+      },
+      "devicePixelRatio": 1,
+      "innerSize": [
+        1440,
+        900
+      ],
+      "fpsAvg": 32.5,
+      "fpsMin": 18.3,
+      "worstFrameMs": 54.7,
+      "godotFpsAvg": 29.7,
+      "godotFpsMin": 8,
+      "gpu": "Google Inc. (AMD) | ANGLE (AMD, AMD Radeon 780M Graphics (0x000015BF) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+      "browser": "157.0.8103.52",
+      "headless": false,
+      "softwareRendering": false,
+      "commit": "cadc949",
+      "window": [
+        1440,
+        900
+      ],
+      "settleMs": 8000,
+      "sampleMs": 5000
+    }
+  ]
+}

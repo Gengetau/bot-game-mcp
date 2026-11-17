@@ -1,0 +1,85 @@
+/* 全镇公屏的样式：范围牌是灰蓝（附近是木色），一眼分清范围。其余沿用 00-chatkit.css 的 .chat-pane 版式。
+ * 所有选择器都挂在 [data-pane="town"] 之下：hud.css 里已有 .chip（顶栏状态牌）、.go、.sel 等裸类名，裸写会串味。
+ * 灰蓝牌用 --d-slate-ink 做底（纸色字对 --d-slate 只有约 3:1，不够 4.5:1）。 */
+[data-pane="town"] .scope { gap: 6px; padding-right: 8px; }
+[data-pane="town"] .plaque { background: var(--d-slate-ink); box-shadow: 0 2px 0 var(--d-slate); white-space: nowrap; }
+[data-pane="town"] .rules { flex: none; margin: 0; padding: 3px 12px 4px; font-size: 12px; line-height: 1.4; color: var(--d-ink-soft); background: var(--d-paper); }
+
+/* 静音开关：右上角小木牌，已静音时变灰蓝并带划线小喇叭 */
+#dock .chat-pane[data-pane="town"] button.mute {
+  position: relative; flex: none; margin-left: auto; display: inline-flex; align-items: center; gap: 4px; height: 24px; padding: 0 8px; border-radius: 6px;
+  background: var(--d-wood); color: var(--d-paper); font: 600 12px/24px var(--d-serif); box-shadow: 0 2px 0 var(--d-wood-dark); white-space: nowrap;
+}
+#dock .chat-pane[data-pane="town"] button.mute::before { content: ""; position: absolute; left: -4px; right: -4px; top: -8px; bottom: -8px; } /* 点按区扩到 40px */
+#dock .chat-pane[data-pane="town"] button.mute .slash { display: none; }
+#dock .chat-pane[data-pane="town"] button.mute[aria-pressed="true"] { background: var(--d-slate-ink); box-shadow: 0 2px 0 var(--d-slate); }
+#dock .chat-pane[data-pane="town"] button.mute[aria-pressed="true"] .slash { display: inline; }
+#dock .chat-pane[data-pane="town"] button.mute[aria-pressed="true"] .wave { display: none; }
+#dock [data-pane="town"] .mute:focus-visible, #dock [data-pane="town"] .older:focus-visible, #dock [data-pane="town"] .go:focus-visible,
+#dock [data-pane="town"] .kinds button:focus-visible { outline: 2px solid var(--d-ember); outline-offset: 1px; }
+
+/* 读取状态条 */
+[data-pane="town"] .strip { flex: none; display: flex; align-items: center; justify-content: center; gap: 8px; min-height: 22px; padding: 2px 12px; font-size: 12px; line-height: 18px; color: var(--d-ink-soft); background: var(--d-paper); }
+[data-pane="town"] .strip[hidden] { display: none; }
+[data-pane="town"] .strip:has(> span:empty) { padding-top: 0; padding-bottom: 0; }
+#dock .chat-pane[data-pane="town"] button.older {
+  position: relative; padding: 2px 12px; min-height: 24px; border-radius: 12px; background: var(--d-wood); color: var(--d-paper); font-size: 12px; font-weight: 600; box-shadow: 0 2px 0 var(--d-wood-dark);
+}
+#dock .chat-pane[data-pane="town"] button.older::before { content: ""; position: absolute; left: 0; right: 0; top: -8px; bottom: -8px; }
+#dock .chat-pane[data-pane="town"] button.older[hidden] { display: none; }
+#dock .chat-pane[data-pane="town"] button.older:disabled { opacity: 0.6; cursor: default; }
+
+/* 列表：每条都显示名字，所以行略紧凑 */
+[data-pane="town"] .list { padding-top: 2px; }
+[data-pane="town"] .msg { margin-top: 4px; max-width: 90%; }
+[data-pane="town"] .who { line-height: 16px; }
+[data-pane="town"] .bub { padding: 4px 10px; line-height: 1.4; border-left-color: var(--d-slate); }
+[data-pane="town"] .msg.mine .bub { border-left: 0; border-right: 3px solid var(--d-leaf); }
+
+/* 暖橙细边：@ 我 */
+[data-pane="town"] .msg.mention .bub { border-left-color: var(--d-ember); background: #efdfb6; box-shadow: inset 0 0 0 1px var(--d-ember); }
+
+/* 组织活动 / 求助：便签黄小牌 + 走过去 */
+[data-pane="town"] .msg .extra { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 3px 2px 0; }
+[data-pane="town"] .msg.mine .extra { justify-content: flex-end; }
+[data-pane="town"] .chip {
+  display: inline-block; max-width: 100%; padding: 0 8px; border-radius: 4px; background: var(--d-note); color: var(--d-ink); border: 1px dashed var(--d-wood-light);
+  font-size: 12px; line-height: 20px; overflow-wrap: anywhere;
+}
+[data-pane="town"] .tk-help .chip { background: #f3e2c2; }
+#dock .chat-pane[data-pane="town"] button.go {
+  position: relative; height: 32px; padding: 0 12px; border-radius: 8px; background: var(--d-wood); color: var(--d-paper); font-size: 13px; font-weight: 600; box-shadow: 0 2px 0 var(--d-wood-dark);
+}
+#dock .chat-pane[data-pane="town"] button.go::before { content: ""; position: absolute; left: -2px; right: -2px; top: -4px; bottom: -4px; }
+#dock .chat-pane[data-pane="town"] button.go:hover:not(:disabled) { background: var(--d-wood-light); }
+
+/* 类型三块小木牌 + 地点下拉 */
+[data-pane="town"] .pick { flex: none; display: flex; align-items: center; gap: 8px; padding: 4px 8px 0; background: var(--d-paper-2); border-top: 2px solid var(--d-line); }
+[data-pane="town"] .kinds { display: flex; gap: 4px; }
+#dock .chat-pane[data-pane="town"] .kinds button {
+  position: relative; height: 32px; padding: 0 12px; border-radius: 8px 8px 0 0; background: var(--d-wood-dark); color: var(--d-paper); font: 13px/32px var(--d-serif); white-space: nowrap;
+}
+#dock .chat-pane[data-pane="town"] .kinds button::before { content: ""; position: absolute; left: -2px; right: -2px; top: -4px; bottom: -4px; }
+#dock .chat-pane[data-pane="town"] .kinds button[aria-checked="true"] { background: var(--d-paper); color: var(--d-ink); font-weight: 600; box-shadow: inset 0 -3px 0 var(--d-ember); }
+#dock .chat-pane[data-pane="town"] .kinds button:disabled { opacity: 0.55; cursor: default; }
+[data-pane="town"] .placesel {
+  position: relative; flex: 1; min-width: 0; height: 32px; padding: 0 6px; border: 2px solid var(--d-wood-light); border-radius: 8px; background: #fffaf0; color: var(--d-ink);
+  font-family: inherit; font-size: 16px; line-height: 1.2; -webkit-appearance: none; appearance: none;
+}
+[data-pane="town"] .placesel[hidden] { display: none; }
+[data-pane="town"] .placesel:disabled { opacity: 0.6; }
+[data-pane="town"] .compose { border-top: 0; min-height: 52px; }
+
+/* 软键盘出现的紧凑模式：只留最近几条和输入栏 */
+body[data-kb="1"] [data-pane="town"] .rules, body[data-kb="1"] [data-pane="town"] .kinds, body[data-kb="1"] [data-pane="town"] .strip, body[data-kb="1"] [data-pane="town"] .pick { display: none; }
+
+/* 手机抽屉：矮，规则提示只留在范围牌的 title 里 */
+body[data-dock="drawer"] [data-pane="town"] .rules { display: none; }
+body[data-dock="drawer"] [data-pane="town"] .scope { padding-top: 4px; padding-bottom: 2px; }
+body[data-dock="drawer"] [data-pane="town"] .compose { min-height: 48px; padding: 4px 8px 6px; }
+body[data-dock="drawer"] [data-pane="town"] .compose input { height: 38px; }
+body[data-dock="drawer"] [data-pane="town"] .compose .send { height: 38px; }
+body[data-dock="drawer"] [data-pane="town"] .msg { margin-top: 3px; }
+body[data-dock="drawer"] [data-pane="town"] .who { line-height: 14px; }
+body[data-dock="drawer"] [data-pane="town"] .bub { padding: 2px 10px; font-size: 13px; line-height: 1.35; }
+body[data-dock="drawer"] [data-pane="town"] .list { padding-top: 0; padding-bottom: 4px; }

@@ -11,6 +11,13 @@ npm run build && npm run e2e   # 黑盒端到端（独立进程、多客户端�
 npm run build       # 编译三个包到各自的 dist/
 npm run docs        # 改了规则、选项或工具描述后，重新生成 docs/GAMES.md、docs/TOOLS.md（CI 会检查）
 npm run simulate -- werewolf --players 9 --humans 2 --seed 1   # 离线跑一局
+npm run world:simulate -- --days 1 --residents 12 --seed 1    # 栖灯镇：固定种子跑逻辑时间并检查不变量
+npm run world:recovery                                         # 栖灯镇：故障注入
+npm run client:lint && npm run client:unit                      # 三维客户端：网页层检查、Godot 无头单元测试（client/tests/，几秒钟；需要 Godot 4.7）
+npm run client:export && npm run client:e2e                    # 三维客户端：导出并跑浏览器端到端（需要 Godot 4.7，不在 CI 里；导出约 2 分钟，端到端完整一遍约 31 分钟，其中声音两步约 11 分钟；每并入一段客户端功能还会变长）
+npm run client:shots                                          # 三维客户端：固定镜头对照截图（真实 Chrome 有头、要先导出；3 种渲染设置 × 4 种镜头，数据进 results.json；加 --kit=sample 或 --kit=kitchen 截带状态物件的四种状态；不在 CI 里）
+npm run client:assets:build                                       # 三维客户端：重建资产套件（Blender 脚本 -> GLB -> 包装场景和清单 -> 校验；需要环境变量 BLENDER、GODOT，Blender 4.2 以上）
+npm run client:assets:check                                       # 三维客户端：只校验资产套件（需要 Godot 4.7，不需要 Blender，几秒钟）
 ```
 
 ## 必须遵守的不变量
@@ -25,6 +32,46 @@ npm run simulate -- werewolf --players 9 --humans 2 --seed 1   # 离线跑一局
 - 玩家提供的文字和昵称，必须先经过 `sanitizeUserText`/`sanitizeName` 才能拼进消息。
 - 需要保密的阶段设置 `secret: true`，必要时加 `minDurationMs`。阶段出现与否、标题、时长都不能随秘密状态变化（参考狼人杀的女巫阶段）。
 
+## 栖灯镇（持续世界）的不变量
+
+小镇在 `packages/engine/src/world/`，说明和接口契约见 `docs/TOWN.md`。改它之前先读那份文档。
+
+- 所有写入只走 `WorldService.command()`（居民动作）或定时任务处理器，并且都在 `w.commit()` 的同一个 SQLite 事务里：状态、账本、事件、回执、定时任务一起提交或一起回滚。处理过程必须同步，不等模型、不等网络。例外只有三类不是「动作」的写入：在场心跳、导航控制租约的续期（`renewNavigation`）和键盘方向输入（`space.ts` 的 `directionInput`，只经 WebSocket），它们同样在 `w.commit()` 里，但没有回执；方向输入不产生任何事件，也不接受客户端坐标，只收方向、序号和控制版本。
+- 订阅者（SSE、长轮询、WebSocket）只在提交之后被唤醒。不要在事务里直接往外发东西。
+- 硬币只通过 `property.ts` 的 `ledger()` 变动，每笔分录平衡、原因键唯一；物品只通过 `addStack` / `takeStack` / `reserve` / `release` 变动。不要直接改余额或数量。
+- 关系、愿望、日报只读 `w.fact()` 记录的结构化事实，不读聊天文字。
+- 投影只有一套（`views.ts` / `project.ts`，空间快照是 `space.ts` 的 `sceneView`）：网页、MCP、观战、日报、回顾都用它。公开层面位置只到区域（公共地点、路上、「住宅区」）；别人的信件、背包、需要、愿望、关系、屋内情况不出现在任何别人能拿到的投影和事件里。新增字段先想清楚谁能看。
+- 位置只由空间模块（`space.ts`）写：`world_actors`（场景、实例、x、z、导航）和 `residents.location_id`（区域标签）都不能被别的模块直接改。要挪人就发起导航或用 `sendToDoor`；别的模块按区域标签判断「在不在一起」，按 `requireReach` 判断够不够得着公共物件。
+- 聊天有两个互相独立的范围（`chat.ts`、`hearing.ts`）：附近聊天的受众在发送事务里按 `posOf` 一次定下（同实例、`hearDistance` 内、同房间、有效在场、不在对局），之后不改；全镇公屏是单独的表、序号和游标，匿名读不到，对局中不能发、AI 不能读，唤醒 AI 只靠明确提及或相关约定，进 AI 上下文的公屏文字要标 `untrusted`。`say_town` 的回执不能带唤醒结果。
+- 场景快照里不只有位置：谁在场、名字、是否在一局小游戏里也在里面。改了这些就调 `touchScene`，让同一场景实例里的人拿到新快照；往快照里加字段时，想清楚它变的时候谁来通知。
+- 读位置用 `posOf` / `positionOfResident`：位置按折线和时间现算，永远截断在导航控制租约的截止时刻。不要自己插值，不要存每帧坐标。
+- 导航的每次变化（开始、改道、停止、穿过门口、结束）都递增 `nav_revision`；`nav_step` 任务必须对上导航编号和版本才生效。
+- 键盘方向输入只是一段租约约 500 毫秒（`dirLeaseMs`）的短直线导航（目的地 `dir`），仍走同一套折线、租约截断和 `nav_revision`；它没有进出口，进出私宅只走 `navigate`。它的路线不能用点地的 10 秒续租撑长，零向量只停方向输入自己的路线，到期和松手都不发事件。 点地 / 停下的动作带 `dirFence`（序号栅栏），让发在它之前、晚到的方向帧确定地作废，不用时间窗。
+- 坐标只出现在两处：本人视图里自己的位置、`sceneView` 里同一场景实例中在场的人。事件（`w.emitTo` / `w.emitPublic`）、公开投影、日报里不能有坐标、折线、到达时间。私宅实例的快照只给屋里的人。
+- 地图（`spatial/town-map.ts`）发布后不原地改：动了可走范围、落脚点或物件位置就换 `mapVersion`。`spatial/` 下的模块是纯函数：不读数据库、不取时间、不用随机数。
+- 给居民的私有事件用 `w.emitTo()`，公开事件用 `w.emitPublic()`；固定模板的通知不要拼进别人的私密信息。
+- 小游戏是原来的游戏定义，由 `GameRunner`（`src/core/runner.ts`）推进；嵌入的记录在世界数据库的 `game_records` 里，公共 `GameManager` 不持有。只有 `embeddable: true` 且通过接入检查的游戏能在镇上开。
+- NPC 是 `world_actors` 里 `kind='npc'`、`resident_id` 为空的行（定义在 `content.ts` 的 `NPCS`，日程在 `npc.ts`）：位置只由 `space.ts` 写，走动、停留、换姿态不发任何事件、不叫醒任何 AI、不记事实，只进场景快照的 `npcs`（不混进 `actors`）；没有导航控制租约，居民路径（`actorOf`、续租、方向输入、停步）碰不到它；不占在场名额，不是聊天听众，不沾账本；它可以作为附近聊天的说话人（`ask_npc` 的固定台词，受众在发送事务里按它的位置定下），但不是听众、不被叫醒、不持有财物；它说的话只给真人听众发 `chat` 事件，不给 AI 发（AI 从视图的 `here.recent_chat` 和回执里看到），不碰叫醒额度和补叫。
+- 时间用 `w.now()`，随机用 `w.rng` / `w.gameRng`，不要用 `Date.now()` 和 `Math.random()`。
+- 新的动作类型：在对应模块的 `install*` 里注册 handler，补 `docs/TOWN.md` 的动作表、`mcp/town.ts` 的指南、`agent-kit/prompts/resident-zh.md`，并加测试（`test/world/`，辅助在 `test/world/helpers.ts`）。
+- 部署、密钥和服务器配置不在开发范围内。
+
+## 东京城市（持续世界第二个，第一期）的不变量
+
+城市在 `packages/engine/src/city/`，说明和接口契约见 `docs/CITY.md`，桥接协议的机器可读版本在 `docs/city/bridge-v1.schema.json`。改它之前先读那份文档。
+
+- 城市和栖灯镇互不相干：各自的服务对象、各自的 SQLite 文件（`city.db` / `town.db`）。城市模块只从 `world/` 借通用的东西（`db.ts` 的数据库外壳、`time.ts` 的时区换算、`service.ts` 里的哈希和请求号工具），不读也不写小镇的任何表。
+- 所有写入都在 `c.commit()` 的同一个事务里：状态、账本、事件、outbox、回执、定时任务一起提交或一起回滚。处理过程同步，不等模型、不等网络（天气是在事务外抓好，再进事务写）。订阅者只在提交之后被唤醒。
+- 单写者：一位室友任何时刻只有小屋内核或城市一边接受她的动作。代行的动作、视图、等待都要带 `visit_id` 和当前的 `domain_epoch`；访问结束后旧代次一律 `STALE_DOMAIN_EPOCH`。室友在 QQ 侧的密钥不能直接进城（`ENTRY_VIA_HOME_ONLY`，在写入任何东西之前拒绝）。
+- 小屋门口（`HOUSE_ENTRANCE`）不公开：不出现在公开视图、目录页、地点列表、外部 bot 的视图和事件里，只在桥接接口里出现。新增视图字段先想清楚外部 bot 能不能看到。
+- 日元只通过 `ledger.ts` 的 `ledger()` 变动，每笔分录平衡、原因键唯一，所有账户余额之和恒为 0；物品的增减只通过 `addPlain` / `addCarried` / `takeItems`；交回时物品的去向（带回、寄存）只由 `releaseVisit` 按结算清单写。
+- 桥接回执永久保存，只记成功的结果：同一个请求号同样内容返回原回执，换内容 409。改了桥接的请求、回执或 outbox 记录的字段，同步改 `docs/city/bridge-v1.schema.json`（有测试校验）；改了映射表同步改 `docs/city/mappings.json` 并升版本。
+- outbox 只追加，序号单调；发给内核的记录里，别的居民只出现显示名和地点。
+- 目录（`catalog.ts`）发布后改了地点、票价、时间就换 `CITY_CATALOG_VERSION` / `FARE_RULE_VERSION`。真实世界的数据带来源标注，店铺是虚构的并标明。
+- 天气事件只由状态为 `ok` 的实时数据触发；合成天气不下雨。
+- 时间用 `c.now()`，随机用 `c.rng`；玩家提供的文字和名字先经过 `sanitizeUserText` / `sanitizeName`，进 AI 上下文的聊天文字标 `untrusted`。
+- 部署、桥接密钥和服务器配置不在开发范围内；上线的每一步先问主人。
+
 ## 代码地图
 
 仓库是 npm 工作区，三个包：
@@ -32,12 +79,16 @@ npm run simulate -- werewolf --players 9 --humans 2 --seed 1   # 离线跑一局
 - `packages/engine`（npm 包 `bot-game-mcp`）：引擎。
   - `src/core/manager.ts`：GameManager，包括大厅、抽签、推进（pump）、投递、长轮询、视角、裁判和存档。
   - `src/core/game.ts`：BaseGame 基类。参考实现是 `src/games/number-bomb/index.ts`。
-  - `src/mcp/server.ts`：工具、资源、提示词。`src/mcp/guides.ts` 是给 agent 的指南文本。
+  - `src/mcp/server.ts`：工具、资源、提示词。`src/mcp/guides.ts` 是给 agent 的指南文本。`src/mcp/town.ts` 是小镇的工具和世界上下文路由。
+  - `src/core/runner.ts`：GameRunner，从 GameManager 抽出来的「推进一局」，公共对局和小镇的嵌入小游戏共用。
+  - `src/world/`：持续世界「栖灯镇」（`service.ts` 命令管线与调度，`db.ts` SQLite，`space.ts` 空间权威，`spatial/` 地图、寻路、运动的纯函数，其余按模块：identity、life、property、mail、interact、social、games、reports、views、http、ws）。旧页面在 `town/`（静态文件，无构建；会被 Godot 网页客户端取代）。配置了 `town.clientDir` 时，引擎在 `/town/3d/` 托管三维客户端的导出产物。
+  - `src/city/`：持续世界「东京」第一期（`service.ts` 提交与调度，`db.ts` 表结构，`catalog.ts` 地点与票价，`ledger.ts` 账本，`trips.ts` 行程，`visits.ts` 和小屋内核的桥接协议，`residents.ts` 身份与在场，`actions.ts` 动作与限流，`views.ts` 投影，`weather.ts`、`reconcile.ts`、`http.ts`）。`src/mcp/city.ts` 让城市和小镇共用工具名。测试在 `test/city/`，`helpers.ts` 里有假内核客户端。
   - `src/server/`：HTTP、SSE、stdio、bridge 传输。
   - 测试：`test/helpers.ts` 提供 FakeClock、`startGame`、`playToEnd`。
 - `packages/referee-onebot`（`bot-game-mcp-referee-onebot`，命令 `bot-game-referee`）：代码裁判，OneBot v11 正向 WebSocket。只能通过 MCP 协议和引擎说话。
 - `packages/agent-kit`（`bot-game-mcp-agent-kit`）：接入端客户端、`waitForTurn`、提示词 `playerPrompt()`；`prompts/player-zh.md` 必须和代码一致（有测试）；`examples/` 是各 agent 框架的接入示例。
-- `scripts/e2e.ts`：黑盒端到端，跨三个包。
+- `client/`：栖灯镇的 Godot 4 网页客户端（不是 npm 工作区）。`client/town/` 是 Godot 工程（`scripts/` GDScript，`web/` 是网页外壳和 DOM 界面，文字全在 HTML 里），`client/tools/export.sh` 导出，`client/ASSETS.md` 是素材许可台账，说明见 `client/README.md`。客户端不做预测：只按服务器给的折线和服务器时间插值。资产套件（功能物件、建筑）的 Blender 源在 `client/art_source/kits/`，生成物在 `client/town/assets/kits/`，契约见 `client/docs/T02a.md`。
+- `scripts/e2e.ts`：黑盒端到端，跨三个包。`scripts/world-simulate.ts`、`world-load.ts`、`world-recovery.ts`：小镇的长时间模拟、压测、故障注入。
 
 裁判和接入端不得 import 引擎内部代码；它们的测试通过包名 `bot-game-mcp` 使用引擎（vitest 和 tsconfig 已映射到引擎源码）。
 

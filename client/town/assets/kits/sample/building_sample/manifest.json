@@ -1,0 +1,42 @@
+{
+  "anchors": [],
+  "animations": [],
+  "bounds": {
+    "max": [
+      8.45,
+      5.45,
+      6.45
+    ],
+    "min": [
+      -8.45,
+      0.0,
+      -6.45
+    ]
+  },
+  "footprint": [
+    15.3,
+    11.3
+  ],
+  "id": "building_sample",
+  "kit": "sample",
+  "origin": "自制（本脚本生成，无外部素材）",
+  "size": [
+    16.9,
+    5.45,
+    12.9
+  ],
+  "source": {
+    "blender": "5.2.3 LTS",
+    "script": "client/art_source/kits/sample/building_sample/build.py"
+  },
+  "states": [
+    "idle"
+  ],
+  "stats": {
+    "material_slots": 12,
+    "meshes": 12,
+    "textures": [],
+    "triangles": 140
+  },
+  "version": 1
+}

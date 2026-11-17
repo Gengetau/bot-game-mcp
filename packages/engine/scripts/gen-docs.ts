@@ -9,6 +9,7 @@ import { GameManager } from '../src/core/manager.js';
 import { createRegistry } from '../src/games/index.js';
 import { Authenticator } from '../src/mcp/auth.js';
 import { createMcpServer } from '../src/mcp/server.js';
+import { createWorld } from '../src/world/index.js';
 
 const registry = createRegistry();
 const parts: string[] = [
@@ -38,7 +39,10 @@ console.log('docs/GAMES.md 已生成');
 async function genTools(): Promise<void> {
   const manager = new GameManager({ registry });
   const auth = new Authenticator({ mode: 'open', adminKeys: [], agents: [] }, manager);
-  const server = createMcpServer({ manager, auth, version: 'docs' }, { identity: null, fixed: false, transport: 'memory' });
+  // 小镇的工具只在开了小镇时注册；文档里一并列出，所以这里开一个内存里的小镇
+  const world = createWorld({ dbPath: ':memory:', registry });
+  const town = { world, auth, trustedIds: [] };
+  const server = createMcpServer({ manager, auth, version: 'docs', town }, { identity: null, fixed: false, transport: 'memory' });
   const [a, b] = InMemoryTransport.createLinkedPair();
   const client = new Client({ name: 'docs', version: '1' });
   await server.connect(b);
@@ -53,6 +57,8 @@ async function genTools(): Promise<void> {
     '> 本文件由 `npx tsx scripts/gen-docs.ts` 自动生成，请勿手改。',
     '',
     `共 ${tools.length} 个工具。所有工具返回一个 JSON 文本块；业务错误以 \`isError: true\` 的工具结果返回（含中文原因与建议），不会是协议错误。`,
+    '',
+    '标着「栖灯镇」的工具、资源和提示词只在配置里开了小镇（`town.enabled`）时才有，说明见 [TOWN.md](TOWN.md)。',
     '',
     '## 工具',
     '',
@@ -81,6 +87,7 @@ async function genTools(): Promise<void> {
   writeFileSync(new URL('../../../docs/TOOLS.md', import.meta.url), `${out.join('\n')}\n`);
   console.log('docs/TOOLS.md 已生成');
   await client.close();
+  world.close();
 }
 
 await genTools();

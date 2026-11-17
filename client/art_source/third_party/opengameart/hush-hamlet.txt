@@ -1,0 +1,8 @@
+来源页面: https://opengameart.org/content/hush-hamlet
+标题: Hush Hamlet
+Author: Zane Little Music Tuesday, November 22, 2022 - 14:41
+页面上标注的许可证 (License(s) 一栏，2026-11-13 读取): CC0
+（页面没有版权说明栏）
+下载日期: 2026-11-13
+下载的原始文件及 sha256:
+  a0761ded88634442fec6e7f02c875ec9745692acd9089c715d73a51a38b883fa  hush_hamlet_loop_0.wav

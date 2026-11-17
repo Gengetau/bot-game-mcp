@@ -62,6 +62,24 @@ export class SeededRng implements Rng {
     if (maxExclusive <= 0) throw new RangeError('maxExclusive must be > 0');
     return Math.floor(this.float() * maxExclusive);
   }
+
+  /** 导出内部状态（可序列化）。持续世界把它和候选状态一起提交，失败就丢弃。 */
+  saveState(): string {
+    return [this.a, this.b, this.c, this.d].map((n) => (n >>> 0).toString(36)).join('.');
+  }
+
+  /** 从 saveState() 的结果恢复，之后的随机序列和导出时完全一致。 */
+  static restore(state: string): SeededRng {
+    const parts = state.split('.').map((x) => Number.parseInt(x, 36));
+    if (parts.length !== 4 || parts.some((n) => !Number.isFinite(n))) throw new RangeError('bad rng state');
+    const rng = new SeededRng(0);
+    [rng.a, rng.b, rng.c, rng.d] = parts as [number, number, number, number];
+    return rng;
+  }
+
+  clone(): SeededRng {
+    return SeededRng.restore(this.saveState());
+  }
 }
 
 export function pick<T>(rng: Rng, items: readonly T[]): T {

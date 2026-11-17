@@ -1,0 +1,20 @@
+/* 头顶气泡：hud.js 的 setTags 给每个气泡一个 <div class="tag b">（淡出阶段多一个 sel），文字走 textContent。
+ * 这里把 hud.css 的 .tag（深色药丸、nowrap、max-width 60vw、overflow hidden）覆盖成一张奶油色小纸片。
+ * 层级靠位置错开而不是 z-index（setTags 用行内样式设 z-index，样式表压不过它）：margin-top 把气泡抬到名牌上方。
+ * #tags 本来就 pointer-events:none，气泡不拦截点击。
+ * 出现动画只动 opacity：setTags 把定位写在行内 transform 上，CSS 动画里再写 transform 会在动画期间盖掉定位，气泡会跳到屏幕左上角。 */
+.tag.b {
+  background: var(--d-paper); color: var(--d-ink); border: 1px solid var(--d-wood); border-radius: 10px; padding: 3px 9px;
+  font-size: 13px; line-height: 1.35; text-shadow: none; white-space: normal; max-width: min(60vw, 220px); overflow: visible; text-align: left;
+  unicode-bidi: plaintext; overflow-wrap: anywhere; margin-top: -26px; opacity: 1; box-shadow: 0 1px 0 rgba(60, 40, 20, 0.25);
+  animation: bubbleIn 0.14s ease-out;
+}
+.tag.b::after {
+  content: ""; position: absolute; left: 50%; top: 100%; width: 0; height: 0; margin-left: -5px; border: 5px solid transparent; border-top-color: var(--d-wood); border-bottom-width: 0;
+}
+.tag.b.sel { opacity: 0; transition: opacity 0.6s ease-in; }
+@keyframes bubbleIn { from { opacity: 0; } }
+@media (prefers-reduced-motion: reduce) {
+  .tag.b { animation: none; }
+  .tag.b.sel { transition: none; }
+}

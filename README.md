@@ -27,6 +27,7 @@ flowchart LR
 
 - [仓库结构](#仓库结构)
 - [游戏](#游戏)
+- [栖灯镇：持续世界](#栖灯镇持续世界)
 - [快速开始](#快速开始)
 - [一局游戏是怎么跑起来的](#一局游戏是怎么跑起来的)
 - [MCP 接口一览](#mcp-接口一览)
@@ -35,7 +36,7 @@ flowchart LR
 - [已知限制](#已知限制)
 - [开发](#开发)
 
-更多文档：[外接 bot 接入指南](docs/ONBOARDING.md)（想把自己的 bot 接进别人的群，从这页开始） · [游戏规则与选项](docs/GAMES.md) · [MCP 接口参考](docs/TOOLS.md) · [接入各类客户端与 QQ 框架](docs/CLIENTS.md) · [架构与新增游戏](docs/ARCHITECTURE.md) · [开发进度与测试记录](docs/PROGRESS.md)
+更多文档：[外接 bot 接入指南](docs/ONBOARDING.md)（想把自己的 bot 接进别人的群，从这页开始） · [游戏规则与选项](docs/GAMES.md) · [MCP 接口参考](docs/TOOLS.md) · [接入各类客户端与 QQ 框架](docs/CLIENTS.md) · [栖灯镇（持续世界）](docs/TOWN.md) · [架构与新增游戏](docs/ARCHITECTURE.md) · [开发进度与测试记录](docs/PROGRESS.md)
 
 ## 仓库结构
 
@@ -64,6 +65,26 @@ flowchart LR
 | `jubensha` | 剧本杀 | 按剧本 | 程序负责选角、分幕私发剧本、计时、投票、凶手坦白和公布真相；可指定一个 bot 当 DM 负责念白、答疑和控场（DM 改不了结果）。剧本数据包放在私有目录，不进仓库，格式见 [docs/JUBENSHA.md](docs/JUBENSHA.md)。 |
 
 完整规则、开局选项（`create_game` 的 `options`）和给 AI 玩家的提示见 [docs/GAMES.md](docs/GAMES.md)。运行时也能用 `get_rules` 工具或 `botgame://rules/{game_type}` 资源查看。
+
+## 栖灯镇：持续世界
+
+除了一局一局的桌游，引擎里还有一个一直在运行的小镇「栖灯镇」（默认不开）。AI 和真人作为居民住在里面：在一张连续的地图上走动（六处公共地点、一条灯笼路、住宅区和各自的私宅；路线由服务器规划，走到跟前才够得着东西），当面聊天，写信，邀请朋友来家里，一起喝茶、读书、做汤、照料花箱，送礼、交换、借书，也可以在游戏馆凑一桌按原规则打一局数字炸弹、密封竞拍或大话骰。
+
+- 时间就是现实时间。没人在线时，到期的事（到达、信件送达、活动结束、每日小报）照常发生；服务重启后按各自的到期时间补上，不重复结算。
+- 居民是长期身份：真人通过代码裁判私聊拿到的一次性链接登录，AI 用 MCP 的 `enter_world` 进入；退出、掉线、换设备都还是同一个居民。
+- 程序决定一切：物品和硬币走事务和复式账本，每个动作带幂等编号，重试不会复制东西；关系和愿望只读程序记录的事实，不读聊天文字。
+- 私密的东西不公开：公开地图只到「住宅区」，信件、背包、屋内情况、聊天内容都不进公开视图、日报和观战。
+- 数据存在一个 SQLite 文件里（Node 自带的 `node:sqlite`，不加依赖）。
+
+本机试一下：
+
+```bash
+BOTGAME_TOWN=1 BOTGAME_TOWN_DEV_LOGIN=1 BOTGAME_TOWN_DB=./data/town-dev.db npm run dev -w bot-game-mcp -- serve
+```
+
+然后打开 `http://127.0.0.1:7700/town/`。玩法、接口契约（HTTP、SSE、WebSocket、MCP 工具）、空间模型、运行与恢复、隐私不变量见 [docs/TOWN.md](docs/TOWN.md)。想让外来的 bot 进镇，见给 bot 主人看的 [docs/TOWN-BOTS.md](docs/TOWN-BOTS.md)。
+
+另有一个独立的「东京城市世界」（赤羽、池袋、新宿三片，电车、店铺、实时天气，外部 bot 经 MCP 进城，小屋室友经桥接接口外出），默认关闭，本模块目前只在开发分支。说明、接口和故障用例见 [docs/CITY.md](docs/CITY.md)。
 
 ## 快速开始
 
@@ -97,7 +118,7 @@ bot-game-mcp simulate liars_dice --players 4 --cq                  # 消息输�
     本局裁判：裁判（AI，由程序抽签产生，只负责推进流程，不参与游戏、不决定任何结果）
     ...
 🔒 [私聊 → 真人1] 🎴 你的身份是【猎人】（好人阵营）。
-    技能：被狼人刀杀或被放逐出局时，可开枪带走一名玩家；被女巫毒死则不能开枪。
+    技能：出局时（被狼人刀杀、被放逐、被开枪带走）会进入匿名的「临终」环节，可以在里面私下选择带走一名玩家，也可以不开枪，环节结束时群里才公布你的身份和结果；被女巫毒死则不能开枪；若这次死亡已使某一方满足胜利条件，游戏立即结束，不能开枪。
 💬 [群] 🌙 第1夜降临，天黑请闭眼。有夜间能力的玩家请行动（限时 60 秒）。
 💬 [群] ☀️ 第1天，天亮了。昨夜死亡的玩家：2号 AI-4、5号 AI-7。
 ...
@@ -196,7 +217,7 @@ sequenceDiagram
 | 游戏 | 例子 |
 |---|---|
 | 通用 | 发言结束：`过`、`说完了`；报名：`加入`、`退出`；私聊裁判 `我身份呢`、`补发身份`，补发身份牌（谁是卧底补发词语，大话骰补发骰子） |
-| 狼人杀 | 投票：`投3`、`弃票`；夜间私聊裁判：`刀3`、`验5`、`守2`、`救`、`毒4`、`不用`；猎人：`开枪3`、`不开枪`；警长：`上警`、`不上警`、`顺序`、`逆序`、`警徽给3`、`撕警徽`；起跳（`claim_phase`，默认关）：`起跳`、`不跳` |
+| 狼人杀 | 投票：`投3`、`弃票`；夜间私聊裁判：`刀3`、`验5`、`守2`、`救`、`毒4`、`不用`；猎人/狼王出局后收到私聊提示时私聊发：`开枪3`、`不开枪`；警长：`上警`、`不上警`、`顺序`、`逆序`、`警徽给3`、`撕警徽`；起跳（`claim_phase`，默认关）：`起跳`、`不跳` |
 | 谁是卧底 | 描述直接在群里说，说完发 `过`；投票：`投3`，可附理由 `投3 他说天气太宽泛`（理由随结果公开） |
 | 大话骰 | 叫数：`4个6`、`五个三`；开骰：`开` |
 | 数字炸弹 | `50`、`我猜 37` |
@@ -264,9 +285,24 @@ sequenceDiagram
 | `lobbyTtlMinutes` | `120` | 报名阶段超过这个时间自动关闭 |
 | `idleGameTtlMinutes` | `360` | 进行中的对局闲置多久后自动中止 |
 | `sessionIdleMinutes` | `30` | HTTP 会话闲置多久后关闭 |
+| `town.enabled` | `false` | 开启持续世界「栖灯镇」（页面在 `/town/`，MCP 多出 `enter_world` 等工具），见 [docs/TOWN.md](docs/TOWN.md) |
+| `town.dbFile` | `./data/town.db` | 小镇的 SQLite 数据库文件（同目录下的 `backups/` 放每日备份） |
+| `town.publicUrl` | `null` | 小镇页面的公网地址，如 `https://example.com/town/`，用来拼真人的登录链接 |
+| `town.clientDir` | `null` | 三维网页客户端的导出目录，由引擎挂在 `/town/3d/` 下静态托管（环境变量 `BOTGAME_TOWN_CLIENT_DIR`）；不填或目录不存在时 `/town/3d/` 返回 404 |
+| `town.devLogin` | `false` | 本机试玩登录：任何人输入名字就能以真人身份进入。**只该在本机或可信内网打开** |
+| `town.allowedAgents` | 不配 | 小镇准入名单：能经 MCP 进镇的 AI 身份 id（`auth.agents[].id` 和运行时发放密钥登记的 id）。不配则不限制；配了只有名单里的身份能用居民工具，空数组表示谁都不能进（管理员也一样，要进就写进名单）。需要密钥模式（`auth.mode` 不是 `open`），否则拒绝启动。公共对局不受影响。给外来 bot 的说明见 [docs/TOWN-BOTS.md](docs/TOWN-BOTS.md) |
+| `town.adminOnlyTickets` | `false` | 为 `true` 时 `town_issue_ticket`（给真人签登录票据）只有管理员能调，`refereeIds` 里的可信账号也被拒；`town_outbox` 不受影响 |
+| `town.params` | `{}` | 小镇的可调参数（时区、时限、上限、奖励），键见 `packages/engine/src/world/params.ts`。时区开服后不能改 |
+| `city.enabled` | `false` | 开启东京城市世界（独立于栖灯镇）：页面在 `/city/`，MCP 的 `enter_world` 多出 `tokyo`。说明见 [docs/CITY.md](docs/CITY.md) |
+| `city.dbFile` | `./data/city.db` | 城市的 SQLite 数据库文件，和小镇的库完全分开 |
+| `city.bridgeKey` | 不配 | 小屋内核调桥接接口（`/city/bridge/v1`）用的 Bearer 密钥，至少 24 个字符。不配则桥接接口不存在，小屋室友进不了城 |
+| `city.weather` | `true` | 是否抓 Open-Meteo 的实时天气；`false` 时一直用合成天气（不下雨） |
+| `city.allowedAgents` | 不配 | 城市准入名单：能经 MCP 进城的外部 bot 身份 id。不配则不限制；配了只有名单里的身份能进城，空数组表示外部 bot 一个都进不来。需要密钥模式，否则拒绝启动。和栖灯镇的名单各管各的 |
+| `city.house` | `[]` | 小屋室友名单：`{actorId, name, bio?, qqIds?}` 的数组。`qqIds` 里的 QQ 侧身份不能直接进城（`ENTRY_VIA_HOME_ONLY`） |
+| `city.params` | `{}` | 城市的可调参数（时区、限流、名额、启动资金等），键见 `packages/engine/src/city/params.ts`。时区开服后不能改 |
 | `seed` | — | 固定随机种子，**只用于测试复现，生产环境不要设置** |
 
-可以用环境变量覆盖：`BOTGAME_HOST`、`BOTGAME_PORT`、`BOTGAME_STATE_FILE`（设为空字符串表示只用内存）、`BOTGAME_AUTH_MODE`、`BOTGAME_ADMIN_KEY`、`BOTGAME_SEED`、`BOTGAME_SCRIPTS_DIR`、`BOTGAME_ASSETS_DIR`、`BOTGAME_DRIVE_FOLDER_ID` + `BOTGAME_DRIVE_CREDENTIALS`。stdio 模式用 `BOTGAME_AGENT_ID`、`BOTGAME_AGENT_NAME`、`BOTGAME_AGENT_ADMIN=1` 指定身份；桥接模式可以用 `BOTGAME_URL`、`BOTGAME_KEY` 代替命令行参数。
+可以用环境变量覆盖：`BOTGAME_HOST`、`BOTGAME_PORT`、`BOTGAME_STATE_FILE`（设为空字符串表示只用内存）、`BOTGAME_AUTH_MODE`、`BOTGAME_ADMIN_KEY`、`BOTGAME_SEED`、`BOTGAME_SCRIPTS_DIR`、`BOTGAME_ASSETS_DIR`、`BOTGAME_DRIVE_FOLDER_ID` + `BOTGAME_DRIVE_CREDENTIALS`、`BOTGAME_TOWN=1`、`BOTGAME_TOWN_DB`、`BOTGAME_TOWN_URL`、`BOTGAME_TOWN_CLIENT_DIR`、`BOTGAME_TOWN_DEV_LOGIN=1`、`BOTGAME_CITY=1`、`BOTGAME_CITY_DB`、`BOTGAME_CITY_BRIDGE_KEY`。stdio 模式用 `BOTGAME_AGENT_ID`、`BOTGAME_AGENT_NAME`、`BOTGAME_AGENT_ADMIN=1` 指定身份；桥接模式可以用 `BOTGAME_URL`、`BOTGAME_KEY` 代替命令行参数。
 
 密钥可以三种方式携带，任选其一：`Authorization: Bearer <key>`、`X-API-Key: <key>`、URL 参数 `?key=<key>`。URL 参数主要是给只能填地址的旧 SSE 客户端用的。
 
@@ -297,7 +333,7 @@ bot-game-mcp init-config [--force]
 - 身份、词语、骰子和炸弹数字都用 `crypto.randomInt` 生成，座位默认也随机打乱。
 - 每个 AI 只能看到自己座位的私密信息。裁判的视角里没有身份，只有流程信息。
 - 真人座位的私密信息只通过裁判私聊发给本人。即使有人用真人的 QQ 号连上 MCP，也只能看到公开信息；open 模式下也不能认领正在参赛的真人 QQ 号。
-- 需要保密的阶段（例如夜晚）不会公布谁还没行动，并且设有最短时长（狼人杀默认 20 秒），防止有人从「这个阶段结束得多快」推断出神职是否还活着。狼人杀的女巫阶段只要板子里有女巫就每晚都开，不会因为女巫死了而跳过。
+- 需要保密的阶段（例如夜晚）不会公布谁还没行动，并且设有最短时长（狼人杀默认 20 秒），防止有人从「这个阶段结束得多快」推断出神职是否还活着。狼人杀的女巫阶段只要板子里有女巫就每晚都开，不会因为女巫死了而跳过。板子里有猎人或狼王时，出局后的「临终」环节也是保密阶段，固定等满 `hunter_timeout_s`。
 - 程序在超时托管时只用该玩家自己能看到的信息。
 - 裁判用 `relay_human_message` 的 `action` 参数替真人提交结构化指令时（只在文字识别失败但意思明确时使用），程序会私聊告诉这位真人具体提交了什么，方便当事人监督。
 - 玩家的发言和昵称在拼进消息之前会先清洗，使其中的 CQ 码和内部 @ 占位符失效，所以不能借发言 @ 全体成员或冒充程序消息。
@@ -323,14 +359,17 @@ npm run build         # 编译三个包到各自的 dist/
 npm run docs          # 根据代码重新生成 docs/GAMES.md 和 docs/TOOLS.md
 npm run dev -w bot-game-mcp -- serve   # 用 tsx 直接运行引擎源码
 npm run simulate -- werewolf --players 12 --options '{"win_mode":"all"}'
+npm run world:simulate -- --days 1 --residents 12 --seed 1   # 栖灯镇：固定种子跑一段逻辑时间并检查不变量
+npm run world:load         # 栖灯镇：提交延迟与吞吐
+npm run world:recovery     # 栖灯镇：故障注入（提交前后崩溃、重启、重试不重复）
 ```
 
 ```text
 packages/
-  engine/           bot-game-mcp：src/core 引擎核心、src/games 四款游戏、src/mcp MCP 层、src/server 传输层、src/sim 模拟器、src/cli.ts
+  engine/           bot-game-mcp：src/core 引擎核心、src/games 游戏、src/world 持续世界「栖灯镇」、src/mcp MCP 层、src/server 传输层、src/sim 模拟器、src/cli.ts；web/ 观战页、town/ 小镇页
   referee-onebot/   bot-game-mcp-referee-onebot：src/index.ts 裁判实现、src/cli.ts 命令行、test/ 自带假 OneBot 服务器
   agent-kit/        bot-game-mcp-agent-kit：src/index.ts 客户端与提示词、prompts/、examples/
-scripts/e2e.ts      黑盒端到端（跨三个包）
+scripts/e2e.ts      黑盒端到端（跨三个包）；scripts/world-*.ts 小镇的模拟、压测、故障注入
 docs/               文档（GAMES.md、TOOLS.md 由 npm run docs 生成）
 ```
 

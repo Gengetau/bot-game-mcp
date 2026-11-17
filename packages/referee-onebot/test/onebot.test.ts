@@ -1168,7 +1168,7 @@ describe('OneBot referee against the real engine', () => {
       voices: [{ key: KEYS.ai, onebotUrl: qqA.url, onebotToken: 'wA' }],
       stepWaitSeconds: 1,
       sendGapMs: 0,
-      webDmGapMs: 1500,
+      webDmGapMs: 5000,
       signal: ac2.signal,
       log: (l) => lines.push(l),
     });
@@ -1235,7 +1235,7 @@ describe('OneBot referee against the real engine', () => {
       // 私聊提醒：第一次就发；间隔内再说只撤回不重复私聊；过了间隔再说，再私聊提醒一次（不是每局只提醒一次）
       await qqMain.waitForCall(dmTo(AI2_ID), 10_000, mark);
       expect(qqMain.calls.slice(mark).filter(dmTo(AI2_ID))).toHaveLength(1);
-      await new Promise((res) => setTimeout(res, 1600));
+      await new Promise((res) => setTimeout(res, 5100));
       const bad4 = emitAll(AI2_ID, '艾莉希娅', '第三次在群里说');
       await qqMain.waitForCall((c) => c.action === 'delete_msg' && c.params.message_id === bad4, 10_000, mark);
       await qqMain.waitForCall((c) => dmTo(AI2_ID)(c) && qqMain.calls.slice(mark).filter(dmTo(AI2_ID)).length >= 2, 10_000, mark);
@@ -1266,7 +1266,9 @@ describe('OneBot referee against the real engine', () => {
     const ac2 = new AbortController();
     const lines: string[] = [];
     const done = runReferee({ url: http.url, key: KEYS.ref, onebotUrl: bad.url, onebotToken: 'wrong', groupId: '1', stepWaitSeconds: 1, signal: ac2.signal, log: (l) => lines.push(l) });
-    await new Promise((res) => setTimeout(res, 800));
+    // 等到「连接断开 / 无法连接」日志出现再 abort（abort 之后 closed 为真，不再写这条日志）
+    const t0 = Date.now();
+    while (!lines.some((l) => l.includes('连接断开') || l.includes('无法连接')) && Date.now() - t0 < 8000) await new Promise((res) => setTimeout(res, 50));
     expect(bad.connections).toBe(0);
     ac2.abort();
     await done;

@@ -640,6 +640,8 @@ class Humans {
   /** 接管后故意用「@原裁判」发一次指令，记录引擎怎么处理 */
   probedOldRef = false;
   oldRefProbe: { id: string; name: string } | null = null;
+  /** 狼人杀：真人在「临终」环节里提交开枪或不开枪的次数（用来证明这条路径真的被走到） */
+  finalActs = 0;
 
   constructor(
     private readonly env: Env,
@@ -873,7 +875,7 @@ class Humans {
     const groupSrc = this.recentGroup(8);
     const sources = [h.lastPrompt, ...groupSrc, h.roleMsg];
     if (key === 'night') {
-      if (h.role === '狼人') {
+      if (h.role === '狼人' || h.role === '狼王') {
         if (!h.chatted.has(title) && chance(this.rng, 0.5)) {
           h.chatted.add(title);
           await this.relay(h, '今晚刀谁比较好？', channel, title);
@@ -897,7 +899,8 @@ class Humans {
       if (canSave && roll < 45) await this.relay(h, this.cmd(h, 'save', undefined, sources, title), channel, title);
       else if (canPoison && roll >= 45 && roll < 70 && others.length > 0) await this.tryTargets(h, title, channel, others, (t) => this.cmd(h, 'poison', t, sources, title), this.cmd(h, 'skipWitch', undefined, sources, title));
       else await this.relay(h, this.cmd(h, 'skipWitch', undefined, sources, title), channel, title);
-    } else if (key === 'hunter') {
+    } else if (key === 'final') {
+      this.finalActs++;
       if (chance(this.rng, 0.8) && others.length > 0) await this.tryTargets(h, title, channel, others, (t) => this.cmd(h, 'shoot', t, sources, title), this.cmd(h, 'noShoot', undefined, sources, title));
       else await this.relay(h, this.cmd(h, 'noShoot', undefined, sources, title), channel, title);
     } else if (key === 'vote' || key === 'pk_vote') {
@@ -1272,7 +1275,7 @@ async function scenarioWerewolf(env: Env, rng: Rng): Promise<Scenario> {
 
   const refConn = sc.conn(env, 'ref', env.ref.key);
   const ais = aiCfgs.map((cfg, i) => ({ cfg, selfPost: i % 2 === 0, conn: sc.conn(env, `ai${i + 1}`, cfg.key, 'http', i % 3 === 2 ? 'x-api-key' : 'bearer') }));
-  const options = { night_min_s: 0, speech_gap_ms: 200, night_timeout_s: 40, witch_timeout_s: 30, speech_timeout_s: 30, vote_timeout_s: 30, last_words_timeout_s: 30, hunter_timeout_s: 20, pk_speech_timeout_s: 30 };
+  const options = { wolf_king: true, night_min_s: 0, speech_gap_ms: 200, night_timeout_s: 40, witch_timeout_s: 30, speech_timeout_s: 30, vote_timeout_s: 30, last_words_timeout_s: 30, hunter_timeout_s: 20, pk_speech_timeout_s: 30 };
   const gameId = await lobby(env, sc, refConn, 'werewolf', groupId, options, ais.map((a) => ({ conn: a.conn, selfPost: a.selfPost })), humanSpecs);
   log('S2', `狼人杀 ${gameId} 开局：9 人（7 AI + 2 真人）`);
 
@@ -1318,6 +1321,11 @@ async function scenarioWerewolf(env: Env, rng: Rng): Promise<Scenario> {
     sc.note(`重启期间发生过消息丢失并经 since_seq 恢复：${loop.gaps[0]}`);
   } else sc.note('重启期间没有丢消息（裁判在途请求没有造成游标前移）');
   commonChecks(sc, loop);
+  // 临终环节有没有被端到端走到：群里出现过开场公告、真人在里面提交过。默认板子的猎人如果没死或被毒，整局都走不到，那时只记一条说明，不假装测过。
+  const finalAnnounced = qq.group.some((l) => /临终环节/.test(l.text));
+  if (!finalAnnounced) sc.note('S2 这一局没有出现「临终」环节（猎人、狼王都没被刀或放逐？），真人私聊开枪这条路径没有被端到端覆盖');
+  else if (humans.finalActs === 0) sc.note('S2 出现了「临终」环节，但出局的猎人、狼王都是 AI，真人没有在里面提交，真人私聊开枪这条路径没有被端到端覆盖');
+  else sc.note(`S2 走到了「临终」环节：真人在里面提交了 ${humans.finalActs} 次`);
   const v = await finishInfo(sc, refConn, gameId);
   sc.check('两名真人都收到了身份私聊', humans.list.every((h) => h.role !== null), humans.list.map((h) => `${h.nick}:${h.role}`).join(','));
   // 恶意昵称：群消息里不能出现可解析的 CQ 码，且不会 @ 到 qq=all
@@ -1718,12 +1726,16 @@ async function main(): Promise<number> {
   };
   process.on('exit', cleanupSync);
   // 看门狗：本进程即使被 SIGKILL，也会在 1 秒内杀掉记录在案的子进程并删除临时目录（只处理自己创建的 pid 文件和目录）
-  reaper = spawn(
-    'sh',
-    ['-c', 'while kill -0 "$1" 2>/dev/null; do sleep 1; done; if [ -f "$2/children.pids" ]; then while read -r p; do [ -n "$p" ] && kill -9 "$p" 2>/dev/null; done < "$2/children.pids"; fi; rm -rf "$2"', 'e2e-reaper', String(process.pid), tmp],
-    { detached: true, stdio: 'ignore' },
-  );
-  reaper.unref();
+  // Windows 上跳过：Git Bash 的 kill 认的是 MSYS 进程号，不认 Node 给的 Windows 进程号，
+  // `kill -0` 会立刻失败，看门狗马上执行 rm -rf 把还在用的临时目录删掉。Windows 上只保留正常退出时的清理。
+  if (process.platform !== 'win32') {
+    reaper = spawn(
+      'sh',
+      ['-c', 'while kill -0 "$1" 2>/dev/null; do sleep 1; done; if [ -f "$2/children.pids" ]; then while read -r p; do [ -n "$p" ] && kill -9 "$p" 2>/dev/null; done < "$2/children.pids"; fi; rm -rf "$2"', 'e2e-reaper', String(process.pid), tmp],
+      { detached: true, stdio: 'ignore' },
+    );
+    reaper.unref();
+  }
   const onSignal = (sig: NodeJS.Signals) => {
     console.error(`\n收到 ${sig}，清理后退出`);
     cleanupSync();

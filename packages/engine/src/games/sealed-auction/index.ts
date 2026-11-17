@@ -341,5 +341,6 @@ export const sealedAuctionDefinition: GameDefinition<SealedAuctionOptions> = {
     price: 'first=支付自己的出价（默认）；second=支付第二高出价，只有一人出正价时付 0',
     bid_timeout_s: '每轮同时出价限时（秒，默认 60）；超时出价为 0',
   },
+  embeddable: true,
   create: (rec, env) => new SealedAuctionGame(rec, env),
 };

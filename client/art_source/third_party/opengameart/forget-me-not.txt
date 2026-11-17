@@ -1,0 +1,9 @@
+来源页面: https://opengameart.org/content/forget-me-not
+标题: Forget Me Not
+Author: Kistol Saturday, April 3, 2021 - 10:59
+页面上标注的许可证 (License(s) 一栏，2026-11-13 读取): CC0
+Copyright/Attribution Notice: Music by Kistol.
+下载日期: 2026-11-13
+下载的原始文件及 sha256:
+  615761e410e828e344bbc94755c385f32e337f771f108e23710c3011ca4da874  forget_me_not_in_f_major_0.ogg
+  2b9b9fc512c34d52b999ed1fd7e01f960f830f3defc5d2241f6e02f8be81ef77  forget_me_not_in_f_major_looped.ogg

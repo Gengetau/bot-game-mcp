@@ -85,6 +85,72 @@ export const configSchema = z.object({
       issuedKeysFile: z.string().nullable().default('./data/botgame-keys.json'),
     })
     .default({ adminKeys: [], agents: [], issuedKeysFile: './data/botgame-keys.json' }),
+  /**
+   * 持续世界「栖灯镇」（/town/）：一个一直运行的小镇，AI 和真人作为居民生活在里面。默认不开。
+   * 数据存在独立的 SQLite 文件里（Node 自带的 node:sqlite，不需要额外依赖）。
+   */
+  town: z
+    .object({
+      enabled: z.boolean().default(false),
+      /** 世界数据库文件。每天自动在旁边的 backups/ 里留一份验证过的备份 */
+      dbFile: z.string().default('./data/town.db'),
+      /** 小镇网页的公网地址（如 https://example.com/town/），用来拼真人的登录链接；不填只返回票据 */
+      publicUrl: z.string().url().nullable().default(null),
+      /** 本机试玩登录：任何人输入名字就能以真人身份进入。只该在本机或可信内网打开 */
+      devLogin: z.boolean().default(false),
+      /** 三维网页客户端的导出目录（Godot 网页导出产物），由引擎挂在 /town/3d/ 下静态托管；不填或目录不存在时 /town/3d/ 返回 404 */
+      clientDir: z.string().nullable().default(null),
+      /** 覆盖默认参数（见 src/world/params.ts）。时区在开服后不能改 */
+      params: z.record(z.string(), z.unknown()).default({}),
+      /**
+       * 小镇准入名单：能经 MCP 进镇的 AI 身份 id（auth.agents[].id 和运行时发放密钥登记的 id）。
+       * 不配：不限制。配了：只有名单里的身份能用小镇的居民工具；空数组表示谁都不能经 MCP 进镇。
+       * 管理员不豁免，要进镇就把它的 id 写进来。需要 auth.mode 不是 open。
+       */
+      allowedAgents: z
+        .array(z.string().transform((s) => s.trim()).pipe(z.string().min(1, '不能是空串或只有空白')))
+        .transform((a) => [...new Set(a)])
+        .optional(),
+      /** 为 true 时，town_issue_ticket（给真人签登录票据）只有管理员能调，可信账号（refereeIds）也被拒 */
+      adminOnlyTickets: z.boolean().default(false),
+    })
+    .default({ enabled: false, dbFile: './data/town.db', publicUrl: null, devLogin: false, clientDir: null, params: {}, adminOnlyTickets: false }),
+  /**
+   * 东京城市世界（/city/）：小屋的室友经外出访问进城、外部 bot 经 MCP 进城的持续城市。默认不开。
+   * 数据存在独立的 SQLite 文件里，和栖灯镇的库完全分开。说明见 docs/CITY.md。
+   */
+  city: z
+    .object({
+      enabled: z.boolean().default(false),
+      dbFile: z.string().default('./data/city.db'),
+      /** 覆盖默认参数（见 src/city/params.ts）。时区在开服后不能改 */
+      params: z.record(z.string(), z.unknown()).default({}),
+      /** 桥接密钥：小屋内核调 /city/bridge/v1 时带的 Bearer。不配就不挂桥接接口。也可以用环境变量 BOTGAME_CITY_BRIDGE_KEY */
+      bridgeKey: z.string().min(24, '桥接密钥至少 24 个字符').optional(),
+      /**
+       * 城市准入名单：能经 MCP 进城的外部 bot 身份 id（auth.agents[].id 和运行时发放密钥登记的 id）。
+       * 不配：不限制。配了：只有名单里的身份能进城和在城里行动；空数组表示外部 bot 一个都进不来（只剩公开视图和桥接）。
+       * 管理员不豁免。需要 auth.mode 不是 open。和小屋室友无关：她们只经桥接进城。
+       */
+      allowedAgents: z
+        .array(z.string().transform((s) => s.trim()).pipe(z.string().min(1, '不能是空串或只有空白')))
+        .transform((a) => [...new Set(a)])
+        .optional(),
+      /** 是否向 open-meteo 抓实时天气；false 时一直用合成天气（标注为 fallback） */
+      weather: z.boolean().default(true),
+      /** 小屋的室友：actorId 是内核里的编号；qqIds 是她在 QQ 侧的 bot 身份 id（这些身份在城里只能看，不能进城） */
+      house: z
+        .array(
+          z.object({
+            actorId: z.string().regex(/^[a-z][a-z0-9_-]{0,31}$/),
+            name: z.string().min(1).max(16),
+            bio: z.string().max(80).optional(),
+            qqIds: z.array(z.string().min(1)).default([]),
+          }),
+        )
+        .default([]),
+    })
+    .default({ enabled: false, dbFile: './data/city.db', params: {}, weather: true, house: [] }),
   refereeStaleSeconds: z.number().int().min(10).default(120),
   lobbyTtlMinutes: z.number().int().min(1).default(120),
   idleGameTtlMinutes: z.number().int().min(5).default(360),
@@ -123,6 +189,20 @@ export function loadConfig(path?: string, env: NodeJS.ProcessEnv = process.env):
   if (env.BOTGAME_PORT) raw.port = Number(env.BOTGAME_PORT);
   if (env.BOTGAME_STATE_FILE !== undefined) raw.stateFile = env.BOTGAME_STATE_FILE || null;
   if (env.BOTGAME_SEED) raw.seed = env.BOTGAME_SEED;
+  if (env.BOTGAME_TOWN !== undefined || env.BOTGAME_TOWN_DB || env.BOTGAME_TOWN_URL || env.BOTGAME_TOWN_CLIENT_DIR !== undefined || env.BOTGAME_TOWN_DEV_LOGIN !== undefined) {
+    raw.town = { ...(raw.town ?? {}) };
+    if (env.BOTGAME_TOWN !== undefined) raw.town.enabled = env.BOTGAME_TOWN === '1' || env.BOTGAME_TOWN === 'true';
+    if (env.BOTGAME_TOWN_DB) raw.town.dbFile = env.BOTGAME_TOWN_DB;
+    if (env.BOTGAME_TOWN_URL) raw.town.publicUrl = env.BOTGAME_TOWN_URL;
+    if (env.BOTGAME_TOWN_CLIENT_DIR !== undefined) raw.town.clientDir = env.BOTGAME_TOWN_CLIENT_DIR || null;
+    if (env.BOTGAME_TOWN_DEV_LOGIN !== undefined) raw.town.devLogin = env.BOTGAME_TOWN_DEV_LOGIN === '1' || env.BOTGAME_TOWN_DEV_LOGIN === 'true';
+  }
+  if (env.BOTGAME_CITY !== undefined || env.BOTGAME_CITY_DB || env.BOTGAME_CITY_BRIDGE_KEY) {
+    raw.city = { ...(raw.city ?? {}) };
+    if (env.BOTGAME_CITY !== undefined) raw.city.enabled = env.BOTGAME_CITY === '1' || env.BOTGAME_CITY === 'true';
+    if (env.BOTGAME_CITY_DB) raw.city.dbFile = env.BOTGAME_CITY_DB;
+    if (env.BOTGAME_CITY_BRIDGE_KEY) raw.city.bridgeKey = env.BOTGAME_CITY_BRIDGE_KEY;
+  }
   if (env.BOTGAME_SCRIPTS_DIR !== undefined) raw.scriptsDir = env.BOTGAME_SCRIPTS_DIR || null;
   if (env.BOTGAME_ASSETS_DIR !== undefined) raw.assetsDir = env.BOTGAME_ASSETS_DIR || null;
   if (env.BOTGAME_DRIVE_FOLDER_ID && env.BOTGAME_DRIVE_CREDENTIALS) {
@@ -142,5 +222,20 @@ export function loadConfig(path?: string, env: NodeJS.ProcessEnv = process.env):
     if (keys.has(k)) throw new Error('配置无效：存在重复的密钥。');
     keys.add(k);
   }
+  const mode = parsed.data.auth.mode ?? (parsed.data.auth.agents.length > 0 ? 'keys' : 'open');
+  if (parsed.data.town.allowedAgents !== undefined && mode === 'open') {
+    throw new Error('配置无效：town.allowedAgents 需要密钥模式。开放模式（auth.mode 为 open，或没有配置任何 auth.agents）下身份是调用方自己报的，名单形同虚设。请把 auth.mode 改成 keys 并配置 auth.agents，或者删掉 town.allowedAgents。');
+  }
+  if (parsed.data.city.allowedAgents !== undefined && mode === 'open') {
+    throw new Error('配置无效：city.allowedAgents 需要密钥模式。开放模式（auth.mode 为 open，或没有配置任何 auth.agents）下身份是调用方自己报的，名单形同虚设。请把 auth.mode 改成 keys 并配置 auth.agents，或者删掉 city.allowedAgents。');
+  }
+  const qq = new Set<string>();
+  for (const m of parsed.data.city.house) {
+    for (const id of m.qqIds) {
+      if (qq.has(id)) throw new Error(`配置无效：city.house 里 QQ 身份 ${id} 出现了不止一次。`);
+      qq.add(id);
+    }
+  }
+  if (new Set(parsed.data.city.house.map((m) => m.actorId)).size !== parsed.data.city.house.length) throw new Error('配置无效：city.house 里有重复的 actorId。');
   return parsed.data;
 }

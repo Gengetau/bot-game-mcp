@@ -1,0 +1,8 @@
+来源页面: https://opengameart.org/content/crickets-ambient-noise-loopable
+标题: Crickets Ambient Noise - loopable
+Author: Wolfgang_ Friday, September 3, 2021 - 22:53
+页面上标注的许可证 (License(s) 一栏，2026-11-13 读取): CC0
+Copyright/Attribution Notice: (optional) Ted Kerr
+下载日期: 2026-11-13
+下载的原始文件及 sha256:
+  5b5bd1f744087888c5623543c3ff80be9c2ce106093993e7c8a8492b0280b2c0  crickets_1.mp3

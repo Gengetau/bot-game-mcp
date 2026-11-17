@@ -18,9 +18,12 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
 import { extractKey, type SessionContext } from '../mcp/auth.js';
 import { createMcpServer } from '../mcp/server.js';
+import { townPolicy } from '../mcp/town.js';
 import type { Runtime } from './runtime.js';
 import { stderrLog } from './log.js';
 import { mountWeb } from './web.js';
+import { mountCity } from '../city/http.js';
+import { mountTown } from '../world/http.js';
 
 interface Session {
   transport: StreamableHTTPServerTransport | SSEServerTransport;
@@ -61,7 +64,7 @@ export async function startHttpServer(rt: Runtime, log: (msg: string) => void = 
     return { ok: true, key, ctx: { identity: identity ?? null, fixed: Boolean(identity), transport: 'http' } };
   }
 
-  const deps = { manager, auth, version: rt.version, log };
+  const deps = { manager, auth, version: rt.version, log, ...(rt.world ? { town: { world: rt.world, auth, trustedIds: config.refereeIds, ...townPolicy(config.town) } } : {}), ...(rt.city ? { city: { city: rt.city, ...(config.city.allowedAgents ? { allowedAgents: config.city.allowedAgents } : {}) } } : {}) };
 
   /**
    * 接回重启前的会话：用原来的会话 ID 新建一个已初始化的传输。
@@ -206,6 +209,9 @@ export async function startHttpServer(rt: Runtime, log: (msg: string) => void = 
   }
 
   const closeWeb = config.web ? mountWeb(app, manager, log) : () => undefined;
+  const town = rt.world ? mountTown(app, rt.world, log, { clientDir: config.town.clientDir }) : null;
+  const closeTown = town ?? (() => undefined);
+  if (rt.city) mountCity(app, rt.city, log, { bridgeKey: config.city.bridgeKey });
 
   // 空闲会话清理
   const idleMs = config.sessionIdleMinutes * 60_000;
@@ -224,6 +230,7 @@ export async function startHttpServer(rt: Runtime, log: (msg: string) => void = 
     const srv = app.listen(config.port, config.host, () => resolve(srv));
     srv.on('error', reject);
   });
+  town?.attach(server); // /town/ws 的 upgrade 处理
   const addr = server.address();
   const port = typeof addr === 'object' && addr ? addr.port : config.port;
   const hostForUrl = config.host === '0.0.0.0' || config.host === '::' ? '127.0.0.1' : config.host;
@@ -235,6 +242,7 @@ export async function startHttpServer(rt: Runtime, log: (msg: string) => void = 
     async close() {
       clearInterval(sweeper);
       closeWeb();
+      closeTown();
       for (const s of sessions.values()) await s.transport.close().catch(() => undefined);
       sessions.clear();
       await new Promise<void>((resolve) => server.close(() => resolve()));

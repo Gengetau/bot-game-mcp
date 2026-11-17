@@ -21,7 +21,18 @@
     "docs": "npm run docs -w bot-game-mcp",
     "simulate": "npm run simulate -w bot-game-mcp --",
     "e2e": "tsx scripts/e2e.ts",
-    "load": "tsx scripts/load.ts"
+    "load": "tsx scripts/load.ts",
+    "world:simulate": "tsx scripts/world-simulate.ts",
+    "world:load": "tsx scripts/world-load.ts",
+    "world:recovery": "tsx scripts/world-recovery.ts",
+    "client:export": "bash client/tools/export.sh",
+    "client:e2e": "tsx scripts/client-e2e.mjs",
+    "client:shots": "node scripts/client-shots.mjs",
+    "client:lint": "node client/tools/lint-web.mjs",
+    "client:unit": "bash client/tools/unit.sh",
+    "client:web": "bash client/tools/web-only.sh",
+    "client:assets:build": "bash client/art_source/build_kits.sh",
+    "client:assets:check": "bash client/tools/check_assets.sh"
   },
   "devDependencies": {
     "@modelcontextprotocol/sdk": "^1.32.2",

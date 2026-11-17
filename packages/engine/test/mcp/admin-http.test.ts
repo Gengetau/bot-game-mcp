@@ -113,7 +113,8 @@ describe('管理页', () => {
     expect(o.scripts.find((s: any) => s.id === 'demo').is_default).toBe(true);
     const file = join(dir, 'botgame-settings.json');
     expect(JSON.parse(readFileSync(file, 'utf8'))).toEqual({ jubenshaDefaultScript: 'demo' });
-    expect(statSync(file).mode & 0o077).toBe(0);
+    // Windows 没有 POSIX 权限位，只在 Linux / macOS 上检查
+    if (process.platform !== 'win32') expect(statSync(file).mode & 0o077).toBe(0);
 
     // 开房不写 script 也能开，用的是默认剧本
     const m = rt.manager;

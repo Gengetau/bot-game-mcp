@@ -1,0 +1,10 @@
+来源页面: https://opengameart.org/content/park-ambiences
+标题: Park ambiences
+Author: Thimras Monday, July 25, 2022 - 04:11
+页面上标注的许可证 (License(s) 一栏，2026-11-13 读取): CC0
+（页面没有版权说明栏）
+下载日期: 2026-11-13
+下载的原始文件及 sha256:
+  dc1a5ac34b89cab7f8f261b53a23da7c1c5e3cc895aae4cb6fb4a1a04001b2af  park_ambience_birds.wav
+  da0c0c9b1249a83a1611cc116d5737b0864a8db9f45f1ae8dcc079d0f7c0bbbf  park_ambience_river.wav
+  5c381856745b4706e7eba55eb9271a61a530e90c05df8126adb2db89ecfa6c5a  park_ambience_wind.wav

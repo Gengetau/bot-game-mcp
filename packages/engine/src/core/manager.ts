@@ -11,17 +11,17 @@
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import { BaseGame, type GameEnv } from './game.js';
-import { GameError, badRequest, forbidden, invalidState, notFound } from './errors.js';
+import { GameError, badRequest, forbidden, invalidAction, invalidState, notFound } from './errors.js';
 import type { AssetStore } from './assets.js';
 import type { GameRegistry, GameDefinition } from './registry.js';
 import { CryptoRng, pick, shortCode, shuffle, type Rng } from './rng.js';
+import { gateOpen, normalizeActionInput, phaseHeaderOf, pumpGame, todoOf, type TodoView } from './runner.js';
+export type { TodoView } from './runner.js';
 import type { ClaimRecord, PersistedState, StateStore } from './store.js';
 import {
   extractCqAts,
   formatDuration,
   normalizeText,
-  parseIntLoose,
-  resolveSeat,
   sanitizeName,
   sanitizeUserText,
   cqToSpeech,
@@ -38,10 +38,10 @@ import type {
   LobbyEntry,
   LogEntry,
   PendingRequest,
-  PhaseState,
   Player,
   RefereeDraw,
   Seat,
+  ViewSection,
 } from './types.js';
 
 export interface ManagerOptions {
@@ -116,13 +116,6 @@ export interface EventView {
   private?: true;
 }
 
-export interface TodoView {
-  prompt: string;
-  kind: 'speech' | 'action';
-  actions: PendingRequest['actions'];
-  seconds_left: number | null;
-}
-
 export interface RefereeStepResult {
   game_id: string;
   group_id: string;
@@ -157,7 +150,6 @@ export interface RelayResult {
 
 type Waiter = () => void;
 
-const MAX_PUMP = 200;
 /** 观众席：每条最多几个字、每人每个时间窗最多几条、每局最多留多少条 */
 const SPECTATOR_MAX_CHARS = 200;
 const SPECTATOR_WINDOW_MS = 30_000;
@@ -221,7 +213,8 @@ export class GameManager {
   }
 
   private restore(state: PersistedState): void {
-    for (const g of state.games) this.games.set(g.id, g);
+    // 嵌入持续世界的小游戏只归世界服务读写：就算存档里混进了这种记录，普通 Manager 也不接手
+    for (const g of state.games) if (!g.embed) this.games.set(g.id, g);
     for (const c of state.claims ?? []) this.claims.set(c.id, c);
   }
 
@@ -517,10 +510,13 @@ export class GameManager {
     const existing = rec.lobby.find((e) => e.id === actor.id);
     if (existing && existing.kind === 'human') throw badRequest('该 QQ 号已作为真人玩家报名。');
     const playerCount = rec.lobby.filter((e) => e.pref !== 'referee' && e.id !== actor.id).length;
-    const cap = this.lobbyLimits(rec).max;
+    const candidate: LobbyEntry = { ...existing, id: actor.id, name: this.nameOf(actor), kind: 'agent', pref,
+      selfPost: opts.selfPost ?? existing?.selfPost ?? true, joinedAt: existing?.joinedAt ?? this.now() };
+    const nextLobby = [...rec.lobby.filter((e) => e.id !== actor.id), candidate];
+    const cap = this.lobbyLimits({ ...rec, lobby: nextLobby }).max;
     // 「玩家或裁判」的报名以前不占名额（可能被抽去当裁判）；人数定死的游戏已经给裁判多留了位置，也要算上
-    const counts = pref === 'player' || (pref === 'either' && Boolean(def.playerRange?.(rec.options as never)));
-    if (!existing && counts && playerCount >= cap) {
+    const counts = pref === 'player' || (pref === 'either' && Boolean(def.playerRange?.(rec.options as never, nextLobby.filter((e) => e.pref !== 'referee'))));
+    if ((!existing || existing.pref === 'referee') && counts && playerCount >= cap) {
       throw invalidState(`人数已满（${this.limitsText(rec)}）。`, '可以 join_as="referee" 报名当裁判。');
     }
     if (existing) {
@@ -542,7 +538,7 @@ export class GameManager {
   /** 上场人数范围（不含裁判）：游戏按选项定的（如剧本人数），否则 minPlayers~maxPlayers */
   private seatRange(rec: GameRecord): { min: number; max: number } {
     const def = this.def(rec);
-    const r = def.playerRange?.(rec.options as never);
+    const r = def.playerRange?.(rec.options as never, rec.lobby.filter((e) => e.pref !== 'referee'));
     return r ? { min: Math.max(def.minPlayers, r.min), max: Math.min(def.maxPlayers, r.max) } : { min: def.minPlayers, max: def.maxPlayers };
   }
 
@@ -551,7 +547,7 @@ export class GameManager {
    */
   private lobbyLimits(rec: GameRecord): { min: number; max: number; slack: number } {
     const r = this.seatRange(rec);
-    if (!this.def(rec).playerRange?.(rec.options as never)) return { ...r, slack: 0 };
+    if (!this.def(rec).playerRange?.(rec.options as never, rec.lobby.filter((e) => e.pref !== 'referee'))) return { ...r, slack: 0 };
     const pureReferee = rec.lobby.some((e) => e.kind === 'agent' && e.pref === 'referee' && this.canReferee(e.id));
     const slack = rec.autoReferee || pureReferee ? 0 : 1;
     return { min: r.min + slack, max: r.max + slack, slack };
@@ -630,10 +626,11 @@ export class GameManager {
       existing.name = name;
       return { summary: this.summary(rec), message: `${name} 已在名单中。`, group_message: null };
     }
-    if (rec.lobby.filter((e) => e.pref !== 'referee').length >= this.lobbyLimits(rec).max) {
+    const candidate: LobbyEntry = { id: userId, name, kind: 'human', pref: 'player', selfPost: false, joinedAt: this.now() };
+    if (rec.lobby.filter((e) => e.pref !== 'referee').length >= this.lobbyLimits({ ...rec, lobby: [...rec.lobby, candidate] }).max) {
       throw invalidState(`人数已满（${this.limitsText(rec)}）。`);
     }
-    rec.lobby.push({ id: userId, name, kind: 'human', pref: 'player', selfPost: false, joinedAt: this.now() });
+    rec.lobby.push(candidate);
     this.touch(rec);
     return {
       summary: this.summary(rec),
@@ -703,8 +700,9 @@ export class GameManager {
 
     // —— 1. 抽签选裁判（程序决定）——
     // 名单外的账号（比如名单收紧之前报的名）不进任何裁判候选
-    const must = new Set((def.mustPlay?.(rec.options as never, rec.lobby) ?? []).filter(Boolean));
-    const mustPlay = (e: LobbyEntry) => must.has(e.id) || must.has(e.name);
+    // 只报名裁判的人不能占 DM 席位，也不能因 host 选项被强拉上场。
+    const must = new Set((def.mustPlay?.(rec.options as never, rec.lobby.filter((e) => e.pref !== 'referee')) ?? []).filter(Boolean));
+    const mustPlay = (e: LobbyEntry) => e.pref !== 'referee' && (must.has(e.id) || must.has(e.name));
     const agents = rec.lobby.filter((e) => e.kind === 'agent' && this.canReferee(e.id) && !mustPlay(e));
     let referee: LobbyEntry | null = null;
     let standby: LobbyEntry[] = [];
@@ -746,7 +744,7 @@ export class GameManager {
     let entries = rec.lobby.filter((e) => e !== referee && (e.pref !== 'referee' || mustPlay(e)));
     // 人数按选项定死的游戏（剧本杀）：报名多了按报名先后入座（必须上场的人优先），多出的人这局不上场
     let benched: LobbyEntry[] = [];
-    if (def.playerRange?.(rec.options as never) && entries.length > range.max) {
+    if (def.playerRange?.(rec.options as never, rec.lobby.filter((e) => e.pref !== 'referee')) && entries.length > range.max) {
       const k = Math.min(range.max, def.seatsFor?.(rec.options as never, entries) ?? range.max);
       const order = [...entries].sort((a, b) => Number(mustPlay(b)) - Number(mustPlay(a)) || a.joinedAt - b.joinedAt);
       const keep = new Set(order.slice(0, k));
@@ -852,55 +850,12 @@ export class GameManager {
 
   // ═══════════════════════════ 推进循环 ═══════════════════════════
 
-  private gateOpen(rec: GameRecord, ph: PhaseState): boolean {
-    if (rec.autoReferee) return true;
-    const cursor = rec.referee?.cursor ?? 0;
-    if (cursor >= ph.gateSeq) return true;
-    // 网页舞台的群镜像不门控：只等还没交付的门控消息
-    return !rec.outbox.some((d) => d.seq > cursor && d.seq <= ph.gateSeq && !d.noGate);
-  }
-
   /**
    * 推进：开放已到达的阶段、结算已完成的阶段；processTimeouts 时还会处理超时（托管）。
-   * 返回是否有变化。
+   * 逻辑在 runner.ts（持续世界的小游戏用同一套），这里只是替普通对局调用它。
    */
   private pump(rec: GameRecord, inst: BaseGame, processTimeouts: boolean): boolean {
-    let changed = false;
-    for (let i = 0; i < MAX_PUMP; i++) {
-      const ph = rec.phase;
-      if (rec.status !== 'running' || !ph) break;
-      if (ph.gateSeq === -1) ph.gateSeq = rec.outboxSeq;
-      const now = this.now();
-      if (ph.openedAt === null) {
-        if (!this.gateOpen(rec, ph)) break;
-        ph.openedAt = now;
-        ph.deadline = now + ph.timeoutMs;
-        changed = true;
-      }
-      if (inst.isPhaseComplete()) {
-        if (ph.minDurationMs > 0 && now < ph.openedAt + ph.minDurationMs) break;
-        const before = ph.id;
-        inst.advance();
-        changed = true;
-        if (rec.status === 'running' && rec.phase?.id === before && inst.isPhaseComplete()) {
-          throw new Error(`[${rec.type}] advance() 未推进阶段 ${ph.key}`);
-        }
-        continue;
-      }
-      if (processTimeouts && ph.deadline !== null && now >= ph.deadline) {
-        inst.onTimeout();
-        changed = true;
-        if (rec.phase === ph && !inst.isPhaseComplete()) {
-          // onTimeout 未能补齐所有待办（不应发生），强制标记
-          for (const r of Object.values(ph.pending)) r.done = true;
-        }
-        continue;
-      }
-      if (processTimeouts && inst.remindPending()) changed = true;
-      break;
-    }
-    if (rec.phase && rec.phase.gateSeq === -1) rec.phase.gateSeq = rec.outboxSeq;
-    return changed;
+    return pumpGame(rec, inst, this.now, processTimeouts);
   }
 
   /** 后台计时：自动主持的对局处理超时；清理过期大厅与长期无人推进的对局。 */
@@ -970,39 +925,7 @@ export class GameManager {
   // ═══════════════════════════ 玩家 ═══════════════════════════
 
   private normalizeInput(rec: GameRecord, raw: ActionInput & Record<string, unknown>): ActionInput {
-    const action = String(raw.action ?? '').trim();
-    if (!action) throw badRequest('需要 action。');
-    const out: ActionInput = { action };
-    const toInt = (v: unknown): number | undefined => {
-      if (v === undefined || v === null || v === '') return undefined;
-      if (typeof v === 'number' && Number.isFinite(v)) return Math.trunc(v);
-      const n = parseIntLoose(stripTrailing(String(v)).replace(/号$/u, ''));
-      if (n === null) throw badRequest(`无法识别的数字：${String(v)}`);
-      return n;
-    };
-    const rawTarget: unknown = raw.target;
-    if (rawTarget !== undefined && rawTarget !== null && rawTarget !== '') {
-      if (typeof rawTarget === 'number') out.target = Math.trunc(rawTarget);
-      else {
-        const seat = resolveSeat(String(rawTarget), rec.players);
-        if (seat === null) throw badRequest(`无法识别的目标：${String(rawTarget)}（请填座位号数字）`);
-        out.target = seat;
-      }
-    }
-    const q = toInt(raw.quantity);
-    if (q !== undefined) out.quantity = q;
-    const f = toInt(raw.face);
-    if (f !== undefined) out.face = f;
-    const num = toInt(raw.number);
-    if (num !== undefined) out.number = num;
-    if (typeof raw.text === 'string') out.text = sanitizeUserText(raw.text);
-    if (typeof raw.card === 'string') out.card = sanitizeUserText(raw.card).slice(0, 40);
-    if (typeof raw.color === 'string') out.color = sanitizeUserText(raw.color).slice(0, 20);
-    if (raw.call !== undefined && raw.call !== null) {
-      if (typeof raw.call !== 'boolean') throw badRequest('call 必须是 true 或 false。');
-      out.call = raw.call;
-    }
-    return out;
+    return normalizeActionInput(rec, raw);
   }
 
   /** bot 玩家执行动作。 */
@@ -1047,36 +970,13 @@ export class GameManager {
   }
 
   private todoFor(rec: GameRecord, inst: BaseGame, seat: Seat): TodoView | null {
-    const ph = rec.phase;
-    if (rec.status !== 'running' || !ph || ph.openedAt === null) return null;
-    const req = ph.pending[String(seat)];
-    if (!req || req.done) return null;
     void inst;
-    return {
-      prompt: req.prompt,
-      kind: req.kind,
-      actions: req.actions,
-      seconds_left: ph.deadline === null ? null : Math.max(0, Math.round((ph.deadline - this.now()) / 1000)),
-    };
+    return todoOf(rec, seat, this.now());
   }
 
   phaseHeader(rec: GameRecord, inst?: BaseGame) {
-    const ph = rec.phase;
-    if (!ph) return null;
     void inst;
-    return {
-      key: ph.key,
-      title: ph.title,
-      round: ph.round,
-      open: ph.openedAt !== null,
-      seconds_left: ph.deadline === null ? null : Math.max(0, Math.round((ph.deadline - this.now()) / 1000)),
-      waiting_for: ph.secret
-        ? '（秘密阶段，不公开等待对象）'
-        : Object.values(ph.pending)
-            .filter((r) => !r.done)
-            .map((r) => `${r.seat}号`)
-            .join('、') || '无',
-    };
+    return phaseHeaderOf(rec, this.now());
   }
 
   /** 正常结束（ended）后完整复盘对所有人公开；中止的对局不公开私密记录，防止「中止后偷看」。 */
@@ -1390,7 +1290,8 @@ export class GameManager {
     const cursor = this.viewCursors.get(cursorKey) ?? 0;
     const numbered = events.map((e, i) => ({ e, view: this.eventView(e, i + 1) }));
     const fresh = opts.fullLog ? numbered : numbered.filter((x) => x.e.seq > cursor);
-    const limited = (opts.fullLog ? fresh : fresh.slice(-60)).map((x) => x.view);
+    const limitedItems = opts.fullLog ? fresh : fresh.slice(-60);
+    const limited = limitedItems.map((x) => x.view);
     if (events.length > 0) this.viewCursors.set(cursorKey, events[events.length - 1]!.seq);
 
     const players = rec.players.map((p) => ({ seat: p.seat, name: p.name, qq: p.id, kind: p.kind, alive: p.alive }));
@@ -1408,14 +1309,22 @@ export class GameManager {
       const me = rec.players.find((p) => p.seat === seat)!;
       const todo = this.todoFor(rec, inst, seat);
       const upcoming = rec.phase && rec.phase.openedAt === null && rec.phase.pending[String(seat)] && !rec.phase.pending[String(seat)]!.done;
+      // 事件文字交给游戏整理（只改 text；own = 发给本座位的私密事件）。默认原样。
+      const shaped = limitedItems.map(({ e, view }) => {
+        const own = e.audience.type === 'seats' && e.audience.seats.includes(seat);
+        const text = inst.agentEventText(seat, { seq: view.seq, kind: e.kind, text: e.text, own, image: Boolean(e.data?.image) });
+        return text === view.text ? view : { ...view, text };
+      });
       return {
         ...base,
-        you: { seat, name: me.name, alive: me.alive, ...inst.privateView(seat) },
+        // AI 座位用有预算的视图；真人座位网页、观战、小镇嵌入局仍是 privateView / publicView
+        public: inst.agentPublicView(seat),
+        you: { seat, name: me.name, alive: me.alive, ...inst.agentView(seat) },
         your_turn: Boolean(todo),
         todo,
-        new_events: limited,
+        new_events: shaped,
         ...(fresh.length > limited.length ? { omitted_events: fresh.length - limited.length } : {}),
-        hint: this.playerHint(rec, me, todo, Boolean(upcoming)),
+        hint: (!todo && rec.status === 'running' ? inst.agentHint(seat) : null) ?? this.playerHint(rec, me, todo, Boolean(upcoming)),
       };
     }
     if (isRef) {
@@ -1464,6 +1373,29 @@ export class GameManager {
     };
   }
 
+  /**
+   * 按需取一段（get_my_view 的 section / page）。纯读：不 pump、不 touch、不推进事件游标、不写日志和出箱。
+   * 对局结束或中止后规则不变（不放宽也不收紧）。段不存在、看不到、格式不对是同一个拒绝。
+   */
+  getSection(actor: Identity, gameId: string | undefined, section: string, page = 1) {
+    const rec = this.resolveGame(actor, gameId, 'any');
+    if (rec.startedAt === null) throw invalidState('游戏还没开始。');
+    const seat = this.agentSeatOf(rec, actor.id);
+    if (seat === null) throw forbidden('你不是本局的玩家，没有这个视角。');
+    const inst = this.inst(rec);
+    if (!inst.hasViewSections()) throw invalidAction('这个游戏没有分段视图。');
+    const got: ViewSection | null = inst.viewSection(seat, section, page);
+    if (!got) throw invalidAction('没有这一段，或者你看不到它。可用的段见 get_my_view 的 you.sections。');
+    const { hits, ...rest } = got;
+    return {
+      ok: true,
+      game_id: rec.id,
+      ...rest,
+      ...(hits ? { hits } : {}),
+      ...(got.page < got.pages ? { next: { section: got.section, page: got.page + 1 } } : {}),
+    };
+  }
+
   private playerHint(rec: GameRecord, me: Player, todo: TodoView | null, upcoming: boolean): string {
     if (rec.status === 'ended') return '游戏已结束，可查看 result。get_game_log 可查看完整复盘（含所有私密信息）。';
     if (rec.status === 'aborted') return '对局已中止。';
@@ -1498,7 +1430,9 @@ export class GameManager {
   ) {
     const rec = this.resolveGame(actor, gameId, 'any');
     if (waitMs > 0) {
-      const startLog = rec.logSeq;
+      // any 唤醒只看「这个观察者看得见的」事件数：别人的私有日志（例如真人在保密环节里私聊提交了行动的回执）
+      // 会让全局 logSeq 变化，拿它唤醒等于告诉旁人「有人刚刚私下答了」。
+      const startVisible = opts.wakeOn === 'any' ? this.visibleEvents(rec, actor, this.agentSeatOf(rec, actor.id)).length : 0;
       const cond = () => {
         if (rec.status !== 'running') return true;
         const seat = this.agentSeatOf(rec, actor.id);
@@ -1507,7 +1441,7 @@ export class GameManager {
           const now = this.now();
           if (rec.outbox.some((d) => d.seq > rec.referee!.cursor && d.notBefore <= now)) return true;
         }
-        if (opts.wakeOn === 'any' && rec.logSeq !== startLog) return true;
+        if (opts.wakeOn === 'any' && this.visibleEvents(rec, actor, seat).length !== startVisible) return true;
         return false;
       };
       await this.waitUntil(rec.id, cond, waitMs, signal);
@@ -1563,7 +1497,7 @@ export class GameManager {
     if (rec.status !== 'running') return true;
     const ph = rec.phase;
     if (!ph) return true;
-    if (ph.openedAt === null) return this.gateOpen(rec, ph);
+    if (ph.openedAt === null) return gateOpen(rec, ph);
     if (ph.deadline !== null && now >= ph.deadline) return true;
     const inst = this.inst(rec);
     if (inst.isPhaseComplete() && now >= ph.openedAt + ph.minDurationMs) return true;
@@ -1835,7 +1769,7 @@ export class GameManager {
     }
     try {
       const phaseBefore = rec.phase ? `${rec.phase.key}@${rec.phase.openedAt}` : '';
-      const fb = inst.onAction(player.seat, input, { via: 'relay', channel });
+      const fb = inst.onAction(player.seat, input, { via: 'relay', channel, ...(fromWeb ? { fromWeb: true } : {}) });
       // 只结束同一个阶段里自己的发言（一句话就自动轮到下一阶段的游戏，不能误结束下一轮）
       const samePhase = rec.phase ? `${rec.phase.key}@${rec.phase.openedAt}` === phaseBefore : false;
       if (endAfter && samePhase && rec.status === 'running') {

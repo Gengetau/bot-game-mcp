@@ -60,7 +60,8 @@ describe('runtime key issuance', () => {
     expect(issued.rotated).toBe(false);
     expect(issued.owner).toBe('555');
     expect(existsSync(keysFile)).toBe(true);
-    expect(statSync(keysFile).mode & 0o777).toBe(0o600);
+    // Windows 没有 POSIX 权限位，只在 Linux / macOS 上检查
+    if (process.platform !== 'win32') expect(statSync(keysFile).mode & 0o777).toBe(0o600);
     const onDisk = JSON.parse(readFileSync(keysFile, 'utf8'));
     expect(onDisk.keys).toHaveLength(1);
     expect(onDisk.keys[0].key).toBe(issued.key);
