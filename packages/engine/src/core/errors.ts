@@ -21,7 +21,9 @@ export type GameErrorCode =
   | 'RATE_LIMITED'
   | 'RESYNC_REQUIRED'
   | 'RECOVERING'
-  | 'NOT_AVAILABLE';
+  | 'NOT_AVAILABLE'
+  // 东京城市世界：见 src/city/errors.ts
+  | 'ENTRY_VIA_HOME_ONLY';
 
 export class GameError extends Error {
   readonly code: GameErrorCode;

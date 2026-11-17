@@ -308,7 +308,7 @@ export function installGames(w: WorldService): void {
   });
 
   // ── 凑桌 ──
-  /** objectId 必须是游戏桌白名单里、当前场所的桌子：写错或伪造的编号明确拒绝，不能落到 requireReach 的「查不到就放行」。 */
+  /** objectId 必须是游戏桌白名单里、当前场所的桌子：写错或伪造的编号明确拒绝，这里先校验，requireReach 对哪儿都查不到的编号也会拒绝（not_here）。 */
   const tableOf = (venue: string, raw: unknown): { id: string; place: string; label: string } => {
     if (typeof raw !== 'string' || raw === '') throw badRequest('需要 objectId：要在哪张游戏桌凑桌（视图 here.tables 里的桌子编号）。');
     const t = gameTable(raw);

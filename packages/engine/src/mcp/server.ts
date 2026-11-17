@@ -11,6 +11,7 @@ import type { ActionInput, Identity } from '../core/types.js';
 import type { Authenticator, SessionContext } from './auth.js';
 import { OVERVIEW, PLAYER_GUIDE, REFEREE_GUIDE, gameTips, gameTypeTable } from './guides.js';
 import { renderDelivery, type DeliveryFormat } from './render.js';
+import { CITY_GUIDE, cityView, citySession, citySpeak, registerCityTools, withCity, type CityDeps } from './city.js';
 import { TOWN_GUIDE, registerTownTools, townGameAct, townSession, townSpeak, townView, type TownDeps } from './town.js';
 
 export interface ServerDeps {
@@ -21,6 +22,8 @@ export interface ServerDeps {
   log?: (msg: string) => void;
   /** 开了持续世界（栖灯镇）时才有：注册小镇的工具，并让进入了世界上下文的会话走居民路由 */
   town?: TownDeps;
+  /** 开了东京城市世界时才有：进城的会话走城市路由 */
+  city?: CityDeps;
 }
 
 /** 成功时不记的高频工具：代码裁判的长轮询，以及它每几秒一次的保活（whoami）和刷新（list_games）；失败照记 */
@@ -109,6 +112,10 @@ export function createMcpServer(deps: ServerDeps, ctx: SessionContext): McpServe
   /** 这个会话选中了世界上下文，而且这次调用没有点名普通对局 */
   // 小镇里的嵌入局编号是 TG- 开头的（普通对局没有这个前缀）：带着它也算小镇上下文
   const inTown = (gameId: string | undefined): boolean => Boolean(town && townSession(ctx) && (!gameId || /^TG-/i.test(gameId)));
+
+  const city = deps.city;
+  /** 这个会话选中了城市世界，而且这次调用没有点名对局 */
+  const inCity = (gameId: string | undefined): boolean => Boolean(city && citySession(ctx) && !gameId);
 
   type Handler<A> = (args: A, extra: { signal: AbortSignal }) => unknown | Promise<unknown>;
   function tool<Shape extends z.ZodRawShape>(
@@ -387,6 +394,7 @@ export function createMcpServer(deps: ServerDeps, ctx: SessionContext): McpServe
         if (town && inTown(a.game_id)) throw invalidAction('你现在在小镇里。取对局里的剧本段要带 game_id（对局编号）。');
         return manager.getSection(me(), a.game_id, a.section, a.page ?? 1);
       }
+      if (city && inCity(a.game_id)) return cityView(city, ctx, me(), a, extra.signal);
       if (town && inTown(a.game_id)) return townView(town, ctx, me(), a, extra.signal);
       const wait = Math.min(a.wait_seconds ?? 0, MAX_WAIT_SECONDS) * 1000;
       return manager.waitView(me(), a.game_id, wait, { fullLog: a.full_log, wakeOn: a.wake_on }, extra.signal);
@@ -406,7 +414,7 @@ export function createMcpServer(deps: ServerDeps, ctx: SessionContext): McpServe
         ...townShape,
       },
     },
-    (a) => (town && inTown(a.game_id) ? townSpeak(town, ctx, me(), a) : manager.speak(me(), a.game_id, a.text, a.channel ?? 'public')),
+    (a) => (city && inCity(a.game_id) ? citySpeak(city, ctx, me(), a) : town && inTown(a.game_id) ? townSpeak(town, ctx, me(), a) : manager.speak(me(), a.game_id, a.text, a.channel ?? 'public')),
   );
 
   tool(
@@ -594,12 +602,19 @@ export function createMcpServer(deps: ServerDeps, ctx: SessionContext): McpServe
   // ─────────────────────────── 栖灯镇（持续世界） ───────────────────────────
 
   if (town) {
-    registerTownTools(tool as never, town, ctx, me);
+    registerTownTools((city ? withCity(tool as never, city, ctx, me) : tool) as never, town, ctx, me);
     server.registerResource('guide-town', 'botgame://guide/town', { title: '栖灯镇：AI 居民说明', mimeType: 'text/markdown' }, (uri) => ({
       contents: [{ uri: uri.href, mimeType: 'text/markdown', text: TOWN_GUIDE }],
     }));
     server.registerPrompt('resident', { title: '栖灯镇居民指南', description: '给住进栖灯镇的 AI 的说明', argsSchema: {} }, () => ({
       messages: [{ role: 'user', content: { type: 'text', text: TOWN_GUIDE } }],
+    }));
+  }
+
+  if (city) {
+    if (!town) registerCityTools(tool as never, city, ctx, me);
+    server.registerResource('guide-city', 'botgame://guide/city', { title: '东京城市世界：进城说明', mimeType: 'text/markdown' }, (uri) => ({
+      contents: [{ uri: uri.href, mimeType: 'text/markdown', text: CITY_GUIDE }],
     }));
   }
 

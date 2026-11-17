@@ -74,16 +74,19 @@ const travelCache = new WeakMap<WorldService, Map<string, number | null>>();
  * 起点可以是任何区域标签：在家里按会馆门口算；在路上没有落脚点，返回 null。
  */
 export function travelSeconds(w: WorldService, from: string, to: string): number | null {
-  const L = layout(w);
   const a = w.map.aliases[isHome(from) ? 'residential' : from];
   const b = w.map.aliases[isHome(to) ? 'residential' : to];
-  if (!a || !b || a.scene !== L.town.id || b.scene !== L.town.id) return null;
+  if (!a || !b || a.scene !== b.scene) return null;
+  const scene = w.map.scenes.get(a.scene);
+  if (!scene || scene.instanced) return null;
   if (a.anchor === b.anchor) return 0;
   let cache = travelCache.get(w);
   if (!cache) travelCache.set(w, (cache = new Map()));
-  const key = a.anchor < b.anchor ? `${a.anchor}|${b.anchor}` : `${b.anchor}|${a.anchor}`;
+  const key = a.anchor < b.anchor ? `${scene.id}|${a.anchor}|${b.anchor}` : `${scene.id}|${b.anchor}|${a.anchor}`;
   if (!cache.has(key)) {
-    const path = findPath(L.town, L.town.anchors.get(a.anchor)!, L.town.anchors.get(b.anchor)!);
+    const pa = scene.anchors.get(a.anchor);
+    const pb = scene.anchors.get(b.anchor);
+    const path = pa && pb ? findPath(scene, pa, pb) : null;
     cache.set(key, path ? Math.ceil(path.length / w.map.speed) : null);
   }
   return cache.get(key) ?? null;
@@ -758,34 +761,57 @@ function plan(w: WorldService, r: ResidentRow, a: ActorRow, to: unknown, now: nu
 
 // ───────────────────────── 给别的模块用的判定 ─────────────────────────
 
+/** 在所有场景里找地图上有位置的物件（物件编号跨场景唯一，见 compileMap）。 */
+function findMapObject(w: WorldService, objectId: string) {
+  for (const scene of w.map.scenes.values()) {
+    const it = scene.interactables.get(objectId);
+    if (it) return { scene, it };
+  }
+  return undefined;
+}
+
+const notHere = () => precondition('这件东西不在你身边。', 'not_here');
+
 /**
- * 够不够得着一件公共物件：按这一刻的权威位置量距离。够不着返回 too_far（附带可以 navigate 的目标）。
- * 够得着而且正在走，就先在这里站住——坐下来做的事需要人不动。地图上没有位置的物件（家里的）不按距离算。
+ * 够不够得着一件物件：按这一刻的权威位置量距离。
+ *   - 地图上有位置的物件（在任何一个场景里）：人必须在同一个场景，而且距离够；同场景够不着返回 too_far（附带可以 navigate 的目标），
+ *     不在同一个场景直接 not_here（不带 navigateTo）。
+ *   - 地图上没有位置的物件：查 placed_objects。私宅里的物件要人就在那一户的私宅实例里；公共地点的物件要居民的区域标签等于它所在的地点。
+ *   - 哪儿都查不到的编号：not_here，不放行。
+ * 通过之后正在走的人先在这里站住——坐下来做的事需要人不动。
  */
 export function requireReach(w: WorldService, r: ResidentRow, objectId: string, now: number): void {
-  const L = layout(w);
-  const it = L.town.interactables.get(objectId);
-  if (!it) {
-    // 家里的物件不按距离，但开始互动就该站住（和公共物件一致），否则边走边「保持」
-    const mine = actorOf(w, r.resident_id);
-    if (mine?.nav) stopNav(w, r.resident_id, now, 'interaction');
-    return;
-  }
+  const found = findMapObject(w, objectId);
   const a = ensureActor(w, r, now);
-  const p = posOf(a, now);
-  if (a.scene_id !== L.town.id || distance(p, it) > (it.reach ?? w.map.interactDistance) + 0.01) {
-    throw precondition(`离${it.name}太远了，先走到它旁边。`, 'too_far', { navigateTo: objectId });
+  if (found) {
+    const { scene, it } = found;
+    if (a.scene_id !== scene.id || (!scene.instanced && a.instance_id !== '')) throw notHere();
+    if (distance(posOf(a, now), it) > (it.reach ?? w.map.interactDistance) + 0.01) {
+      throw precondition(`离${it.name}太远了，先走到它旁边。`, 'too_far', { navigateTo: objectId });
+    }
+  } else {
+    const placed = w.db.get('SELECT space_id FROM placed_objects WHERE object_id = ? AND world_id = ?', objectId, w.worldId) as { space_id: string } | undefined;
+    if (!placed) throw notHere();
+    if (isHome(placed.space_id)) {
+      const home = layout(w).home;
+      if (!home || a.scene_id !== home.id || a.instance_id !== homeOwner(placed.space_id)) throw notHere();
+    } else {
+      // 事务里最新的居民行（传进来的 r 可能是旧的）
+      const fresh = w.resident(r.resident_id) ?? r;
+      if (fresh.location_id !== placed.space_id) throw notHere();
+    }
   }
+  // 家里的物件不按距离，但开始互动就该站住（和公共物件一致），否则边走边「保持」
   if (a.nav) stopNav(w, r.resident_id, now, 'interaction');
 }
 
-/** 物件在地图上的位置（没有就是 null）；视图用它告诉居民够不够得着。 */
+/** 物件在地图上的位置（没有就是 null）；视图用它告诉居民够不够得着。人不在物件所在的场景就是够不着。 */
 export function objectReach(w: WorldService, residentId: string, objectId: string, now: number): { near: boolean; distance: number } | null {
-  const L = layout(w);
-  const it = L.town.interactables.get(objectId);
-  if (!it) return null;
+  const found = findMapObject(w, objectId);
+  if (!found) return null;
+  const { scene, it } = found;
   const p = positionOfResident(w, residentId, now);
-  if (!p || p.scene !== L.town.id) return { near: false, distance: Infinity };
+  if (!p || p.scene !== scene.id) return { near: false, distance: Infinity };
   const d = distance(p, it);
   return { near: d <= (it.reach ?? w.map.interactDistance) + 0.01, distance: d };
 }

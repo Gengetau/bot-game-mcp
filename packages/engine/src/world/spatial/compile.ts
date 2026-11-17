@@ -178,6 +178,21 @@ export function compileMap(source: MapSource): CompiledMap {
   for (const id of dupes(source.scenes.map((s) => s.id))) problems.push(`场景编号重复：${id}`);
 
   const sceneById = new Map(source.scenes.map((s) => [s.id, s]));
+  // 物件编号跨场景唯一（requireReach 按编号在所有场景里找物件）。同一场景内的重复由下面按场景检查
+  {
+    const owner = new Map<string, string>();
+    const reported = new Set<string>();
+    for (const s of source.scenes) {
+      for (const it of s.interactables) {
+        const prev = owner.get(it.id);
+        if (prev === undefined) owner.set(it.id, s.id);
+        else if (prev !== s.id && !reported.has(it.id)) {
+          reported.add(it.id);
+          problems.push(`物件编号跨场景重复：${it.id}（${prev}、${s.id}）`);
+        }
+      }
+    }
+  }
   const rasterOk = new Set<string>();
 
   for (const s of source.scenes) {

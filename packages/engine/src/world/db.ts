@@ -638,6 +638,20 @@ const MIGRATIONS: readonly string[] = [
   `,
 ];
 
+/**
+ * 一套 schema：迁移脚本按顺序执行，条数就是目标版本。栖灯镇用 TOWN_SCHEMA；
+ * 别的世界（东京城市世界，src/city/db.ts）用同一个数据库外壳、各自的迁移和各自的文件。
+ */
+export interface SchemaSpec {
+  /** 报错里用的名字 */
+  label: string;
+  migrations: readonly string[];
+  /** 每日备份的文件名前缀（清理旧备份时按它找） */
+  backupPrefix: string;
+}
+
+export const TOWN_SCHEMA: SchemaSpec = { label: '世界数据库', migrations: MIGRATIONS, backupPrefix: 'town-' };
+
 /** 故障注入点（只给恢复测试用）：在事务的指定位置抛错或杀进程。 */
 export type Failpoint = (point: 'before_commit' | 'after_commit') => void;
 
@@ -650,9 +664,12 @@ export class TownDb {
   /** 最近一次提交花了多久（毫秒），给指标用 */
   lastCommitMs = 0;
 
-  constructor(path: string) {
+  private readonly schema: SchemaSpec;
+
+  constructor(path: string, schema: SchemaSpec = TOWN_SCHEMA) {
     const { DatabaseSync } = loadSqlite();
     this.path = path;
+    this.schema = schema;
     if (path !== ':memory:') mkdirSync(dirname(path), { recursive: true });
     this.db = new DatabaseSync(path);
     try {
@@ -683,21 +700,23 @@ export class TownDb {
 
   private migrate(): void {
     const current = this.userVersion();
-    if (current > SCHEMA_VERSION) {
-      throw new Error(`世界数据库的 schema 版本（${current}）比这个程序认识的（${SCHEMA_VERSION}）新，拒绝打开以免写坏数据。`);
+    const target = this.schema.migrations.length;
+    const label = this.schema.label;
+    if (current > target) {
+      throw new Error(`${label}的 schema 版本（${current}）比这个程序认识的（${target}）新，拒绝打开以免写坏数据。`);
     }
-    if (current === SCHEMA_VERSION) return;
+    if (current === target) return;
     // 升级已有数据前先留一份可恢复的一致备份
     if (current > 0 && !this.inMemory) this.snapshotTo(`${this.path}.pre-v${current + 1}-${Date.now()}.bak`);
-    for (let v = current; v < SCHEMA_VERSION; v++) {
+    for (let v = current; v < target; v++) {
       this.db.exec('BEGIN IMMEDIATE');
       try {
-        this.db.exec(MIGRATIONS[v]!);
+        this.db.exec(this.schema.migrations[v]!);
         this.db.exec(`PRAGMA user_version = ${v + 1}`);
         this.db.exec('COMMIT');
       } catch (e) {
         this.db.exec('ROLLBACK');
-        throw new Error(`世界数据库迁移到 v${v + 1} 失败，写接口不开放：${e instanceof Error ? e.message : String(e)}`);
+        throw new Error(`${label}迁移到 v${v + 1} 失败，写接口不开放：${e instanceof Error ? e.message : String(e)}`);
       }
     }
   }
@@ -832,7 +851,7 @@ export class TownDb {
     verifyBackup(dest);
     if (keep > 0) {
       const dir = dirname(dest);
-      const prefix = 'town-';
+      const prefix = this.schema.backupPrefix;
       const files = readdirSync(dir)
         .filter((f) => f.startsWith(prefix) && f.endsWith('.db'))
         .sort();

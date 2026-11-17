@@ -16,6 +16,7 @@ import { WorldError } from '../../src/world/errors.js';
 import { agentPrincipal, claimControl, heartbeat, issueTicket, exchangeTicket, sessionPrincipal, leaveWorld } from '../../src/world/identity.js';
 import { createWorld, enterWorld } from '../../src/world/index.js';
 import type { WorldService } from '../../src/world/service.js';
+import type { MapSource } from '../../src/world/spatial/index.js';
 import { positionOfResident, renewNavigation, whereabouts } from '../../src/world/space.js';
 import { meView, type MeView } from '../../src/world/views.js';
 import { FakeClock } from '../helpers.js';
@@ -31,6 +32,8 @@ export interface TownOpts {
   dbPath?: string;
   clock?: FakeClock;
   start?: boolean;
+  /** 换一张小地图（缺省是栖灯镇的地图） */
+  map?: MapSource;
 }
 
 export class Actor {
@@ -170,6 +173,7 @@ export class Town {
       params: this.opts.params ?? {},
       log: (m) => this.logs.push(m),
       devLogin: true,
+      map: this.opts.map,
     });
     if (this.opts.start !== false) w.startSync();
     return w;
