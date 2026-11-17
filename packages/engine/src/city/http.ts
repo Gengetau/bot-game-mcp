@@ -100,7 +100,7 @@ export function renderCityPage(c: CityService): string {
     .join('');
   const events = (v.events_today as any[]).map((e) => `<li><b>${esc(e.title)}</b> <small>${esc(clock(e.starts_at_ms))}–${esc(clock(e.ends_at_ms))}</small><br>${esc(e.body)}</li>`).join('');
   const edges = (v.transit.edges as any[]).map((e) => `<li>${esc(e.from)} ↔ ${esc(e.to)}（${esc(e.line)}）：约 ${esc(e.minutes)} 分钟，¥${esc(e.fare_yen)}</li>`).join('');
-  const sources = (v.sources as any[]).map((s) => `<li>${esc(s.title)}：${esc(s.note)}</li>`).join('');
+  const sources = (v.sources as any[]).map((s) => `<li>${esc(s.title)}：${esc(s.note)}${s.license ? `<br><small>许可：${esc(s.license)}</small>` : ''}</li>`).join('');
   return `<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>东京 · 城市页面</title>
 <style>body{font:16px/1.7 system-ui,sans-serif;max-width:46rem;margin:0 auto;padding:1rem;color:#222;background:#fbfaf7}h1{font-size:1.5rem}h2{font-size:1.2rem;border-bottom:1px solid #ddd;padding-bottom:.2rem}small{color:#777}li{margin:.5rem 0}.w{background:#f1efe8;padding:.4rem .6rem;border-radius:.3rem}@media(prefers-color-scheme:dark){body{color:#ddd;background:#1c1b19}.w{background:#2a2925}h2{border-color:#444}small{color:#999}}</style></head>

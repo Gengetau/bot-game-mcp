@@ -27,6 +27,13 @@ export interface SourceReference {
   url?: string;
   /** 取值或核对的日期（YYYY-MM-DD） */
   retrieved?: string;
+  /** 许可或使用条件（真实数据才有） */
+  license?: string;
+  /**
+   * 对应《虚拟东京都建城资料源》表（Tokyo World Sourcebook，2026-11-17 版，不在仓库里）里的编号。
+   * 只表示「这一项和那条资料源有关」，不表示已经导入了那份数据。
+   */
+  sourcebook?: readonly string[];
 }
 
 export const SOURCES: readonly SourceReference[] = [
@@ -34,17 +41,19 @@ export const SOURCES: readonly SourceReference[] = [
     id: 'jreast-network',
     kind: 'operator',
     title: 'JR 东日本的线路（埼京线、湘南新宿线、山手线）',
-    note: '赤羽、池袋、新宿三站之间有直达列车是公开的线路事实。这里只用「哪两站之间有车」，不用真实时刻表。',
+    note: '赤羽、池袋、新宿三站之间有直达列车是公开的线路事实。这里只用「哪两站之间有车」，不用真实时刻表：JR 东日本在 ODPT 上的时刻资料是竞赛限定许可（到 2027-03-12），不作长期依赖；以后要铺开全网，站和线路的地理底座用国土数值信息 N02（CC BY 4.0）。第一期没有导入这两份数据。',
     url: 'https://www.jreast.co.jp/',
     retrieved: '2026-11-17',
+    sourcebook: ['T01', 'T04'],
   },
   {
     id: 'sim-fares',
     kind: 'simulated',
     title: '模拟票价（参考 JR 东日本 2026-03-14 运价改定后的幹線运价档）',
-    note: '赤羽—新宿 10.3 km（不足 1 km 进位，按 11 km 算）在 11–15 km 档，公开报道为 ¥260；赤羽—池袋 5.5 km、池袋—新宿 4.8 km 在 4–6 km 档，按改定幅度估为 ¥200，没有逐一核对官方运价表。一律按纸质车票的整十日元算，不是实时运价，标注为 simulated。',
+    note: '赤羽—新宿 10.3 km（不足 1 km 进位，按 11 km 算）在 11–15 km 档，公开报道为 ¥260；赤羽—池袋 5.5 km、池袋—新宿 4.8 km 在 4–6 km 档，按改定幅度估为 ¥200，没有逐一核对官方运价表。一律按纸质车票的整十日元算，不是实时运价，标注为 simulated。公开的开放数据目录里没有 JR 东日本的独立票价集，所以票价用单独设计、明确标注的模拟规则。',
     url: 'https://trafficnews.jp/post/136618',
     retrieved: '2026-11-17',
+    sourcebook: ['T04'],
   },
   {
     id: 'sim-times',
@@ -65,8 +74,10 @@ export const SOURCES: readonly SourceReference[] = [
     id: 'open-meteo',
     kind: 'open_data',
     title: 'Open-Meteo 天气数据',
-    note: '当前和逐小时天气来自 Open-Meteo（CC BY 4.0）。抓不到时先用最近一次快照，超过 3 小时退回合成天气并标注。',
+    note: '当前和逐小时天气来自 Open-Meteo 的预报模型，不是街区实测。城市统一抓取（每 30 分钟一次请求，三个坐标），所有居民共用同一份快照。抓不到时先用最近一次快照，超过 3 小时退回合成天气并标注。',
     url: 'https://open-meteo.com/',
+    license: '数据 CC BY 4.0；免费托管的接口只限非商业用途（每天少于 10,000 次调用），带订阅或广告的服务要用付费接口',
+    sourcebook: ['L02'],
   },
 ];
 
