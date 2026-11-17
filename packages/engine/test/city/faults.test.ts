@@ -8,6 +8,7 @@ import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   BRIDGE,
+  MAPPINGS,
   SHOPS,
   abortVisit,
   cityPrincipal,
@@ -201,6 +202,7 @@ describe('F5 / F7：适配器掉线', () => {
     k.depart({ yen: 20_000, to: KISSA, returnIn: 3 * HOUR });
     t.run(31 * MIN);
     k.act({ type: 'buy', sku: 'coffee_beans' });
+    k.act({ type: 'buy', sku: 'milk_tea' });
     // 之后适配器再没有任何调用
     t.run(3 * HOUR);
     expect(k.describe().state).toBe('settled');
@@ -210,11 +212,15 @@ describe('F5 / F7：适配器掉线', () => {
     expect(started.occurred_at_ms).toBe(k.describe().return_by_ms - 36 * MIN);
     expect(k.describe().times.settled_at_ms).toBeLessThanOrEqual(k.describe().return_by_ms);
     k.pull();
-    // 咖啡豆不在映射表里：留在寄存包裹
-    expect(k.settlement!.items).toEqual([expect.objectContaining({ type: 'coffee_beans', qty: 1, fate: 'locker' })]);
-    expect(k.settlement!.purse_final_yen).toBe(20_000 - 200 - 900 - 200);
+    // 咖啡豆在映射表里（只回家）：回家变成内核的一包咖啡；那杯没喝的奶茶不在表里，留在寄存包裹
+    expect(k.settlement!.items.map((i) => [i.type, i.qty, i.fate, i.kernel ?? null]).sort((x, y) => String(x[0]).localeCompare(String(y[0])))).toEqual([
+      ['coffee_beans', 1, 'back', { kind: 'food', item: 'coffee' }],
+      ['milk_tea', 1, 'locker', null],
+    ]);
+    expect(k.settlement!.purse_final_yen).toBe(20_000 - 200 - 900 - 500 - 200);
     expect(k.release().state).toBe('reconcile');
-    expect(t.c.db.get("SELECT state FROM items WHERE type = 'coffee_beans'")!.state).toBe('locker');
+    expect(t.c.db.get("SELECT state FROM items WHERE type = 'coffee_beans'")!.state).toBe('returned');
+    expect(t.c.db.get("SELECT state FROM items WHERE type = 'milk_tea'")!.state).toBe('locker');
     expect(k.view().items).toEqual([]);
   });
 
@@ -297,7 +303,7 @@ describe('F6：带出的零食', () => {
     k.pull();
     expect(k.settlement!.items.map((i) => [i.type, i.fate, i.kernel ?? null]).sort((x, y) => String(x[0]).localeCompare(String(y[0])))).toEqual([
       ['cookie', 'back', { kind: 'food', item: 'cookie' }],
-      ['melon_pan', 'locker', null],
+      ['melon_pan', 'back', { kind: 'food', item: 'bread' }],
     ]);
   });
 });
@@ -577,7 +583,7 @@ describe('出门前的检查', () => {
     const k = t.kernel('nia');
     const base = k.prepareBody({ yen: 1000, to: KISSA });
     rejects(() => prepareVisit(t.c, { ...base, protocol: 'city-bridge/2' }), 'VERSION_MISMATCH', 'protocol');
-    rejects(() => prepareVisit(t.c, { ...base, mappings_version: 2 }), 'VERSION_MISMATCH', 'mappings_version');
+    rejects(() => prepareVisit(t.c, { ...base, mappings_version: MAPPINGS.version + 1 }), 'VERSION_MISMATCH', 'mappings_version');
     rejects(() => prepareVisit(t.c, { ...base, actor_id: 'nobody' }), 'NOT_FOUND', 'unknown_actor');
     rejects(() => prepareVisit(t.c, { ...base, carry: { yen: 1000, items: [{ ref: 'res:sword:1', kernel: { kind: 'tool', item: 'sword' }, qty: 1 }] } }), 'PRECONDITION_FAILED', 'item_not_mapped');
     rejects(() => prepareVisit(t.c, { ...base, plan: { ...(base.plan as object), destination: 'mars:base' } }), 'PRECONDITION_FAILED', 'no_such_place');

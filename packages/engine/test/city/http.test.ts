@@ -6,7 +6,7 @@ import type { AddressInfo } from 'node:net';
 import express from 'express';
 import { afterEach, describe, expect, it } from 'vitest';
 import { mountCity } from '../../src/city/http.js';
-import { bridgePayloadHash } from '../../src/city/index.js';
+import { MAPPINGS, bridgePayloadHash } from '../../src/city/index.js';
 import { COOKIE, HOUSE_ENTRANCE, KISSA, MIN, makeCity, type CityTest } from './helpers.js';
 
 const KEY = 'bridge-key-for-tests-0123456789';
@@ -96,7 +96,7 @@ describe('桥接接口', () => {
     const k = t.kernel('nia');
 
     const catalog = await api('GET', '/catalog');
-    expect(catalog.body).toMatchObject({ protocol: 'city-bridge/1', city_catalog_version: 'tokyo-p1.0', mappings: { version: 1 }, handover_node: HOUSE_ENTRANCE });
+    expect(catalog.body).toMatchObject({ protocol: 'city-bridge/1', city_catalog_version: 'tokyo-p1.0', mappings: { version: MAPPINGS.version }, handover_node: HOUSE_ENTRANCE });
     expect(catalog.body.places.find((p: any) => p.id === KISSA).homeward).toEqual({ fare_yen: 200, minutes: 31 });
 
     const prepare = k.prepareBody({ yen: 20_000, items: [COOKIE], to: KISSA });

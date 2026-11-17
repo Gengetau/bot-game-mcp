@@ -1,5 +1,5 @@
 {
-  "version": 1,
+  "version": 2,
   "items": [
     {
       "kernel": {
@@ -9,6 +9,64 @@
       "engine_type": "cookie",
       "stack": true,
       "edible": true
+    },
+    {
+      "kernel": {
+        "kind": "food",
+        "item": "onigiri"
+      },
+      "engine_type": "onigiri",
+      "stack": true,
+      "edible": true
+    },
+    {
+      "kernel": {
+        "kind": "food",
+        "item": "bottled_tea"
+      },
+      "engine_type": "green_tea",
+      "stack": true,
+      "edible": true
+    },
+    {
+      "kernel": {
+        "kind": "food",
+        "item": "coffee"
+      },
+      "engine_type": "coffee_beans",
+      "stack": true,
+      "edible": false,
+      "direction": "home"
+    },
+    {
+      "kernel": {
+        "kind": "food",
+        "item": "bread"
+      },
+      "engine_type": "melon_pan",
+      "stack": true,
+      "edible": true,
+      "direction": "home"
+    },
+    {
+      "kernel": {
+        "kind": "food",
+        "item": "bread"
+      },
+      "engine_type": "cream_bun",
+      "stack": true,
+      "edible": true,
+      "direction": "home"
+    },
+    {
+      "kernel": {
+        "kind": "food",
+        "item": "dessert"
+      },
+      "engine_type": "cheesecake",
+      "stack": true,
+      "edible": true,
+      "direction": "home"
     }
   ],
   "effects": [
@@ -18,9 +76,39 @@
       "kernel_effect": "snack"
     },
     {
+      "engine_kind": "ate",
+      "engine_type": "onigiri",
+      "kernel_effect": "snack"
+    },
+    {
+      "engine_kind": "ate",
+      "engine_type": "melon_pan",
+      "kernel_effect": "snack"
+    },
+    {
+      "engine_kind": "ate",
+      "engine_type": "cream_bun",
+      "kernel_effect": "snack"
+    },
+    {
+      "engine_kind": "ate",
+      "engine_type": "cheesecake",
+      "kernel_effect": "snack"
+    },
+    {
       "engine_kind": "drank",
       "engine_type": "coffee",
       "kernel_effect": "drink_coffee"
+    },
+    {
+      "engine_kind": "drank",
+      "engine_type": "milk_tea",
+      "kernel_effect": "drink_tea"
+    },
+    {
+      "engine_kind": "drank",
+      "engine_type": "green_tea",
+      "kernel_effect": "drink_tea"
     },
     {
       "engine_kind": "walked",

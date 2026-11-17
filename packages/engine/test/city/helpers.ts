@@ -12,6 +12,7 @@ import { SeededRng } from '../../src/core/rng.js';
 import {
   CityError,
   HOUSE_ENTRANCE,
+  MAPPINGS,
   cityCommand,
   cityPrincipal,
   commitVisit,
@@ -207,7 +208,7 @@ export class FakeKernel {
       request_id: `${this.visitId}:prepare`,
       protocol: 'city-bridge/1',
       vocab_version: 'vocab-test',
-      mappings_version: 1,
+      mappings_version: MAPPINGS.version,
       visit_id: this.visitId,
       actor_id: this.actorId,
       carry: { yen: o.yen, items: o.items ?? [] },

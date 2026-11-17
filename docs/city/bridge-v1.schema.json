@@ -922,7 +922,8 @@
               "kernel": { "$ref": "#/$defs/KernelItem" },
               "engine_type": { "type": "string" },
               "stack": { "type": "boolean" },
-              "edible": { "type": "boolean" }
+              "edible": { "type": "boolean" },
+              "direction": { "description": "不写是双向；home 表示只用于回家（城里得到的这类物品回家时变成 kernel），出门时不按这一行换算。", "type": "string", "enum": ["home"] }
             },
             "required": ["kernel", "engine_type", "stack", "edible"]
           }

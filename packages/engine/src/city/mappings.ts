@@ -11,6 +11,11 @@ export interface ItemMapping {
   engine_type: string;
   stack: boolean;
   edible: boolean;
+  /**
+   * 方向。不写：双向（出门能带、回家能带）。`home`：只用于回家——城里得到的这类物品回家时变成 `kernel`，
+   * 出门时不按这一行换算（几种城里的物品可以对到同一种内核资源，反过来没法唯一确定）。
+   */
+  direction?: 'home';
 }
 
 export interface EffectMapping {
@@ -28,18 +33,34 @@ export interface Mappings {
 }
 
 export const MAPPINGS: Mappings = {
-  version: 1,
-  items: [{ kernel: { kind: 'food', item: 'cookie' }, engine_type: 'cookie', stack: true, edible: true }],
+  version: 2,
+  items: [
+    // 双向：内核词表里有同名或同义的资源
+    { kernel: { kind: 'food', item: 'cookie' }, engine_type: 'cookie', stack: true, edible: true },
+    { kernel: { kind: 'food', item: 'onigiri' }, engine_type: 'onigiri', stack: true, edible: true },
+    { kernel: { kind: 'food', item: 'bottled_tea' }, engine_type: 'green_tea', stack: true, edible: true },
+    // 只回家：城里的具体品种归到内核已有的大类
+    { kernel: { kind: 'food', item: 'coffee' }, engine_type: 'coffee_beans', stack: true, edible: false, direction: 'home' },
+    { kernel: { kind: 'food', item: 'bread' }, engine_type: 'melon_pan', stack: true, edible: true, direction: 'home' },
+    { kernel: { kind: 'food', item: 'bread' }, engine_type: 'cream_bun', stack: true, edible: true, direction: 'home' },
+    { kernel: { kind: 'food', item: 'dessert' }, engine_type: 'cheesecake', stack: true, edible: true, direction: 'home' },
+  ],
   effects: [
     { engine_kind: 'ate', engine_type: 'cookie', kernel_effect: 'snack' },
+    { engine_kind: 'ate', engine_type: 'onigiri', kernel_effect: 'snack' },
+    { engine_kind: 'ate', engine_type: 'melon_pan', kernel_effect: 'snack' },
+    { engine_kind: 'ate', engine_type: 'cream_bun', kernel_effect: 'snack' },
+    { engine_kind: 'ate', engine_type: 'cheesecake', kernel_effect: 'snack' },
     { engine_kind: 'drank', engine_type: 'coffee', kernel_effect: 'drink_coffee' },
+    { engine_kind: 'drank', engine_type: 'milk_tea', kernel_effect: 'drink_tea' },
+    { engine_kind: 'drank', engine_type: 'green_tea', kernel_effect: 'drink_tea' },
     { engine_kind: 'walked', min_minutes: 15, kernel_effect: 'walk_15m' },
   ],
 };
 
-/** 内核资源种类 → 引擎物品类型；表里没有返回 null（出门不能带）。 */
+/** 内核资源种类 → 引擎物品类型；表里没有、或者只有「只回家」的行，返回 null（出门不能带）。 */
 export function engineTypeOf(kernel: { kind?: unknown; item?: unknown }): string | null {
-  const m = MAPPINGS.items.find((i) => i.kernel.kind === kernel.kind && i.kernel.item === kernel.item);
+  const m = MAPPINGS.items.find((i) => i.direction !== 'home' && i.kernel.kind === kernel.kind && i.kernel.item === kernel.item);
   return m ? m.engine_type : null;
 }
 

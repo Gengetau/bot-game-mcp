@@ -363,7 +363,7 @@ docs/city/mappings.json               物品与效果映射表
 
 ### 出门：prepare 与 commit
 
-`prepare` 检查：协议是 `city-bridge/1`、`mappings_version` 等于当前（1）、`actor_id` 在身份映射里、`carry.yen` 是 0 到 10,000,000 的整数、`carry.items` 最多 20 项且每项 `ref` 不重复、`qty` 1 到 99、物品类型在映射表里（没有的不能带，`item_not_mapped`）、目的地是公开地点、`return_by_ms` 晚于 `start_at_ms` 和现在、这位室友没有没结束的访问。这个 `visit_id` 如果之前被 `abort` 过（哪怕引擎从没见过它），`prepare` 被拒（`visit_aborted`）。
+`prepare` 检查：协议是 `city-bridge/1`、`mappings_version` 等于当前（2）、`actor_id` 在身份映射里、`carry.yen` 是 0 到 10,000,000 的整数、`carry.items` 最多 20 项且每项 `ref` 不重复、`qty` 1 到 99、物品类型在映射表里、而且那一行是双向的（没有的、只有「只回家」行的都不能带，`item_not_mapped`）、目的地是公开地点、`return_by_ms` 晚于 `start_at_ms` 和现在、这位室友没有没结束的访问。这个 `visit_id` 如果之前被 `abort` 过（哪怕引擎从没见过它），`prepare` 被拒（`visit_aborted`）。
 
 `commit` 在一个事务里做：
 
@@ -426,7 +426,25 @@ docs/city/mappings.json               物品与效果映射表
 
 步行效果：每满 15 分钟（映射表的 `min_minutes`）的步行写一条 `walked`，不满的累计到下一次。
 
-物品与效果映射表（`docs/city/mappings.json`，版本 1）目前只有曲奇：内核的 `food/cookie` ↔ 引擎的 `cookie`；效果：吃曲奇 `snack`、喝咖啡 `drink_coffee`、步行 15 分钟 `walk_15m`。`prepare` 里的 `mappings_version` 对不上就是 `VERSION_MISMATCH`。改映射时 `mappings.ts` 和 `mappings.json` 一起改，版本加一（`test/city/mappings.test.ts` 检查两边一致）。
+物品与效果映射表（`docs/city/mappings.json`，版本 2）。`prepare` 里的 `mappings_version` 对不上就是 `VERSION_MISMATCH`。改映射时 `mappings.ts` 和 `mappings.json` 一起改，版本加一（`test/city/mappings.test.ts` 检查两边一致）。
+
+物品（内核一侧的名字取自内核词表 life1 那一档，`kind` 只有 `food`）：
+
+| 引擎的物品类型 | 内核的资源 | 方向 |
+|---|---|---|
+| `cookie` 曲奇 | `food/cookie` | 双向 |
+| `onigiri` 饭团 | `food/onigiri` | 双向 |
+| `green_tea` 瓶装绿茶 | `food/bottled_tea` | 双向 |
+| `coffee_beans` 咖啡豆 | `food/coffee`（内核里是一包咖啡） | 只回家 |
+| `melon_pan` 菠萝包、`cream_bun` 奶油面包 | `food/bread` | 只回家 |
+| `cheesecake` 芝士蛋糕 | `food/dessert` | 只回家 |
+
+- 双向：出门能带（`prepare` 按它换成引擎的物品类型），城里得到的回家时也按它换回去。
+- 只回家（`direction: "home"`）：城里的具体品种归到内核已有的大类。出门时不按这些行换算——内核的一个面包没法确定是城里的哪一种；这类物品现在不能带出门。
+- 不在表里、回家时进寄存包裹的：现点的杯装饮料（`coffee`、`milk_tea`）、`umbrella`（内核里伞是衣橱里的服饰，不是资源）、`paperback`、`postcard`、`notebook`（内核词表里没有书和文具）。
+- 一件数量 1 的引擎物品回家是数量 1 的内核资源，不换算份量。
+
+效果：吃 `cookie` / `onigiri` / `melon_pan` / `cream_bun` / `cheesecake` → `snack`；喝 `coffee` → `drink_coffee`；喝 `milk_tea` / `green_tea` → `drink_tea`；步行 15 分钟 → `walk_15m`。这四个效果名是这张表定的，内核词表里没有同名的东西（内核现在只有固定的一次进食效果），具体数值由内核的适配器实现。
 
 ## 账本
 
@@ -550,7 +568,7 @@ docs/city/mappings.json               物品与效果映射表
 
 访问停在 `reconcile` 的情况（人已经回家，由人处理）：
 
-- 结算清单里有 `locker` 物品：她在城里得到、映射表里没有的物品（映射表目前只有曲奇，所以买的咖啡豆、雨伞、饭团……只要没吃掉、没送出，都是这一类）。物品标为 `locker`，留在城里，引擎没有取回它的动作。
+- 结算清单里有 `locker` 物品：她在城里得到、映射表里没有的物品（现点的杯装饮料、雨伞、书和文具，只要没吃掉、没送出，都是这一类；映射表见「物品与效果映射表」）。物品标为 `locker`，留在城里，引擎没有取回它的动作。
 - 结算清单里有 `pending` 订单（结果未知的购买）：钱锁在她的随身钱包里。
 
 `resolvePendingOrder(orderId, 'completed' | 'failed')` 可以人工确认一笔结果未知的订单，但只处理她还在城里（访问是 `active` / `returning`）的情况；访问已经结束的拒绝（`visit_closed`），要按对账报告人工处理。它目前没有 HTTP 或 MCP 入口，只是一个导出的函数。
@@ -642,7 +660,7 @@ docs/city/mappings.json               物品与效果映射表
 ## 已知限制 / 没做的
 
 - **票价和耗时是模拟值。** 票价的数值对照过 2026-03-14 改定后的纸质车票运价档（见「车站、线路、票价、时间」），但没有 IC 运价、换乘、折扣，也不会跟着真实运价变；耗时是估计。
-- **映射表只有曲奇。** 室友在城里买到的东西（咖啡豆、雨伞、饭团、面包……）只要没吃掉、没送出，回家时都是 `locker`，访问停在 `reconcile`，需要人工处理。`locker` 的物品没有取回的动作，也看不到（本人视图只列可用的物品）。
+- **映射表没有覆盖全部商品。** 版本 2 让饭团、瓶装绿茶、曲奇、咖啡豆、两种面包、芝士蛋糕能回家；现点的杯装饮料、雨伞、文库本、明信片、笔记本在内核词表里没有对应的资源，只要没吃掉、没送出，回家时还是 `locker`，访问停在 `reconcile`，需要人工处理。要让它们回家，得内核先加这些资源。内核词表有 p1a 和 life1 两档，表里的名字按 life1 取（`bread`、`bottled_tea`、`dessert` 只在 life1 里），线上用的是哪一档要内核那边确认。`locker` 的物品没有取回的动作，也看不到（本人视图只列可用的物品）。
 - `resolvePendingOrder` 只处理她还在城里的情况，也没有 HTTP / MCP 入口。访问关闭后的 `pending` 订单和锁住的钱要按对账报告人工处理。`pending` 目前只能由测试用的故障注入点产生（第一期没有真的会「结果未知」的店家）。
 - **F13 在内核侧**，引擎没有对应的测试。
 - 天气用的是 Open-Meteo 免费托管的接口，只限非商业用途（主人定了这个服务是免费的，可以用）；气象厅的数据源没有接（见「和《建城资料源》表的对照」）。
