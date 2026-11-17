@@ -45,6 +45,66 @@
   }
   ```
 
+### 1.3 Schema v2 完整 SQL 建表参考与多份携带物拆分规则（引擎侧 M1-D 落地基准）
+
+- **多份带出物兼容规则**：协议允许 `carry.items[].qty` 取 `1..99`。当 `qty === 1` 时直接建 `instance = 1`；当 `qty > 1` 时建 `instance = 0, origin_ref = ref`，若整行全额赠送则原地更新 `owner_id` 保留原 `item_id` 与 `origin_ref`，若部分赠送（如 3 送 1）则原行减 `1`、拆出的受赠新行完整继承 `origin_ref` 与 `origin_json`，绝不退化为无来源普通堆叠件。
+- **Schema v2 目标 DDL 参考（SQLite 重建表迁移保留全部存量数据）**：
+  ```sql
+  CREATE TABLE residents (
+    resident_id TEXT PRIMARY KEY,
+    principal_id TEXT NOT NULL UNIQUE REFERENCES principals(principal_id),
+    name TEXT NOT NULL,
+    bio TEXT NOT NULL DEFAULT '',
+    origin TEXT NOT NULL CHECK (origin IN ('external','house','human')),
+    place_id TEXT,
+    trip_id TEXT,
+    in_city INTEGER NOT NULL DEFAULT 0 CHECK (in_city IN (0,1)),
+    present_until INTEGER NOT NULL DEFAULT 0,
+    control_epoch INTEGER NOT NULL DEFAULT 0,
+    controller_id TEXT,
+    revision INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL,
+    last_seen_at INTEGER NOT NULL
+  ) STRICT;
+
+  CREATE TABLE login_tickets (
+    ticket_hash TEXT PRIMARY KEY,
+    principal_id TEXT NOT NULL REFERENCES principals(principal_id),
+    created_at INTEGER NOT NULL,
+    expires_at INTEGER NOT NULL,
+    redeemed_at INTEGER
+  ) STRICT, WITHOUT ROWID;
+
+  CREATE TABLE web_sessions (
+    token_hash TEXT PRIMARY KEY,
+    principal_id TEXT NOT NULL REFERENCES principals(principal_id),
+    csrf_token TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    expires_at INTEGER NOT NULL,
+    revoked_at INTEGER
+  ) STRICT, WITHOUT ROWID;
+
+  CREATE TABLE items (
+    item_id TEXT PRIMARY KEY,
+    owner_id TEXT NOT NULL REFERENCES residents(resident_id),
+    type TEXT NOT NULL,
+    quantity INTEGER NOT NULL CHECK (quantity >= 0),
+    instance INTEGER NOT NULL DEFAULT 0 CHECK (instance IN (0,1)),
+    origin_ref TEXT,
+    origin_json TEXT,
+    meta_json TEXT,
+    borrowed_from TEXT REFERENCES residents(resident_id),
+    visit_id TEXT,
+    state TEXT NOT NULL DEFAULT 'held' CHECK (state IN ('held','returned','locker','disposed','space')),
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    CHECK (instance = 0 OR quantity <= 1)
+  ) STRICT;
+  CREATE UNIQUE INDEX items_plain_stack
+    ON items(owner_id, type)
+    WHERE origin_ref IS NULL AND instance = 0 AND state = 'held';
+  ```
+
 ---
 
 ## 2. 映射表 `mappings_version: 2` 与现点热饮 `carry_home: false` 规则
