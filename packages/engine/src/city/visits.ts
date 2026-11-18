@@ -10,9 +10,9 @@
  */
 import { parseJson, type Row } from '../world/db.js';
 import { sha256, stableStringify } from '../world/service.js';
-import { CITY_CATALOG_VERSION, HOUSE_ENTRANCE, homeward, itemName, place, publicPlace } from './catalog.js';
+import { CITY_CATALOG_VERSION, HOUSE_ENTRANCE, homeward, isCarryHome, itemName, place, publicPlace } from './catalog.js';
 import { CityError, cityBadRequest, cityConflict, cityPrecondition } from './errors.js';
-import { BRIDGE, addCarried, ensurePurse, heldItems, ledger, purseOf, spendSummary, wallet } from './ledger.js';
+import { BRIDGE, addCarried, disposeHeldItem, ensurePurse, heldItems, ledger, moveItemToLocker, purseOf, sanitizeItemMeta, spendSummary, wallet, type ItemRow } from './ledger.js';
 import { MAPPINGS, engineTypeOf, kernelItemOf, walkEffect } from './mappings.js';
 import { runReconcile } from './reconcile.js';
 import type { CityResident, CityService } from './service.js';
@@ -62,6 +62,7 @@ export interface CarryItem {
   kernel: { kind: string; item: string };
   qty: number;
   engine_type: string;
+  meta?: Record<string, unknown> | null;
 }
 
 export interface VisitPlan {
@@ -136,6 +137,16 @@ export function wake(c: CityService, visit: VisitRow, reason: string, at: number
 /** 随身钱包的一笔支出或收入（只做投影和当天账目展示，不改内核余额）。 */
 export function outboxPurchase(c: CityService, visit: VisitRow, at: number, data: { what: string; yen: number; detail?: Record<string, unknown> }): void {
   outbox(c, visit, 'purchase', at, { what: data.what, yen: data.yen, purse_yen: wallet(c, visit.resident_id).balance, ...(data.detail ?? {}) });
+}
+
+/** 访问关单后未决订单确认为 failed：钱退回桥接账户，写一条幂等 order_refunded 供内核补回家庭钱包。 */
+export function outboxOrderRefunded(
+  c: CityService,
+  visit: VisitRow,
+  at: number,
+  data: { order_id: string; yen: number; all_pending_cleared: boolean },
+): string {
+  return outbox(c, visit, 'order_refunded', at, data, `${visit.visit_id}:refund:${data.order_id}`);
 }
 
 /** 身体效果：吃喝、步行、活动。effect_id = <visit_id>:<引擎记录号>，内核按它去重。返回 effect_id。 */
@@ -222,11 +233,21 @@ export interface Settlement {
   cutoff_seq: number;
   carry_yen: number;
   purse_final_yen: number;
-  items: { engine_item_id: string; origin_ref: string | null; type: string; qty: number; fate: 'back' | 'consumed' | 'given' | 'sold' | 'locker'; kernel?: { kind: string; item: string } }[];
+  items: {
+    engine_item_id: string;
+    origin_ref: string | null;
+    type: string;
+    qty: number;
+    fate: 'back' | 'consumed' | 'given' | 'sold' | 'locker' | 'disposed';
+    kernel?: { kind: string; item: string };
+    instance?: boolean;
+    meta?: Record<string, unknown> | null;
+  }[];
   consumed: { type: string; qty: number; effect_id: string | null; origin_ref: string | null }[];
   given: { type: string; qty: number; origin_ref: string | null; to: string }[];
   pending: { order_id: string; what: string; yen: number; place: string }[];
   spend_summary: { what: string; yen: number }[];
+  notes?: string[];
   settled_at_ms: number;
 }
 
@@ -239,11 +260,51 @@ export function settle(c: CityService, visit: VisitRow, at: number): Settlement 
   if (fresh.state !== 'returning' && fresh.state !== 'active') throw new Error(`访问 ${fresh.visit_id} 不在可结算的状态：${fresh.state}`);
   const w = wallet(c, fresh.resident_id);
   const items: Settlement['items'] = [];
+  const notes: string[] = [];
   for (const it of heldItems(c, fresh.resident_id)) {
+    const meta = it.instance === 1 ? parseJson<Record<string, unknown> | null>(it.meta_json, null) : null;
+    if (!isCarryHome(it.type)) {
+      // carry_home: false 的现点杯装热饮：返家前清理，绝不代喝写 body_effect，也不进储物柜
+      notes.push(`未饮完的${itemName(it.type)}（${it.quantity} 份）已在返家前处理，未带回或寄存。`);
+      items.push({
+        engine_item_id: it.item_id,
+        origin_ref: it.origin_ref,
+        type: it.type,
+        qty: it.quantity,
+        fate: 'disposed',
+        ...(meta ? { instance: true, meta } : {}),
+      });
+      continue;
+    }
     const kernel = kernelItemOf(it.type);
-    // 带出来的物品原样回家；城里得到的要映射表里有才能回家，否则留在寄存包裹
+    // 带出来的物品原样回家；城里得到的要映射表里有才能回家，否则留在城市储物柜
     const fate = it.origin_ref !== null || kernel ? 'back' : 'locker';
-    items.push({ engine_item_id: it.item_id, origin_ref: it.origin_ref, type: it.type, qty: it.quantity, fate, ...(kernel && it.origin_ref === null ? { kernel } : {}) });
+    items.push({
+      engine_item_id: it.item_id,
+      origin_ref: it.origin_ref,
+      type: it.type,
+      qty: it.quantity,
+      fate,
+      ...(kernel && it.origin_ref === null ? { kernel } : {}),
+      ...(meta ? { instance: true, meta } : {}),
+    });
+  }
+  // 本次访问期间她在车站主动存入储物柜且仍留在柜中的物品，也记入结算摘要（fate = 'locker'）
+  const manualStored = c.db.all<ItemRow & Row>(
+    "SELECT * FROM items WHERE owner_id = ? AND visit_id = ? AND state = 'locker' AND quantity > 0 ORDER BY item_id",
+    fresh.resident_id,
+    fresh.visit_id,
+  );
+  for (const it of manualStored) {
+    const meta = it.instance === 1 ? parseJson<Record<string, unknown> | null>(it.meta_json, null) : null;
+    items.push({
+      engine_item_id: it.item_id,
+      origin_ref: null,
+      type: it.type,
+      qty: it.quantity,
+      fate: 'locker',
+      ...(meta ? { instance: true, meta } : {}),
+    });
   }
   const moves = c.db.all<Row>("SELECT item_id, type, origin_ref, quantity, fate, effect_id, counterparty FROM item_events WHERE visit_id = ? AND resident_id = ? AND fate IN ('consumed','given','sold') ORDER BY event_id", fresh.visit_id, fresh.resident_id);
   const consumed: Settlement['consumed'] = [];
@@ -269,6 +330,7 @@ export function settle(c: CityService, visit: VisitRow, at: number): Settlement 
     given,
     pending,
     spend_summary: spendSummary(c, fresh.visit_id, fresh.resident_id),
+    ...(notes.length > 0 ? { notes } : {}),
     settled_at_ms: at,
   };
   c.db.run(
@@ -372,7 +434,8 @@ export function prepareVisit(c: CityService, body: Record<string, unknown>): Bri
       // 映射表里没有的类型出门不能带（规格 3.5.1）。内核出门前就该拦下，这里再拦一次
       if (!engineType) throw cityPrecondition('这件东西不在映射表里，不能带进城。', 'item_not_mapped', { ref });
       refs.add(ref);
-      items.push({ ref, kernel: { kind: String(kernel.kind), item: String(kernel.item) }, qty: raw.qty, engine_type: engineType });
+      const meta = raw.meta !== undefined ? sanitizeItemMeta(raw.meta) : null;
+      items.push({ ref, kernel: { kind: String(kernel.kind), item: String(kernel.item) }, qty: raw.qty, engine_type: engineType, ...(meta ? { meta } : {}) });
     }
     const plan = (body.plan ?? {}) as Record<string, unknown>;
     const dest = typeof plan.destination === 'string' ? publicPlace(plan.destination) : undefined;
@@ -441,7 +504,7 @@ export function commitVisit(c: CityService, visitId: string, body: Record<string
       ref: it.ref,
       engine_type: it.engine_type,
       qty: it.qty,
-      engine_item_id: addCarried(c, r.resident_id, it.engine_type, it.qty, it.ref, { domain: 'ai-house', ref: it.ref, transfer_id: transferId }, visitId),
+      engine_item_id: addCarried(c, r.resident_id, it.engine_type, it.qty, it.ref, { domain: 'ai-house', ref: it.ref, transfer_id: transferId }, visitId, it.meta),
     }));
     c.db.run('UPDATE house_members SET last_epoch = ? WHERE actor_id = ?', body.domain_epoch, member.actor_id);
     c.db.run("UPDATE visits SET state = 'active', transfer_id = ?, domain_epoch = ?, committed_at = ? WHERE visit_id = ?", transferId, body.domain_epoch, now, visitId);
@@ -520,10 +583,12 @@ export function releaseVisit(c: CityService, visitId: string, body: Record<strin
     const final = visit.purse_final_yen ?? 0;
     ledger(c, `visit:${visitId}:out`, 'visit_out', '回家', [[purseOf(visit.resident_id), -final], [BRIDGE, final]], visitId);
     for (const it of settlement.items) {
-      if (it.fate === 'back') c.db.run("UPDATE items SET state = 'returned' WHERE item_id = ? AND state = 'held'", it.engine_item_id);
-      else if (it.fate === 'locker') c.db.run("UPDATE items SET state = 'locker' WHERE item_id = ? AND state = 'held'", it.engine_item_id);
+      if (it.fate === 'back') c.db.run("UPDATE items SET state = 'returned', updated_at = ? WHERE item_id = ? AND state = 'held'", now, it.engine_item_id);
+      else if (it.fate === 'locker') moveItemToLocker(c, it.engine_item_id, now);
+      else if (it.fate === 'disposed') disposeHeldItem(c, it.engine_item_id, now);
     }
-    const needsReconcile = settlement.pending.length > 0 || settlement.items.some((i) => i.fate === 'locker');
+    // 储物柜寄存属正常流转；仅存在结果未知的 pending 订单时访问进入异常态 reconcile
+    const needsReconcile = settlement.pending.length > 0;
     const state: VisitState = needsReconcile ? 'reconcile' : 'closed';
     c.db.run('UPDATE visits SET state = ?, released_at = ? WHERE visit_id = ?', state, now, visitId);
     c.db.run('UPDATE house_members SET last_epoch = MAX(last_epoch, ?) WHERE actor_id = ?', body.domain_epoch, visit.actor_id);

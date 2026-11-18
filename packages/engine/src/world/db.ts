@@ -708,16 +708,29 @@ export class TownDb {
     if (current === target) return;
     // 升级已有数据前先留一份可恢复的一致备份
     if (current > 0 && !this.inMemory) this.snapshotTo(`${this.path}.pre-v${current + 1}-${Date.now()}.bak`);
-    for (let v = current; v < target; v++) {
-      this.db.exec('BEGIN IMMEDIATE');
-      try {
-        this.db.exec(this.schema.migrations[v]!);
-        this.db.exec(`PRAGMA user_version = ${v + 1}`);
-        this.db.exec('COMMIT');
-      } catch (e) {
-        this.db.exec('ROLLBACK');
-        throw new Error(`${label}迁移到 v${v + 1} 失败，写接口不开放：${e instanceof Error ? e.message : String(e)}`);
+    this.db.exec('PRAGMA foreign_keys = OFF');
+    try {
+      for (let v = current; v < target; v++) {
+        this.db.exec('BEGIN IMMEDIATE');
+        try {
+          this.db.exec(this.schema.migrations[v]!);
+          const fkErrors = this.db.prepare('PRAGMA foreign_key_check').all() as Row[];
+          if (fkErrors.length > 0) {
+            throw new Error(`外键约束检查未通过：${JSON.stringify(fkErrors[0])}`);
+          }
+          this.db.exec(`PRAGMA user_version = ${v + 1}`);
+          this.db.exec('COMMIT');
+        } catch (e) {
+          try {
+            this.db.exec('ROLLBACK');
+          } catch {
+            /* ignore */
+          }
+          throw new Error(`${label}迁移到 v${v + 1} 失败，写接口不开放：${e instanceof Error ? e.message : String(e)}`);
+        }
       }
+    } finally {
+      this.db.exec('PRAGMA foreign_keys = ON');
     }
   }
 

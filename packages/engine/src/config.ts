@@ -123,6 +123,12 @@ export const configSchema = z.object({
     .object({
       enabled: z.boolean().default(false),
       dbFile: z.string().default('./data/city.db'),
+      /** 东京人类网页端的公网地址（如 https://example.com/city/play/），用来拼登录链接；不填只返回票据 */
+      publicUrl: z.string().url().nullable().default(null),
+      /** 为 true 时，city_issue_ticket（给真人签登录票据）只有管理员能调，可信账号（refereeIds）也被拒 */
+      adminOnlyTickets: z.boolean().default(false),
+      /** 本机试玩登录：任何人输入名字就能以真人身份进入。只该在本机或隔离测试打开 */
+      devLogin: z.boolean().default(false),
       /** 覆盖默认参数（见 src/city/params.ts）。时区在开服后不能改 */
       params: z.record(z.string(), z.unknown()).default({}),
       /** 桥接密钥：小屋内核调 /city/bridge/v1 时带的 Bearer。不配就不挂桥接接口。也可以用环境变量 BOTGAME_CITY_BRIDGE_KEY */
@@ -150,7 +156,7 @@ export const configSchema = z.object({
         )
         .default([]),
     })
-    .default({ enabled: false, dbFile: './data/city.db', params: {}, weather: true, house: [] }),
+    .default({ enabled: false, dbFile: './data/city.db', publicUrl: null, adminOnlyTickets: false, devLogin: false, params: {}, weather: true, house: [] }),
   refereeStaleSeconds: z.number().int().min(10).default(120),
   lobbyTtlMinutes: z.number().int().min(1).default(120),
   idleGameTtlMinutes: z.number().int().min(5).default(360),
@@ -197,11 +203,25 @@ export function loadConfig(path?: string, env: NodeJS.ProcessEnv = process.env):
     if (env.BOTGAME_TOWN_CLIENT_DIR !== undefined) raw.town.clientDir = env.BOTGAME_TOWN_CLIENT_DIR || null;
     if (env.BOTGAME_TOWN_DEV_LOGIN !== undefined) raw.town.devLogin = env.BOTGAME_TOWN_DEV_LOGIN === '1' || env.BOTGAME_TOWN_DEV_LOGIN === 'true';
   }
-  if (env.BOTGAME_CITY !== undefined || env.BOTGAME_CITY_DB || env.BOTGAME_CITY_BRIDGE_KEY) {
+  if (
+    env.BOTGAME_CITY !== undefined ||
+    env.BOTGAME_CITY_DB ||
+    env.BOTGAME_CITY_BRIDGE_KEY ||
+    env.BOTGAME_CITY_PUBLIC_URL !== undefined ||
+    env.BOTGAME_CITY_ADMIN_ONLY_TICKETS !== undefined ||
+    env.BOTGAME_CITY_DEV_LOGIN !== undefined
+  ) {
     raw.city = { ...(raw.city ?? {}) };
     if (env.BOTGAME_CITY !== undefined) raw.city.enabled = env.BOTGAME_CITY === '1' || env.BOTGAME_CITY === 'true';
     if (env.BOTGAME_CITY_DB) raw.city.dbFile = env.BOTGAME_CITY_DB;
     if (env.BOTGAME_CITY_BRIDGE_KEY) raw.city.bridgeKey = env.BOTGAME_CITY_BRIDGE_KEY;
+    if (env.BOTGAME_CITY_PUBLIC_URL !== undefined) raw.city.publicUrl = env.BOTGAME_CITY_PUBLIC_URL || null;
+    if (env.BOTGAME_CITY_ADMIN_ONLY_TICKETS !== undefined) {
+      raw.city.adminOnlyTickets = env.BOTGAME_CITY_ADMIN_ONLY_TICKETS === '1' || env.BOTGAME_CITY_ADMIN_ONLY_TICKETS === 'true';
+    }
+    if (env.BOTGAME_CITY_DEV_LOGIN !== undefined) {
+      raw.city.devLogin = env.BOTGAME_CITY_DEV_LOGIN === '1' || env.BOTGAME_CITY_DEV_LOGIN === 'true';
+    }
   }
   if (env.BOTGAME_SCRIPTS_DIR !== undefined) raw.scriptsDir = env.BOTGAME_SCRIPTS_DIR || null;
   if (env.BOTGAME_ASSETS_DIR !== undefined) raw.assetsDir = env.BOTGAME_ASSETS_DIR || null;

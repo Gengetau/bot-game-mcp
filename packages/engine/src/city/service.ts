@@ -43,6 +43,10 @@ export interface CityOptions {
   house?: HouseMemberConfig[];
   /** 天气抓取函数；null = 不抓（一直用退路天气）。缺省是 open-meteo */
   fetchWeather?: WeatherFetcher | null;
+  /** 人类网页端公网地址（如 https://example.com/city/play/），用于拼接登录票据链接 */
+  publicUrl?: string | null;
+  /** 是否开启本机试玩登录（仅隔离测试环境开启） */
+  devLogin?: boolean;
 }
 
 export interface CityResident {
@@ -50,11 +54,13 @@ export interface CityResident {
   principal_id: string;
   name: string;
   bio: string;
-  origin: 'external' | 'house';
+  origin: 'external' | 'house' | 'human';
   place_id: string | null;
   trip_id: string | null;
   in_city: number;
   present_until: number;
+  control_epoch: number;
+  controller_id: string | null;
   revision: number;
   created_at: number;
   last_seen_at: number;
@@ -108,6 +114,8 @@ export class CityService {
   readonly log: (msg: string) => void;
   readonly house: readonly HouseMemberConfig[];
   readonly fetchWeather: WeatherFetcher | null | undefined;
+  readonly publicUrl: string | null;
+  readonly devLogin: boolean;
   status: 'recovering' | 'running' | 'degraded' | 'closed' = 'recovering';
 
   readonly jobHandlers = new Map<string, CityJobHandler>();
@@ -139,6 +147,8 @@ export class CityService {
     this.log = opts.log ?? (() => undefined);
     this.house = opts.house ?? [];
     this.fetchWeather = opts.fetchWeather;
+    this.publicUrl = opts.publicUrl ?? null;
+    this.devLogin = Boolean(opts.devLogin);
     const seen = new Set<string>();
     for (const m of this.house) {
       if (!/^[a-z][a-z0-9_-]{0,31}$/.test(m.actorId)) throw new Error(`小屋室友的 actorId 不合法：${m.actorId}`);
@@ -286,6 +296,10 @@ export class CityService {
     return this.encodeCursor('r', residentId, this.streamHead(`r:${residentId}`).highWater);
   }
 
+  publicCursor(): string {
+    return this.encodeCursor('p', 'pub', this.streamHead('pub').highWater);
+  }
+
   /** 读某位居民游标之后的事件。不带游标 = 从当前水位开始；游标无效或落在已清理的区间 = resync。 */
   readResidentEvents(residentId: string, cursor: string | undefined | null, limit = 50): CityStreamRead {
     const head = this.streamHead(`r:${residentId}`);
@@ -304,7 +318,58 @@ export class CityService {
     return { events, cursor: events.length ? events[events.length - 1]!.id : this.encodeCursor('r', residentId, after), resync: false, more };
   }
 
+  /** 读公开游标之后的公开事件流。 */
+  readPublicEvents(cursor: string | undefined | null, limit = 50): CityStreamRead {
+    const head = this.streamHead('pub');
+    const headCursor = this.encodeCursor('p', 'pub', head.highWater);
+    if (cursor === undefined || cursor === null || cursor === '') return { events: [], cursor: headCursor, resync: false, more: false };
+    const after = this.decodeCursor('p', 'pub', cursor);
+    if (after === null || after > head.highWater || after < head.retainedFrom - 1) return { events: [], cursor: headCursor, resync: true, more: false };
+    const rows = this.db.all('SELECT cursor, type, projection, occurred_at FROM public_events WHERE cursor > ? ORDER BY cursor LIMIT ?', after, limit + 1);
+    const more = rows.length > limit;
+    const events = rows.slice(0, limit).map((row) => ({
+      id: this.encodeCursor('p', 'pub', Number(row.cursor)),
+      type: String(row.type),
+      at: Number(row.occurred_at),
+      data: parseJson<Record<string, unknown>>(row.projection, {}),
+    }));
+    return { events, cursor: events.length ? events[events.length - 1]!.id : this.encodeCursor('p', 'pub', after), resync: false, more };
+  }
+
   // ═══════════════════════════ 订阅与等待 ═══════════════════════════
+
+  onResidentBump(residentId: string, fn: () => void): () => void {
+    const channel = `r:${residentId}`;
+    this.emitter.on(channel, fn);
+    return () => {
+      this.emitter.off(channel, fn);
+    };
+  }
+
+  onPublicBump(fn: () => void): () => void {
+    this.emitter.on('public', fn);
+    return () => {
+      this.emitter.off('public', fn);
+    };
+  }
+
+  onSessionRevoked(tokenHash: string, fn: () => void): () => void {
+    const channel = `revoked:${tokenHash}`;
+    this.emitter.on(channel, fn);
+    return () => {
+      this.emitter.off(channel, fn);
+    };
+  }
+
+  notifySessionRevoked(tokenHash: string): void {
+    for (const fn of this.emitter.listeners(`revoked:${tokenHash}`)) {
+      try {
+        fn();
+      } catch {
+        /* ignore */
+      }
+    }
+  }
 
   private flushBumps(): void {
     const ids = this.pendingBumps;

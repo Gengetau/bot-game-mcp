@@ -183,6 +183,8 @@ export interface ItemType {
   type: string;
   name: string;
   kind: ItemKind;
+  /** 是否可带回家或存入储物柜；未设默认 true，现点杯装热饮为 false */
+  carry_home?: boolean;
 }
 
 export const ITEM_TYPES: readonly ItemType[] = [
@@ -191,8 +193,8 @@ export const ITEM_TYPES: readonly ItemType[] = [
   { type: 'melon_pan', name: '菠萝包', kind: 'food' },
   { type: 'cream_bun', name: '奶油面包', kind: 'food' },
   { type: 'cheesecake', name: '芝士蛋糕', kind: 'food' },
-  { type: 'coffee', name: '咖啡', kind: 'drink' },
-  { type: 'milk_tea', name: '奶茶', kind: 'drink' },
+  { type: 'coffee', name: '咖啡', kind: 'drink', carry_home: false },
+  { type: 'milk_tea', name: '奶茶', kind: 'drink', carry_home: false },
   { type: 'green_tea', name: '瓶装绿茶', kind: 'drink' },
   { type: 'coffee_beans', name: '咖啡豆', kind: 'thing' },
   { type: 'umbrella', name: '透明雨伞', kind: 'thing' },
@@ -204,6 +206,8 @@ export const ITEM_TYPES: readonly ItemType[] = [
 const ITEM_BY_TYPE = new Map(ITEM_TYPES.map((i) => [i.type, i]));
 export const itemType = (type: string): ItemType | undefined => ITEM_BY_TYPE.get(type);
 export const itemName = (type: string): string => ITEM_BY_TYPE.get(type)?.name ?? type;
+export const isCarryHome = (type: string): boolean => ITEM_BY_TYPE.get(type)?.carry_home !== false;
+export const isStorable = (type: string): boolean => isCarryHome(type);
 
 export interface Good {
   sku: string;
@@ -242,6 +246,7 @@ export interface Place {
 }
 
 const BASE_ACTIONS = ['say', 'travel', 'consume', 'give'];
+const STATION_ACTIONS = [...BASE_ACTIONS, 'store_locker', 'take_locker'];
 
 export const PLACES: readonly Place[] = [
   // ── 赤羽 ──
@@ -258,7 +263,7 @@ export const PLACES: readonly Place[] = [
     walkMinutes: 0,
     rain: 'none',
     goods: [],
-    actions: BASE_ACTIONS,
+    actions: STATION_ACTIONS,
     blurb: '检票口外的大厅，人来人往。',
     source: 'jreast-network',
     fictional: false,
@@ -355,7 +360,7 @@ export const PLACES: readonly Place[] = [
     walkMinutes: 0,
     rain: 'none',
     goods: [],
-    actions: BASE_ACTIONS,
+    actions: STATION_ACTIONS,
     blurb: '东口的检票口外，头顶是百货店的连廊。',
     source: 'jreast-network',
     fictional: false,
@@ -436,7 +441,7 @@ export const PLACES: readonly Place[] = [
     walkMinutes: 0,
     rain: 'none',
     goods: [],
-    actions: BASE_ACTIONS,
+    actions: STATION_ACTIONS,
     blurb: '南口的检票口外。第一次来的人多半要在这里找一会儿方向。',
     source: 'jreast-network',
     fictional: false,

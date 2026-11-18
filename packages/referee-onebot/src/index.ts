@@ -123,6 +123,12 @@ export interface RefereeOptions {
    * 只私聊发给他；还可以（outbox）把小镇的稀疏公告转发到群里。
    */
   town?: TownOptions;
+  /**
+   * 东京都（持续城市世界）接入，默认不开。
+   * 开了之后：真人在群里或私聊发「东京」「进城」「东京都」关键词，裁判用 city_issue_ticket 给本人签发一次性登录链接并私聊送达；
+   * 当 --city 开启且 --town 未开启时，收到旧词「小镇」会温和提示栖灯镇已停运封存并引导发送「东京」。
+   */
+  city?: CityRefereeOptions;
   /** 外部停止信号 */
   signal?: AbortSignal;
   log?: (line: string) => void;
@@ -155,6 +161,22 @@ export interface TownOutboxOptions {
 }
 
 export const DEFAULT_TOWN_KEYWORDS = ['小镇', '进小镇', '栖灯镇'];
+export const DEFAULT_CITY_KEYWORDS = ['东京', '进城', '东京都'];
+
+/** 东京都接入配置。给了这个对象就算开启（除非 enabled 为 false）。 */
+export interface CityRefereeOptions {
+  enabled?: boolean;
+  /** 触发登录链接的关键词（整条消息精确匹配，去掉 @、指令前缀和句尾标点）。默认「东京」「进城」「东京都」 */
+  keywords?: string[];
+  /** 同一个人两次领取登录链接的最短间隔（秒），默认 60 */
+  ticketCooldownSeconds?: number;
+  /** 引擎没开城市（没有 city_issue_ticket 工具）时：reply = 回一句「东京都还没开」（默认），silent = 不响应 */
+  whenOff?: 'reply' | 'silent';
+  /** 私聊领取时要求对方在本群里（管理员不限），默认 true */
+  requireGroupMember?: boolean;
+  /** 当 --city 开启且 --town 未开启时，对旧词「小镇」回复停运引导，默认 true */
+  legacyTownHint?: boolean;
+}
 
 /**
  * 这条消息（已去掉 CQ 码的纯文本）是不是「要小镇登录链接」的指令。
@@ -173,6 +195,14 @@ export function isTownCommand(plain: string, keywords: readonly string[] = DEFAU
   if (prefix && t.startsWith(prefix)) t = t.slice(prefix.length);
   const body = norm(t);
   return body.length > 0 && keywords.some((k) => norm(k) === body);
+}
+
+/**
+ * 这条消息（已去掉 CQ 码的纯文本）是不是「要东京都登录链接」的指令。
+ * 整条消息必须就是关键词（可带指令前缀、斜杠和句尾标点），含多余参数（如「东京 12345」）一律不算。
+ */
+export function isCityCommand(plain: string, keywords: readonly string[] = DEFAULT_CITY_KEYWORDS, prefix = '/桌游'): boolean {
+  return isTownCommand(plain, keywords, prefix);
 }
 
 type Log = (line: string) => void;
@@ -569,6 +599,18 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
   /** 每个人最近一次领取登录链接的时间（限频）和是否已经提示过「刚发过」 */
   const townAsked = new Map<string, { at: number; noticed: boolean; refused?: boolean }>();
   const isTownText = (plain: string) => townOn && isTownCommand(plain, townKeywords, prefix);
+  // 东京都接入（不配置则整块不生效；跟随模式不响应任何指令）
+  const cityOn = !follower && Boolean(opts.city) && opts.city?.enabled !== false;
+  const city = opts.city ?? {};
+  const cityKeywords = city.keywords?.length ? city.keywords : DEFAULT_CITY_KEYWORDS;
+  const cityCooldownMs = Math.max(0, city.ticketCooldownSeconds ?? 60) * 1000;
+  const cityWhenOff = city.whenOff ?? 'reply';
+  const cityNeedMember = city.requireGroupMember ?? true;
+  const cityLegacyHint = cityOn && !townOn && city.legacyTownHint !== false;
+  const cityAsked = new Map<string, { at: number; noticed: boolean; refused?: boolean }>();
+  const legacyHintAsked = new Map<string, number>();
+  const isCityText = (plain: string) => cityOn && isCityCommand(plain, cityKeywords, prefix);
+  const isLegacyHintText = (plain: string) => cityLegacyHint && isTownCommand(plain, DEFAULT_TOWN_KEYWORDS, prefix);
 
   let stopped = false;
   let outboxDoneRef: Promise<void> = Promise.resolve();
@@ -748,7 +790,8 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
     (autoStart > 0 ? `\n报名够人后 ${autoStart} 秒没有新人加入就自动开局；开房时写人数（如「${prefix} 狼人杀 7」）则凑满立刻开局。` : '') +
     (lobbyTimeout > 0 ? `\n人数不够时 ${fmtDuration(lobbyTimeout)} 没有新人报名，房间自动取消。` : '') +
     (keyIssuer ? `\n想接入自己的 bot：私聊 ${voiceOf(keyIssuer)?.name ?? keyIssuer} 发「申请密钥 <bot的QQ号> <bot的昵称>」。` : '') +
-    (townOn ? `\n想进栖灯镇：发「${townKeywords[0]}」，登录链接会私聊给你（只能用一次，别转给别人）。` : '');
+    (townOn ? `\n想进栖灯镇：发「${townKeywords[0]}」，登录链接会私聊给你（只能用一次，别转给别人）。` : '') +
+    (cityOn ? `\n想进东京都：发「${cityKeywords[0]}」，登录链接会私聊给你（5 分钟内有效，只能用一次，别转给别人）。` : '');
 
   function fmtDuration(sec: number): string {
     if (sec % 60 === 0) return `${sec / 60} 分钟`;
@@ -1316,6 +1359,77 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
     }
   }
 
+  /**
+   * 真人要东京都登录链接。号码和昵称只来自消息事件本身（uid / nick），绝不解析消息文本中的号码；
+   * 链接只私聊发给本人，群内只回提示，日志脱敏不印票据与完整链接。
+   */
+  async function handleCity(v: Voice, uid: string, nick: string, channel: 'group' | 'private'): Promise<void> {
+    const reply = (t: string): Promise<void> => (channel === 'group' ? sayTo(uid, t) : sendPrivateAs(v, uid, t));
+    const now = Date.now();
+    const last = cityAsked.get(uid);
+    if (last && now - last.at < cityCooldownMs) {
+      if (!last.noticed) {
+        last.noticed = true;
+        const secs = Math.max(1, Math.ceil((cityCooldownMs - (now - last.at)) / 1000));
+        await reply(last.refused ? `刚才没能给你签发东京都登录链接，${secs} 秒后再来问。` : `刚给你发过东京都登录链接了，${secs} 秒后再来要。`);
+      }
+      return;
+    }
+    if (cityAsked.size > 2000) for (const [k, x] of cityAsked) if (now - x.at >= cityCooldownMs) cityAsked.delete(k);
+    cityAsked.set(uid, { at: now, noticed: false });
+    try {
+      if (channel === 'private' && cityNeedMember && !admins.has(uid) && !(await inGroup(v, uid))) {
+        return void (await reply(`你不在群 ${opts.groupId} 里，不能领取东京都的登录链接。`));
+      }
+      const name = sanitizeNick(nick) || uid;
+      const r = await main.engine.call('city_issue_ticket', { user_id: uid, name });
+      const link = String(r.url ?? r.ticket ?? '');
+      if (!link) throw new ToolError('引擎没有返回登录链接');
+      const body = r.url
+        ? `🗼 东京都登录链接（5 分钟内有效，只能用一次，别转发给别人）：\n${link}`
+        : `🗼 东京都登录票据（5 分钟内有效，只能用一次，别转发给别人；服务器没配置公网地址，到东京都页面粘贴这串票据登录）：\n${link}`;
+      const sent = await sendPrivateStrict(channel === 'private' ? v : main, uid, body);
+      if (sent) {
+        log(`[city] 已给 ${nick}(${uid}) 私聊登录链接`);
+        if (channel === 'group') await sayTo(uid, '东京都登录链接已私聊发给你（5 分钟内有效，只能用一次）。');
+      } else {
+        cityAsked.set(uid, { at: now - Math.max(0, cityCooldownMs - 10_000), noticed: false });
+        if (channel === 'group') {
+          await sayTo(
+            uid,
+            '私聊没发过去：请先加我为好友，或点我头像发起一次临时会话、随便发一句话，再发一次「' + cityKeywords[0] + '」。链接不会发在群里。',
+          );
+        }
+      }
+    } catch (e) {
+      if (e instanceof ToolError && e.code === 'TOOL_NOT_FOUND') {
+        cityAsked.delete(uid);
+        log('[city] 引擎没有开东京都（没有 city_issue_ticket 工具）');
+        if (cityWhenOff === 'reply') await reply('东京都还没开。');
+      } else if (e instanceof ToolError) {
+        log(`[city] 签发登录链接被引擎拒绝（${e.code ?? '?'}）：${e.message}`);
+        const asked = cityAsked.get(uid);
+        if (asked) asked.refused = true;
+        await reply(`⚠️ ${e.message.replace(/^city_issue_ticket：/, '')}`);
+      } else {
+        cityAsked.delete(uid);
+        log(`[city] 签发登录链接失败：${errMsg(e)}`);
+        await reply('引擎暂时联系不上，稍后再试。');
+      }
+    }
+  }
+
+  async function handleLegacyTownHint(v: Voice, uid: string, channel: 'group' | 'private'): Promise<void> {
+    const now = Date.now();
+    const last = legacyHintAsked.get(uid) ?? 0;
+    if (now - last < Math.max(10_000, cityCooldownMs)) return;
+    if (legacyHintAsked.size > 2000) for (const [k, t] of legacyHintAsked) if (now - t >= 60_000) legacyHintAsked.delete(k);
+    legacyHintAsked.set(uid, now);
+    const msg = `栖灯镇已停运封存，发送「${cityKeywords[0]}」可获取东京都登录链接。`;
+    if (channel === 'group') await sayTo(uid, msg);
+    else await sendPrivateAs(v, uid, msg);
+  }
+
   /** 小镇公告转发：取待发公告 → 发到群 → 发成功才确认（至少一次：发送失败或确认失败都会下次再来）。 */
   const townCtl: { wake: (() => void) | null } = { wake: null };
   const townSleep = (ms: number) =>
@@ -1391,7 +1505,7 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
     if (ev.message_type === 'group' && String(ev.group_id) === opts.groupId && st.active && web.ids.has(uid) && !admins.has(uid)) {
       // 网页舞台：参赛 bot 在群里说话（可能把私密信息说给别的参赛 bot 听）→ 撤回 + 提醒。指令和镜像发言不算
       const plain = cqToPlain(segmentsToCq(ev.message ?? ev.raw_message ?? ''));
-      if (!plain.startsWith(prefix) && !isMirrorEcho(uid, plain) && !isTownText(plain)) {
+      if (!plain.startsWith(prefix) && !isMirrorEcho(uid, plain) && !isTownText(plain) && !isCityText(plain) && !isLegacyHintText(plain)) {
         if (dedupe(`${ev.group_id}:${ev.message_id ?? `${uid}:${Date.now()}`}`)) return;
         const via = st.active;
         const job = () => punishWebTalk(via, uid, nick, ev.message_id);
@@ -1424,7 +1538,9 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
       !spect.ids.has(uid) &&
       !myIds().has(uid) &&
       !cqToPlain(cq).startsWith(prefix) &&
-      !isTownText(cqToPlain(cq))
+      !isTownText(cqToPlain(cq)) &&
+      !isCityText(cqToPlain(cq)) &&
+      !isLegacyHintText(cqToPlain(cq))
     ) {
       if (dedupe(`${ev.group_id}:${ev.message_id ?? `${uid}:${Date.now()}`}`)) return;
       const via = st.active;
@@ -1434,21 +1550,34 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
     }
     if (ev.message_type === 'private' && undelivered.has(uid)) flushUndelivered(uid);
     let job: () => Promise<void>;
+    const plainText = cqToPlain(cq);
     const keyBody = keyIssuer && ev.message_type === 'private' && v.id === keyIssuer && !myIds().has(uid) ? stripPrefix(cqToPlain(cq)) : null;
-    const townAsk =
-      townOn &&
+    const humanEligible =
       /^\d{1,20}$/.test(uid) &&
       !bots.has(uid) &&
       !myIds().has(uid) &&
-      ((ev.message_type === 'group' && String(ev.group_id) === opts.groupId) || ev.message_type === 'private') &&
-      isTownText(cqToPlain(cq));
+      ((ev.message_type === 'group' && String(ev.group_id) === opts.groupId) || ev.message_type === 'private');
+    const cityAsk = cityOn && humanEligible && isCityText(plainText);
+    const townAsk =
+      townOn &&
+      humanEligible &&
+      isTownText(plainText);
+    const legacyTownAsk = cityLegacyHint && humanEligible && isLegacyHintText(plainText);
     if (keyBody !== null && KEY_CMD_RE.test(keyBody)) {
       job = () => handleKeyCommand(v, uid, nick, keyBody);
+    } else if (cityAsk) {
+      if (ev.message_type === 'group' && dedupe(`${ev.group_id}:${ev.message_id ?? `${uid}:${cq}`}`)) return;
+      const channel = ev.message_type === 'group' ? 'group' : 'private';
+      job = () => handleCity(v, uid, nick, channel);
     } else if (townAsk) {
       // 号码只来自消息事件的 user_id（上面的 uid），昵称来自事件里的群名片 / 昵称
       if (ev.message_type === 'group' && dedupe(`${ev.group_id}:${ev.message_id ?? `${uid}:${cq}`}`)) return;
       const channel = ev.message_type === 'group' ? 'group' : 'private';
       job = () => handleTown(v, uid, nick, channel);
+    } else if (legacyTownAsk) {
+      if (ev.message_type === 'group' && dedupe(`${ev.group_id}:${ev.message_id ?? `${uid}:${cq}`}`)) return;
+      const channel = ev.message_type === 'group' ? 'group' : 'private';
+      job = () => handleLegacyTownHint(v, uid, channel);
     } else if (bots.has(uid)) {
       // bot 账号的话从不转交；开了 --bot-commands 才认它们的「/桌游」指令（跟随模式不响应任何指令）。
       // 先于「自己的账号」判断：玩家 bot 往往同时是本进程的嗓子账号，它们自己说的话也要能当指令

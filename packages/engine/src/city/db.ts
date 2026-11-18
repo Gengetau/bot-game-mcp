@@ -353,6 +353,98 @@ const MIGRATIONS: readonly string[] = [
     findings_json TEXT NOT NULL
   ) STRICT;
   `,
+  // ───── v2 ─────
+  // M1：三类主体（external / house / human）与客户端控制代次（control_epoch / controller_id）、
+  // 人类一次性登录票据与网页会话、两类物品身份（instance / meta_json / borrowed_from / disposed / space）与储物柜去向流水。
+  `
+  CREATE TABLE residents_v2 (
+    resident_id TEXT PRIMARY KEY,
+    principal_id TEXT NOT NULL UNIQUE REFERENCES principals(principal_id),
+    name TEXT NOT NULL,
+    bio TEXT NOT NULL DEFAULT '',
+    origin TEXT NOT NULL CHECK (origin IN ('external','house','human')),
+    place_id TEXT,
+    trip_id TEXT,
+    in_city INTEGER NOT NULL DEFAULT 0 CHECK (in_city IN (0,1)),
+    present_until INTEGER NOT NULL DEFAULT 0,
+    control_epoch INTEGER NOT NULL DEFAULT 0,
+    controller_id TEXT,
+    revision INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL,
+    last_seen_at INTEGER NOT NULL
+  ) STRICT;
+  INSERT INTO residents_v2(resident_id, principal_id, name, bio, origin, place_id, trip_id, in_city, present_until, control_epoch, controller_id, revision, created_at, last_seen_at)
+    SELECT resident_id, principal_id, name, bio, origin, place_id, trip_id, in_city, present_until, 0, NULL, revision, created_at, last_seen_at
+    FROM residents;
+  DROP TABLE residents;
+  ALTER TABLE residents_v2 RENAME TO residents;
+  CREATE INDEX residents_place ON residents(place_id) WHERE place_id IS NOT NULL;
+
+  CREATE TABLE login_tickets (
+    ticket_hash TEXT PRIMARY KEY,
+    principal_id TEXT NOT NULL REFERENCES principals(principal_id),
+    created_at INTEGER NOT NULL,
+    expires_at INTEGER NOT NULL,
+    redeemed_at INTEGER
+  ) STRICT, WITHOUT ROWID;
+
+  CREATE TABLE web_sessions (
+    token_hash TEXT PRIMARY KEY,
+    principal_id TEXT NOT NULL REFERENCES principals(principal_id),
+    csrf_token TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    expires_at INTEGER NOT NULL,
+    revoked_at INTEGER
+  ) STRICT, WITHOUT ROWID;
+  CREATE INDEX web_sessions_principal ON web_sessions(principal_id);
+
+  CREATE TABLE items_v2 (
+    item_id TEXT PRIMARY KEY,
+    owner_id TEXT NOT NULL REFERENCES residents(resident_id),
+    type TEXT NOT NULL,
+    quantity INTEGER NOT NULL CHECK (quantity >= 0),
+    instance INTEGER NOT NULL DEFAULT 0 CHECK (instance IN (0,1)),
+    origin_ref TEXT,
+    origin_json TEXT,
+    meta_json TEXT,
+    borrowed_from TEXT REFERENCES residents(resident_id),
+    visit_id TEXT,
+    state TEXT NOT NULL DEFAULT 'held' CHECK (state IN ('held','returned','locker','disposed','space')),
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    CHECK (instance = 0 OR quantity <= 1)
+  ) STRICT;
+  INSERT INTO items_v2(item_id, owner_id, type, quantity, instance, origin_ref, origin_json, meta_json, borrowed_from, visit_id, state, created_at, updated_at)
+    SELECT item_id, owner_id, type, quantity,
+           CASE WHEN origin_ref IS NOT NULL AND quantity <= 1 THEN 1 ELSE 0 END,
+           origin_ref, origin_json, NULL, NULL, visit_id, state, created_at, created_at
+    FROM items;
+  DROP TABLE items;
+  ALTER TABLE items_v2 RENAME TO items;
+  CREATE UNIQUE INDEX items_plain_stack ON items(owner_id, type) WHERE origin_ref IS NULL AND instance = 0 AND state = 'held';
+  CREATE INDEX items_owner ON items(owner_id, state);
+  CREATE INDEX items_visit ON items(visit_id) WHERE visit_id IS NOT NULL;
+
+  CREATE TABLE item_events_v2 (
+    event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    visit_id TEXT,
+    resident_id TEXT NOT NULL,
+    item_id TEXT NOT NULL,
+    type TEXT NOT NULL,
+    origin_ref TEXT,
+    quantity INTEGER NOT NULL CHECK (quantity > 0),
+    fate TEXT NOT NULL CHECK (fate IN ('acquired','received','consumed','given','sold','stored','retrieved','disposed','loaned','returned_loan','crafted','placed')),
+    effect_id TEXT,
+    counterparty TEXT,
+    at INTEGER NOT NULL
+  ) STRICT;
+  INSERT INTO item_events_v2(event_id, visit_id, resident_id, item_id, type, origin_ref, quantity, fate, effect_id, counterparty, at)
+    SELECT event_id, visit_id, resident_id, item_id, type, origin_ref, quantity, fate, effect_id, counterparty, at
+    FROM item_events;
+  DROP TABLE item_events;
+  ALTER TABLE item_events_v2 RENAME TO item_events;
+  CREATE INDEX item_events_visit ON item_events(visit_id, event_id) WHERE visit_id IS NOT NULL;
+  `,
 ];
 
 export const CITY_SCHEMA: SchemaSpec = { label: '城市世界数据库', migrations: MIGRATIONS, backupPrefix: 'city-' };

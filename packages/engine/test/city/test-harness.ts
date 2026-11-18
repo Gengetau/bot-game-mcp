@@ -30,6 +30,7 @@ import { SeededRng } from '../../src/core/rng.js';
 import { FileStateStore } from '../../src/core/store.js';
 import { createRegistry } from '../../src/games/index.js';
 import { Authenticator, extractKey, type SessionContext } from '../../src/mcp/auth.js';
+import { cityPolicy } from '../../src/mcp/city.js';
 import { createMcpServer } from '../../src/mcp/server.js';
 import { VERSION } from '../../src/version.js';
 import { mountCity } from '../../src/city/http.js';
@@ -75,6 +76,8 @@ export interface IsolatedCityHarnessOptions {
   enableControlRoutes?: boolean;
   /** 覆盖 city.params */
   cityParams?: Record<string, unknown>;
+  /** 覆盖 city 配置字段（如 publicUrl、devLogin、adminOnlyTickets） */
+  cityOverrides?: Record<string, unknown>;
 }
 
 export interface IsolatedCityHarness {
@@ -124,6 +127,7 @@ export async function createIsolatedCityHarness(opts: IsolatedCityHarnessOptions
   rawCfg.city.weather = false;
   if (opts.seed) rawCfg.seed = opts.seed;
   if (opts.cityParams) rawCfg.city.params = { ...rawCfg.city.params, ...opts.cityParams };
+  if (opts.cityOverrides) rawCfg.city = { ...rawCfg.city, ...opts.cityOverrides };
 
   // 通过正式 configSchema 校验配置合法性
   const tmpCfgFile = join(workDir, 'botgame.city-test.resolved.json');
@@ -149,6 +153,7 @@ export async function createIsolatedCityHarness(opts: IsolatedCityHarnessOptions
   let currentCity!: CityService;
   let currentManager!: GameManager;
   let currentServer!: HttpServer;
+  let closeCityHttp: () => void = () => undefined;
   let currentPort = config.port;
   const mcpSessions = new Map<string, StreamableHTTPServerTransport>();
 
@@ -206,6 +211,8 @@ export async function createIsolatedCityHarness(opts: IsolatedCityHarnessOptions
     const city = createCity({
       dbPath,
       params: config.city.params,
+      publicUrl: config.city.publicUrl,
+      devLogin: config.city.devLogin,
       now: clock.now,
       rng: new SeededRng(`${config.seed ?? 'test'}:city:${bootSeq}`),
       house: config.city.house.map((m) => ({ actorId: m.actorId, name: m.name, ...(m.bio ? { bio: m.bio } : {}), qqIds: m.qqIds })),
@@ -229,7 +236,9 @@ export async function createIsolatedCityHarness(opts: IsolatedCityHarnessOptions
       log,
       city: {
         city,
-        ...(config.city.allowedAgents ? { allowedAgents: config.city.allowedAgents } : {}),
+        auth,
+        trustedIds: config.refereeIds,
+        ...cityPolicy(config.city),
       },
     };
 
@@ -304,7 +313,11 @@ export async function createIsolatedCityHarness(opts: IsolatedCityHarnessOptions
       res.json({ games: manager.listGames({ groupId: req.query.group_id as string | undefined, includeFinished: req.query.all === '1' }) });
     });
 
-    mountCity(app, city, log, { bridgeKey: config.city.bridgeKey, requestsPerMinute: 10_000 });
+    closeCityHttp = mountCity(app, city, log, {
+      bridgeKey: config.city.bridgeKey,
+      adminKeys: config.auth.adminKeys,
+      requestsPerMinute: 10_000,
+    });
 
     if (opts.enableControlRoutes) {
       const ctl = express.Router();
@@ -362,6 +375,8 @@ export async function createIsolatedCityHarness(opts: IsolatedCityHarnessOptions
   const shutdownCurrent = async (): Promise<void> => {
     for (const t of mcpSessions.values()) await t.close().catch(() => undefined);
     mcpSessions.clear();
+    closeCityHttp();
+    closeCityHttp = () => undefined;
     if (currentServer) {
       currentServer.closeAllConnections();
       await new Promise<void>((r) => currentServer.close(() => r()));
