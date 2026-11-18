@@ -31,7 +31,7 @@ import {
   type Place,
 } from './catalog.js';
 import { CityError } from './errors.js';
-import { heldItems, lockerItems, wallet } from './ledger.js';
+import { heldItems, lockerItems, trustedAssetIdOf, wallet } from './ledger.js';
 import { MAPPINGS, kernelItemOf } from './mappings.js';
 import { card } from './residents.js';
 import type { CityResident, CityService } from './service.js';
@@ -249,7 +249,7 @@ export function selfView(c: CityService, r: CityResident, opts: { clientId?: str
       ...(meta ? { meta } : {}),
       ...(t && t.kind !== 'thing' ? { edible: true } : {}),
       // 室友：这件东西能不能带回家（映射表里有才行，否则回家时留在寄存包裹）
-      ...(r.origin === 'house' ? { from_home: i.origin_ref !== null, can_go_home: carryHome && (i.origin_ref !== null || kernelItemOf(i.type) !== null) } : {}),
+      ...(r.origin === 'house' ? { from_home: i.origin_ref !== null, can_go_home: carryHome && (i.origin_ref !== null || (i.type === 'apparel_bundle' ? trustedAssetIdOf(i) !== null : kernelItemOf(i.type) !== null)) } : {}),
     };
   });
   const locker = lockerItems(c, r.resident_id).map((i) => {

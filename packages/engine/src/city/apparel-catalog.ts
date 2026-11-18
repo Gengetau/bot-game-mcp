@@ -45,9 +45,9 @@ export function shopApparelBySku(placeId: string, sku: string): ApparelCatalogEn
   return hit && hit.shop === key ? hit : undefined;
 }
 
-function preferredSeasonsForMonth(month: number): readonly string[] {
-  if (month >= 3 && month <= 5) return ['spring', 'autumn'];
-  if (month >= 6 && month <= 8) return ['summer', 'swimwear', 'spring'];
+function preferredSeasonsForMonth(month: number, shop?: ApparelShopKey): readonly string[] {
+  if (month >= 3 && month <= 5) return shop === 'lumiere' ? ['spring', 'autumn', 'party'] : ['spring', 'autumn'];
+  if (month >= 6 && month <= 8) return shop === 'lumiere' ? ['summer', 'swimwear', 'party'] : ['summer', 'swimwear', 'spring'];
   if (month >= 9 && month <= 11) return ['autumn', 'winter', 'party'];
   return ['winter', 'autumn', 'party'];
 }
@@ -72,7 +72,7 @@ export function apparelWindowForPlace(placeId: string, dateStr = '2026-11-18', c
   const pool = BY_SHOP[key];
   if (pool.length <= count) return [...pool];
   const month = Number(dateStr.slice(5, 7)) || 11;
-  const seasons = preferredSeasonsForMonth(month);
+  const seasons = preferredSeasonsForMonth(month, key);
   const seasonal = key === 'velours' ? pool : pool.filter((e) => seasons.includes(e.cat));
   const activePool = seasonal.length >= count ? seasonal : pool;
   const start = dateSeed(dateStr, key) % activePool.length;

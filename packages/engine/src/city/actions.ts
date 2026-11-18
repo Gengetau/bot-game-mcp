@@ -418,8 +418,9 @@ export function resolvePendingOrder(
     unhold(c, r.resident_id, yen);
     c.db.run('UPDATE orders SET status = ?, resolved_at = ? WHERE order_id = ?', outcome, now, orderId);
     if (outcome === 'completed') {
-      ledger(c, `order:${orderId}`, 'purchase', itemName(itemTyp), [[purseOf(r.resident_id), -yen], [SHOPS, yen]], visit?.visit_id ?? null);
       const resolvedGood = findGoodAtPlace(String(o.place_id), String(o.sku), c.today(now), true);
+      const goodLabel = resolvedGood?.name ?? itemName(itemTyp);
+      ledger(c, `order:${orderId}`, 'purchase', goodLabel, [[purseOf(r.resident_id), -yen], [SHOPS, yen]], visit?.visit_id ?? null);
       if (resolvedGood?.assetId) {
         addPurchasedInstances(
           c,
@@ -439,7 +440,7 @@ export function resolvePendingOrder(
       }
       if (visit && !visitClosed) {
         outboxPurchase(c, visit, now, {
-          what: itemName(itemTyp),
+          what: goodLabel,
           yen: -yen,
           detail: { order_id: orderId, place: String(o.place_id), sku: String(o.sku), type: itemTyp, qty, resolved: true },
         });

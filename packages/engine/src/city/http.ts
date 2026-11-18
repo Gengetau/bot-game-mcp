@@ -35,6 +35,7 @@ import {
   HOUSE_ENTRANCE,
   ITEM_TYPES,
   TRANSIT_EDGES,
+  goodsForPlace,
   homeward,
   isCarryHome,
   isStorable,
@@ -746,7 +747,7 @@ export function mountCity(app: Express, c: CityService, log: (msg: string) => vo
         carry_home: isCarryHome(i.type),
         storable: isStorable(i.type),
       })),
-      places: publicPlaces().map((p) => ({ id: p.id, name: p.name, area: p.area, type: p.type, hours: p.hours, rain: p.rain, homeward: { fare_yen: homeward(p.id).fareYen, minutes: homeward(p.id).minutes }, goods: p.goods.map((g) => ({ sku: g.sku, type: g.type, name: g.name, price_yen: g.priceYen })) })),
+      places: publicPlaces().map((p) => ({ id: p.id, name: p.name, area: p.area, type: p.type, hours: p.hours, rain: p.rain, homeward: { fare_yen: homeward(p.id).fareYen, minutes: homeward(p.id).minutes }, goods: goodsForPlace(p, c.today(c.now())).map((g) => ({ sku: g.sku, type: g.type, name: g.name, price_yen: g.priceYen })) })),
       transit: TRANSIT_EDGES.map((e) => ({ from: station(e.a)!.placeId, to: station(e.b)!.placeId, line: e.line, minutes: e.minutes, fare_yen: e.fareYen, source: 'simulated' })),
     })),
   );

@@ -1,4 +1,6 @@
+import express from 'express';
 import { describe, expect, it } from 'vitest';
+import { mountCity } from '../../src/city/http.js';
 import { APPAREL_CATALOG, apparelWindowForPlace } from '../../src/city/apparel-catalog.js';
 import { resolvePendingOrder } from '../../src/city/actions.js';
 import { runReconcile } from '../../src/city/reconcile.js';
@@ -109,5 +111,45 @@ describe('东京服饰买手店与 mappings v3 返家入柜闭环 (#260)', () =>
     expect(s2.items.some((i) => i.type === 'apparel_bundle' && i.fate === 'back' && i.kernel?.kind === 'wardrobe_asset')).toBe(true);
     expect(nia.release().state).toBe('closed');
     expect(runReconcile(t.c, 'test2').ok).toBe(true);
+  });
+
+  it('R260-04 & P3：跨日后 /city/bridge/v1/catalog 与店内实时橱窗完全一致，且光廊成衣春夏常驻包含派对礼服', async () => {
+    const t = makeCity();
+    const app = express();
+    const close = mountCity(app, t.c, () => {}, { bridgeKey: 'test_bridge_key_260' });
+    const srv = await new Promise<import('node:http').Server>((res) => {
+      const s = app.listen(0, '127.0.0.1', () => res(s));
+    });
+    try {
+      const addr = srv.address() as import('node:net').AddressInfo;
+      t.run(50 * HOUR);
+      expect(t.c.today(t.c.now())).toBe('2026-11-19');
+
+      const resp = await fetch(`http://127.0.0.1:${addr.port}/city/bridge/v1/catalog`, {
+        headers: { Authorization: 'Bearer test_bridge_key_260' },
+      });
+      const cat = (await resp.json()) as any;
+      const catalogSkus = cat.places
+        .find((p: any) => p.id === 'ikebukuro:suzuran-closet')
+        .goods.map((g: any) => g.sku);
+
+      const b = t.bot('跨日旅人', { entry: 'ikebukuro:station' });
+      b.act({ type: 'travel', to: 'ikebukuro:suzuran-closet' });
+      t.run(10 * MIN);
+      const liveShopSkus = ((b.view().here as any).goods as any[]).map((g: any) => g.sku);
+      expect(catalogSkus).toEqual(liveShopSkus);
+
+      let partySeenSpringSummer = 0;
+      for (const m of ['03', '04', '05', '06', '07', '08']) {
+        for (let d = 1; d <= 28; d++) {
+          const w = apparelWindowForPlace('shinjuku:lumiere-atelier', `2026-${m}-${String(d).padStart(2, '0')}`);
+          partySeenSpringSummer += w.filter((x) => x.cat === 'party').length;
+        }
+      }
+      expect(partySeenSpringSummer).toBeGreaterThan(0);
+    } finally {
+      close();
+      await new Promise<void>((res) => srv.close(() => res()));
+    }
   });
 });
