@@ -5,6 +5,7 @@
   "description": "小屋内核与东京城市引擎之间的桥接接口（服务器到服务器，前缀 /city/bridge/v1，Bearer 密钥）。本文件描述引擎当前实现的请求、回执、outbox 记录、结算清单和失败码。通用约定：1）request_id 必须匹配 ^[\\w.:-]{8,160}$，重试用同一个；2）payload_hash 可选，是「请求体去掉 request_id 和 payload_hash 之后」的规范化 JSON（键按字典序、无空白）的 SHA-256 十六进制，对不上返回 400 BAD_REQUEST / payload_hash_mismatch；3）桥接回执永久保存：同一个 request_id + 同样的内容返回原回执并带 replayed: true，同一个 request_id + 不同内容返回 409 CONFLICT / request_conflict；4）执行失败不留回执，修正后可以用同一个 request_id 再试；5）所有时间是 UTC 毫秒整数；6）outbox 按 seq 递增，内核按 record_id 去重。",
   "type": "object",
   "x-protocol": "city-bridge/1",
+  "x-mappings-version": 2,
   "x-endpoints": [
     {
       "method": "GET",
@@ -138,8 +139,29 @@
       "minLength": 1
     },
     "AreaId": {
+      "description": "开放街区编号（首发赤羽/池袋/新宿，v1 覆盖六街区；M4 内容包按标准 ID 扩展）。",
       "type": "string",
-      "enum": ["akabane", "ikebukuro", "shinjuku"]
+      "enum": ["akabane", "ikebukuro", "shinjuku", "asakusa", "shibuya", "kichijoji"]
+    },
+    "KernelEffectName": {
+      "description": "与小屋内核 world-kernel/life1 严格对齐的四种城市身体效果名（mappings_version = 2）：snack / drink_coffee / drink_tea 映射 ACTIONS['eat'].effects.once（hunger -60 * qty）；walk_15m 映射 ACTIVITIES['stroll'].effects.rate * 15 * blocks（energy -0.75 * blocks，blocks = minutes // 15）。",
+      "type": "string",
+      "enum": ["snack", "drink_coffee", "drink_tea", "walk_15m"]
+    },
+    "ItemMeta": {
+      "description": "具名实例件（instance = 1）的结构化元数据；玩家文本必须经净化且标注 untrusted: true。",
+      "type": "object",
+      "properties": {
+        "title": { "type": "string", "maxLength": 40 },
+        "summary": { "type": "string", "maxLength": 300 },
+        "author_id": { "type": "string" },
+        "author_name": { "type": "string" },
+        "created_at_ms": { "$ref": "#/$defs/TimeMs" },
+        "reading_progress": { "type": "integer", "minimum": 0 },
+        "location_ref": { "type": "string" },
+        "untrusted": { "type": "boolean" }
+      },
+      "additionalProperties": true
     },
     "KernelItem": {
       "description": "内核侧的资源种类（映射表的 kernel 一侧）。",
@@ -173,7 +195,7 @@
         "payload_hash": { "$ref": "#/$defs/PayloadHash" },
         "protocol": { "const": "city-bridge/1" },
         "vocab_version": { "description": "内核词表版本，只记录（最多 80 字符）。", "type": "string" },
-        "mappings_version": { "description": "必须等于引擎的映射表版本，否则 422 VERSION_MISMATCH / mappings_version。", "type": "integer" },
+        "mappings_version": { "description": "必须等于引擎的映射表版本（当前锁定为 2），否则 422 VERSION_MISMATCH / mappings_version。", "type": "integer", "const": 2 },
         "visit_id": { "$ref": "#/$defs/VisitId" },
         "actor_id": { "description": "内核里的室友身份，要在引擎的身份映射里。", "type": "string", "minLength": 1 },
         "carry": {
@@ -189,7 +211,8 @@
                 "properties": {
                   "ref": { "description": "内核资源 ID，同一次访问内不重复。", "type": "string", "pattern": "^\\S{1,160}$" },
                   "kernel": { "$ref": "#/$defs/KernelItem" },
-                  "qty": { "type": "integer", "minimum": 1, "maximum": 99 }
+                  "qty": { "type": "integer", "minimum": 1, "maximum": 99 },
+                  "meta": { "$ref": "#/$defs/ItemMeta" }
                 },
                 "required": ["ref", "kernel", "qty"]
               }
@@ -272,7 +295,9 @@
         { "$ref": "#/$defs/ActionBuy" },
         { "$ref": "#/$defs/ActionConsume" },
         { "$ref": "#/$defs/ActionGive" },
-        { "$ref": "#/$defs/ActionGoHome" }
+        { "$ref": "#/$defs/ActionGoHome" },
+        { "$ref": "#/$defs/ActionStoreLocker" },
+        { "$ref": "#/$defs/ActionTakeLocker" }
       ]
     },
     "ActionTravel": {
@@ -335,6 +360,30 @@
       },
       "required": ["type"]
     },
+    "ActionStoreLocker": {
+      "description": "在车站大厅或个人空间将随身物品存入本人城市储物柜（carry_home: false 的现点热饮不可存 422 / not_storable；从家里带出的 origin_ref 物品不可存 422 / carried_from_home）。item_id 或 item 二选一。",
+      "type": "object",
+      "properties": {
+        "type": { "const": "store_locker" },
+        "item_id": { "type": "string", "minLength": 1 },
+        "item": { "type": "string", "minLength": 1 },
+        "qty": { "type": "integer", "minimum": 1, "maximum": 99 }
+      },
+      "required": ["type"],
+      "anyOf": [{ "required": ["item_id"] }, { "required": ["item"] }]
+    },
+    "ActionTakeLocker": {
+      "description": "在车站大厅或个人空间从本人城市储物柜取出物品到随身背包。item_id 或 item 二选一。",
+      "type": "object",
+      "properties": {
+        "type": { "const": "take_locker" },
+        "item_id": { "type": "string", "minLength": 1 },
+        "item": { "type": "string", "minLength": 1 },
+        "qty": { "type": "integer", "minimum": 1, "maximum": 99 }
+      },
+      "required": ["type"],
+      "anyOf": [{ "required": ["item_id"] }, { "required": ["item"] }]
+    },
 
     "Receipt": {
       "description": "桥接回执。永久保存；同一个 request_id + 同样内容重发返回原回执并带 replayed: true，内容不同返回 409 CONFLICT / request_conflict。state 是处理完之后访问的状态。",
@@ -363,6 +412,7 @@
       "allOf": [{ "$ref": "#/$defs/Receipt" }, { "properties": { "payload": { "$ref": "#/$defs/ReturnRequestPayload" } } }]
     },
     "ReleaseReceipt": {
+      "description": "release 回执：M1 起 locker 寄存属正常流转（state 为 closed），仅当存在未决异常订单（pending 非空）时 state 为 reconcile。",
       "allOf": [{ "$ref": "#/$defs/Receipt" }, { "properties": { "state": { "enum": ["closed", "reconcile"] }, "payload": { "$ref": "#/$defs/ReleasePayload" } } }]
     },
     "ActReceipt": {
@@ -373,7 +423,7 @@
       "type": "object",
       "properties": {
         "city_catalog_version": { "type": "string" },
-        "mappings_version": { "type": "integer" },
+        "mappings_version": { "type": "integer", "const": 2 },
         "carry_yen": { "$ref": "#/$defs/Yen" },
         "items": {
           "type": "array",
@@ -516,7 +566,7 @@
         "state": { "$ref": "#/$defs/VisitState" },
         "protocol": { "const": "city-bridge/1" },
         "city_catalog_version": { "type": "string" },
-        "mappings_version": { "type": "integer" },
+        "mappings_version": { "type": "integer", "minimum": 1 },
         "vocab_version": { "type": ["string", "null"] },
         "transfer_id": { "type": ["string", "null"] },
         "domain_epoch": { "type": ["integer", "null"] },
@@ -601,7 +651,8 @@
         { "$ref": "#/$defs/OutboxPurchase" },
         { "$ref": "#/$defs/OutboxDecisionWake" },
         { "$ref": "#/$defs/OutboxReturnStarted" },
-        { "$ref": "#/$defs/OutboxVisitSettled" }
+        { "$ref": "#/$defs/OutboxVisitSettled" },
+        { "$ref": "#/$defs/OutboxOrderRefunded" }
       ]
     },
     "OutboxBase": {
@@ -635,6 +686,21 @@
     },
     "OutboxVisitSettled": {
       "allOf": [{ "$ref": "#/$defs/OutboxBase" }, { "properties": { "kind": { "const": "visit_settled" }, "payload": { "$ref": "#/$defs/Settlement" } } }]
+    },
+    "OutboxOrderRefunded": {
+      "allOf": [{ "$ref": "#/$defs/OutboxBase" }, { "properties": { "kind": { "const": "order_refunded" }, "payload": { "$ref": "#/$defs/OrderRefundedPayload" } } }]
+    },
+    "OrderRefundedPayload": {
+      "description": "访问已关单（reconcile / closed）后，结果未知的 pending 订单经管理端确认为 failed 时写入：资金已从随身钱包退回 bridge:ai-house，内核按 record_id 幂等给室友家庭钱包补回 yen；all_pending_cleared 为 true 时本次访问已无遗留未决订单。",
+      "type": "object",
+      "properties": {
+        "actor_id": { "type": "string", "minLength": 1 },
+        "order_id": { "type": "string", "minLength": 1 },
+        "yen": { "type": "integer", "minimum": 1 },
+        "all_pending_cleared": { "type": "boolean" }
+      },
+      "required": ["actor_id", "order_id", "yen", "all_pending_cleared"],
+      "additionalProperties": true
     },
 
     "VisitProgressPayload": {
@@ -673,7 +739,7 @@
         "engine_type": { "description": "ate / drank 才有。", "type": "string" },
         "qty": { "description": "ate / drank 才有。", "type": "integer", "minimum": 1 },
         "minutes": { "description": "walked 才有：这一条代表的步行分钟数（映射表的 min_minutes）。", "type": "integer", "minimum": 1 },
-        "kernel_effect": { "type": ["string", "null"] }
+        "kernel_effect": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/KernelEffectName" }] }
       },
       "required": ["actor_id", "effect_id", "engine_kind", "kernel_effect"],
       "additionalProperties": true
@@ -769,7 +835,7 @@
         "carry_yen": { "$ref": "#/$defs/Yen" },
         "purse_final_yen": { "description": "能带回家的钱；被结果未知的交易锁住的部分留在城里等对账。", "$ref": "#/$defs/Yen" },
         "items": {
-          "description": "每件物品的去向：back 回家；locker 城里得到的、映射表里没有的，留在寄存包裹；consumed / given / sold 已经用掉、送人、卖掉。只有 back 且是城里得到、映射表里有的才带 kernel。",
+          "description": "每件物品的去向：back 回家；locker 留在城市储物柜（正常流转，不触发 reconcile）；disposed 为 carry_home: false 的现点热饮返家前自动清理（不进储物柜、不写身体效果）；consumed / given / sold 已经用掉、送人、卖掉。只有 back 且是城里得到、映射表里有的才带 kernel。",
           "type": "array",
           "items": {
             "type": "object",
@@ -778,8 +844,10 @@
               "origin_ref": { "description": "带出来的物品是内核资源 ID；城里得到的为 null。", "type": ["string", "null"] },
               "type": { "type": "string" },
               "qty": { "type": "integer", "minimum": 1 },
-              "fate": { "type": "string", "enum": ["back", "consumed", "given", "sold", "locker"] },
-              "kernel": { "$ref": "#/$defs/KernelItem" }
+              "fate": { "type": "string", "enum": ["back", "consumed", "given", "sold", "locker", "disposed"] },
+              "kernel": { "$ref": "#/$defs/KernelItem" },
+              "instance": { "oneOf": [{ "type": "boolean" }, { "type": "integer", "enum": [0, 1] }] },
+              "meta": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/ItemMeta" }] }
             },
             "required": ["engine_item_id", "origin_ref", "type", "qty", "fate"]
           }
@@ -834,6 +902,11 @@
             },
             "required": ["what", "yen"]
           }
+        },
+        "notes": {
+          "description": "可选的结算提示（例如未饮完的现点热饮按 disposed 处理说明）。",
+          "type": "array",
+          "items": { "type": "string" }
         },
         "settled_at_ms": { "$ref": "#/$defs/TimeMs" }
       },
@@ -910,10 +983,10 @@
     },
 
     "MappingsTable": {
-      "description": "物品与效果映射表，和 docs/city/mappings.json 同内容。",
+      "description": "物品与效果映射表（当前锁定 version = 2），和 docs/city/mappings.json 同内容。",
       "type": "object",
       "properties": {
-        "version": { "type": "integer" },
+        "version": { "type": "integer", "const": 2 },
         "items": {
           "type": "array",
           "items": {
@@ -936,7 +1009,7 @@
               "engine_kind": { "type": "string", "enum": ["ate", "drank", "walked"] },
               "engine_type": { "type": "string" },
               "min_minutes": { "type": "integer", "minimum": 1 },
-              "kernel_effect": { "type": "string" }
+              "kernel_effect": { "$ref": "#/$defs/KernelEffectName" }
             },
             "required": ["engine_kind", "kernel_effect"]
           }
@@ -960,7 +1033,9 @@
             "properties": {
               "type": { "type": "string" },
               "name": { "type": "string" },
-              "kind": { "type": "string", "enum": ["food", "drink", "thing"] }
+              "kind": { "type": "string", "enum": ["food", "drink", "thing"] },
+              "carry_home": { "description": "false 表示堂食/随身即饮（如现点 coffee、milk_tea），不可存入储物柜，返家未饮完按 disposed 清理。", "type": "boolean" },
+              "storable": { "type": "boolean" }
             },
             "required": ["type", "name", "kind"]
           }
@@ -1095,6 +1170,7 @@
         "STALE_DOMAIN_EPOCH",
         "VISIT_NOT_ACTIVE",
         "VERSION_MISMATCH",
+        "CONTROL_LOST",
         "INTERNAL"
       ]
     }

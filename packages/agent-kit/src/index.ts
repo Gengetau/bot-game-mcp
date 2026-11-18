@@ -8,4 +8,6 @@
 export * from './client.js';
 export * from './town.js';
 export * from './resident.js';
+export * from './city.js';
+export * from './city-runner.js';
 export * from './prompts.js';

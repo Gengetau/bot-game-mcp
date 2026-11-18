@@ -1,0 +1,58 @@
+{
+  "host": "127.0.0.1",
+  "port": 17700,
+  "path": "/mcp",
+  "legacySse": true,
+  "publicApi": true,
+  "web": true,
+  "stateFile": "./data/city-test-state.json",
+  "settingsFile": "./data/city-test-settings.json",
+  "seed": "city-isolated-test-seed-v1",
+  "refereeIds": ["80001"],
+  "auth": {
+    "mode": "keys",
+    "adminKeys": ["test_only_admin_key_city_isolated_0001"],
+    "agents": [
+      { "key": "test_only_referee_key_city_0001", "id": "80001", "name": "测试裁判" },
+      { "key": "test_only_ext_bot_key_city_90001", "id": "90001", "name": "旅人一号" },
+      { "key": "test_only_ext_bot_key_city_90002", "id": "90002", "name": "旅人二号" },
+      { "key": "test_only_ext_bot_unlisted_90099", "id": "90099", "name": "名单外访客" },
+      { "key": "test_only_house_qq_nia_30001", "id": "30001", "name": "妮娅QQ端" }
+    ],
+    "issuedKeysFile": "./data/city-test-keys.json"
+  },
+  "town": {
+    "enabled": false,
+    "dbFile": "./data/town-frozen.db",
+    "publicUrl": null,
+    "devLogin": false,
+    "clientDir": null,
+    "params": {},
+    "adminOnlyTickets": false
+  },
+  "city": {
+    "enabled": true,
+    "dbFile": "./data/city-test.db",
+    "bridgeKey": "test-only-city-bridge-key-not-for-prod-0001",
+    "weather": false,
+    "allowedAgents": ["90001", "90002"],
+    "house": [
+      { "actorId": "nia", "name": "妮娅", "bio": "喜欢甜食与午后散步", "qqIds": ["30001"] },
+      { "actorId": "claire", "name": "克蕾雅", "bio": "安静读书的室友", "qqIds": ["30002"] },
+      { "actorId": "alicia", "name": "艾莉希娅", "bio": "温和细心的室友", "qqIds": ["30003"] },
+      { "actorId": "grok", "name": "格萝可", "bio": "爱打游戏的宅系室友", "qqIds": ["30004"] },
+      { "actorId": "xingli", "name": "星璃", "bio": "活力满满的群管理员", "qqIds": ["30005"] },
+      { "actorId": "whale", "name": "岚汐", "bio": "喜欢海风与茶点", "qqIds": ["30006"] }
+    ],
+    "params": {
+      "timezone": "Asia/Tokyo",
+      "backupKeep": 2
+    }
+  },
+  "allowedGroups": ["1000001"],
+  "maxActiveGames": 0,
+  "refereeStaleSeconds": 120,
+  "lobbyTtlMinutes": 120,
+  "idleGameTtlMinutes": 360,
+  "sessionIdleMinutes": 30
+}
