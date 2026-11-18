@@ -222,7 +222,7 @@ export function renderCityPage(c: CityService): string {
       const places = (a.places as any[])
         .map((p) => {
           const people = (p.here as any[]).map((r) => esc(r.name)).join('、');
-          const goods = (p.goods as any[]).map((g) => `${esc(g.name)} ¥${esc(g.price_yen)}`).join('，');
+          const goods = (p.goods as any[]).map((g) => `${esc(g.name)} ¥${esc(g.price_yen)}${g.discount_label ? `（${esc(g.discount_label)}）` : ''}`).join('，');
           const state = p.open ? '' : p.closed_reason === 'rain' ? '（下雨，暂不开放）' : '（现在不营业）';
           return `<li><b>${esc(p.name)}</b>${state} <small>${esc(p.hours)}${p.fictional ? ' · 虚构店铺' : ''}</small><br>${esc(p.blurb)}${goods ? `<br><small>${goods}</small>` : ''}${people ? `<br>这里有：${people}` : ''}</li>`;
         })
@@ -734,7 +734,9 @@ export function mountCity(app: Express, c: CityService, log: (msg: string) => vo
 
   bridge.get(
     '/catalog',
-    sync(() => ({
+    sync(() => {
+      const ct = c.catalogTime(c.now());
+      return {
       protocol: BRIDGE_PROTOCOL,
       city_catalog_version: CITY_CATALOG_VERSION,
       fare_rule_version: FARE_RULE_VERSION,
@@ -747,9 +749,10 @@ export function mountCity(app: Express, c: CityService, log: (msg: string) => vo
         carry_home: isCarryHome(i.type),
         storable: isStorable(i.type),
       })),
-      places: publicPlaces().map((p) => ({ id: p.id, name: p.name, area: p.area, type: p.type, hours: p.hours, rain: p.rain, homeward: { fare_yen: homeward(p.id).fareYen, minutes: homeward(p.id).minutes }, goods: goodsForPlace(p, c.today(c.now())).map((g) => ({ sku: g.sku, type: g.type, name: g.name, price_yen: g.priceYen })) })),
+      places: publicPlaces().map((p) => ({ id: p.id, name: p.name, area: p.area, type: p.type, hours: p.hours, rain: p.rain, homeward: { fare_yen: homeward(p.id).fareYen, minutes: homeward(p.id).minutes }, goods: goodsForPlace(p, ct).map((g) => ({ sku: g.sku, type: g.type, name: g.name, price_yen: g.priceYen })) })),
       transit: TRANSIT_EDGES.map((e) => ({ from: station(e.a)!.placeId, to: station(e.b)!.placeId, line: e.line, minutes: e.minutes, fare_yen: e.fareYen, source: 'simulated' })),
-    })),
+      };
+    }),
   );
   bridge.post('/visits/prepare', sync((req) => prepareVisit(c, body(req))));
   bridge.post('/visits/:id/commit', sync((req) => commitVisit(c, visitId(req), body(req))));

@@ -7,8 +7,9 @@
  */
 import { sanitizeUserText } from '../core/text.js';
 import type { Row } from '../world/db.js';
-import { isStorable, itemName, itemType } from './catalog.js';
-import { cityBadRequest, cityPrecondition } from './errors.js';
+import { sha256 } from '../world/service.js';
+import { MAX_FLYLEAF_ENTRIES, MAX_FLYLEAF_NOTE_CHARS, isStorable, itemName, itemType } from './catalog.js';
+import { CityError, cityBadRequest, cityPrecondition } from './errors.js';
 import type { CityService } from './service.js';
 
 /** 外部 bot 首次进城的发放来源 */
@@ -124,9 +125,36 @@ export interface ItemRow {
   meta_json: string | null;
   borrowed_from: string | null;
   visit_id: string | null;
-  state: 'held' | 'returned' | 'locker' | 'disposed' | 'space';
+  state: 'held' | 'returned' | 'locker' | 'disposed' | 'space' | 'shelf' | 'drift' | 'lost_found';
+  shelf_place_id?: string | null;
+  shelf_price_yen?: number | null;
   created_at: number;
   updated_at: number;
+}
+
+export interface FlyleafEntry {
+  by_id?: string;
+  by_name: string;
+  note: string;
+  place_id?: string;
+  at_ms: number;
+  untrusted: true;
+}
+
+export interface LockerDepositRow {
+  deposit_id: string;
+  item_id: string;
+  sender_id: string;
+  recipient_id: string | null;
+  voucher_hash: string | null;
+  place_id: string;
+  type: string;
+  quantity: number;
+  status: 'active' | 'claimed' | 'expired_returned' | 'expired_lost_found';
+  created_at: number;
+  expires_at: number;
+  resolved_at: number | null;
+  claimed_by: string | null;
 }
 
 /** 身上可用的物品（数量为零的不算）。带出门的排在前面。 */
@@ -137,10 +165,13 @@ export function heldItems(c: CityService, residentId: string): ItemRow[] {
   );
 }
 
-/** 城市储物柜里的物品（数量为零的不算）。 */
+/** 个人城市储物柜里的物品（不含已锁定在公共代取寄存柜里的物品）。 */
 export function lockerItems(c: CityService, residentId: string): ItemRow[] {
   return c.db.all<ItemRow & Row>(
-    "SELECT * FROM items WHERE owner_id = ? AND state = 'locker' AND quantity > 0 ORDER BY (instance = 0), updated_at DESC, item_id",
+    `SELECT * FROM items
+     WHERE owner_id = ? AND state = 'locker' AND quantity > 0
+       AND NOT EXISTS (SELECT 1 FROM locker_deposits d WHERE d.item_id = items.item_id AND d.status = 'active')
+     ORDER BY (instance = 0), updated_at DESC, item_id`,
     residentId,
   );
 }
@@ -188,6 +219,25 @@ export function sanitizeItemMeta(raw: unknown): Record<string, unknown> | null {
     out.reading_progress = src.reading_progress;
   }
   if (typeof src.location_ref === 'string') out.location_ref = src.location_ref.slice(0, 80);
+  if (Array.isArray(src.flyleaf)) {
+    const cleanEntries: FlyleafEntry[] = [];
+    for (const item of src.flyleaf.slice(-MAX_FLYLEAF_ENTRIES)) {
+      if (!item || typeof item !== 'object' || Array.isArray(item)) continue;
+      const rec = item as Record<string, unknown>;
+      const cleanNote = [...sanitizeUserText(typeof rec.note === 'string' ? rec.note : '').trim()].slice(0, MAX_FLYLEAF_NOTE_CHARS).join('');
+      if (!cleanNote) continue;
+      const byName = [...sanitizeUserText(typeof rec.by_name === 'string' ? rec.by_name : '').trim()].slice(0, 24).join('') || '匿名旅人';
+      cleanEntries.push({
+        ...(typeof rec.by_id === 'string' ? { by_id: rec.by_id.slice(0, 64) } : {}),
+        by_name: byName,
+        note: cleanNote,
+        ...(typeof rec.place_id === 'string' ? { place_id: rec.place_id.slice(0, 64) } : {}),
+        at_ms: typeof rec.at_ms === 'number' && Number.isSafeInteger(rec.at_ms) ? rec.at_ms : 0,
+        untrusted: true,
+      });
+    }
+    if (cleanEntries.length > 0) out.flyleaf = cleanEntries;
+  }
   return out;
 }
 
@@ -627,4 +677,444 @@ export function trustedAssetIdOf(row: Pick<ItemRow, 'type' | 'origin_json'>): st
   }
   if (!parsed || parsed.domain !== 'tokyo_shop' || typeof parsed.asset_id !== 'string') return null;
   return TRUSTED_ASSET_ID_RE.test(parsed.asset_id) ? parsed.asset_id : null;
+}
+
+// ───────────────────────── 漂流文库本（扉页流转印记） ─────────────────────────
+
+function parseMeta(raw: string | null): Record<string, unknown> {
+  if (!raw) return {};
+  try {
+    const p = JSON.parse(raw) as unknown;
+    return p && typeof p === 'object' && !Array.isArray(p) ? (p as Record<string, unknown>) : {};
+  } catch {
+    return {};
+  }
+}
+
+function appendFlyleafNote(
+  meta: Record<string, unknown>,
+  entry: { byId: string; byName: string; note: string; placeId: string; at: number },
+): Record<string, unknown> {
+  const prev = Array.isArray(meta.flyleaf) ? (meta.flyleaf as FlyleafEntry[]) : [];
+  const next: FlyleafEntry[] = [
+    ...prev,
+    {
+      by_id: entry.byId,
+      by_name: [...sanitizeUserText(entry.byName).trim()].slice(0, 24).join('') || '旅人',
+      note: entry.note,
+      place_id: entry.placeId,
+      at_ms: entry.at,
+      untrusted: true as const,
+    },
+  ].slice(-MAX_FLYLEAF_ENTRIES);
+  return sanitizeItemMeta({ ...meta, summary: entry.note, flyleaf: next, untrusted: true }) ?? { untrusted: true };
+}
+
+export function cleanFlyleafInput(rawNote: unknown): string {
+  if (rawNote === undefined || rawNote === null) return '';
+  if (typeof rawNote !== 'string') throw cityBadRequest('note 必须是字符串。', 'bad_note');
+  const cleaned = sanitizeUserText(rawNote).trim();
+  if ([...cleaned].length > MAX_FLYLEAF_NOTE_CHARS) {
+    throw cityBadRequest(`扉页批注最多 ${MAX_FLYLEAF_NOTE_CHARS} 个字。`, 'text_too_long');
+  }
+  return cleaned;
+}
+
+/** 阅读或批注文库本：instance=0 拆分 1 本升级为 instance=1；已是 instance=1 则原地更新同 item_id，不销毁重建。 */
+export function annotatePaperback(
+  c: CityService,
+  residentId: string,
+  what: { itemId?: string; type?: string },
+  opts: { title?: string; note?: string; placeId: string; residentName: string; visitId: string | null },
+  at: number,
+): { item_id: string; type: string; reading_progress: number; flyleaf_count: number; title?: string } {
+  const held = heldItems(c, residentId);
+  let row: ItemRow | undefined;
+  if (what.itemId) {
+    row = held.find((i) => i.item_id === what.itemId);
+    if (!row) throw cityPrecondition('你身上没有这本书。', 'not_enough_items');
+  } else {
+    const t = what.type ?? '';
+    if (!t || !itemType(t)) throw cityBadRequest('要说清楚是哪本书：item_id 或 item。', 'no_such_item');
+    // 传物品类型时优先从未批注的堆叠本中拆开新的一本；若全已拆封再续写已读本
+    row = held.find((i) => i.type === t && i.instance === 0) ?? held.find((i) => i.type === t);
+    if (!row) throw cityPrecondition('你身上没有文库本。', 'not_enough_items');
+  }
+  if (row.type !== 'paperback') {
+    throw cityPrecondition(`${itemName(row.type)}不支持写读书扉页批注，当前仅支持文库本。`, 'not_readable');
+  }
+  const cleanNote = cleanFlyleafInput(opts.note);
+  let cleanTitle = '';
+  if (opts.title !== undefined) {
+    cleanTitle = sanitizeUserText(opts.title).trim();
+    if ([...cleanTitle].length > 40) throw cityBadRequest('书名最多 40 个字。', 'text_too_long');
+  }
+
+  if (row.instance === 0) {
+    c.db.run('UPDATE items SET quantity = quantity - 1, updated_at = ? WHERE item_id = ?', at, row.item_id);
+    const newId = c.id('it');
+    let meta: Record<string, unknown> = {
+      ...(cleanTitle ? { title: cleanTitle } : {}),
+      reading_progress: 1,
+      created_at_ms: at,
+      untrusted: true,
+    };
+    if (cleanNote) {
+      meta = appendFlyleafNote(meta, { byId: residentId, byName: opts.residentName, note: cleanNote, placeId: opts.placeId, at });
+    } else {
+      meta = sanitizeItemMeta(meta) ?? { untrusted: true };
+    }
+    c.db.run(
+      "INSERT INTO items(item_id, owner_id, type, quantity, instance, origin_ref, origin_json, meta_json, borrowed_from, visit_id, state, shelf_place_id, shelf_price_yen, created_at, updated_at) VALUES (?,?,?,1,1,NULL,NULL,?,NULL,?,'held',NULL,NULL,?,?)",
+      newId,
+      residentId,
+      row.type,
+      JSON.stringify(meta),
+      opts.visitId,
+      at,
+      at,
+    );
+    const count = Array.isArray(meta.flyleaf) ? meta.flyleaf.length : 0;
+    return { item_id: newId, type: row.type, reading_progress: 1, flyleaf_count: count, ...(typeof meta.title === 'string' ? { title: meta.title } : {}) };
+  }
+
+  const prev = parseMeta(row.meta_json);
+  const nextProgress = (typeof prev.reading_progress === 'number' && Number.isSafeInteger(prev.reading_progress) ? prev.reading_progress : 0) + 1;
+  let nextMeta: Record<string, unknown> = {
+    ...prev,
+    ...(cleanTitle ? { title: cleanTitle } : {}),
+    reading_progress: nextProgress,
+    untrusted: true,
+  };
+  if (cleanNote) {
+    nextMeta = appendFlyleafNote(nextMeta, { byId: residentId, byName: opts.residentName, note: cleanNote, placeId: opts.placeId, at });
+  } else {
+    nextMeta = sanitizeItemMeta(nextMeta) ?? { untrusted: true };
+  }
+  c.db.run('UPDATE items SET meta_json = ?, updated_at = ? WHERE item_id = ?', JSON.stringify(nextMeta), at, row.item_id);
+  const count = Array.isArray(nextMeta.flyleaf) ? nextMeta.flyleaf.length : 0;
+  return {
+    item_id: row.item_id,
+    type: row.type,
+    reading_progress: nextProgress,
+    flyleaf_count: count,
+    ...(typeof nextMeta.title === 'string' ? { title: nextMeta.title } : {}),
+  };
+}
+
+/** 将已读/写过批注的 instance=1 文库本放入古书二手架（shelf）或车站图书漂流角（drift），全程保持同一 item_id。 */
+export function driftBookToCorner(
+  c: CityService,
+  residentId: string,
+  what: { itemId?: string; type?: string },
+  mode: 'shelf' | 'drift',
+  placeId: string,
+  residentName: string,
+  visitId: string | null,
+  at: number,
+  note?: string,
+  resaleYen?: number,
+): { item_id: string; type: string; flyleaf_count: number; title?: string } {
+  const held = heldItems(c, residentId);
+  const row = what.itemId ? held.find((i) => i.item_id === what.itemId) : held.find((i) => i.type === (what.type ?? ''));
+  if (!row) throw cityPrecondition('你身上没有这本书。', 'not_enough_items');
+  if (row.type !== 'paperback') throw cityPrecondition('只有文库本可以放上古书二手架或漂流角。', 'not_driftable');
+  if (row.instance !== 1) throw cityPrecondition('需要先读过或写过批注（instance = 1）的文库本才能漂流或卖入二手架。', 'not_annotated');
+  if (row.origin_ref !== null) throw cityPrecondition('从家里带出来的物品不能放入漂流角。', 'carried_from_home');
+  if (row.borrowed_from !== null) throw cityPrecondition('借来的书不能转手或漂流。', 'item_borrowed');
+
+  const cleanNote = cleanFlyleafInput(note);
+  let meta = parseMeta(row.meta_json);
+  if (cleanNote) {
+    meta = appendFlyleafNote(meta, { byId: residentId, byName: residentName, note: cleanNote, placeId, at });
+  } else {
+    meta = sanitizeItemMeta(meta) ?? { untrusted: true };
+  }
+  c.db.run(
+    'UPDATE items SET state = ?, shelf_place_id = ?, shelf_price_yen = ?, visit_id = NULL, meta_json = ?, updated_at = ? WHERE item_id = ?',
+    mode,
+    placeId,
+    mode === 'shelf' ? (resaleYen ?? 350) : 0,
+    JSON.stringify(meta),
+    at,
+    row.item_id,
+  );
+  logItem(c, row, visitId, 1, mode === 'shelf' ? 'sold' : 'placed', { counterparty: placeId });
+  const count = Array.isArray(meta.flyleaf) ? meta.flyleaf.length : 0;
+  return {
+    item_id: row.item_id,
+    type: row.type,
+    flyleaf_count: count,
+    ...(typeof meta.title === 'string' ? { title: meta.title } : {}),
+  };
+}
+
+/** 从当前地点的古书二手架或漂流角淘走同一本 instance=1 文库本（保持同一 item_id）。 */
+export function takeBookFromCorner(
+  c: CityService,
+  residentId: string,
+  itemId: string,
+  mode: 'shelf' | 'drift',
+  placeId: string,
+  visitId: string | null,
+  at: number,
+): { row: ItemRow; priceYen: number } {
+  const row = c.db.get<ItemRow & Row>(
+    'SELECT * FROM items WHERE item_id = ? AND state = ? AND shelf_place_id = ? AND quantity = 1',
+    itemId,
+    mode,
+    placeId,
+  );
+  if (!row) throw new CityError('NOT_FOUND', '架上已经没有这本书了。', 'no_such_item');
+  const priceYen = mode === 'shelf' ? Number(row.shelf_price_yen ?? 350) : 0;
+  c.db.run(
+    "UPDATE items SET owner_id = ?, state = 'held', visit_id = ?, shelf_place_id = NULL, shelf_price_yen = NULL, updated_at = ? WHERE item_id = ?",
+    residentId,
+    visitId,
+    at,
+    row.item_id,
+  );
+  logItem(c, { ...row, owner_id: residentId }, visitId, 1, 'acquired', { counterparty: placeId });
+  const fresh = c.db.get<ItemRow & Row>('SELECT * FROM items WHERE item_id = ?', row.item_id)!;
+  return { row: fresh, priceYen };
+}
+
+export function cornerBooksAt(c: CityService, mode: 'shelf' | 'drift', placeId: string, limit = 5): ItemRow[] {
+  return c.db.all<ItemRow & Row>(
+    'SELECT * FROM items WHERE state = ? AND shelf_place_id = ? AND quantity > 0 ORDER BY updated_at DESC, item_id LIMIT ?',
+    mode,
+    placeId,
+    limit,
+  );
+}
+
+// ───────────────────────── 投币储物柜凭条代取与超时退回 ─────────────────────────
+
+export function createLockerDeposit(
+  c: CityService,
+  senderId: string,
+  what: { itemId?: string; type?: string },
+  qty: number,
+  placeId: string,
+  opts: { recipientId?: string; issueVoucher?: boolean; visitId: string | null },
+  at: number,
+): { deposit: LockerDepositRow; voucherCode?: string } {
+  if (!Number.isInteger(qty) || qty <= 0 || qty > 99) throw cityBadRequest('qty 要是 1 到 99 的整数。', 'bad_quantity');
+  if (opts.recipientId !== undefined) {
+    if (!c.resident(opts.recipientId)) throw new CityError('NOT_FOUND', '找不到这位受托居民。', 'no_such_resident');
+  }
+  const activeCount = c.db.scalar("SELECT COUNT(*) FROM locker_deposits WHERE sender_id = ? AND status = 'active'", senderId);
+  if (activeCount >= c.params.maxActiveLockerDeposits) {
+    throw cityPrecondition(`你最多只能同时占用 ${c.params.maxActiveLockerDeposits} 个公共代取储物柜位。`, 'locker_deposit_limit');
+  }
+
+  const held = heldItems(c, senderId);
+  let candidates: ItemRow[];
+  let targetType: string;
+  if (what.itemId) {
+    const exact = held.find((i) => i.item_id === what.itemId);
+    if (!exact) throw cityPrecondition('你身上没有这件东西。', 'not_enough_items');
+    targetType = exact.type;
+    if (!isStorable(targetType)) throw cityPrecondition(`${itemName(targetType)}是现点饮品，不能存进储物柜。`, 'not_storable');
+    if (exact.origin_ref !== null) throw cityPrecondition('从家里带出来的随身物品不能存入公共代取储物柜。', 'carried_from_home');
+    if (exact.borrowed_from !== null) throw cityPrecondition('借来的东西不能转存给别人领取。', 'item_borrowed');
+    candidates = [exact];
+  } else {
+    const t = what.type ?? '';
+    if (!t || !itemType(t)) throw cityBadRequest('要说清楚是哪件东西：item_id 或 item。', 'no_such_item');
+    targetType = t;
+    if (!isStorable(targetType)) throw cityPrecondition(`${itemName(targetType)}是现点饮品，不能存进储物柜。`, 'not_storable');
+    const matching = held.filter((i) => i.type === targetType);
+    const storableRows = matching.filter((i) => i.origin_ref === null && i.borrowed_from === null);
+    if (storableRows.reduce((n, i) => n + i.quantity, 0) < qty) {
+      if (matching.some((i) => i.origin_ref !== null)) {
+        throw cityPrecondition('从家里带出来的随身物品不能存入公共代取储物柜。', 'carried_from_home');
+      }
+      if (matching.some((i) => i.borrowed_from !== null)) {
+        throw cityPrecondition('借来的东西不能转存给别人领取。', 'item_borrowed');
+      }
+      throw cityPrecondition('你身上没有这么多可寄存的物品。', 'not_enough_items');
+    }
+    candidates = storableRows;
+  }
+  const avail = candidates.reduce((n, i) => n + i.quantity, 0);
+  if (avail < qty) throw cityPrecondition('你身上没有这么多可寄存的物品。', 'not_enough_items');
+
+  // 代取寄存每次锁定单行 item_id（instance=1 原地入柜；instance=0 拆分专用寄存行）
+  const first = candidates[0]!;
+  let lockedItemId: string;
+  if (first.instance === 1) {
+    if (qty !== 1) throw cityBadRequest('具名实例物品一次只能寄存 1 件。', 'bad_quantity');
+    lockedItemId = first.item_id;
+    c.db.run("UPDATE items SET state = 'locker', visit_id = ?, updated_at = ? WHERE item_id = ?", opts.visitId, at, lockedItemId);
+    logItem(c, first, opts.visitId, 1, 'stored', opts.recipientId ? { counterparty: opts.recipientId } : {});
+  } else {
+    if (first.quantity < qty) throw cityPrecondition('单堆数量不足以一次拆出寄存。', 'not_enough_items');
+    c.db.run('UPDATE items SET quantity = quantity - ?, updated_at = ? WHERE item_id = ?', qty, at, first.item_id);
+    lockedItemId = c.id('it');
+    c.db.run(
+      "INSERT INTO items(item_id, owner_id, type, quantity, instance, origin_ref, origin_json, meta_json, borrowed_from, visit_id, state, shelf_place_id, shelf_price_yen, created_at, updated_at) VALUES (?,?,?,?,0,NULL,NULL,NULL,NULL,?,'locker',NULL,NULL,?,?)",
+      lockedItemId,
+      senderId,
+      targetType,
+      qty,
+      opts.visitId,
+      at,
+      at,
+    );
+    logItem(c, { item_id: lockedItemId, owner_id: senderId, type: targetType, origin_ref: null }, opts.visitId, qty, 'stored', opts.recipientId ? { counterparty: opts.recipientId } : {});
+  }
+
+  const depositId = c.id('dep');
+  const voucherCode = opts.issueVoucher ? c.id('clk') : undefined;
+  const voucherHash = voucherCode ? sha256(voucherCode) : null;
+  const expiresAt = at + c.params.lockerLeaseMs;
+  c.db.run(
+    "INSERT INTO locker_deposits(deposit_id, item_id, sender_id, recipient_id, voucher_hash, place_id, type, quantity, status, created_at, expires_at, resolved_at, claimed_by) VALUES (?,?,?,?,?,?,?,?,'active',?,?,NULL,NULL)",
+    depositId,
+    lockedItemId,
+    senderId,
+    opts.recipientId ?? null,
+    voucherHash,
+    placeId,
+    targetType,
+    qty,
+    at,
+    expiresAt,
+  );
+  c.schedule('locker_expire', `locker:${depositId}`, expiresAt, { depositId });
+  const deposit = c.db.get<LockerDepositRow & Row>('SELECT * FROM locker_deposits WHERE deposit_id = ?', depositId)!;
+  return { deposit, ...(voucherCode ? { voucherCode } : {}) };
+}
+
+export function claimLockerDeposit(
+  c: CityService,
+  claimantId: string,
+  placeId: string,
+  opts: { depositId?: string; voucher?: string },
+  visitId: string | null,
+  at: number,
+): { deposit: LockerDepositRow; item_id: string; type: string; qty: number } {
+  let deposit: LockerDepositRow | undefined;
+  if (opts.voucher) {
+    deposit = c.db.get<LockerDepositRow & Row>('SELECT * FROM locker_deposits WHERE voucher_hash = ?', sha256(opts.voucher.trim()));
+    if (!deposit) throw new CityError('NOT_FOUND', '取件凭条无效或已失效。', 'invalid_voucher');
+  } else if (opts.depositId) {
+    deposit = c.db.get<LockerDepositRow & Row>('SELECT * FROM locker_deposits WHERE deposit_id = ?', opts.depositId);
+    if (!deposit) throw new CityError('NOT_FOUND', '找不到这格代取储物柜。', 'no_such_deposit');
+    if (deposit.voucher_hash !== null) {
+      throw cityPrecondition('这格储物柜需要出示一次性取件凭条（voucher）才能领取。', 'voucher_required');
+    }
+  } else {
+    throw cityBadRequest('请提供 deposit_id 或 voucher。', 'bad_locker_claim');
+  }
+
+  if (deposit.status !== 'active') {
+    throw cityPrecondition('这笔储物柜寄存已领取或已超时释放。', deposit.status === 'claimed' ? 'already_claimed' : 'voucher_expired');
+  }
+  if (deposit.expires_at <= at) {
+    throw cityPrecondition('这笔储物柜寄存已超过租期上限。', 'voucher_expired');
+  }
+  if (deposit.recipient_id !== null && deposit.recipient_id !== claimantId && !(opts.depositId && !opts.voucher && deposit.sender_id === claimantId)) {
+    throw new CityError('FORBIDDEN', '你不是这格储物柜指定的受托领取人。', 'not_recipient');
+  }
+  if (deposit.place_id !== placeId) {
+    throw cityPrecondition(`这件物品寄存在其他车站的储物柜（${deposit.place_id}）。`, 'wrong_station', { place_id: deposit.place_id });
+  }
+
+  const item = c.db.get<ItemRow & Row>('SELECT * FROM items WHERE item_id = ?', deposit.item_id);
+  if (!item || item.state !== 'locker' || item.quantity <= 0) {
+    throw cityPrecondition('储物柜里的物品状态异常。', 'not_enough_items');
+  }
+
+  c.cancelJob(`locker:${deposit.deposit_id}`);
+  c.db.run(
+    "UPDATE locker_deposits SET status = 'claimed', resolved_at = ?, claimed_by = ?, voucher_hash = NULL WHERE deposit_id = ?",
+    at,
+    claimantId,
+    deposit.deposit_id,
+  );
+
+  let outItemId: string;
+  if (item.instance === 1) {
+    outItemId = item.item_id;
+    c.db.run("UPDATE items SET owner_id = ?, state = 'held', visit_id = ?, updated_at = ? WHERE item_id = ?", claimantId, visitId, at, outItemId);
+    logItem(c, { ...item, owner_id: claimantId }, visitId, 1, 'retrieved', { counterparty: deposit.sender_id });
+  } else {
+    const existingHeld = c.db.get<ItemRow & Row>(
+      "SELECT * FROM items WHERE owner_id = ? AND type = ? AND origin_ref IS NULL AND instance = 0 AND state = 'held'",
+      claimantId,
+      item.type,
+    );
+    if (existingHeld) {
+      outItemId = existingHeld.item_id;
+      c.db.run('UPDATE items SET quantity = quantity + ?, visit_id = ?, updated_at = ? WHERE item_id = ?', item.quantity, visitId, at, outItemId);
+      c.db.run('UPDATE items SET quantity = 0, updated_at = ? WHERE item_id = ?', at, item.item_id);
+    } else {
+      outItemId = item.item_id;
+      c.db.run("UPDATE items SET owner_id = ?, state = 'held', visit_id = ?, updated_at = ? WHERE item_id = ?", claimantId, visitId, at, outItemId);
+    }
+    logItem(c, { item_id: outItemId, owner_id: claimantId, type: item.type, origin_ref: null }, visitId, item.quantity, 'retrieved', { counterparty: deposit.sender_id });
+  }
+
+  c.emitTo([deposit.sender_id], 'locker_claimed', { deposit_id: deposit.deposit_id, item_id: outItemId, type: item.type, qty: deposit.quantity, claimed_by: claimantId }, at);
+  const fresh = c.db.get<LockerDepositRow & Row>('SELECT * FROM locker_deposits WHERE deposit_id = ?', deposit.deposit_id)!;
+  return { deposit: fresh, item_id: outItemId, type: item.type, qty: deposit.quantity };
+}
+
+/** 租期到期（默认 72h）自动退回原主个人储物柜；若原主柜满则转招领态（lost_found）释放公共柜位。 */
+export function expireLockerDeposit(c: CityService, depositId: string, at: number): 'returned' | 'lost_found' | 'noop' {
+  const deposit = c.db.get<LockerDepositRow & Row>('SELECT * FROM locker_deposits WHERE deposit_id = ?', depositId);
+  if (!deposit || deposit.status !== 'active') return 'noop';
+  const item = c.db.get<ItemRow & Row>('SELECT * FROM items WHERE item_id = ?', deposit.item_id);
+  if (!item || item.quantity <= 0) {
+    c.db.run("UPDATE locker_deposits SET status = 'expired_lost_found', resolved_at = ?, voucher_hash = NULL WHERE deposit_id = ?", at, depositId);
+    return 'lost_found';
+  }
+
+  const personal = lockerItems(c, deposit.sender_id);
+  const personalQty = personal.reduce((n, i) => n + i.quantity, 0);
+  const hasPlainStack = item.instance === 0 && personal.some((i) => i.type === item.type && i.instance === 0 && i.origin_ref === null);
+  const addedEntry = hasPlainStack ? 0 : 1;
+  const fits = personal.length + addedEntry <= c.params.maxLockerEntries && personalQty + item.quantity <= c.params.maxLockerQty;
+
+  if (fits) {
+    c.db.run("UPDATE locker_deposits SET status = 'expired_returned', resolved_at = ?, voucher_hash = NULL WHERE deposit_id = ?", at, depositId);
+    if (item.instance === 0 && hasPlainStack) {
+      const existing = personal.find((i) => i.type === item.type && i.instance === 0 && i.origin_ref === null)!;
+      c.db.run('UPDATE items SET quantity = quantity + ?, updated_at = ? WHERE item_id = ?', item.quantity, at, existing.item_id);
+      c.db.run('UPDATE items SET quantity = 0, updated_at = ? WHERE item_id = ?', at, item.item_id);
+    } else {
+      c.db.run('UPDATE items SET updated_at = ? WHERE item_id = ?', at, item.item_id);
+    }
+    c.emitTo([deposit.sender_id], 'locker_expired', { deposit_id: depositId, item_id: item.item_id, type: item.type, outcome: 'returned' }, at);
+    if (deposit.recipient_id) {
+      c.emitTo([deposit.recipient_id], 'locker_expired', { deposit_id: depositId, type: item.type, outcome: 'returned' }, at);
+    }
+    return 'returned';
+  }
+
+  c.db.run("UPDATE items SET state = 'lost_found', updated_at = ? WHERE item_id = ?", at, item.item_id);
+  c.db.run("UPDATE locker_deposits SET status = 'expired_lost_found', resolved_at = ?, voucher_hash = NULL WHERE deposit_id = ?", at, depositId);
+  c.emitTo([deposit.sender_id], 'locker_expired', { deposit_id: depositId, item_id: item.item_id, type: item.type, outcome: 'lost_found' }, at);
+  if (deposit.recipient_id) {
+    c.emitTo([deposit.recipient_id], 'locker_expired', { deposit_id: depositId, type: item.type, outcome: 'lost_found' }, at);
+  }
+  return 'lost_found';
+}
+
+export function activeLockerDepositsForRecipient(c: CityService, recipientId: string, limit = 5): LockerDepositRow[] {
+  return c.db.all<LockerDepositRow & Row>(
+    "SELECT * FROM locker_deposits WHERE recipient_id = ? AND status = 'active' ORDER BY expires_at ASC, deposit_id LIMIT ?",
+    recipientId,
+    limit,
+  );
+}
+
+export function activeLockerDepositsBySender(c: CityService, senderId: string, limit = 5): LockerDepositRow[] {
+  return c.db.all<LockerDepositRow & Row>(
+    "SELECT * FROM locker_deposits WHERE sender_id = ? AND status = 'active' ORDER BY expires_at ASC, deposit_id LIMIT ?",
+    senderId,
+    limit,
+  );
 }

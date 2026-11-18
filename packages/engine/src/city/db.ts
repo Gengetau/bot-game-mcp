@@ -445,6 +445,57 @@ const MIGRATIONS: readonly string[] = [
   ALTER TABLE item_events_v2 RENAME TO item_events;
   CREATE INDEX item_events_visit ON item_events(visit_id, event_id) WHERE visit_id IS NOT NULL;
   `,
+  // ───── v3 ─────
+  // M3-C：漂流文库本（shelf / drift 态与 shelf_place_id / shelf_price_yen）、招领态（lost_found）及车站投币储物柜凭条寄存（locker_deposits）
+  `
+  CREATE TABLE items_v3 (
+    item_id TEXT PRIMARY KEY,
+    owner_id TEXT NOT NULL REFERENCES residents(resident_id),
+    type TEXT NOT NULL,
+    quantity INTEGER NOT NULL CHECK (quantity >= 0),
+    instance INTEGER NOT NULL DEFAULT 0 CHECK (instance IN (0,1)),
+    origin_ref TEXT,
+    origin_json TEXT,
+    meta_json TEXT,
+    borrowed_from TEXT REFERENCES residents(resident_id),
+    visit_id TEXT,
+    state TEXT NOT NULL DEFAULT 'held' CHECK (state IN ('held','returned','locker','disposed','space','shelf','drift','lost_found')),
+    shelf_place_id TEXT,
+    shelf_price_yen INTEGER,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    CHECK (instance = 0 OR quantity <= 1)
+  ) STRICT;
+  INSERT INTO items_v3(item_id, owner_id, type, quantity, instance, origin_ref, origin_json, meta_json, borrowed_from, visit_id, state, shelf_place_id, shelf_price_yen, created_at, updated_at)
+    SELECT item_id, owner_id, type, quantity, instance, origin_ref, origin_json, meta_json, borrowed_from, visit_id, state, NULL, NULL, created_at, updated_at
+    FROM items;
+  DROP TABLE items;
+  ALTER TABLE items_v3 RENAME TO items;
+  CREATE UNIQUE INDEX items_plain_stack ON items(owner_id, type) WHERE origin_ref IS NULL AND instance = 0 AND state = 'held';
+  CREATE INDEX items_owner ON items(owner_id, state);
+  CREATE INDEX items_visit ON items(visit_id) WHERE visit_id IS NOT NULL;
+  CREATE INDEX items_shelf ON items(state, shelf_place_id) WHERE state IN ('shelf','drift');
+
+  CREATE TABLE locker_deposits (
+    deposit_id TEXT PRIMARY KEY,
+    item_id TEXT NOT NULL REFERENCES items(item_id),
+    sender_id TEXT NOT NULL REFERENCES residents(resident_id),
+    recipient_id TEXT REFERENCES residents(resident_id),
+    voucher_hash TEXT,
+    place_id TEXT NOT NULL,
+    type TEXT NOT NULL,
+    quantity INTEGER NOT NULL CHECK (quantity > 0),
+    status TEXT NOT NULL CHECK (status IN ('active','claimed','expired_returned','expired_lost_found')),
+    created_at INTEGER NOT NULL,
+    expires_at INTEGER NOT NULL,
+    resolved_at INTEGER,
+    claimed_by TEXT REFERENCES residents(resident_id)
+  ) STRICT;
+  CREATE INDEX locker_deposits_sender ON locker_deposits(sender_id, status);
+  CREATE INDEX locker_deposits_recipient ON locker_deposits(recipient_id, status) WHERE recipient_id IS NOT NULL;
+  CREATE INDEX locker_deposits_expiry ON locker_deposits(status, expires_at) WHERE status = 'active';
+  CREATE UNIQUE INDEX locker_deposits_voucher ON locker_deposits(voucher_hash) WHERE voucher_hash IS NOT NULL;
+  `,
 ];
 
 export const CITY_SCHEMA: SchemaSpec = { label: '城市世界数据库', migrations: MIGRATIONS, backupPrefix: 'city-' };
