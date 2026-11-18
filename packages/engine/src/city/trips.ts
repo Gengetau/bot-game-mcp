@@ -12,11 +12,13 @@ import { parseJson, type Row } from '../world/db.js';
 import {
   FARE_RULE_VERSION,
   HOUSE_ENTRANCE,
+  TRANSIT_DEFAULT_HOURS,
   homeward,
   openAt,
   place,
   planRoute,
   station,
+  transitEdgeBetween,
   transitEdgeOpenAt,
   type LegPlan,
   type Place,
@@ -27,8 +29,10 @@ import { CityError, cityPrecondition } from './errors.js';
 import { TRANSIT, ledger, purseOf, wallet } from './ledger.js';
 import { card } from './residents.js';
 import type { CityResident, CityService } from './service.js';
-import { addWalk, afterMove, lastTrainSafeDepartMs, openVisitOf, outboxPurchase, progress, settle, visitById, wake, type VisitRow } from './visits.js';
+import { addWalk, afterMove, lastTrainSafeDepartMs, openVisitOf, outboxPurchase, progress, settle, transitWindowAt, visitById, wake, type VisitRow } from './visits.js';
 import { isRaining } from './weather.js';
+
+const MISSED_LAST_TRAIN_NOTE = '错过终电（铁道夜间停运），已按夜间无列车兜底归家，未搭乘停运列车、未扣回程车费。';
 
 export interface Leg {
   n: number;
@@ -145,6 +149,53 @@ export function routeTransitCheck(
   return { ok: true };
 }
 
+/**
+ * 校验一段尚未持久化上车的铁道乘车段此刻是否仍可实际登车：
+ *  1. 计划上车时刻本身须在模拟运营窗内（plannedWin.open）；
+ *  2. 实际处理时刻（effectiveNow = max(depart_at_ms, c.now())）须在运营窗内；
+ *  3. 实际处理时刻不得跨过该计划班次所属运营日的终电收班线（effectiveNow < plannedWin.closeMs），
+ *     防止在步行去车站途中停机、跨过终电后恢复时补记未曾发车的终电并误扣模拟票价。
+ */
+function canBoardTrainLegNow(
+  c: CityService,
+  leg: { from: string; to: string; depart_at_ms: number },
+  actualNow: number = c.now(),
+): boolean {
+  const hours = transitEdgeBetween(leg.from, leg.to)?.hours ?? TRANSIT_DEFAULT_HOURS;
+  const plannedWin = transitWindowAt(c.params.timezone, hours, leg.depart_at_ms);
+  if (!plannedWin.open) return false;
+  const effectiveNow = Math.max(leg.depart_at_ms, actualNow);
+  if (!transitEdgeOpenAt(leg.from, leg.to, c.minuteOfDay(effectiveNow)).open) return false;
+  if (effectiveNow >= plannedWin.closeMs) return false;
+  return true;
+}
+
+/**
+ * 判断一条回程路线在有效动身时刻 effectiveAt 是否已错过终电（或当前处于停运期）：
+ * 纯步行回程恒返回 false；含铁道段时，若当前在停运窗、或相较原排程时刻 scheduledAt 已跨过当晚终电收班线，返回 true。
+ */
+export function routeReturnMissedLastTrain(
+  c: CityService,
+  route: RoutePlan,
+  effectiveAt: number,
+  scheduledAt?: number,
+): boolean {
+  if (!route.legs.some((l) => l.mode === 'train')) return false;
+  if (!routeTransitCheck(c, route, effectiveAt).ok) return true;
+  if (scheduledAt !== undefined && scheduledAt < effectiveAt) {
+    let curSched = scheduledAt;
+    for (const leg of route.legs) {
+      if (leg.mode === 'train') {
+        const hours = transitEdgeBetween(leg.from, leg.to)?.hours ?? TRANSIT_DEFAULT_HOURS;
+        const win = transitWindowAt(c.params.timezone, hours, curSched);
+        if (!win.open || effectiveAt >= win.closeMs) return true;
+      }
+      curSched += leg.minutes * 60_000;
+    }
+  }
+  return false;
+}
+
 function carAmbiance(minuteOfDay: number, count: number): string {
   const lateNight = minuteOfDay >= 23 * 60 + 30 || minuteOfDay < 20;
   if (lateNight) {
@@ -238,7 +289,7 @@ export function startTrip(c: CityService, r: CityResident, toId: string, purpose
     const enter = canEnter(c, dest, eta);
     if (!enter.ok) throw cityPrecondition(enter.message, enter.reason, { place: toId });
     if (visit) {
-      const guard = lastTrainSafeDepartMs(c, toId, at);
+      const guard = lastTrainSafeDepartMs(c, toId, at, eta);
       if (guard && eta > guard.departByMs) {
         throw cityPrecondition(
           '太晚了，过去之后就赶不上回赤羽的末班电车了。',
@@ -300,8 +351,21 @@ export function startTrip(c: CityService, r: CityResident, toId: string, purpose
 function beginLeg(c: CityService, trip: TripRow, legs: Leg[], n: number, visit: VisitRow | null): void {
   const leg = legs[n]!;
   const r = c.mustResident(trip.resident_id);
-  if (leg.mode === 'train' && !transitEdgeOpenAt(leg.from, leg.to, c.minuteOfDay(leg.depart_at_ms)).open) {
-    stopTrip(c, trip, leg.from, leg.depart_at_ms, 'transit_closed_night', visit);
+  if (leg.mode === 'train' && !canBoardTrainLegNow(c, leg, c.now())) {
+    const actualAt = Math.max(leg.depart_at_ms, c.now());
+    if (trip.purpose === 'return' || (visit && visit.state === 'returning')) {
+      const stoppedRes = finishTrip(c, trip, 'stopped', actualAt, leg.from, 'missed_last_train');
+      c.emitTo([trip.resident_id], 'trip_stopped', { trip_id: trip.trip_id, place: leg.from, reason: 'missed_last_train' }, actualAt);
+      if (visit) {
+        progress(c, visit, 'stopped', actualAt, { place: leg.from, reason: 'missed_last_train' });
+        completeMissedLastTrainReturn(c, stoppedRes, visit, leg.from, actualAt, {
+          emitLeftFromPlace: false,
+          recordLeftPlace: false,
+        });
+      }
+      return;
+    }
+    stopTrip(c, trip, leg.from, actualAt, 'transit_closed_night', visit);
     return;
   }
   if (leg.mode === 'train' && leg.fare_yen > 0) {
@@ -371,7 +435,8 @@ export function installTrips(c: CityService): void {
     if (visit && visit.state === 'returning' && trip.purpose !== 'return') {
       const r = finishTrip(c, trip, 'cancelled', at, leg.to, 'returning');
       progress(c, visit, last ? 'arrived_place' : 'arrived_station', at, { place: leg.to });
-      startReturnTrip(c, r, visit, Math.max(at, visit.returning_at ?? at, c.now()));
+      const plannedTurnaround = Math.max(at, visit.returning_at ?? at);
+      startReturnTrip(c, r, visit, Math.max(plannedTurnaround, c.now()), plannedTurnaround);
       return;
     }
 
@@ -417,12 +482,50 @@ function PLACE_OF_STATION(p: Place): string | null {
   return st && place(st.placeId) ? st.placeId : null;
 }
 
+function completeMissedLastTrainReturn(
+  c: CityService,
+  r: CityResident,
+  visit: VisitRow,
+  fromPlaceId: string,
+  at: number,
+  opts: { emitLeftFromPlace: boolean; recordLeftPlace: boolean },
+): void {
+  if (opts.emitLeftFromPlace && !place(fromPlaceId)?.hidden && r.in_city) {
+    const others = c.presentAt(fromPlaceId).filter((x) => x.resident_id !== r.resident_id);
+    c.emitTo(others.map((x) => x.resident_id), 'left', { who: card(r), place: fromPlaceId }, at);
+  }
+  c.db.run(
+    'UPDATE residents SET place_id = ?, trip_id = NULL, revision = revision + 1 WHERE resident_id = ?',
+    HOUSE_ENTRANCE,
+    r.resident_id,
+  );
+  if (visit.return_reason === 'last_train') {
+    c.db.run("UPDATE visits SET return_reason = 'missed_last_train' WHERE visit_id = ?", visit.visit_id);
+  }
+  const freshVisit = visitById(c, visit.visit_id)!;
+  if (opts.recordLeftPlace) {
+    progress(c, freshVisit, 'left_place', at, {
+      place: fromPlaceId,
+      to: HOUSE_ENTRANCE,
+      eta_ms: at,
+      purpose: 'return',
+    });
+  }
+  progress(c, freshVisit, 'arrived_place', at, {
+    place: HOUSE_ENTRANCE,
+    reason: 'missed_last_train',
+  });
+  settle(c, freshVisit, at, {
+    extraNotes: [MISSED_LAST_TRAIN_NOTE],
+  });
+}
+
 /**
  * 走回小屋门口。已经在门口就直接结算；
  * 若因引擎停机或夜间召回导致出发时铁道已停运（错过终电），走无列车零扣费归家兜底：
  * 绝不凭空新发停运列车或误扣回程电车票价，同时将室友安全接回小屋门口结算，避免滞留外区。
  */
-export function startReturnTrip(c: CityService, r: CityResident, visit: VisitRow, at: number): void {
+export function startReturnTrip(c: CityService, r: CityResident, visit: VisitRow, at: number, scheduledAt?: number): void {
   const effectiveAt = Math.max(at, c.now());
   const fromId = r.place_id;
   if (!fromId || fromId === HOUSE_ENTRANCE) {
@@ -430,32 +533,10 @@ export function startReturnTrip(c: CityService, r: CityResident, visit: VisitRow
     return;
   }
   const route = planRoute(fromId, HOUSE_ENTRANCE);
-  if (route && !routeTransitCheck(c, route, effectiveAt).ok) {
-    if (!place(fromId)?.hidden && r.in_city) {
-      const others = c.presentAt(fromId).filter((x) => x.resident_id !== r.resident_id);
-      c.emitTo(others.map((x) => x.resident_id), 'left', { who: card(r), place: fromId }, effectiveAt);
-    }
-    c.db.run(
-      'UPDATE residents SET place_id = ?, trip_id = NULL, revision = revision + 1 WHERE resident_id = ?',
-      HOUSE_ENTRANCE,
-      r.resident_id,
-    );
-    if (visit.return_reason === 'last_train') {
-      c.db.run("UPDATE visits SET return_reason = 'missed_last_train' WHERE visit_id = ?", visit.visit_id);
-    }
-    const freshVisit = visitById(c, visit.visit_id)!;
-    progress(c, freshVisit, 'left_place', effectiveAt, {
-      place: fromId,
-      to: HOUSE_ENTRANCE,
-      eta_ms: effectiveAt,
-      purpose: 'return',
-    });
-    progress(c, freshVisit, 'arrived_place', effectiveAt, {
-      place: HOUSE_ENTRANCE,
-      reason: 'missed_last_train',
-    });
-    settle(c, freshVisit, effectiveAt, {
-      extraNotes: ['错过终电（铁道夜间停运），已按夜间无列车兜底归家，未搭乘停运列车、未扣回程车费。'],
+  if (route && routeReturnMissedLastTrain(c, route, effectiveAt, scheduledAt)) {
+    completeMissedLastTrainReturn(c, r, visit, fromId, effectiveAt, {
+      emitLeftFromPlace: true,
+      recordLeftPlace: true,
     });
     return;
   }

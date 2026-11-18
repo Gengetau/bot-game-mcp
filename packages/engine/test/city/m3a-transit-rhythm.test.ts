@@ -502,4 +502,147 @@ describe('M3-A 4：终电跨停运边界双重启对账探针（F10 持久恢复
     expect(runReconcile(p2.c, 'm3a_inflight_return_missed_last_train').ok).toBe(true);
     p2.c.close();
   });
+
+  it('R262-01b：返程或市内出行在步行前往车站途中（尚未上车）停机并跨过终电恢复时，不补记幽灵上车、不误扣模拟票价且零滞留归家', () => {
+    // ── 子场景 1（复现返程步行断点）：00:11 开始步行返程 -> 00:12 停机（尚未上 00:15 终电）-> 00:25 恢复 ──
+    const dbPath1 = tmpDb();
+    const t1 = makeCity({ dbPath: dbPath1, at: jst('2026-11-18', 23, 35) });
+    const k1 = t1.kernel('nia');
+    k1.depart({ yen: 10_000, to: 'shinjuku:southern-terrace', returnIn: 3 * HOUR });
+    t1.run(37 * MIN); // 2026-11-19 00:12 JST：00:11 已触发返程步行，正在走往新宿站途中（leg_index=0）
+    expect(k1.describe()).toMatchObject({ state: 'returning', return_reason: 'last_train' });
+    expect(
+      t1.c.db.get<{ leg_index: number; status: string }>(
+        "SELECT leg_index, status FROM trips WHERE visit_id = ? AND purpose = 'return'",
+        k1.visitId,
+      ),
+    ).toEqual({ leg_index: 0, status: 'running' });
+    expect(
+      t1.c.db.scalar("SELECT COUNT(*) FROM ledger_transactions WHERE visit_id = ? AND kind = 'fare'", k1.visitId),
+    ).toBe(1);
+
+    // 00:12 停机至 00:25（跨过 00:15 计划上车时刻与 00:20 终电停运线）
+    t1.c.close();
+    t1.clock.t = jst('2026-11-19', 0, 25);
+    const t2 = makeCity({ dbPath: dbPath1, clock: t1.clock });
+    const k2 = t2.kernel('nia');
+    k2.visitId = k1.visitId;
+    k2.epoch = k1.epoch;
+
+    expect(k2.describe()).toMatchObject({ state: 'settled', return_reason: 'missed_last_train' });
+    expect(
+      t2.c.db.get<{ leg_index: number; status: string; stop_reason: string }>(
+        "SELECT leg_index, status, stop_reason FROM trips WHERE visit_id = ? AND purpose = 'return'",
+        k2.visitId,
+      ),
+    ).toEqual({ leg_index: 0, status: 'stopped', stop_reason: 'missed_last_train' });
+
+    // 绝不补记 00:15 回程 boarded，绝不误扣回程 ¥260 票价
+    const boarded1 = t2
+      .outbox(k2.visitId)
+      .filter((r) => r.kind === 'visit_progress' && r.payload.phase === 'boarded');
+    expect(boarded1).toHaveLength(1);
+    expect(boarded1[0]!.occurred_at_ms).toBe(jst('2026-11-18', 23, 47));
+    expect(
+      t2.c.db.scalar("SELECT COUNT(*) FROM ledger_transactions WHERE visit_id = ? AND kind = 'fare'", k2.visitId),
+    ).toBe(1);
+
+    k2.pull();
+    expect(k2.settlement!.purse_final_yen).toBe(10_000 - 260);
+    expect(k2.settlement!.notes?.some((n) => n.includes('错过终电'))).toBe(true);
+    expect(k2.release()).toMatchObject({ state: 'closed', payload: { reconcile_ok: true } });
+    expect(ledgerImbalance(t2.c)).toBe(0);
+    expect(runReconcile(t2.c, 'm3a_return_walk_outage_0025').ok).toBe(true);
+    t2.c.close();
+
+    // ── 子场景 2（长停机跨整夜边界）：00:12 返程步行中停机，直至清晨 05:30 早班重开后才恢复，仍不伪造昨晚 00:15 乘车扣费 ──
+    const dbPath2 = tmpDb();
+    const m1 = makeCity({ dbPath: dbPath2, at: jst('2026-11-18', 23, 35), house: SIX_HOUSEMATES });
+    const km1 = m1.kernel('alicia');
+    km1.depart({ yen: 10_000, to: 'shinjuku:southern-terrace', returnIn: 3 * HOUR });
+    m1.run(37 * MIN); // 00:12 JST：返程步行段 leg_index=0
+    m1.c.close();
+    m1.clock.t = jst('2026-11-19', 5, 30);
+    const m2 = makeCity({ dbPath: dbPath2, clock: m1.clock, house: SIX_HOUSEMATES });
+    const km2 = m2.kernel('alicia');
+    km2.visitId = km1.visitId;
+    km2.epoch = km1.epoch;
+    expect(km2.describe()).toMatchObject({ state: 'settled', return_reason: 'missed_last_train' });
+    expect(
+      m2.c.db.scalar("SELECT COUNT(*) FROM ledger_transactions WHERE visit_id = ? AND kind = 'fare'", km2.visitId),
+    ).toBe(1);
+    km2.pull();
+    expect(km2.settlement!.purse_final_yen).toBe(10_000 - 260);
+    expect(km2.release().state).toBe('closed');
+    expect(ledgerImbalance(m2.c)).toBe(0);
+    expect(runReconcile(m2.c, 'm3a_return_walk_outage_0530').ok).toBe(true);
+    m2.c.close();
+
+    // ── 子场景 3（active 市内步行去车站途中停机跨过终电）：23:50 从露台去池袋站，23:51 停机，00:25 恢复 ──
+    const dbPath3 = tmpDb();
+    const a1 = makeCity({ dbPath: dbPath3, at: jst('2026-11-18', 23, 15), house: SIX_HOUSEMATES });
+    const ka1 = a1.kernel('grok');
+    ka1.depart({ yen: 10_000, to: 'shinjuku:southern-terrace', returnIn: 3 * HOUR });
+    a1.run(35 * MIN); // 23:50 JST 到达露台
+    ka1.act({ type: 'travel', to: 'ikebukuro:station' }); // 23:50->23:54 步行到新宿站，原定 23:54 乘山手线
+    a1.run(1 * MIN); // 23:51 JST 仍在步行去新宿站途中（尚未上山手线）
+    a1.c.close();
+    a1.clock.t = jst('2026-11-19', 0, 25);
+    const a2 = makeCity({ dbPath: dbPath3, clock: a1.clock, house: SIX_HOUSEMATES });
+    const ka2 = a2.kernel('grok');
+    ka2.visitId = ka1.visitId;
+    ka2.epoch = ka1.epoch;
+    expect(ka2.describe()).toMatchObject({ state: 'settled', return_reason: 'missed_last_train' });
+    expect(
+      a2.c.db.scalar("SELECT COUNT(*) FROM ledger_transactions WHERE visit_id = ? AND kind = 'fare'", ka2.visitId),
+    ).toBe(1); // 仅最初去程 ¥260，未扣山手线 ¥170 也未扣回程 ¥260
+    ka2.pull();
+    expect(ka2.settlement!.purse_final_yen).toBe(10_000 - 260);
+    expect(ka2.release().state).toBe('closed');
+    expect(ledgerImbalance(a2.c)).toBe(0);
+    expect(runReconcile(a2.c, 'm3a_active_walk_outage_0025').ok).toBe(true);
+    a2.c.close();
+
+    // ── 子场景 4（外部居民步行去车站途中停机跨过终电）：停在车站大厅、不补记乘车、不扣模拟车费 ──
+    const dbPath4 = tmpDb();
+    const e1 = makeCity({ dbPath: dbPath4, at: jst('2026-11-19', 0, 8) });
+    const ext = e1.bot('夜行外客', { entry: 'shinjuku:station', stay: false });
+    ext.act({ type: 'travel', to: 'shinjuku:southern-terrace' });
+    e1.run(4 * MIN); // 00:12 JST 在新宿南口露台
+    const walletBefore = ext.view().wallet.yen;
+    ext.act({ type: 'travel', to: 'ikebukuro:station' }); // 00:12->00:16 步行到新宿站，原定 00:16 乘山手线（¥200）
+    e1.run(1 * MIN); // 00:13 JST 步行途中停机
+    e1.c.close();
+    e1.clock.t = jst('2026-11-19', 0, 25);
+    const e2 = makeCity({ dbPath: dbPath4, clock: e1.clock });
+    expect(e2.c.mustResident(ext.id).place_id).toBe('shinjuku:station');
+    expect(
+      e2.c.db.get<{ leg_index: number; status: string; stop_reason: string }>(
+        "SELECT leg_index, status, stop_reason FROM trips WHERE resident_id = ? ORDER BY rowid DESC LIMIT 1",
+        ext.id,
+      ),
+    ).toEqual({ leg_index: 0, status: 'stopped', stop_reason: 'transit_closed_night' });
+    expect(
+      e2.c.db.scalar("SELECT COUNT(*) FROM ledger_transactions WHERE kind = 'fare'"),
+    ).toBe(0);
+    expect(e2.c.db.get<{ balance: number }>('SELECT balance FROM accounts WHERE resident_id = ?', ext.id)?.balance).toBe(walletBefore);
+    expect(ledgerImbalance(e2.c)).toBe(0);
+    e2.c.close();
+
+    // ── 子场景 5（清晨早起室友步行赶首班车）：04:50 出门步行 12m 接 05:02 首班车去池袋站，不误判昨晚 00:20 终电截止 ──
+    const dawn = makeCity({ at: jst('2026-11-19', 4, 50), house: SIX_HOUSEMATES });
+    const kd = dawn.kernel('xingli');
+    const dawnDep = kd.depart({ yen: 6_000, to: 'ikebukuro:station', returnIn: 3 * HOUR }); // return_by = 07:50
+    expect(dawnDep.payload.plan_blocked).toBeUndefined();
+    expect(dawnDep.payload.trip).not.toBeNull();
+    dawn.run(5 * MIN); // 04:55 JST 仍在步行去赤羽站途中，不应被误判错过昨晚终电而提前拉回家
+    expect(kd.describe().state).toBe('active');
+    expect(kd.view().visit.leave_by_ms).toBe(jst('2026-11-19', 7, 20)); // 07:50 - 25m 回程 - 5m 余量
+    dawn.run(20 * MIN); // 05:15 JST 正常搭首班车抵达池袋站
+    expect(kd.view().location).toEqual({ place: 'ikebukuro:station' });
+    dawn.run(3 * HOUR);
+    expect(kd.describe()).toMatchObject({ state: 'settled', return_reason: 'return_by' });
+    expect(kd.release().state).toBe('closed');
+    expect(ledgerImbalance(dawn.c)).toBe(0);
+  });
 });

@@ -30,7 +30,7 @@ import { BRIDGE, addCarried, disposeHeldItem, ensurePurse, heldItems, ledger, mo
 import { MAPPINGS, engineTypeOf, kernelItemOf, walkEffect } from './mappings.js';
 import { runReconcile } from './reconcile.js';
 import type { CityResident, CityService } from './service.js';
-import { routeTransitCheck, runningTrip, startReturnTrip, startTrip } from './trips.js';
+import { routeReturnMissedLastTrain, runningTrip, startReturnTrip, startTrip } from './trips.js';
 
 export const BRIDGE_PROTOCOL = 'city-bridge/1';
 /** 桥接请求号：比居民动作的请求号宽一些（visit:<visit_id>:d<n>:a<n>） */
@@ -265,6 +265,7 @@ export function lastTrainSafeDepartMs(
   c: CityService,
   fromPlaceId: string,
   refMs: number = c.now(),
+  arrivalAtMs?: number,
 ): { departByMs: number; closeMs: number } | null {
   if (fromPlaceId === HOUSE_ENTRANCE) return null;
   const r = planRoute(fromPlaceId, HOUSE_ENTRANCE);
@@ -275,7 +276,12 @@ export function lastTrainSafeDepartMs(
   for (const leg of r.legs) {
     if (leg.mode === 'train') {
       const hours = transitEdgeBetween(leg.from, leg.to)?.hours ?? TRANSIT_DEFAULT_HOURS;
-      const win = transitWindowAt(c.params.timezone, hours, refMs);
+      const winAt = transitWindowAt(c.params.timezone, hours, refMs);
+      // 若出发时刻处于夜间停运窗（如 04:50 步行去车站衔接 05:00+ 首班车），按实际抵达时刻所在的新运营窗计算当晚终电
+      const win =
+        !winAt.open && arrivalAtMs !== undefined && arrivalAtMs > refMs
+          ? transitWindowAt(c.params.timezone, hours, arrivalAtMs)
+          : winAt;
       const departByMs = win.closeMs - offsetMin * 60_000 - marginMs;
       if (!best || departByMs < best.departByMs) {
         best = { departByMs, closeMs: win.closeMs };
@@ -294,7 +300,9 @@ export function effectiveVisitReturnSchedule(
   refMs: number = c.now(),
 ): { dueMs: number; reason: 'return_by' | 'last_train'; lastTrainCloseMs: number | null } {
   const normalDue = visit.return_by_ms - homeward(contextPlaceId).minutes * 60_000 - c.params.returnMarginMs;
-  const guard = lastTrainSafeDepartMs(c, contextPlaceId, refMs);
+  const trip = runningTrip(c, visit.resident_id);
+  const arrivalAtMs = trip && trip.purpose === 'travel' && trip.to_place === contextPlaceId ? trip.ends_at : undefined;
+  const guard = lastTrainSafeDepartMs(c, contextPlaceId, refMs, arrivalAtMs);
   if (guard && guard.departByMs < normalDue) {
     return { dueMs: guard.departByMs, reason: 'last_train', lastTrainCloseMs: guard.closeMs };
   }
@@ -308,20 +316,24 @@ export function effectiveVisitReturnSchedule(
 export function afterMove(c: CityService, visit: VisitRow, contextPlaceId: string): void {
   const fresh = visitById(c, visit.visit_id);
   if (!fresh || fresh.state !== 'active') return;
+  const key = `visit:${fresh.visit_id}:return`;
+  const existing = c.db.get<{ due_at: number }>("SELECT due_at FROM scheduled_jobs WHERE dedupe_key = ? AND status = 'pending'", key);
+  if (existing && Number(existing.due_at) <= c.now()) return;
   const sched = effectiveVisitReturnSchedule(c, fresh, contextPlaceId, c.now());
-  c.reschedule('visit_return', `visit:${fresh.visit_id}:return`, sched.dueMs, { visitId: fresh.visit_id, reason: sched.reason });
+  c.reschedule('visit_return', key, sched.dueMs, { visitId: fresh.visit_id, reason: sched.reason });
 }
 
 /** 进入 returning：不再接受新交易和新动作；回程行程开始（在路上的话，这一段走完就改走回程）。 */
-export function beginReturn(c: CityService, visit: VisitRow, reason: string, at: number): boolean {
+export function beginReturn(c: CityService, visit: VisitRow, reason: string, at: number, scheduledAt?: number): boolean {
   const fresh = visitById(c, visit.visit_id);
   if (!fresh || fresh.state !== 'active') return false;
   const r = c.mustResident(fresh.resident_id);
   const departAt = Math.max(at, c.now());
+  const fromPlace = r.place_id ?? runningTrip(c, r.resident_id)?.to_place ?? null;
   let effectiveReason = reason;
-  if (r.place_id && r.place_id !== HOUSE_ENTRANCE && reason === 'last_train') {
-    const route = planRoute(r.place_id, HOUSE_ENTRANCE);
-    if (route && !routeTransitCheck(c, route, departAt).ok) {
+  if (fromPlace && fromPlace !== HOUSE_ENTRANCE && reason === 'last_train') {
+    const route = planRoute(fromPlace, HOUSE_ENTRANCE);
+    if (route && routeReturnMissedLastTrain(c, route, departAt, scheduledAt)) {
       effectiveReason = 'missed_last_train';
     }
   }
@@ -329,10 +341,10 @@ export function beginReturn(c: CityService, visit: VisitRow, reason: string, at:
   c.db.run("UPDATE visits SET state = 'returning', return_reason = ?, returning_at = ? WHERE visit_id = ?", cleanReason, departAt, fresh.visit_id);
   c.cancelJob(`visit:${fresh.visit_id}:return`);
   const returning = visitById(c, fresh.visit_id)!;
-  outbox(c, returning, 'return_started', departAt, { reason: cleanReason, from: r.place_id ?? runningTrip(c, r.resident_id)?.to_place ?? null });
+  outbox(c, returning, 'return_started', departAt, { reason: cleanReason, from: fromPlace });
   c.emitTo([r.resident_id], 'returning', { reason: cleanReason, return_by_ms: fresh.return_by_ms }, departAt);
   // 站在某个地点：立刻动身。在路上：这一段照常走完，到站作业会改走回程（trips.ts）
-  if (r.place_id) startReturnTrip(c, r, returning, departAt);
+  if (r.place_id) startReturnTrip(c, r, returning, departAt, scheduledAt);
   return true;
 }
 
@@ -770,10 +782,10 @@ export function readOutbox(c: CityService, after: number, limit: number): { reco
 
 export function installVisits(c: CityService): void {
   // 到点回家：还在城里就开始回程（适配器掉线也一样）
-  c.jobHandlers.set('visit_return', (payload, _job, now) => {
+  c.jobHandlers.set('visit_return', (payload, job, now) => {
     const visit = visitById(c, String(payload.visitId));
     const reason = payload.reason === 'last_train' ? 'last_train' : 'return_by';
-    if (visit && visit.state === 'active') beginReturn(c, visit, reason, now);
+    if (visit && visit.state === 'active') beginReturn(c, visit, reason, now, job.due_at);
   });
   // prepare 之后一直没有交接：到最晚回家时刻自动作废。迟到的 commit 会得到 409 visit_aborted，内核按取消处理（释放冻结）
   c.jobHandlers.set('visit_prepared_expire', (payload, _job, now) => {
