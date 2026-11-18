@@ -110,6 +110,14 @@ const state = {
   publicView: null,
   /** @type {number | null} */
   historyNext: null,
+  itemOffset: 0,
+  /** @type {number[]} */
+  itemPageStack: [],
+  lockerOffset: 0,
+  /** @type {number[]} */
+  lockerPageStack: [],
+  /** @type {Map<string, Record<string, any>>} */
+  inspectedItems: new Map(),
   /** @type {EventSource | null} */
   stream: null,
   /** @type {number | null} */
@@ -165,6 +173,16 @@ const profileSubmitBtn = /** @type {HTMLButtonElement} */ (mustEl('profile-submi
 
 const refreshHistoryBtn = /** @type {HTMLButtonElement} */ (mustEl('refresh-history-btn'));
 const moreHistoryBtn = /** @type {HTMLButtonElement} */ (mustEl('more-history-btn'));
+
+const bagPager = mustEl('bag-pager');
+const bagPageStatus = mustEl('bag-page-status');
+const bagPrevBtn = /** @type {HTMLButtonElement} */ (mustEl('bag-prev-btn'));
+const bagNextBtn = /** @type {HTMLButtonElement} */ (mustEl('bag-next-btn'));
+
+const lockerPager = mustEl('locker-pager');
+const lockerPageStatus = mustEl('locker-page-status');
+const lockerPrevBtn = /** @type {HTMLButtonElement} */ (mustEl('locker-prev-btn'));
+const lockerNextBtn = /** @type {HTMLButtonElement} */ (mustEl('locker-next-btn'));
 
 // ───────────────────────── 通知与错误 ─────────────────────────
 
@@ -399,9 +417,61 @@ function startRealtime() {
 
 // ───────────────────────── 数据拉取与动作提交 ─────────────────────────
 
+function resetInventoryPaging() {
+  state.itemOffset = 0;
+  state.itemPageStack = [];
+  state.lockerOffset = 0;
+  state.lockerPageStack = [];
+  state.inspectedItems.clear();
+}
+
+/** @returns {string} */
+function buildMePath() {
+  const params = new URLSearchParams();
+  params.set('client_id', state.clientId);
+  if (state.itemOffset > 0) params.set('item_offset', String(state.itemOffset));
+  if (state.lockerOffset > 0) params.set('locker_offset', String(state.lockerOffset));
+  return `/me?${params.toString()}`;
+}
+
+/**
+ * 当末页最后一件物品被取出/存入/消耗导致当前偏移页为空时，自动回退到有效上一页。
+ * @param {Record<string, any>} v
+ * @returns {boolean} 是否调整了页偏移需要重新拉取
+ */
+function reconcilePageOffsets(v) {
+  let needsRefetch = false;
+  const itemsPage = v.items_page;
+  if (!itemsPage) {
+    state.itemOffset = 0;
+    state.itemPageStack = [];
+  } else {
+    if (typeof itemsPage.offset === 'number') state.itemOffset = itemsPage.offset;
+    if (state.itemOffset > 0 && Array.isArray(v.items) && v.items.length === 0 && Number(itemsPage.total || 0) > 0) {
+      state.itemOffset = state.itemPageStack.length > 0 ? (state.itemPageStack.pop() ?? 0) : 0;
+      needsRefetch = true;
+    }
+  }
+  const lockerPage = v.locker_page;
+  if (!lockerPage) {
+    state.lockerOffset = 0;
+    state.lockerPageStack = [];
+  } else {
+    if (typeof lockerPage.offset === 'number') state.lockerOffset = lockerPage.offset;
+    if (state.lockerOffset > 0 && Array.isArray(v.locker_items) && v.locker_items.length === 0 && Number(lockerPage.total || 0) > 0) {
+      state.lockerOffset = state.lockerPageStack.length > 0 ? (state.lockerPageStack.pop() ?? 0) : 0;
+      needsRefetch = true;
+    }
+  }
+  return needsRefetch;
+}
+
 async function refreshMe() {
   try {
-    const v = await apiCall('GET', `/me?client_id=${encodeURIComponent(state.clientId)}`);
+    let v = await apiCall('GET', buildMePath());
+    if (reconcilePageOffsets(v)) {
+      v = await apiCall('GET', buildMePath());
+    }
     state.view = v;
     if (v.me) {
       state.sessionResident = { id: String(v.me.id), name: String(v.me.name), in_city: Boolean(v.me.in_city) };
@@ -427,10 +497,19 @@ async function submitCityAction(action, successNote) {
       client_id: state.clientId,
       request_id: newRequestId(),
       action,
+      ...(state.itemOffset > 0 ? { item_offset: state.itemOffset } : {}),
+      ...(state.lockerOffset > 0 ? { locker_offset: state.lockerOffset } : {}),
     });
+    if (typeof action.item_id === 'string') {
+      state.inspectedItems.delete(action.item_id);
+    }
     if (out.view) {
-      state.view = out.view;
-      renderApp();
+      if (reconcilePageOffsets(out.view)) {
+        await refreshMe();
+      } else {
+        state.view = out.view;
+        renderApp();
+      }
     } else {
       await refreshMe();
     }
@@ -624,8 +703,9 @@ function renderScenePanel() {
         const actRow = make('div', { className: 'entity-actions' });
         const sel = make('select', { attrs: { 'aria-label': `选择送给 ${person.name} 的物品` } });
         for (const it of bagItems) {
+          const titleTag = it.meta?.title ? `《${it.meta.title}》` : '';
           const opt = make('option', {
-            text: `${it.name}（×${it.qty}${it.instance ? '·具名' : ''}）`,
+            text: `${it.name}${titleTag}（×${it.qty}${it.instance ? '·具名' : ''}）`,
             attrs: { value: String(it.item_id) },
           });
           sel.appendChild(opt);
@@ -636,6 +716,26 @@ function renderScenePanel() {
         });
         actRow.appendChild(sel);
         actRow.appendChild(giveBtn);
+        if (v.items_page && (v.items_page.offset > 0 || v.items_page.has_more)) {
+          if (v.items_page.offset > 0) {
+            const prevBag = make('button', {
+              className: 'btn btn-ghost btn-compact',
+              text: '上一页',
+              attrs: { type: 'button', 'aria-label': `赠送物品列表上一页（给 ${person.name}）` },
+            });
+            prevBag.addEventListener('click', () => stepBagPage(-1));
+            actRow.appendChild(prevBag);
+          }
+          if (v.items_page.has_more) {
+            const nextBag = make('button', {
+              className: 'btn btn-ghost btn-compact',
+              text: '下一页',
+              attrs: { type: 'button', 'aria-label': `赠送物品列表下一页（给 ${person.name}）` },
+            });
+            nextBag.addEventListener('click', () => stepBagPage(1));
+            actRow.appendChild(nextBag);
+          }
+        }
         li.appendChild(actRow);
       }
       peopleList.appendChild(li);
@@ -785,6 +885,155 @@ async function showRoutePreview(fromId, toId) {
   }
 }
 
+/**
+ * @param {Record<string, any> | undefined | null} meta
+ * @returns {string}
+ */
+function formatItemSubtitle(meta) {
+  if (!meta || typeof meta !== 'object') return '';
+  /** @type {string[]} */
+  const parts = [];
+  if (typeof meta.title === 'string' && meta.title) parts.push(`《${meta.title}》`);
+  if (typeof meta.summary === 'string' && meta.summary) parts.push(meta.summary);
+  if (typeof meta.flyleaf_count === 'number' && meta.flyleaf_count > 0) {
+    parts.push(`扉页批注 ${meta.flyleaf_count} 条`);
+  }
+  return parts.join(' · ');
+}
+
+/**
+ * @param {HTMLElement} pagerEl
+ * @param {HTMLElement} statusEl
+ * @param {HTMLButtonElement} prevBtn
+ * @param {HTMLButtonElement} nextBtn
+ * @param {Record<string, any> | undefined} pageMeta
+ * @param {number} shownLen
+ */
+function renderPager(pagerEl, statusEl, prevBtn, nextBtn, pageMeta, shownLen) {
+  const total = typeof pageMeta?.total === 'number' ? pageMeta.total : shownLen;
+  const offset = typeof pageMeta?.offset === 'number' ? pageMeta.offset : 0;
+  const hasMore = Boolean(pageMeta?.has_more && typeof pageMeta?.next_offset === 'number');
+  if (!pageMeta || (offset === 0 && !hasMore)) {
+    pagerEl.hidden = true;
+    statusEl.textContent = '';
+    prevBtn.disabled = true;
+    nextBtn.disabled = true;
+    return;
+  }
+  const start = shownLen > 0 ? offset + 1 : offset;
+  const end = offset + shownLen;
+  statusEl.textContent = shownLen > 0 ? `第 ${start}–${end} 件 / 共 ${total} 件` : `共 ${total} 件`;
+  const prevWasFocused = document.activeElement === prevBtn;
+  const nextWasFocused = document.activeElement === nextBtn;
+  prevBtn.disabled = offset <= 0;
+  nextBtn.disabled = !hasMore;
+  pagerEl.hidden = false;
+  if (prevWasFocused && prevBtn.disabled && !nextBtn.disabled) nextBtn.focus();
+  else if (nextWasFocused && nextBtn.disabled && !prevBtn.disabled) prevBtn.focus();
+}
+
+/**
+ * @param {-1 | 1} dir
+ */
+function stepBagPage(dir) {
+  if (dir < 0) {
+    if (state.itemOffset <= 0) return;
+    state.itemOffset = state.itemPageStack.length > 0 ? (state.itemPageStack.pop() ?? 0) : 0;
+    void refreshMe();
+    return;
+  }
+  const next = state.view?.items_page?.next_offset;
+  if (typeof next !== 'number') return;
+  state.itemPageStack.push(state.itemOffset);
+  state.itemOffset = next;
+  void refreshMe();
+}
+
+/**
+ * @param {-1 | 1} dir
+ */
+function stepLockerPage(dir) {
+  if (dir < 0) {
+    if (state.lockerOffset <= 0) return;
+    state.lockerOffset = state.lockerPageStack.length > 0 ? (state.lockerPageStack.pop() ?? 0) : 0;
+    void refreshMe();
+    return;
+  }
+  const next = state.view?.locker_page?.next_offset;
+  if (typeof next !== 'number') return;
+  state.lockerPageStack.push(state.lockerOffset);
+  state.lockerOffset = next;
+  void refreshMe();
+}
+
+/**
+ * @param {string} itemId
+ */
+async function toggleInspectItem(itemId) {
+  if (state.inspectedItems.has(itemId)) {
+    state.inspectedItems.delete(itemId);
+    renderLifePanel();
+    return;
+  }
+  try {
+    const out = await apiCall('GET', `/items/${encodeURIComponent(itemId)}`);
+    if (out.item && typeof out.item === 'object') {
+      state.inspectedItems.set(itemId, out.item);
+      renderLifePanel();
+    }
+  } catch (e) {
+    if (e instanceof ApiError) showError(e.message);
+  }
+}
+
+/**
+ * @param {HTMLElement} li
+ * @param {HTMLElement} actionsEl
+ * @param {Record<string, any>} entry
+ */
+function mountInstanceDetailControls(li, actionsEl, entry) {
+  if (!entry.instance) return;
+  const itemId = String(entry.item_id || '');
+  if (!itemId) return;
+  const expanded = state.inspectedItems.has(itemId);
+  const labelTarget = entry.meta?.title ? `${entry.name}《${entry.meta.title}》` : String(entry.name || itemId);
+  const btnText = expanded ? '收起详情' : '查看详情';
+  const btn = make('button', {
+    className: 'btn btn-ghost btn-compact',
+    text: btnText,
+    attrs: {
+      type: 'button',
+      'aria-expanded': expanded ? 'true' : 'false',
+      'aria-label': `${btnText}：${labelTarget}`,
+    },
+  });
+  btn.addEventListener('click', () => {
+    void toggleInspectItem(itemId);
+  });
+  actionsEl.appendChild(btn);
+
+  const detail = state.inspectedItems.get(itemId);
+  if (!detail) return;
+  const box = make('div', { className: 'item-detail-box' });
+  const dMeta = detail.meta && typeof detail.meta === 'object' ? detail.meta : null;
+  if (dMeta?.title) {
+    box.appendChild(make('strong', { text: `书名/铭牌：${String(dMeta.title)}` }));
+  }
+  const flyleaf = Array.isArray(dMeta?.flyleaf) ? dMeta.flyleaf : [];
+  if (flyleaf.length > 0) {
+    const ul = make('ul', { className: 'item-detail-list' });
+    for (const noteEntry of flyleaf) {
+      const who = String(noteEntry.by_name || '旅人');
+      const note = String(noteEntry.note || '');
+      ul.appendChild(make('li', { text: `${who}：${note}` }));
+    }
+    box.appendChild(ul);
+  } else if (!dMeta?.title) {
+    box.appendChild(make('span', { className: 'muted small-note', text: `物品编号 ${itemId}` }));
+  }
+  li.appendChild(box);
+}
+
 function renderLifePanel() {
   const v = state.view;
   if (!v) return;
@@ -830,8 +1079,9 @@ function renderLifePanel() {
       if (it.instance) tags.push('具名实例');
       if (it.carry_home === false) tags.push('现点饮品·不可寄存');
       meta.appendChild(make('strong', { text: `${it.name} × ${it.qty}${tags.length ? `（${tags.join('，')}）` : ''}` }));
-      if (it.meta?.title || it.meta?.summary) {
-        meta.appendChild(make('span', { className: 'muted small-note', text: `${it.meta.title || ''} ${it.meta.summary || ''}`.trim() }));
+      const subtitle = formatItemSubtitle(it.meta);
+      if (subtitle) {
+        meta.appendChild(make('span', { className: 'muted small-note', text: subtitle }));
       }
       li.appendChild(meta);
 
@@ -853,9 +1103,11 @@ function renderLifePanel() {
         actions.appendChild(storeBtn);
       }
       li.appendChild(actions);
+      mountInstanceDetailControls(li, actions, it);
       bagList.appendChild(li);
     }
   }
+  renderPager(bagPager, bagPageStatus, bagPrevBtn, bagNextBtn, v.items_page, items.length);
 
   // 储物柜
   const lockerBadge = mustEl('locker-status-badge');
@@ -871,17 +1123,25 @@ function renderLifePanel() {
       const li = make('li', { className: 'entity-item' });
       const meta = make('div', { className: 'entity-meta' });
       meta.appendChild(make('strong', { text: `${lk.name} × ${lk.qty}${lk.instance ? '（具名实例）' : ''}` }));
+      const lkSubtitle = formatItemSubtitle(lk.meta);
+      if (lkSubtitle) {
+        meta.appendChild(make('span', { className: 'muted small-note', text: lkSubtitle }));
+      }
       li.appendChild(meta);
 
+      const lkActions = make('div', { className: 'entity-actions' });
       const takeBtn = make('button', { className: 'btn btn-secondary', text: '取出 1 件', attrs: { type: 'button' } });
       takeBtn.disabled = !writable || !atLocker;
       takeBtn.addEventListener('click', () => {
         void submitCityAction({ type: 'take_locker', item_id: lk.item_id, qty: 1 }, `已从储物柜取出 ${lk.name}。`);
       });
-      li.appendChild(takeBtn);
+      lkActions.appendChild(takeBtn);
+      li.appendChild(lkActions);
+      mountInstanceDetailControls(li, lkActions, lk);
       lockerList.appendChild(li);
     }
   }
+  renderPager(lockerPager, lockerPageStatus, lockerPrevBtn, lockerNextBtn, v.locker_page, lockers.length);
 
   // 个人名片表单（不打断正在输入的焦点）
   if (document.activeElement !== profileNameInput) profileNameInput.value = String(v.me?.name || '');
@@ -965,6 +1225,7 @@ async function syncSession() {
     state.principal = null;
     state.sessionResident = null;
     state.view = null;
+    resetInventoryPaging();
     stopRealtime();
     return;
   }
@@ -1066,6 +1327,7 @@ enterForm.addEventListener('submit', async (ev) => {
   if (bio) payload.bio = bio;
   try {
     const out = await apiCall('POST', '/enter', payload);
+    resetInventoryPaging();
     state.view = out.view;
     state.sessionResident = {
       id: String(out.resident_id),
@@ -1136,7 +1398,11 @@ profileForm.addEventListener('submit', async (ev) => {
 claimControlBtn.addEventListener('click', async () => {
   showError('');
   try {
-    const out = await apiCall('POST', '/claim', { client_id: state.clientId });
+    const out = await apiCall('POST', '/claim', {
+      client_id: state.clientId,
+      ...(state.itemOffset > 0 ? { item_offset: state.itemOffset } : {}),
+      ...(state.lockerOffset > 0 ? { locker_offset: state.lockerOffset } : {}),
+    });
     if (out.view) state.view = out.view;
     renderApp();
     showNotice('已接管本窗口的居民控制权。');
@@ -1171,12 +1437,17 @@ logoutBtn.addEventListener('click', async () => {
   state.principal = null;
   state.sessionResident = null;
   state.view = null;
+  resetInventoryPaging();
   renderApp();
   showNotice('已安全退出登录。');
 });
 
 refreshHistoryBtn.addEventListener('click', () => void loadHistory(true));
 moreHistoryBtn.addEventListener('click', () => void loadHistory(false));
+bagPrevBtn.addEventListener('click', () => stepBagPage(-1));
+bagNextBtn.addEventListener('click', () => stepBagPage(1));
+lockerPrevBtn.addEventListener('click', () => stepLockerPage(-1));
+lockerNextBtn.addEventListener('click', () => stepLockerPage(1));
 
 // ───────────────────────── 启动入口 ─────────────────────────
 

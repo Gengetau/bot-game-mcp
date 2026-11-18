@@ -32,6 +32,7 @@ import {
   routePreview,
   selfView,
   touchPresence,
+  utf8Bytes,
   type CityResident,
   type CityService,
 } from '../city/index.js';
@@ -73,6 +74,8 @@ type ToolHandler = (args: any, extra: { signal: AbortSignal }) => unknown | Prom
 type ToolFn = (name: string, config: ToolConfig, handler: ToolHandler) => void;
 
 const MAX_WAIT_SECONDS = 50;
+/** 带游标拉取时单次 new_events 的软字节预算（至少保底返回 1 条事件，防止游标停滞）。 */
+const CURSOR_EVENTS_TARGET_BYTES = 1280;
 
 export const CITY_GUIDE = `# 东京：给进城的 AI 的说明
 
@@ -198,13 +201,17 @@ function enter(
     ...(a.claim !== undefined ? { claim: a.claim } : {}),
   });
   setCitySession(ctx, true);
-  return {
+  const header: Record<string, unknown> = {
     ok: true,
     world_id: c.worldId,
     created: out.created,
     resident_id: out.resident.resident_id,
     ...(out.granted_yen ? { granted_yen: out.granted_yen } : {}),
-    ...selfView(c, out.resident, { clientId, maxBytes: MAX_SELF_VIEW_BYTES - 128 }),
+  };
+  const headerOverhead = utf8Bytes(header) + 16;
+  return {
+    ...header,
+    ...selfView(c, out.resident, { clientId, maxBytes: MAX_SELF_VIEW_BYTES - headerOverhead }),
   };
 }
 
@@ -221,24 +228,83 @@ export function cityView(
     const r = residentOf(deps, ctx, me);
     const clientId = sessionClientId(ctx);
     touchPresence(c, r.resident_id);
-    let extra: Record<string, unknown> = {};
-    if (a.cursor) {
-      const ms = Math.min(a.wait_seconds ?? 0, MAX_WAIT_SECONDS) * 1000;
-      if (ms > 0) await c.waitResident(r.resident_id, a.cursor, ms, signal);
-      const read = c.readResidentEvents(r.resident_id, a.cursor, 50);
-      extra = { new_events: read.events.map((e) => ({ type: e.type, at: e.at, ...e.data })), ...(read.more ? { more: true } : {}), ...(read.resync ? { resync: true } : { cursor: read.cursor }) };
-    }
     const itemOffset = typeof a.item_offset === 'number' ? a.item_offset : undefined;
     const lockerOffset = typeof a.locker_offset === 'number' ? a.locker_offset : undefined;
-    return {
-      ...selfView(c, c.mustResident(r.resident_id), {
-        clientId,
-        ...(itemOffset !== undefined ? { itemOffset } : {}),
-        ...(lockerOffset !== undefined ? { lockerOffset } : {}),
-        ...(!a.cursor ? { maxBytes: MAX_SELF_VIEW_BYTES } : {}),
-      }),
-      ...extra,
+    const baseOpts = {
+      clientId,
+      ...(itemOffset !== undefined ? { itemOffset } : {}),
+      ...(lockerOffset !== undefined ? { lockerOffset } : {}),
     };
+
+    if (!a.cursor) {
+      return selfView(c, c.mustResident(r.resident_id), {
+        ...baseOpts,
+        maxBytes: MAX_SELF_VIEW_BYTES,
+      });
+    }
+
+    const ms = Math.min(a.wait_seconds ?? 0, MAX_WAIT_SECONDS) * 1000;
+    if (ms > 0) await c.waitResident(r.resident_id, a.cursor, ms, signal);
+    const read = c.readResidentEvents(r.resident_id, a.cursor, 50);
+    const fresh = c.mustResident(r.resident_id);
+
+    if (read.resync) {
+      const resyncExtra = { new_events: [] as unknown[], resync: true as const };
+      const overhead = utf8Bytes(resyncExtra) + 16;
+      return {
+        ...selfView(c, fresh, { ...baseOpts, maxBytes: MAX_SELF_VIEW_BYTES - overhead }),
+        ...resyncExtra,
+      };
+    }
+
+    const formatted = read.events.map((e) => ({ type: e.type, at: e.at, ...e.data }));
+    if (formatted.length === 0) {
+      const emptyExtra = {
+        new_events: [] as unknown[],
+        ...(read.more ? { more: true as const } : {}),
+        cursor: read.cursor,
+      };
+      const overhead = utf8Bytes({ new_events: [], ...(read.more ? { more: true } : {}) }) + 16;
+      return {
+        ...selfView(c, fresh, { ...baseOpts, maxBytes: MAX_SELF_VIEW_BYTES - overhead }),
+        ...emptyExtra,
+      };
+    }
+
+    let count = formatted.length;
+    while (count > 1 && utf8Bytes(formatted.slice(0, count)) > CURSOR_EVENTS_TARGET_BYTES) {
+      count--;
+    }
+
+    const decodedAfter = c.decodeCursor('r', r.resident_id, a.cursor) ?? 0;
+    const startCursor = c.encodeCursor('r', r.resident_id, decodedAfter);
+    const buildMerged = (k: number): Record<string, unknown> => {
+      const slice = formatted.slice(0, k);
+      const hasMore = read.more || k < formatted.length;
+      const nextCursor = k > 0 ? read.events[k - 1]!.id : startCursor;
+      const extraForBudget = {
+        new_events: slice,
+        ...(hasMore ? { more: true } : {}),
+      };
+      const overhead = utf8Bytes(extraForBudget) + 24;
+      const view = selfView(c, fresh, {
+        ...baseOpts,
+        maxBytes: MAX_SELF_VIEW_BYTES - overhead,
+      });
+      return {
+        ...view,
+        cursor: nextCursor,
+        new_events: slice,
+        ...(hasMore ? { more: true } : {}),
+      };
+    };
+
+    let merged = buildMerged(count);
+    while (utf8Bytes(merged) > MAX_SELF_VIEW_BYTES && count > 0) {
+      count--;
+      merged = buildMerged(count);
+    }
+    return merged;
   });
 }
 

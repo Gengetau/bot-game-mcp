@@ -1,5 +1,8 @@
+import { readFileSync } from 'node:fs';
 import type { Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
+import { fileURLToPath } from 'node:url';
+import vm from 'node:vm';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import express from 'express';
@@ -7,6 +10,7 @@ import { describe, expect, it } from 'vitest';
 import { mountCity } from '../../src/city/http.js';
 import {
   goodsForPlace,
+  issueCityTicket,
   place,
   publicCityView,
   resolvePendingOrder,
@@ -447,6 +451,603 @@ describe('东京 M3-C：漂流文库本扉页流转与 4KB / 防注入硬护栏'
       expect(secItem.item.meta.title).toBe('散步文库第9辑');
     } finally {
       await client.close();
+    }
+  });
+
+  it('R264-P2-03：MCP 带 cursor 的 get_my_view 严格守住合并结果 <= 4096 B，且多事件分页绝不跳过未返回事件', async () => {
+    const t = makeCity({ at: T0 });
+    const friend = t.bot('同行友', { entry: 'ikebukuro:station' });
+    friend.go('ikebukuro:suzuran-closet');
+
+    const manager = new GameManager({ registry: createRegistry(), rng: new SeededRng('m3c-cursor') });
+    const auth = new Authenticator(
+      { mode: 'keys', adminKeys: [], agents: [{ key: 'k-cursor-reader', id: '7788', name: '漫游读者' }] },
+      manager,
+    );
+    const mcpServer = createMcpServer(
+      { manager, auth, version: 'test', city: { city: t.c } },
+      { identity: { id: '7788', name: '漫游读者' }, fixed: true, transport: 'memory' },
+    );
+    const [ca, cb] = InMemoryTransport.createLinkedPair();
+    const client = new Client({ name: 'm3c-cursor-client', version: '1.0.0' });
+    await mcpServer.connect(cb);
+    await client.connect(ca);
+    try {
+      const mcpCall = async (name: string, args: Record<string, unknown> = {}) => {
+        const res = (await client.callTool({ name, arguments: args })) as { isError?: boolean; content: { text: string }[] };
+        expect(res.isError, res.content[0]?.text).toBeFalsy();
+        const parsed = JSON.parse(res.content[0]!.text);
+        const bytes = Buffer.byteLength(JSON.stringify(parsed), 'utf8');
+        expect(bytes, `${name}(${JSON.stringify(args)}) returned ${bytes} B > 4096 B`).toBeLessThanOrEqual(4096);
+        return parsed;
+      };
+
+      await mcpCall('enter_world', { world_id: 'tokyo', name: '漫游读者', entry: 'ikebukuro:station' });
+      let seq = 0;
+      const mcpAct = (action: Record<string, unknown>) =>
+        mcpCall('world_act', { request_id: `m3c-cur-${String(++seq).padStart(4, '0')}`, action });
+
+      const trBook = await mcpAct({ type: 'travel', to: 'ikebukuro:shiorido' });
+      t.run(trBook.trip.ends_at_ms - t.clock.t);
+      await mcpCall('enter_world', { world_id: 'tokyo' });
+      await mcpAct({ type: 'buy', sku: 'paperback', qty: 9 });
+      for (let i = 1; i <= 9; i++) {
+        await mcpAct({
+          type: 'read_item',
+          item: 'paperback',
+          title: `雨夜文库第${i}册`,
+          note: `在池袋旧书店记下第${i}则随想`,
+        });
+      }
+
+      const trCloset = await mcpAct({ type: 'travel', to: 'ikebukuro:suzuran-closet' });
+      t.run(trCloset.trip.ends_at_ms - t.clock.t);
+      await mcpCall('enter_world', { world_id: 'tokyo' });
+
+      // 1) 记录同伴说话前的游标，同伴正常说 3 条消息：无游标与带 cursor 均须 <= 4096 B
+      const beforeChat = await mcpCall('get_my_view', {});
+      const cursor0 = beforeChat.cursor as string;
+      const threeMsgs = [
+        '这件浅米色风衣的领口剪裁很适合秋天散步。',
+        '刚才路过南池袋公园，银杏叶已经开始变黄了。',
+        '挑完衣服要不要一起去旁边的喫茶「灯」喝杯热咖啡？',
+      ];
+      for (const msg of threeMsgs) {
+        friend.act({ type: 'say', text: msg });
+      }
+
+      const noCursorView = await mcpCall('get_my_view', {});
+      expect(Buffer.byteLength(JSON.stringify(noCursorView), 'utf8')).toBeLessThanOrEqual(4096);
+
+      const withCursorView = await mcpCall('get_my_view', { cursor: cursor0 });
+      expect(Buffer.byteLength(JSON.stringify(withCursorView), 'utf8')).toBeLessThanOrEqual(4096);
+
+      // 若 3 条事件分多批返回，继续顺着 cursor 拉完并确认不丢任何一条
+      const gotThree: string[] = (withCursorView.new_events as any[]).filter((e) => e.type === 'chat').map((e) => e.text);
+      let cur = withCursorView.cursor as string;
+      let more = Boolean(withCursorView.more);
+      let guard3 = 0;
+      while (more && guard3++ < 10) {
+        const nextV = await mcpCall('get_my_view', { cursor: cur });
+        gotThree.push(...(nextV.new_events as any[]).filter((e) => e.type === 'chat').map((e) => e.text));
+        cur = nextV.cursor as string;
+        more = Boolean(nextV.more);
+      }
+      expect(gotThree).toEqual(threeMsgs);
+
+      // 2) 压力场景：同伴连续发出 14 条长消息（事件流本身总字节 > 4096 B，注意推进时钟避开聊天限速），验证分页拉取 0 跳过、0 重复
+      const burstExpected: string[] = [];
+      for (let i = 1; i <= 14; i++) {
+        t.run(5 * MIN);
+        await mcpCall('heartbeat', {});
+        const text = `第${String(i).padStart(2, '0')}条长谈：${'冬日东京铁道与街角书店漫步见闻录'.repeat(6)}`;
+        burstExpected.push(text);
+        friend.act({ type: 'say', text });
+      }
+
+      const burstCollected: string[] = [];
+      let burstCur = cur;
+      let pageCount = 0;
+      for (;;) {
+        pageCount++;
+        expect(pageCount).toBeLessThanOrEqual(20);
+        // 第 2 次拉取时顺带测试同时传 cursor + item_offset 的复合场景
+        const v = await mcpCall('get_my_view', pageCount === 2 ? { cursor: burstCur, item_offset: 2 } : { cursor: burstCur });
+        const evs = v.new_events as any[];
+        if (v.more) {
+          expect(evs.length).toBeGreaterThan(0);
+        }
+        burstCollected.push(...evs.filter((e) => e.type === 'chat').map((e) => e.text));
+        burstCur = v.cursor as string;
+        if (!v.more) break;
+      }
+      expect(pageCount).toBeGreaterThan(1);
+      expect(burstCollected).toEqual(burstExpected);
+
+      // 追平水位后再次带 cursor 查询应为空列表且 more 为假
+      const tail = await mcpCall('get_my_view', { cursor: burstCur });
+      expect(tail.new_events).toEqual([]);
+      expect(tail.more).toBeFalsy();
+    } finally {
+      await client.close();
+    }
+  });
+
+  it('R264-P2-04：人类网页端 /city/play/ 接通随身背包与储物柜翻页控件，可查取与详情预览首屏外具名物品', async () => {
+    const t = makeCity({ at: T0, params: { actionsPerHour: 300, actionsPerDay: 600 } });
+    const issued = issueCityTicket(t.c, { userId: '88001', name: '网页旅人' });
+    const app = express();
+    mountCity(app, t.c, () => {}, { requestsPerMinute: 2000 });
+    const srv: Server = await new Promise((resolve) => {
+      const s = app.listen(0, '127.0.0.1', () => resolve(s));
+    });
+
+    class FakeElement {
+      tagName: string;
+      id = '';
+      className = '';
+      hidden = false;
+      disabled = false;
+      required = false;
+      checked = false;
+      value = '';
+      name = '';
+      type = '';
+      maxLength = 524288;
+      tabIndex = 0;
+      scrollTop = 0;
+      scrollHeight = 0;
+      parentNode: FakeElement | null = null;
+      children: FakeElement[] = [];
+      attrs = new Map<string, string>();
+      listeners = new Map<string, ((ev: any) => unknown)[]>();
+      private ownText = '';
+      private doc: FakeDocument;
+
+      constructor(doc: FakeDocument, tag: string) {
+        this.doc = doc;
+        this.tagName = tag.toUpperCase();
+      }
+
+      get textContent(): string {
+        if (this.children.length === 0) return this.ownText;
+        return this.children.map((c) => c.textContent).join('');
+      }
+
+      set textContent(v: string) {
+        this.children = [];
+        this.ownText = String(v ?? '');
+      }
+
+      setAttribute(k: string, v: string): void {
+        const key = k.toLowerCase();
+        const val = String(v);
+        this.attrs.set(key, val);
+        if (key === 'id') {
+          this.id = val;
+          this.doc.byId.set(val, this);
+        } else if (key === 'class') this.className = val;
+        else if (key === 'hidden') this.hidden = true;
+        else if (key === 'disabled') this.disabled = true;
+        else if (key === 'required') this.required = true;
+        else if (key === 'checked') this.checked = true;
+        else if (key === 'value') this.value = val;
+        else if (key === 'name') this.name = val;
+        else if (key === 'type') this.type = val;
+      }
+
+      getAttribute(k: string): string | null {
+        const key = k.toLowerCase();
+        if (key === 'id') return this.id || null;
+        if (key === 'class') return this.className || null;
+        return this.attrs.has(key) ? this.attrs.get(key)! : null;
+      }
+
+      removeAttribute(k: string): void {
+        const key = k.toLowerCase();
+        this.attrs.delete(key);
+        if (key === 'hidden') this.hidden = false;
+        if (key === 'disabled') this.disabled = false;
+      }
+
+      appendChild(child: FakeElement): FakeElement {
+        child.parentNode = this;
+        this.children.push(child);
+        if (child.id) this.doc.byId.set(child.id, child);
+        return child;
+      }
+
+      replaceChildren(...nodes: FakeElement[]): void {
+        this.ownText = '';
+        this.children = [];
+        for (const n of nodes) this.appendChild(n);
+      }
+
+      addEventListener(type: string, fn: (ev: any) => unknown): void {
+        const list = this.listeners.get(type) ?? [];
+        list.push(fn);
+        this.listeners.set(type, list);
+      }
+
+      focus(): void {
+        this.doc.activeElement = this;
+      }
+
+      async clickAsync(): Promise<void> {
+        if (this.disabled) return;
+        for (const fn of this.listeners.get('click') ?? []) {
+          await fn({ preventDefault() {}, currentTarget: this, target: this });
+        }
+      }
+
+      async submitAsync(): Promise<void> {
+        for (const fn of this.listeners.get('submit') ?? []) {
+          await fn({ preventDefault() {}, currentTarget: this, target: this });
+        }
+      }
+
+      requestSubmit(): void {
+        void this.submitAsync();
+      }
+
+      walk(out: FakeElement[] = []): FakeElement[] {
+        out.push(this);
+        for (const c of this.children) c.walk(out);
+        return out;
+      }
+
+      querySelectorAll(sel: string): FakeElement[] {
+        if (sel === 'input[name="entry"]:checked') {
+          return this.doc.root.walk().filter((e) => e.tagName === 'INPUT' && e.name === 'entry' && e.checked);
+        }
+        const all = this.walk();
+        if (sel === 'button') {
+          return all.filter((e) => e.tagName === 'BUTTON');
+        }
+        return [];
+      }
+
+      querySelector(sel: string): FakeElement | null {
+        return this.querySelectorAll(sel)[0] ?? null;
+      }
+    }
+
+    class FakeDocument {
+      byId = new Map<string, FakeElement>();
+      root = new FakeElement(this, 'body');
+      activeElement: FakeElement | null = null;
+      tabs: FakeElement[] = [];
+      panels: FakeElement[] = [];
+
+      createElement(tag: string): FakeElement {
+        return new FakeElement(this, tag);
+      }
+
+      getElementById(id: string): FakeElement | null {
+        return this.byId.get(id) ?? null;
+      }
+
+      querySelectorAll(sel: string): FakeElement[] {
+        if (sel === '.tablist [role="tab"]') return this.tabs;
+        if (sel === '[role="tabpanel"]') return this.panels;
+        return this.root.querySelectorAll(sel);
+      }
+    }
+
+    function loadCityHtmlDom(html: string): FakeDocument {
+      const doc = new FakeDocument();
+      const tagRe = /<([a-zA-Z0-9]+)\b([^>]*)>/g;
+      let m: RegExpExecArray | null;
+      while ((m = tagRe.exec(html)) !== null) {
+        const tag = m[1]!.toLowerCase();
+        const rawAttrs = m[2]!;
+        if (tag === 'meta' || tag === 'link' || tag === 'script') continue;
+        const el = doc.createElement(tag);
+        const attrRe = /([a-zA-Z0-9_-]+)(?:="([^"]*)")?/g;
+        let am: RegExpExecArray | null;
+        while ((am = attrRe.exec(rawAttrs)) !== null) {
+          const k = am[1]!;
+          if (k === '/') continue;
+          el.setAttribute(k, am[2] ?? '');
+        }
+        if (el.id || el.getAttribute('role') === 'tab' || el.getAttribute('role') === 'tabpanel' || el.name === 'entry') {
+          doc.root.appendChild(el);
+        }
+        if (el.getAttribute('role') === 'tab') doc.tabs.push(el);
+        if (el.getAttribute('role') === 'tabpanel') doc.panels.push(el);
+      }
+      return doc;
+    }
+
+    try {
+      const port = (srv.address() as AddressInfo).port;
+      const base = `http://127.0.0.1:${port}`;
+      const cityDir = fileURLToPath(new URL('../../city', import.meta.url));
+      const html = readFileSync(`${cityDir}/index.html`, 'utf8');
+      const appJs = readFileSync(`${cityDir}/app.js`, 'utf8');
+      const doc = loadCityHtmlDom(html);
+
+      let cookieHeader = '';
+      const apiLog: { method: string; path: string; status: number; bytes: number }[] = [];
+      const pendingFetches = new Set<Promise<unknown>>();
+      const flushAsync = async () => {
+        for (let i = 0; i < 6; i++) {
+          if (pendingFetches.size > 0) await Promise.all([...pendingFetches]);
+          await new Promise((r) => setTimeout(r, 5));
+        }
+      };
+
+      const sandboxFetch = (input: string, init: Record<string, any> = {}) => {
+        const p = (async () => {
+          const headers: Record<string, string> = {
+            Origin: base,
+            Host: `127.0.0.1:${port}`,
+            ...(init.headers ?? {}),
+            ...(cookieHeader ? { Cookie: cookieHeader } : {}),
+          };
+          const res = await fetch(`${base}${input}`, {
+            method: init.method ?? 'GET',
+            headers,
+            ...(init.body !== undefined ? { body: init.body } : {}),
+          });
+          const setCookie = res.headers.get('set-cookie');
+          if (setCookie) {
+            cookieHeader = setCookie.split(';')[0]!;
+          }
+          const rawText = await res.text();
+          const bytes = Buffer.byteLength(rawText, 'utf8');
+          apiLog.push({ method: String(init.method ?? 'GET'), path: input, status: res.status, bytes });
+          if (input.startsWith('/city/api/me')) {
+            expect(bytes, `${input} returned ${bytes} B > 4096 B`).toBeLessThanOrEqual(4096);
+          }
+          return {
+            ok: res.ok,
+            status: res.status,
+            json: async () => JSON.parse(rawText),
+          };
+        })();
+        pendingFetches.add(p);
+        void p.finally(() => pendingFetches.delete(p));
+        return p;
+      };
+
+      const storage = new Map<string, string>();
+      const timers = new Set<ReturnType<typeof setInterval>>();
+      const win = {
+        location: { hash: `#ticket=${encodeURIComponent(issued.ticket)}`, pathname: '/city/play/', search: '' },
+        history: { replaceState() {} },
+        setInterval: (fn: () => void, ms: number) => {
+          const id = setInterval(fn, Math.max(ms, 60_000));
+          timers.add(id);
+          return id;
+        },
+        clearInterval: (id: any) => {
+          clearInterval(id);
+          timers.delete(id);
+        },
+        setTimeout: (fn: () => void, ms: number) => setTimeout(fn, ms),
+        clearTimeout: (id: any) => clearTimeout(id),
+      };
+
+      vm.runInNewContext(appJs, {
+        window: win,
+        document: doc,
+        sessionStorage: {
+          getItem: (k: string) => storage.get(k) ?? null,
+          setItem: (k: string, v: string) => storage.set(k, String(v)),
+        },
+        EventSource: class {
+          addEventListener() {}
+          close() {}
+        },
+        fetch: sandboxFetch,
+        crypto: globalThis.crypto,
+        URLSearchParams,
+        Intl,
+        Date,
+        Math,
+        JSON,
+        Number,
+        String,
+        Boolean,
+        Array,
+        Object,
+        Map,
+        Set,
+        Promise,
+        Error,
+        console,
+      });
+      await flushAsync();
+
+      // 1) 网页启动自动兑换 #ticket= 票据登录，填写首次入城表单进入池袋站
+      const entryShinjuku = doc.getElementById('entry-shinjuku')!;
+      const entryIkebukuro = doc.getElementById('entry-ikebukuro')!;
+      entryShinjuku.checked = false;
+      entryIkebukuro.checked = true;
+      doc.getElementById('enter-name-input')!.value = '网页旅人';
+      await doc.getElementById('enter-form')!.submitAsync();
+      await flushAsync();
+
+      const humanRow = t.c.db.get<{ resident_id: string }>("SELECT resident_id FROM residents WHERE name = '网页旅人'")!;
+      expect(humanRow).toBeTruthy();
+      const humanId = humanRow.resident_id;
+
+      // 2) 准备 15 本储物柜具名文库本 + 9 本随身具名文库本，最终站在池袋站大厅（可存取柜）
+      let actSeq = 0;
+      const postWebAct = async (action: Record<string, unknown>) => {
+        const sessRes = await sandboxFetch('/city/api/session');
+        const sess = await sessRes.json();
+        const cid = storage.get('city_client_id')!;
+        const r = await sandboxFetch('/city/api/act', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-City-CSRF': sess.csrf_token, 'X-City-Client': cid },
+          body: JSON.stringify({ client_id: cid, request_id: `web-seed-${String(++actSeq).padStart(4, '0')}`, action }),
+        });
+        const body = await r.json();
+        expect(r.ok, JSON.stringify(body)).toBe(true);
+        return body;
+      };
+      const advanceWeb = async (totalMs: number) => {
+        let rem = totalMs;
+        const sess = await (await sandboxFetch('/city/api/session')).json();
+        const cid = storage.get('city_client_id')!;
+        while (rem > 0) {
+          const step = Math.min(rem, 2 * MIN);
+          t.run(step);
+          rem -= step;
+          await sandboxFetch('/city/api/heartbeat', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-City-CSRF': sess.csrf_token, 'X-City-Client': cid },
+            body: JSON.stringify({ client_id: cid }),
+          });
+        }
+      };
+
+      for (let batch = 0; batch < 2; batch++) {
+        const tr = await postWebAct({ type: 'travel', to: 'ikebukuro:shiorido' });
+        await advanceWeb(tr.trip.ends_at_ms - t.clock.t);
+        const count = batch === 0 ? 8 : 7;
+        await postWebAct({ type: 'buy', sku: 'paperback', qty: count });
+        for (let j = 0; j < count; j++) {
+          const idx = batch * 8 + j + 1;
+          await postWebAct({
+            type: 'read_item',
+            item: 'paperback',
+            title: `私柜藏书第${String(idx).padStart(2, '0')}册`,
+            note: `私柜第${idx}册批注`,
+          });
+        }
+        const back = await postWebAct({ type: 'travel', to: 'ikebukuro:station' });
+        await advanceWeb(back.trip.ends_at_ms - t.clock.t);
+        const allHeldRows = t.c.db.all<{ item_id: string }>(
+          "SELECT item_id FROM items WHERE owner_id = ? AND state = 'held' AND quantity > 0 ORDER BY item_id",
+          humanId,
+        );
+        for (const row of allHeldRows) {
+          await postWebAct({ type: 'store_locker', item_id: row.item_id, qty: 1 });
+        }
+      }
+
+      const trFinal = await postWebAct({ type: 'travel', to: 'ikebukuro:shiorido' });
+      await advanceWeb(trFinal.trip.ends_at_ms - t.clock.t);
+      await postWebAct({ type: 'buy', sku: 'paperback', qty: 9 });
+      for (let i = 1; i <= 9; i++) {
+        await postWebAct({
+          type: 'read_item',
+          item: 'paperback',
+          title: `随身手记第${String(i).padStart(2, '0')}卷`,
+          note: `随身手记第${i}卷扉页心得`,
+        });
+      }
+      const backStation = await postWebAct({ type: 'travel', to: 'ikebukuro:station' });
+      await advanceWeb(backStation.trip.ends_at_ms - t.clock.t);
+
+      // 触发网页端自身刷新（经 claim 同步最新 view）并切换到「我的生活」面板
+      await doc.getElementById('claim-control-btn')!.clickAsync();
+      await flushAsync();
+      await doc.getElementById('tab-life')!.clickAsync();
+      await flushAsync();
+
+      const bagList = doc.getElementById('bag-list')!;
+      const bagPager = doc.getElementById('bag-pager');
+      const bagNextBtn = doc.getElementById('bag-next-btn');
+      const bagPrevBtn = doc.getElementById('bag-prev-btn');
+      expect(bagPager, '网页须提供随身背包分页栏 #bag-pager').toBeTruthy();
+      expect(bagPager!.hidden).toBe(false);
+      expect(bagList.children.length).toBeLessThan(9);
+
+      // 3) 翻遍随身背包所有页，验证 9 本书全部可在网页上看到，并在末页查看详情与存入储物柜
+      const seenBagText: string[] = [bagList.textContent];
+      let bagGuard = 0;
+      while (bagNextBtn && !bagNextBtn.disabled && bagGuard++ < 10) {
+        await bagNextBtn.clickAsync();
+        await flushAsync();
+        seenBagText.push(bagList.textContent);
+      }
+      expect(apiLog.some((x) => x.path.includes('/city/api/me?') && x.path.includes('item_offset='))).toBe(true);
+      const allBagCombined = seenBagText.join('\n');
+      for (let i = 1; i <= 9; i++) {
+        expect(allBagCombined).toContain(`随身手记第${String(i).padStart(2, '0')}卷`);
+      }
+
+      // 在背包非首屏末页取第一项（确认不在首屏），点击「查看详情」验证完整扉页批注可见，并点击「存入储物柜」
+      const firstBagPageText = seenBagText[0]!;
+      const nonFirstBagLi = bagList.children[0]!;
+      expect(nonFirstBagLi).toBeTruthy();
+      const titleMatch = /随身手记第(\d{2})卷/.exec(nonFirstBagLi.textContent);
+      expect(titleMatch).toBeTruthy();
+      const nonFirstBagTitle = titleMatch![0]!;
+      const nonFirstBagIdx = Number(titleMatch![1]);
+      expect(firstBagPageText).not.toContain(nonFirstBagTitle);
+
+      const detailBtn = nonFirstBagLi.querySelectorAll('button').find((b) => b.textContent.includes('详情'));
+      expect(detailBtn).toBeTruthy();
+      await detailBtn!.clickAsync();
+      await flushAsync();
+      const refreshedBagLi = bagList.children.find((li) => li.textContent.includes(nonFirstBagTitle))!;
+      expect(refreshedBagLi.textContent).toContain(`随身手记第${nonFirstBagIdx}卷扉页心得`);
+
+      const storeBtn = refreshedBagLi.querySelectorAll('button').find((b) => b.textContent.includes('存入储物柜'));
+      expect(storeBtn).toBeTruthy();
+      expect(storeBtn!.disabled).toBe(false);
+      await storeBtn!.clickAsync();
+      await flushAsync();
+      expect(
+        t.c.db.get<{ state: string }>("SELECT state FROM items WHERE owner_id = ? AND meta_json LIKE ?", humanId, `%${nonFirstBagTitle}%`)!.state,
+      ).toBe('locker');
+
+      // 点击「上一页」能够正常回退
+      if (!bagPrevBtn!.disabled) {
+        await bagPrevBtn!.clickAsync();
+        await flushAsync();
+      }
+
+      // 4) 翻遍个人储物柜所有页，选取一本明确不在首屏的私柜藏书，翻页定位后直接点击「取出 1 件」取回随身背包
+      const lockerList = doc.getElementById('locker-list')!;
+      const lockerPager = doc.getElementById('locker-pager');
+      const lockerNextBtn = doc.getElementById('locker-next-btn');
+      const lockerPrevBtn = doc.getElementById('locker-prev-btn');
+      expect(lockerPager, '网页须提供储物柜分页栏 #locker-pager').toBeTruthy();
+      expect(lockerPager!.hidden).toBe(false);
+      const firstLockerText = lockerList.textContent;
+      const allLockerTitles = Array.from({ length: 15 }, (_, k) => `私柜藏书第${String(k + 1).padStart(2, '0')}册`);
+      const targetLockerTitle = allLockerTitles.find((tt) => !firstLockerText.includes(tt))!;
+      expect(targetLockerTitle).toBeTruthy();
+
+      let foundTargetLi: FakeElement | undefined;
+      let lkGuard = 0;
+      while (lkGuard++ < 12) {
+        foundTargetLi = lockerList.children.find((li) => li.textContent.includes(targetLockerTitle));
+        if (foundTargetLi || !lockerNextBtn || lockerNextBtn.disabled) break;
+        await lockerNextBtn.clickAsync();
+        await flushAsync();
+      }
+      expect(apiLog.some((x) => x.path.includes('/city/api/me?') && x.path.includes('locker_offset='))).toBe(true);
+      expect(foundTargetLi, `翻页后须在储物柜列表中定位到《${targetLockerTitle}》`).toBeTruthy();
+
+      const takeBtn = foundTargetLi!.querySelectorAll('button').find((b) => b.textContent.includes('取出'));
+      expect(takeBtn).toBeTruthy();
+      expect(takeBtn!.disabled).toBe(false);
+      await takeBtn!.clickAsync();
+      await flushAsync();
+
+      const targetBookInDb = t.c.db.get<{ state: string }>(
+        'SELECT state FROM items WHERE owner_id = ? AND meta_json LIKE ?',
+        humanId,
+        `%${targetLockerTitle}%`,
+      )!;
+      expect(targetBookInDb.state).toBe('held');
+
+      if (lockerPrevBtn && !lockerPrevBtn.disabled) {
+        await lockerPrevBtn.clickAsync();
+        await flushAsync();
+      }
+
+      for (const id of timers) clearInterval(id);
+    } finally {
+      srv.closeAllConnections();
+      await new Promise<void>((r) => srv.close(() => r()));
     }
   });
 });

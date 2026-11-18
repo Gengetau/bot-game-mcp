@@ -125,7 +125,7 @@ export function formatLockerItemSummary(i: ItemRow): Record<string, unknown> & {
   };
 }
 
-function utf8Bytes(val: unknown): number {
+export function utf8Bytes(val: unknown): number {
   return Buffer.byteLength(JSON.stringify(val), 'utf8');
 }
 
@@ -516,6 +516,14 @@ export function selfView(c: CityService, r: CityResident, opts: SelfViewOptions 
       shownLocker.pop();
     } else if (shownItems.length > 0) {
       shownItems.pop();
+    } else if (hereView && Array.isArray(hereView.books) && hereView.books.length > 0) {
+      (hereView.books as unknown[]).pop();
+    } else if (hereView && Array.isArray(hereView.exits) && hereView.exits.length > 0) {
+      (hereView.exits as unknown[]).pop();
+    } else if (lockerDeposits.length > 0) {
+      lockerDeposits.pop();
+    } else if (lockerPickups.length > 0) {
+      lockerPickups.pop();
     } else {
       break;
     }

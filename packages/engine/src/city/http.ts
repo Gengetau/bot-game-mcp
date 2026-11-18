@@ -28,7 +28,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import express, { type Express, type NextFunction, type Request, type Response } from 'express';
-import { cityCommand, requireActingVisit, resolvePendingOrder, visitAct } from './actions.js';
+import { cityCommand, inspectSingleItem, requireActingVisit, resolvePendingOrder, visitAct } from './actions.js';
 import {
   CITY_CATALOG_VERSION,
   FARE_RULE_VERSION,
@@ -474,11 +474,26 @@ export function mountCity(app: Express, c: CityService, log: (msg: string) => vo
       if (!session.resident) throw new CityError('UNAUTHENTICATED', '还没有进入东京，请先起名入城。', 'no_resident');
       const b = jsonObj(req);
       const clientId = normalizeClientId('web', b.client_id ?? req.headers['x-city-client']);
+      const itemOffset = optionalOffset(b.item_offset, 'item_offset');
+      const lockerOffset = optionalOffset(b.locker_offset, 'locker_offset');
       const out = cityCommand(c, session.resident.resident_id, b.request_id, b.action, { clientId });
       return {
         ...out,
-        view: selfView(c, c.mustResident(session.resident.resident_id), { clientId }),
+        view: selfView(c, c.mustResident(session.resident.resident_id), {
+          clientId,
+          ...(itemOffset !== undefined ? { itemOffset } : {}),
+          ...(lockerOffset !== undefined ? { lockerOffset } : {}),
+        }),
       };
+    }),
+  );
+
+  api.get(
+    '/items/:id',
+    apiSync((req) => {
+      const { session } = requireSession(c, req);
+      if (!session.resident) throw new CityError('UNAUTHENTICATED', '还没有进入东京，请先起名入城。', 'no_resident');
+      return inspectSingleItem(c, c.mustResident(session.resident.resident_id), String(req.params.id ?? ''));
     }),
   );
 
@@ -503,10 +518,16 @@ export function mountCity(app: Express, c: CityService, log: (msg: string) => vo
       if (!session.resident) throw new CityError('UNAUTHENTICATED', '还没有进入东京，请先起名入城。', 'no_resident');
       const b = jsonObj(req);
       const clientId = normalizeClientId('web', b.client_id ?? req.headers['x-city-client']);
+      const itemOffset = optionalOffset(b.item_offset, 'item_offset');
+      const lockerOffset = optionalOffset(b.locker_offset, 'locker_offset');
       const out = claimCityControl(c, session.resident.resident_id, clientId);
       return {
         ...out,
-        view: selfView(c, c.mustResident(session.resident.resident_id), { clientId }),
+        view: selfView(c, c.mustResident(session.resident.resident_id), {
+          clientId,
+          ...(itemOffset !== undefined ? { itemOffset } : {}),
+          ...(lockerOffset !== undefined ? { lockerOffset } : {}),
+        }),
       };
     }),
   );
