@@ -44,6 +44,7 @@ import { runReconcile } from './reconcile.js';
 import { card, updateResidentProfile } from './residents.js';
 import type { CityResident, CityService } from './service.js';
 import { placeOpen, spendable, startTrip, tripView } from './trips.js';
+import { MAX_SELF_VIEW_BYTES, cityItemsPage } from './views.js';
 import { beginReturn, bodyEffect, clearChatWake, noteSpeech, openVisitOf, outboxOrderRefunded, outboxPurchase, visitById, wake, wakeForChat, withReceipt, type BridgeReceipt, type VisitRow } from './visits.js';
 
 export const CITY_ACTIONS = [
@@ -347,8 +348,8 @@ function doReadItem(c: CityService, r: CityResident, a: Action, at: number, visi
   return { status: 'completed', item: { ...annotated, name: itemName(annotated.type), instance: true } };
 }
 
-function doInspectItem(c: CityService, r: CityResident, a: Action): Record<string, unknown> {
-  const itemId = str(a.item_id).trim();
+export function inspectSingleItem(c: CityService, r: CityResident, rawItemId: string): Record<string, unknown> {
+  const itemId = rawItemId.trim();
   if (!itemId) throw cityBadRequest('inspect_item 需要传 item_id。', 'no_such_item');
   const row = c.db.get<ItemRow & Row>('SELECT * FROM items WHERE item_id = ? AND quantity > 0', itemId);
   if (!row) throw new CityError('NOT_FOUND', '找不到这件物品，或你无权查看详情。', 'no_such_item');
@@ -375,7 +376,6 @@ function doInspectItem(c: CityService, r: CityResident, a: Action): Record<strin
   const rawMeta = row.instance === 1 ? parseJson<Record<string, unknown> | null>(row.meta_json, null) : null;
   const meta = rawMeta ? sanitizeItemMeta(rawMeta) : null;
   return {
-    status: 'completed',
     item: {
       item_id: row.item_id,
       type: row.type,
@@ -388,6 +388,22 @@ function doInspectItem(c: CityService, r: CityResident, a: Action): Record<strin
       ...(meta ? { meta } : {}),
     },
   };
+}
+
+function doInspectItem(c: CityService, r: CityResident, a: Action): Record<string, unknown> {
+  if (a.item_id === undefined && (a.offset !== undefined || a.limit !== undefined || a.scope !== undefined)) {
+    const scope = a.scope === undefined ? 'held' : a.scope;
+    if (scope !== 'held' && scope !== 'locker') throw cityBadRequest('scope 只能是 held 或 locker。', 'bad_scope');
+    const offset = a.offset === undefined ? 0 : Number(a.offset);
+    if (!Number.isInteger(offset) || offset < 0) throw cityBadRequest('offset 要是非负整数。', 'bad_offset');
+    const limit = a.limit === undefined ? 10 : Number(a.limit);
+    if (!Number.isInteger(limit) || limit < 1 || limit > 20) throw cityBadRequest('limit 要是 1 到 20 的整数。', 'bad_limit');
+    return {
+      status: 'completed',
+      ...cityItemsPage(c, r, scope, offset, limit, MAX_SELF_VIEW_BYTES - 128),
+    };
+  }
+  return { status: 'completed', ...inspectSingleItem(c, r, str(a.item_id)) };
 }
 
 function doDriftBook(c: CityService, r: CityResident, a: Action, at: number, visit: VisitRow | null): Record<string, unknown> {

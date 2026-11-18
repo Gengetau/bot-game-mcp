@@ -157,8 +157,8 @@ export class Bot {
   act(action: Record<string, unknown>, requestId?: string): any {
     return cityCommand(this.t.c, this.id, requestId ?? `req-${this.id}-${++this.seq}`, action);
   }
-  view(): any {
-    return selfView(this.t.c, this.t.c.mustResident(this.id));
+  view(opts?: { clientId?: string; itemOffset?: number; lockerOffset?: number; maxBytes?: number }): any {
+    return selfView(this.t.c, this.t.c.mustResident(this.id), opts);
   }
   /** 走到某个地点并等到到达。 */
   go(to: string): void {
@@ -239,8 +239,8 @@ export class FakeKernel {
     return visitAct(this.c, this.visitId, { request_id: requestId ?? this.rid('a'), domain_epoch: this.epoch, action });
   }
 
-  view(): any {
-    return selfView(this.c, this.c.mustResident(this.t.residentOf(this.actorId)));
+  view(opts?: { clientId?: string; itemOffset?: number; lockerOffset?: number; maxBytes?: number }): any {
+    return selfView(this.c, this.c.mustResident(this.t.residentOf(this.actorId)), opts);
   }
 
   describe(): any {

@@ -60,7 +60,7 @@ import {
   type CityWebSession,
 } from './residents.js';
 import type { CityService } from './service.js';
-import { chatHistory, publicCityView, routePreview, selfView } from './views.js';
+import { MAX_SELF_VIEW_BYTES, chatHistory, publicCityView, routePreview, selfView } from './views.js';
 import { BRIDGE_PROTOCOL, abortVisit, commitVisit, describeVisit, prepareVisit, readOutbox, releaseVisit, requestReturn } from './visits.js';
 import { allWeather } from './weather.js';
 
@@ -268,6 +268,13 @@ export function mountCity(app: Express, c: CityService, log: (msg: string) => vo
     return req.body as Record<string, unknown>;
   };
 
+  const optionalOffset = (raw: unknown, field: string): number | undefined => {
+    if (raw === undefined || raw === '') return undefined;
+    const n = Number(raw);
+    if (!Number.isSafeInteger(n) || n < 0) throw cityBadRequest(`${field} 必须是非负整数。`, 'bad_offset');
+    return n;
+  };
+
   app.get(['/city', '/city/'], guard, (_req, res) => {
     try {
       res.setHeader('Content-Type', 'text/html; charset=utf-8');
@@ -448,8 +455,14 @@ export function mountCity(app: Express, c: CityService, log: (msg: string) => vo
       if (!session.resident) throw new CityError('UNAUTHENTICATED', '还没有进入东京，请先起名入城。', 'no_resident');
       const rawClient = req.query.client_id ?? req.headers['x-city-client'];
       const clientId = rawClient !== undefined ? normalizeClientId('web', rawClient) : undefined;
+      const itemOffset = optionalOffset(req.query.item_offset, 'item_offset');
+      const lockerOffset = optionalOffset(req.query.locker_offset, 'locker_offset');
       touchPresence(c, session.resident.resident_id);
-      return selfView(c, c.mustResident(session.resident.resident_id), { ...(clientId ? { clientId } : {}) });
+      return selfView(c, c.mustResident(session.resident.resident_id), {
+        ...(clientId ? { clientId } : {}),
+        ...(itemOffset !== undefined ? { itemOffset } : {}),
+        ...(lockerOffset !== undefined ? { lockerOffset } : {}),
+      });
     }),
   );
 
@@ -783,7 +796,18 @@ export function mountCity(app: Express, c: CityService, log: (msg: string) => vo
     '/visits/:id/view',
     sync((req) => {
       const visit = requireActingVisit(c, visitId(req), Number(req.query.domain_epoch));
-      return { visit_id: visit.visit_id, state: visit.state, ...selfView(c, c.mustResident(visit.resident_id)) };
+      const itemOffset = optionalOffset(req.query.item_offset, 'item_offset');
+      const lockerOffset = optionalOffset(req.query.locker_offset, 'locker_offset');
+      const headerOverhead = Buffer.byteLength(JSON.stringify({ visit_id: visit.visit_id, state: visit.state }), 'utf8');
+      return {
+        visit_id: visit.visit_id,
+        state: visit.state,
+        ...selfView(c, c.mustResident(visit.resident_id), {
+          ...(itemOffset !== undefined ? { itemOffset } : {}),
+          ...(lockerOffset !== undefined ? { lockerOffset } : {}),
+          maxBytes: MAX_SELF_VIEW_BYTES - headerOverhead,
+        }),
+      };
     }),
   );
   bridge.get('/visits/:id/wait', async (req, res) => {

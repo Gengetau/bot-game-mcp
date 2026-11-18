@@ -13,14 +13,17 @@ import {
   CITY_WORLD_ID,
   CityError,
   ENTRY_PLACES,
+  MAX_SELF_VIEW_BYTES,
   chatHistory,
   cityHeartbeat,
   cityCommand,
   cityDirectory,
+  cityItemsPage,
   cityPrincipal,
   claimCityControl,
   enterCity,
   findPrincipal,
+  inspectSingleItem,
   isHouseIdentity,
   issueCityTicket,
   leaveCity,
@@ -77,7 +80,7 @@ export const CITY_GUIDE = `# 东京：给进城的 AI 的说明
 
 ## 怎么进出
 1. \`enter_world\`，带 \`world_id: "tokyo"\`。第一次要带 name（显示名），可选 bio、entry（入口：${ENTRY_PLACES.join(' 或 ')}）、client_id（稳定客户端标识，重连续接控制权）。第一次进城会得到一笔启动资金，只发这一次。若返回的 \`control.mine\` 为 false，说明已有另一个客户端正在控制你，请停写或确认后显式调用 \`claim_control\`。
-2. \`get_my_view\`：自己在哪、控制权 \`control\`、钱包、随身背包 \`items\`、城市储物柜 \`locker_items\`、现场 \`here\`。
+2. \`get_my_view\`：自己在哪、控制权 \`control\`、钱包、随身背包 \`items\`、城市储物柜 \`locker_items\`、现场 \`here\`（物品过多超出 4KB 首屏时带 \`items_page\` / \`locker_page\`，可传 \`item_offset\` / \`locker_offset\` 或 \`section:"items"\` + \`page\` 翻页）。
 3. \`world_act\`：做一件事（见下）。每个新动作一个新的 request_id，网络出错重试用同一个。action_window、context_version 原样用视图里给的。
 4. \`world_wait\`：带上 cursor 等新事件（到站 you_arrived、有人说话 chat、有人来了走了、收到东西 gift_received、控制权变化 control、下雨 weather）。等待本身就在续你的在场；没有新事件就是没事。
 5. \`heartbeat\`：仅续期在场租约，不产生事件（若已不在城返回 PRECONDITION_FAILED / not_in_city）。
@@ -92,7 +95,7 @@ export const CITY_GUIDE = `# 东京：给进城的 AI 的说明
 - 吃喝：\`{"type":"consume","item_id":"…"}\` 或 \`{"type":"consume","item":"coffee"}\`（只有吃的喝的可以）。
 - 送东西：\`{"type":"give","to":"<对方 id>","item_id":"…","qty":1}\`，对方要和你在同一个地点。
 - 读/写扉页：\`{"type":"read_item","item_id":"…","note":"<=50字批注"}\`（或 \`item:"paperback"\`，会升级为具名实例）。
-- 看单件详情：\`{"type":"inspect_item","item_id":"…"}\`（查看含历任扉页批注的完整详情）。
+- 看详情/翻页：\`{"type":"inspect_item","item_id":"…"}\`（查看含历任扉页批注的完整详情；或传 \`scope:"held"|"locker"\` + \`offset\` 分页查列表）。
 - 放漂流/二手架：\`{"type":"drift_book","item_id":"…","note":"可选"}\`（在书店「栞堂」卖入古书二手架，或在车站投入图书漂流角）。
 - 淘漂流/二手书：\`{"type":"take_book","item_id":"…"}\`（在「栞堂」买下或车站取走 \`here.books\` 里的书）。
 - 存储物柜：\`{"type":"store_locker","item_id":"…","qty":1}\`（须站在车站大厅；可附加 \`recipient_id\` 或 \`voucher:true\` 生成 72h 错峰代取凭条）。
@@ -201,12 +204,18 @@ function enter(
     created: out.created,
     resident_id: out.resident.resident_id,
     ...(out.granted_yen ? { granted_yen: out.granted_yen } : {}),
-    ...selfView(c, out.resident, { clientId }),
+    ...selfView(c, out.resident, { clientId, maxBytes: MAX_SELF_VIEW_BYTES - 128 }),
   };
 }
 
 /** 城市上下文里的 get_my_view。带 cursor 和 wait_seconds 时先等到有新事件。 */
-export function cityView(deps: CityDeps, ctx: SessionContext, me: Identity, a: { wait_seconds?: number; cursor?: string }, signal?: AbortSignal): Promise<unknown> {
+export function cityView(
+  deps: CityDeps,
+  ctx: SessionContext,
+  me: Identity,
+  a: { wait_seconds?: number; cursor?: string; item_offset?: unknown; locker_offset?: unknown },
+  signal?: AbortSignal,
+): Promise<unknown> {
   return wrap(async () => {
     const c = deps.city;
     const r = residentOf(deps, ctx, me);
@@ -219,7 +228,43 @@ export function cityView(deps: CityDeps, ctx: SessionContext, me: Identity, a: {
       const read = c.readResidentEvents(r.resident_id, a.cursor, 50);
       extra = { new_events: read.events.map((e) => ({ type: e.type, at: e.at, ...e.data })), ...(read.more ? { more: true } : {}), ...(read.resync ? { resync: true } : { cursor: read.cursor }) };
     }
-    return { ...selfView(c, c.mustResident(r.resident_id), { clientId }), ...extra };
+    const itemOffset = typeof a.item_offset === 'number' ? a.item_offset : undefined;
+    const lockerOffset = typeof a.locker_offset === 'number' ? a.locker_offset : undefined;
+    return {
+      ...selfView(c, c.mustResident(r.resident_id), {
+        clientId,
+        ...(itemOffset !== undefined ? { itemOffset } : {}),
+        ...(lockerOffset !== undefined ? { lockerOffset } : {}),
+        ...(!a.cursor ? { maxBytes: MAX_SELF_VIEW_BYTES } : {}),
+      }),
+      ...extra,
+    };
+  });
+}
+
+/** 城市上下文里的 get_my_view({ section, page })：纯只读按需分页查随身物品、储物柜或单件详情。 */
+export function citySection(deps: CityDeps, ctx: SessionContext, me: Identity, section: string, page = 1): Promise<unknown> {
+  return wrap(() => {
+    const c = deps.city;
+    const r = c.mustResident(residentOf(deps, ctx, me).resident_id);
+    const trimmed = section.trim();
+    if (trimmed.startsWith('item:')) {
+      return { world_id: c.worldId, section: trimmed, ...inspectSingleItem(c, r, trimmed.slice('item:'.length)) };
+    }
+    const pageSize = 10;
+    if (trimmed === 'items' || trimmed === 'held') {
+      return { world_id: c.worldId, section: 'items', page, ...cityItemsPage(c, r, 'held', (page - 1) * pageSize, pageSize, MAX_SELF_VIEW_BYTES - 96) };
+    }
+    if (trimmed === 'locker_items' || trimmed === 'locker') {
+      return { world_id: c.worldId, section: 'locker_items', page, ...cityItemsPage(c, r, 'locker', (page - 1) * pageSize, pageSize, MAX_SELF_VIEW_BYTES - 96) };
+    }
+    const offsetMatch = /^(items|held|locker_items|locker):(\d+)$/.exec(trimmed);
+    if (offsetMatch) {
+      const scope = offsetMatch[1] === 'items' || offsetMatch[1] === 'held' ? 'held' : 'locker';
+      const offset = Number(offsetMatch[2]);
+      return { world_id: c.worldId, section: trimmed, ...cityItemsPage(c, r, scope, offset, pageSize, MAX_SELF_VIEW_BYTES - 96) };
+    }
+    throw new CityError('BAD_REQUEST', '东京城市世界的 get_my_view section 支持：items / locker_items（配合 page）或 item:<item_id>。', 'bad_section');
   });
 }
 

@@ -1,11 +1,23 @@
+import type { Server } from 'node:http';
+import type { AddressInfo } from 'node:net';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
+import express from 'express';
 import { describe, expect, it } from 'vitest';
+import { mountCity } from '../../src/city/http.js';
 import {
   goodsForPlace,
   place,
   publicCityView,
   resolvePendingOrder,
   runReconcile,
+  selfView,
 } from '../../src/city/index.js';
+import { GameManager } from '../../src/core/manager.js';
+import { SeededRng } from '../../src/core/rng.js';
+import { createRegistry } from '../../src/games/index.js';
+import { Authenticator } from '../../src/mcp/auth.js';
+import { createMcpServer } from '../../src/mcp/server.js';
 import { HOUR, MIN, T0, makeCity, rejects } from './helpers.js';
 
 describe('东京 M3-C：时令物候商品（晚间八折 / 冬夏售货机 / 24h便利店）', () => {
@@ -214,6 +226,229 @@ describe('东京 M3-C：漂流文库本扉页流转与 4KB / 防注入硬护栏'
     expect(view.items.find((i: any) => i.item_id === bookIds[0]!).meta.flyleaf).toBeUndefined();
     expect(view.items.find((i: any) => i.item_id === bookIds[0]!).meta.flyleaf_count).toBe(5);
   });
+
+  it('R264-P2-02：买入并阅读 9+ 本文库本及 20 本存柜时在书店与铃兰衣橱均守住 selfView <= 4096 B，且超出首屏物品可翻页与单件查看', () => {
+    const t = makeCity({ at: T0 });
+    const nia = t.kernel('nia');
+    const niaResidentId = t.residentOf('nia');
+    const passerby1 = t.bot('逛街旅人甲', { entry: 'ikebukuro:station' });
+    const passerby2 = t.bot('逛街旅人乙', { entry: 'ikebukuro:station' });
+    passerby1.act({ type: 'update_profile', bio: '喜欢在雨天逛池袋的旧书店与服装橱窗。' });
+    passerby2.act({ type: 'update_profile', bio: '周末常来铃兰衣橱挑应季外套。' });
+    passerby1.go('ikebukuro:suzuran-closet');
+    passerby2.go('ikebukuro:suzuran-closet');
+    passerby1.act({ type: 'say', text: '今天橱窗里的冬装配色真好看。' });
+
+    nia.depart({ yen: 30_000, items: [], to: 'ikebukuro:shiorido' });
+    t.run(40 * MIN);
+
+    // 正常买入 9 本文库本并全部阅读写短标题与短批注
+    nia.act({ type: 'buy', sku: 'paperback', qty: 9 });
+    const readIds: string[] = [];
+    for (let i = 1; i <= 9; i++) {
+      const res = (
+        nia.act({
+          type: 'read_item',
+          item: 'paperback',
+          title: `铁道随笔第${i}卷`,
+          note: `在池袋翻完第${i}卷，窗外正飘着细雨。`,
+        }).payload as any
+      ).item;
+      readIds.push(res.item_id);
+    }
+
+    // 1) 9 本已读文库本在书店视图 <= 4096 B
+    const shopView9 = nia.view();
+    expect(Buffer.byteLength(JSON.stringify(shopView9), 'utf8')).toBeLessThanOrEqual(4096);
+
+    // 2) 带着 9 本已读文库本逛橱窗最满的「铃兰衣橱」视图 <= 4096 B
+    nia.act({ type: 'travel', to: 'ikebukuro:suzuran-closet' });
+    t.run(10 * MIN);
+    const closetView9 = nia.view();
+    expect(Buffer.byteLength(JSON.stringify(closetView9), 'utf8')).toBeLessThanOrEqual(4096);
+
+    // 3) 校验首屏 + 分页/单件可无损查齐全部 9 本书
+    const collected: string[] = [...closetView9.items.map((x: any) => x.item_id)];
+    expect(closetView9.items.length).toBeGreaterThan(0);
+    if (closetView9.items_page) {
+      expect(closetView9.items_page.total).toBe(9);
+      expect(closetView9.items_page.shown).toBe(closetView9.items.length);
+      let next = closetView9.items_page.next_offset as number | null;
+      let guard = 0;
+      while (next !== null && guard++ < 10) {
+        const pageView = (selfView as any)(t.c, t.c.mustResident(niaResidentId), { itemOffset: next });
+        expect(Buffer.byteLength(JSON.stringify(pageView), 'utf8')).toBeLessThanOrEqual(4096);
+        expect(pageView.items.length).toBeGreaterThan(0);
+        for (const it of pageView.items) collected.push(it.item_id);
+        next = pageView.items_page?.next_offset ?? null;
+      }
+      // 通过 inspect_item 列表分页动作同样可查出溢出项
+      const actPage = nia.act({
+        type: 'inspect_item',
+        scope: 'held',
+        offset: closetView9.items_page.next_offset,
+        limit: 10,
+      }).payload as any;
+      expect(Buffer.byteLength(JSON.stringify(actPage), 'utf8')).toBeLessThanOrEqual(4096);
+      expect([...closetView9.items.map((x: any) => x.item_id), ...actPage.items.map((x: any) => x.item_id)].sort()).toEqual(
+        [...readIds].sort(),
+      );
+    }
+    expect([...collected].sort()).toEqual([...readIds].sort());
+
+    // 对超出首屏的第 9 本书直接调用 inspect_item 查看完整扉页详情
+    const lastId = readIds[readIds.length - 1]!;
+    const lastDetail = (nia.act({ type: 'inspect_item', item_id: lastId }).payload as any).item;
+    expect(lastDetail.item_id).toBe(lastId);
+    expect(lastDetail.meta.title).toBe('铁道随笔第9卷');
+    expect(lastDetail.meta.flyleaf[0].note).toContain('第9卷');
+
+    // 4) 个人储物柜塞入 20 本已读文库本（+ 随身仍有多本）时，首页与 lockerOffset 翻页均 <= 4096 B
+    const collector = t.bot('藏书家', { entry: 'ikebukuro:station' });
+    const lockerBookIds: string[] = [];
+    for (let batch = 0; batch < 3; batch++) {
+      collector.go('ikebukuro:shiorido');
+      const count = batch < 2 ? 8 : 4;
+      collector.act({ type: 'buy', sku: 'paperback', qty: count });
+      for (let j = 0; j < count; j++) {
+        const idx = lockerBookIds.length + 1;
+        const bItem = collector.act({
+          type: 'read_item',
+          item: 'paperback',
+          title: `馆藏文库第${idx}册`,
+          note: `第${idx}册扉页签章`,
+        }).item;
+        lockerBookIds.push(bItem.item_id);
+      }
+      collector.go('ikebukuro:station');
+      for (const bid of lockerBookIds.slice(-count)) {
+        collector.act({ type: 'store_locker', item_id: bid, qty: 1 });
+      }
+    }
+    collector.go('ikebukuro:suzuran-closet');
+    const cView0 = collector.view();
+    expect(Buffer.byteLength(JSON.stringify(cView0), 'utf8')).toBeLessThanOrEqual(4096);
+    const seenLocker: string[] = [...cView0.locker_items.map((x: any) => x.item_id)];
+    let lNext: number | null = cView0.locker_page?.next_offset ?? null;
+    let lGuard = 0;
+    while (lNext !== null && lGuard++ < 10) {
+      const lPage = (selfView as any)(t.c, t.c.mustResident(collector.id), { lockerOffset: lNext });
+      expect(Buffer.byteLength(JSON.stringify(lPage), 'utf8')).toBeLessThanOrEqual(4096);
+      expect(lPage.locker_items.length).toBeGreaterThan(0);
+      for (const li of lPage.locker_items) seenLocker.push(li.item_id);
+      lNext = lPage.locker_page?.next_offset ?? null;
+    }
+    expect(seenLocker.sort()).toEqual([...lockerBookIds].sort());
+  });
+
+  it('R264-P2-02b：MCP get_my_view（item_offset 与 section/page）及桥接 HTTP /visits/:id/view 均守住 4096 B 上限且可翻页查全', async () => {
+    const t = makeCity({ at: T0 });
+    const nia = t.kernel('nia');
+    nia.depart({ yen: 25_000, items: [], to: 'ikebukuro:shiorido' });
+    t.run(40 * MIN);
+    nia.act({ type: 'buy', sku: 'paperback', qty: 9 });
+    const niaBookIds: string[] = [];
+    for (let i = 1; i <= 9; i++) {
+      const it = (nia.act({ type: 'read_item', item: 'paperback', title: `池袋夜读第${i}本`, note: `短批注第${i}条` }).payload as any).item;
+      niaBookIds.push(it.item_id);
+    }
+    nia.act({ type: 'travel', to: 'ikebukuro:suzuran-closet' });
+    t.run(10 * MIN);
+
+    // 1) 桥接 HTTP /visits/:id/view 完整外层 JSON 严格 <= 4096 B，且可通过 item_offset 翻页取全
+    const app = express();
+    const bridgeKey = 'bridge-test-secret-key-0123456789';
+    mountCity(app, t.c, () => {}, { bridgeKey });
+    const srv: Server = await new Promise((resolve) => {
+      const s = app.listen(0, '127.0.0.1', () => resolve(s));
+    });
+    try {
+      const port = (srv.address() as AddressInfo).port;
+      const headers = { Authorization: `Bearer ${bridgeKey}` };
+      const r1 = await fetch(`http://127.0.0.1:${port}/city/bridge/v1/visits/${nia.visitId}/view?domain_epoch=${nia.epoch}`, { headers });
+      expect(r1.status).toBe(200);
+      const raw1 = await r1.text();
+      expect(Buffer.byteLength(raw1, 'utf8')).toBeLessThanOrEqual(4096);
+      const j1 = JSON.parse(raw1);
+      const seenBridge = [...j1.items.map((x: any) => x.item_id)];
+      let bNext: number | null = j1.items_page?.next_offset ?? null;
+      let bGuard = 0;
+      while (bNext !== null && bGuard++ < 10) {
+        const r2 = await fetch(
+          `http://127.0.0.1:${port}/city/bridge/v1/visits/${nia.visitId}/view?domain_epoch=${nia.epoch}&item_offset=${bNext}`,
+          { headers },
+        );
+        expect(r2.status).toBe(200);
+        const raw2 = await r2.text();
+        expect(Buffer.byteLength(raw2, 'utf8')).toBeLessThanOrEqual(4096);
+        const j2 = JSON.parse(raw2);
+        expect(j2.items.length).toBeGreaterThan(0);
+        seenBridge.push(...j2.items.map((x: any) => x.item_id));
+        bNext = j2.items_page?.next_offset ?? null;
+      }
+      expect(seenBridge.sort()).toEqual([...niaBookIds].sort());
+    } finally {
+      srv.closeAllConnections();
+      await new Promise<void>((r) => srv.close(() => r()));
+    }
+
+    // 2) MCP get_my_view 首屏、item_offset 翻页与 section="items"/section="item:<id>" 只读查询全部 <= 4096 B
+    const manager = new GameManager({ registry: createRegistry(), rng: new SeededRng('m3c-mcp') });
+    const auth = new Authenticator({ mode: 'keys', adminKeys: [], agents: [{ key: 'k-reader', id: '7777', name: '爱书人' }] }, manager);
+    const mcpServer = createMcpServer(
+      { manager, auth, version: 'test', city: { city: t.c } },
+      { identity: { id: '7777', name: '爱书人' }, fixed: true, transport: 'memory' },
+    );
+    const [ca, cb] = InMemoryTransport.createLinkedPair();
+    const client = new Client({ name: 'm3c-client', version: '1.0.0' });
+    await mcpServer.connect(cb);
+    await client.connect(ca);
+    try {
+      const mcpCall = async (name: string, args: Record<string, unknown> = {}) => {
+        const res = (await client.callTool({ name, arguments: args })) as { isError?: boolean; content: { text: string }[] };
+        expect(res.isError, res.content[0]?.text).toBeFalsy();
+        const parsed = JSON.parse(res.content[0]!.text);
+        expect(Buffer.byteLength(JSON.stringify(parsed), 'utf8')).toBeLessThanOrEqual(4096);
+        return parsed;
+      };
+      await mcpCall('enter_world', { world_id: 'tokyo', name: '爱书人', entry: 'ikebukuro:station' });
+      let reqSeq = 0;
+      const mcpAct = (action: Record<string, unknown>) =>
+        mcpCall('world_act', { request_id: `m3c-mcp-${String(++reqSeq).padStart(4, '0')}`, action });
+      const tr1 = await mcpAct({ type: 'travel', to: 'ikebukuro:shiorido' });
+      t.run(tr1.trip.ends_at_ms - t.clock.t);
+      await mcpCall('enter_world', { world_id: 'tokyo' });
+      await mcpAct({ type: 'buy', sku: 'paperback', qty: 9 });
+      const botBooks: string[] = [];
+      for (let i = 1; i <= 9; i++) {
+        const r = await mcpAct({ type: 'read_item', item: 'paperback', title: `散步文库第${i}辑`, note: `第${i}辑随手记` });
+        botBooks.push(r.item.item_id);
+      }
+      const tr2 = await mcpAct({ type: 'travel', to: 'ikebukuro:suzuran-closet' });
+      t.run(tr2.trip.ends_at_ms - t.clock.t);
+      await mcpCall('enter_world', { world_id: 'tokyo' });
+
+      const v1 = await mcpCall('get_my_view', {});
+      const mcpSeen = [...v1.items.map((x: any) => x.item_id)];
+      let mNext: number | null = v1.items_page?.next_offset ?? null;
+      let mGuard = 0;
+      while (mNext !== null && mGuard++ < 10) {
+        const v2 = await mcpCall('get_my_view', { item_offset: mNext });
+        expect(v2.items.length).toBeGreaterThan(0);
+        mcpSeen.push(...v2.items.map((x: any) => x.item_id));
+        mNext = v2.items_page?.next_offset ?? null;
+      }
+      expect(mcpSeen.sort()).toEqual([...botBooks].sort());
+
+      // 通过标准 get_my_view({ section, page }) 只读分段同样可查
+      const sec1 = await mcpCall('get_my_view', { section: 'items', page: 1 });
+      expect(sec1.total).toBe(9);
+      const secItem = await mcpCall('get_my_view', { section: `item:${botBooks[8]!}` });
+      expect(secItem.item.meta.title).toBe('散步文库第9辑');
+    } finally {
+      await client.close();
+    }
+  });
 });
 
 describe('东京 M3-C：车站投币储物柜凭条代取与 72h 超时退回防占柜', () => {
@@ -335,5 +570,90 @@ describe('东京 M3-C：车站投币储物柜凭条代取与 72h 超时退回防
     const got = bot.act({ type: 'take_locker', voucher: dep.voucher_code }).retrieved;
     expect(got.item_id).toBe(niaBook);
     expect(runReconcile(t.c, 'bridge-locker').ok).toBe(true);
+  });
+
+  it('R264-P2-01：统一隔离个人与代取储物柜行——个人存柜、室友返家托管、跨关单补发与代取领取数量严格守恒', () => {
+    const t = makeCity({ at: T0 });
+    const a = t.bot('存物居民', { entry: 'ikebukuro:station' });
+    const b = t.bot('代取居民', { entry: 'ikebukuro:station' });
+    const nia = t.kernel('nia');
+    const claire = t.kernel('claire');
+
+    // 1) 个人存柜 vs 代取柜：居民留 1 份饭团代取、另 1 份存自己个人柜 -> 不同 item_id，私柜为 1，领取数量严格守恒
+    a.go('ikebukuro:ekimae-conbini');
+    a.act({ type: 'buy', sku: 'onigiri', qty: 2 });
+    a.go('ikebukuro:station');
+
+    const depRes = a.act({ type: 'store_locker', item: 'onigiri', qty: 1, recipient_id: b.id });
+    const depItemId = depRes.deposit.item_id as string;
+    const personalRes = a.act({ type: 'store_locker', item: 'onigiri', qty: 1 });
+    const personalItemId = personalRes.stored.item_id as string;
+
+    expect(personalItemId).not.toBe(depItemId);
+    expect(a.view().locker_items).toEqual([expect.objectContaining({ item_id: personalItemId, type: 'onigiri', qty: 1 })]);
+    expect(a.view().locker_deposits).toEqual([
+      expect.objectContaining({ deposit_id: depRes.deposit.deposit_id, item_id: depItemId, type: 'onigiri', qty: 1 }),
+    ]);
+    expect(runReconcile(t.c, 'after-personal-and-deposit').ok).toBe(true);
+
+    const claimed = b.act({ type: 'take_locker', deposit_id: depRes.deposit.deposit_id }).retrieved;
+    expect(claimed.qty).toBe(1);
+    expect(b.view().items.find((i: any) => i.type === 'onigiri')?.qty).toBe(1);
+    expect(a.view().locker_items).toEqual([expect.objectContaining({ item_id: personalItemId, type: 'onigiri', qty: 1 })]);
+    const takenOwn = a.act({ type: 'take_locker', item: 'onigiri', qty: 1 }).retrieved;
+    expect(takenOwn.qty).toBe(1);
+    expect(a.view().locker_items).toEqual([]);
+
+    // 2) 室友返家托管（零个人底仓子场景）：买 2 份未映射鸡蛋三明治（egg_sandwich），1 份代取、1 份随身返家 releaseVisit -> moveItemToLocker 绝不混入代取行
+    nia.depart({ yen: 5000, items: [], to: 'ikebukuro:ekimae-conbini' });
+    t.run(40 * MIN);
+    nia.act({ type: 'buy', sku: 'egg_sandwich', qty: 2 });
+    nia.act({ type: 'travel', to: 'ikebukuro:station' });
+    t.run(10 * MIN);
+    const niaDep = (nia.act({ type: 'store_locker', item: 'egg_sandwich', qty: 1, recipient_id: b.id, voucher: true }).payload as any).deposit;
+    nia.act({ type: 'go_home' });
+    t.run(30 * MIN);
+    expect(nia.release().state).toBe('closed');
+    expect(runReconcile(t.c, 'after-nia-home-custody').ok).toBe(true);
+
+    const bGotNia = b.act({ type: 'take_locker', voucher: niaDep.voucher_code }).retrieved;
+    expect(bGotNia.qty).toBe(1);
+    expect(b.view().items.find((i: any) => i.type === 'egg_sandwich')?.qty).toBe(1);
+
+    nia.depart({ yen: 3000, items: [], to: 'ikebukuro:station' });
+    t.run(30 * MIN);
+    expect(nia.view().locker_items).toEqual([expect.objectContaining({ type: 'egg_sandwich', qty: 1 })]);
+    nia.act({ type: 'go_home' });
+    t.run(30 * MIN);
+    expect(nia.release().state).toBe('closed');
+
+    // 3) 室友返家托管（有个人底仓 + 跨关单 F9 补发 addPlainToLocker 子场景）：买未映射透明伞（umbrella）1 代取 + 1 私柜 + 1 随身返家 + 1 关单后补发 = 1 代取 + 3 私柜
+    claire.depart({ yen: 5000, items: [], to: 'ikebukuro:ekimae-conbini' });
+    t.run(40 * MIN);
+    claire.act({ type: 'buy', sku: 'umbrella', qty: 3 });
+    t.c.failpoints.purchaseUnknown = () => true;
+    const pendingOrd = (claire.act({ type: 'buy', sku: 'umbrella', qty: 1 }).payload as any).order_id as string;
+    t.c.failpoints.purchaseUnknown = undefined;
+    claire.act({ type: 'travel', to: 'ikebukuro:station' });
+    t.run(10 * MIN);
+
+    const claireDep = (claire.act({ type: 'store_locker', item: 'umbrella', qty: 1, voucher: true }).payload as any).deposit;
+    const clairePersonal = (claire.act({ type: 'store_locker', item: 'umbrella', qty: 1 }).payload as any).stored;
+    expect(clairePersonal.item_id).not.toBe(claireDep.item_id);
+
+    claire.act({ type: 'go_home' });
+    t.run(30 * MIN);
+    expect(claire.release().state).toBe('reconcile');
+    const resolved = resolvePendingOrder(t.c, pendingOrd, 'completed');
+    expect(resolved.reconcile_ok).toBe(true);
+
+    const bGotClaire = b.act({ type: 'take_locker', voucher: claireDep.voucher_code }).retrieved;
+    expect(bGotClaire.qty).toBe(1);
+    expect(b.view().items.find((i: any) => i.type === 'umbrella')?.qty).toBe(1);
+
+    claire.depart({ yen: 3000, items: [], to: 'ikebukuro:station' });
+    t.run(30 * MIN);
+    expect(claire.view().locker_items).toEqual([expect.objectContaining({ item_id: clairePersonal.item_id, type: 'umbrella', qty: 3 })]);
+    expect(runReconcile(t.c, 'locker-isolation-full').ok).toBe(true);
   });
 });

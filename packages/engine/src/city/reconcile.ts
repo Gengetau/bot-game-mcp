@@ -102,6 +102,31 @@ export function runReconcile(c: CityService, trigger: string): ReconcileReport {
     );
     for (const s of stray) err('carried_item_outside_visit', { item_id: s.item_id, visit_id: s.visit_id });
 
+    const badDeposits = c.db.all<Row>(
+      `SELECT d.deposit_id, d.item_id, d.sender_id, d.type, d.quantity AS dep_qty,
+              i.owner_id, i.state, i.quantity AS item_qty
+       FROM locker_deposits d
+       LEFT JOIN items i ON i.item_id = d.item_id
+       WHERE d.status = 'active'
+         AND (
+           i.item_id IS NULL
+           OR i.state <> 'locker'
+           OR i.owner_id <> d.sender_id
+           OR i.type <> d.type
+           OR i.quantity <> d.quantity
+           OR (SELECT COUNT(*) FROM locker_deposits d2 WHERE d2.item_id = d.item_id AND d2.status = 'active') <> 1
+         )`,
+    );
+    for (const bd of badDeposits) {
+      err('locker_deposit_mismatch', {
+        deposit_id: bd.deposit_id,
+        item_id: bd.item_id,
+        deposit_qty: Number(bd.dep_qty),
+        item_qty: bd.item_qty === null ? null : Number(bd.item_qty),
+        item_state: bd.state ?? null,
+      });
+    }
+
     const failedJobs = c.db.scalar("SELECT COUNT(*) FROM scheduled_jobs WHERE status = 'failed'");
     if (failedJobs > 0) err('failed_jobs', { count: failedJobs });
     const stuckJobs = c.db.scalar("SELECT COUNT(*) FROM scheduled_jobs WHERE status = 'pending' AND attempts >= 5");

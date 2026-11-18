@@ -276,7 +276,10 @@ export function addPlainToLocker(c: CityService, residentId: string, type: strin
   if (!Number.isInteger(qty) || qty <= 0) throw new Error('物品数量必须是正整数');
   const now = c.now();
   const existing = c.db.get<ItemRow & Row>(
-    "SELECT * FROM items WHERE owner_id = ? AND type = ? AND origin_ref IS NULL AND instance = 0 AND state = 'locker' ORDER BY item_id LIMIT 1",
+    `SELECT * FROM items
+     WHERE owner_id = ? AND type = ? AND origin_ref IS NULL AND instance = 0 AND state = 'locker' AND quantity > 0
+       AND NOT EXISTS (SELECT 1 FROM locker_deposits d WHERE d.item_id = items.item_id)
+     ORDER BY item_id LIMIT 1`,
     residentId,
     type,
   );
@@ -328,7 +331,10 @@ export function moveItemToLocker(c: CityService, itemId: string, at: number = c.
     return;
   }
   const existing = c.db.get<ItemRow & Row>(
-    "SELECT * FROM items WHERE owner_id = ? AND type = ? AND origin_ref IS NULL AND instance = 0 AND state = 'locker' AND item_id <> ? ORDER BY item_id LIMIT 1",
+    `SELECT * FROM items
+     WHERE owner_id = ? AND type = ? AND origin_ref IS NULL AND instance = 0 AND state = 'locker' AND quantity > 0 AND item_id <> ?
+       AND NOT EXISTS (SELECT 1 FROM locker_deposits d WHERE d.item_id = items.item_id)
+     ORDER BY item_id LIMIT 1`,
     row.owner_id,
     row.type,
     row.item_id,
@@ -941,16 +947,23 @@ export function createLockerDeposit(
   if (avail < qty) throw cityPrecondition('你身上没有这么多可寄存的物品。', 'not_enough_items');
 
   // 代取寄存每次锁定单行 item_id（instance=1 原地入柜；instance=0 拆分专用寄存行）
-  const first = candidates[0]!;
+  const plainRows = candidates.filter((i) => i.instance === 0);
+  const plainTotal = plainRows.reduce((n, i) => n + i.quantity, 0);
   let lockedItemId: string;
-  if (first.instance === 1) {
+  if (what.itemId && candidates[0]!.instance === 1) {
+    const exact = candidates[0]!;
     if (qty !== 1) throw cityBadRequest('具名实例物品一次只能寄存 1 件。', 'bad_quantity');
-    lockedItemId = first.item_id;
+    lockedItemId = exact.item_id;
     c.db.run("UPDATE items SET state = 'locker', visit_id = ?, updated_at = ? WHERE item_id = ?", opts.visitId, at, lockedItemId);
-    logItem(c, first, opts.visitId, 1, 'stored', opts.recipientId ? { counterparty: opts.recipientId } : {});
-  } else {
-    if (first.quantity < qty) throw cityPrecondition('单堆数量不足以一次拆出寄存。', 'not_enough_items');
-    c.db.run('UPDATE items SET quantity = quantity - ?, updated_at = ? WHERE item_id = ?', qty, at, first.item_id);
+    logItem(c, exact, opts.visitId, 1, 'stored', opts.recipientId ? { counterparty: opts.recipientId } : {});
+  } else if (plainTotal >= qty) {
+    let left = qty;
+    for (const row of plainRows) {
+      if (left <= 0) break;
+      const take = Math.min(left, row.quantity);
+      c.db.run('UPDATE items SET quantity = quantity - ?, updated_at = ? WHERE item_id = ?', take, at, row.item_id);
+      left -= take;
+    }
     lockedItemId = c.id('it');
     c.db.run(
       "INSERT INTO items(item_id, owner_id, type, quantity, instance, origin_ref, origin_json, meta_json, borrowed_from, visit_id, state, shelf_place_id, shelf_price_yen, created_at, updated_at) VALUES (?,?,?,?,0,NULL,NULL,NULL,NULL,?,'locker',NULL,NULL,?,?)",
@@ -963,6 +976,13 @@ export function createLockerDeposit(
       at,
     );
     logItem(c, { item_id: lockedItemId, owner_id: senderId, type: targetType, origin_ref: null }, opts.visitId, qty, 'stored', opts.recipientId ? { counterparty: opts.recipientId } : {});
+  } else {
+    if (qty !== 1) throw cityBadRequest('具名实例物品一次只能寄存 1 件。', 'bad_quantity');
+    const inst = candidates.find((i) => i.instance === 1);
+    if (!inst) throw cityPrecondition('你身上没有这么多可寄存的物品。', 'not_enough_items');
+    lockedItemId = inst.item_id;
+    c.db.run("UPDATE items SET state = 'locker', visit_id = ?, updated_at = ? WHERE item_id = ?", opts.visitId, at, lockedItemId);
+    logItem(c, inst, opts.visitId, 1, 'stored', opts.recipientId ? { counterparty: opts.recipientId } : {});
   }
 
   const depositId = c.id('dep');
@@ -1015,15 +1035,16 @@ export function claimLockerDeposit(
   if (deposit.expires_at <= at) {
     throw cityPrecondition('这笔储物柜寄存已超过租期上限。', 'voucher_expired');
   }
-  if (deposit.recipient_id !== null && deposit.recipient_id !== claimantId && !(opts.depositId && !opts.voucher && deposit.sender_id === claimantId)) {
+  if (deposit.recipient_id !== null && deposit.recipient_id !== claimantId && deposit.sender_id !== claimantId) {
     throw new CityError('FORBIDDEN', '你不是这格储物柜指定的受托领取人。', 'not_recipient');
   }
   if (deposit.place_id !== placeId) {
     throw cityPrecondition(`这件物品寄存在其他车站的储物柜（${deposit.place_id}）。`, 'wrong_station', { place_id: deposit.place_id });
   }
 
+  const claimQty = deposit.quantity;
   const item = c.db.get<ItemRow & Row>('SELECT * FROM items WHERE item_id = ?', deposit.item_id);
-  if (!item || item.state !== 'locker' || item.quantity <= 0) {
+  if (!item || item.state !== 'locker' || item.quantity < claimQty) {
     throw cityPrecondition('储物柜里的物品状态异常。', 'not_enough_items');
   }
 
@@ -1041,6 +1062,7 @@ export function claimLockerDeposit(
     c.db.run("UPDATE items SET owner_id = ?, state = 'held', visit_id = ?, updated_at = ? WHERE item_id = ?", claimantId, visitId, at, outItemId);
     logItem(c, { ...item, owner_id: claimantId }, visitId, 1, 'retrieved', { counterparty: deposit.sender_id });
   } else {
+    c.db.run('UPDATE items SET quantity = quantity - ?, updated_at = ? WHERE item_id = ?', claimQty, at, item.item_id);
     const existingHeld = c.db.get<ItemRow & Row>(
       "SELECT * FROM items WHERE owner_id = ? AND type = ? AND origin_ref IS NULL AND instance = 0 AND state = 'held'",
       claimantId,
@@ -1048,18 +1070,26 @@ export function claimLockerDeposit(
     );
     if (existingHeld) {
       outItemId = existingHeld.item_id;
-      c.db.run('UPDATE items SET quantity = quantity + ?, visit_id = ?, updated_at = ? WHERE item_id = ?', item.quantity, visitId, at, outItemId);
-      c.db.run('UPDATE items SET quantity = 0, updated_at = ? WHERE item_id = ?', at, item.item_id);
+      c.db.run('UPDATE items SET quantity = quantity + ?, visit_id = ?, updated_at = ? WHERE item_id = ?', claimQty, visitId, at, outItemId);
     } else {
-      outItemId = item.item_id;
-      c.db.run("UPDATE items SET owner_id = ?, state = 'held', visit_id = ?, updated_at = ? WHERE item_id = ?", claimantId, visitId, at, outItemId);
+      outItemId = c.id('it');
+      c.db.run(
+        "INSERT INTO items(item_id, owner_id, type, quantity, instance, origin_ref, origin_json, meta_json, borrowed_from, visit_id, state, created_at, updated_at) VALUES (?,?,?,?,0,NULL,NULL,NULL,NULL,?,'held',?,?)",
+        outItemId,
+        claimantId,
+        item.type,
+        claimQty,
+        visitId,
+        at,
+        at,
+      );
     }
-    logItem(c, { item_id: outItemId, owner_id: claimantId, type: item.type, origin_ref: null }, visitId, item.quantity, 'retrieved', { counterparty: deposit.sender_id });
+    logItem(c, { item_id: outItemId, owner_id: claimantId, type: item.type, origin_ref: null }, visitId, claimQty, 'retrieved', { counterparty: deposit.sender_id });
   }
 
-  c.emitTo([deposit.sender_id], 'locker_claimed', { deposit_id: deposit.deposit_id, item_id: outItemId, type: item.type, qty: deposit.quantity, claimed_by: claimantId }, at);
+  c.emitTo([deposit.sender_id], 'locker_claimed', { deposit_id: deposit.deposit_id, item_id: outItemId, type: item.type, qty: claimQty, claimed_by: claimantId }, at);
   const fresh = c.db.get<LockerDepositRow & Row>('SELECT * FROM locker_deposits WHERE deposit_id = ?', deposit.deposit_id)!;
-  return { deposit: fresh, item_id: outItemId, type: item.type, qty: deposit.quantity };
+  return { deposit: fresh, item_id: outItemId, type: item.type, qty: claimQty };
 }
 
 /** 租期到期（默认 72h）自动退回原主个人储物柜；若原主柜满则转招领态（lost_found）释放公共柜位。 */
@@ -1067,29 +1097,46 @@ export function expireLockerDeposit(c: CityService, depositId: string, at: numbe
   const deposit = c.db.get<LockerDepositRow & Row>('SELECT * FROM locker_deposits WHERE deposit_id = ?', depositId);
   if (!deposit || deposit.status !== 'active') return 'noop';
   const item = c.db.get<ItemRow & Row>('SELECT * FROM items WHERE item_id = ?', deposit.item_id);
-  if (!item || item.quantity <= 0) {
+  if (!item || item.state !== 'locker' || item.quantity <= 0) {
     c.db.run("UPDATE locker_deposits SET status = 'expired_lost_found', resolved_at = ?, voucher_hash = NULL WHERE deposit_id = ?", at, depositId);
     return 'lost_found';
   }
 
+  const returnQty = Math.min(item.quantity, deposit.quantity);
   const personal = lockerItems(c, deposit.sender_id);
   const personalQty = personal.reduce((n, i) => n + i.quantity, 0);
   const hasPlainStack = item.instance === 0 && personal.some((i) => i.type === item.type && i.instance === 0 && i.origin_ref === null);
   const addedEntry = hasPlainStack ? 0 : 1;
-  const fits = personal.length + addedEntry <= c.params.maxLockerEntries && personalQty + item.quantity <= c.params.maxLockerQty;
+  const fits = personal.length + addedEntry <= c.params.maxLockerEntries && personalQty + returnQty <= c.params.maxLockerQty;
 
   if (fits) {
     c.db.run("UPDATE locker_deposits SET status = 'expired_returned', resolved_at = ?, voucher_hash = NULL WHERE deposit_id = ?", at, depositId);
-    if (item.instance === 0 && hasPlainStack) {
-      const existing = personal.find((i) => i.type === item.type && i.instance === 0 && i.origin_ref === null)!;
-      c.db.run('UPDATE items SET quantity = quantity + ?, updated_at = ? WHERE item_id = ?', item.quantity, at, existing.item_id);
-      c.db.run('UPDATE items SET quantity = 0, updated_at = ? WHERE item_id = ?', at, item.item_id);
+    let returnedItemId = item.item_id;
+    if (item.instance === 0) {
+      c.db.run('UPDATE items SET quantity = quantity - ?, updated_at = ? WHERE item_id = ?', returnQty, at, item.item_id);
+      const existing = personal.find((i) => i.type === item.type && i.instance === 0 && i.origin_ref === null);
+      if (existing) {
+        returnedItemId = existing.item_id;
+        c.db.run('UPDATE items SET quantity = quantity + ?, updated_at = ? WHERE item_id = ?', returnQty, at, existing.item_id);
+      } else {
+        returnedItemId = c.id('it');
+        c.db.run(
+          "INSERT INTO items(item_id, owner_id, type, quantity, instance, origin_ref, origin_json, meta_json, borrowed_from, visit_id, state, created_at, updated_at) VALUES (?,?,?,?,0,NULL,NULL,NULL,NULL,?,'locker',?,?)",
+          returnedItemId,
+          deposit.sender_id,
+          item.type,
+          returnQty,
+          item.visit_id,
+          at,
+          at,
+        );
+      }
     } else {
       c.db.run('UPDATE items SET updated_at = ? WHERE item_id = ?', at, item.item_id);
     }
-    c.emitTo([deposit.sender_id], 'locker_expired', { deposit_id: depositId, item_id: item.item_id, type: item.type, outcome: 'returned' }, at);
+    c.emitTo([deposit.sender_id], 'locker_expired', { deposit_id: depositId, item_id: returnedItemId, type: item.type, qty: returnQty, outcome: 'returned' }, at);
     if (deposit.recipient_id) {
-      c.emitTo([deposit.recipient_id], 'locker_expired', { deposit_id: depositId, type: item.type, outcome: 'returned' }, at);
+      c.emitTo([deposit.recipient_id], 'locker_expired', { deposit_id: depositId, type: item.type, qty: returnQty, outcome: 'returned' }, at);
     }
     return 'returned';
   }

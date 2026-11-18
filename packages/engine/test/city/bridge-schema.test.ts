@@ -167,6 +167,8 @@ describe('协议产物和 schema 对得上', () => {
       { type: 'buy', sku: 'coffee', qty: 2 },
       { type: 'consume', item_id: 'itm_x', qty: 1 },
       { type: 'give', to: 'r1', item: 'cookie' },
+      { type: 'inspect_item', item_id: 'itm_x' },
+      { type: 'inspect_item', scope: 'held', offset: 0, limit: 10 },
       { type: 'go_home' },
     ]) {
       expectValid('Action', action);
