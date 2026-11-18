@@ -33,7 +33,7 @@ export interface Mappings {
 }
 
 export const MAPPINGS: Mappings = {
-  version: 2,
+  version: 3,
   items: [
     // 双向：内核词表里有同名或同义的资源
     { kernel: { kind: 'food', item: 'cookie' }, engine_type: 'cookie', stack: true, edible: true },
@@ -44,6 +44,7 @@ export const MAPPINGS: Mappings = {
     { kernel: { kind: 'food', item: 'bread' }, engine_type: 'melon_pan', stack: true, edible: true, direction: 'home' },
     { kernel: { kind: 'food', item: 'bread' }, engine_type: 'cream_bun', stack: true, edible: true, direction: 'home' },
     { kernel: { kind: 'food', item: 'dessert' }, engine_type: 'cheesecake', stack: true, edible: true, direction: 'home' },
+    { kernel: { kind: 'wardrobe_asset', item: '*' }, engine_type: 'apparel_bundle', stack: false, edible: false, direction: 'home' },
   ],
   effects: [
     { engine_kind: 'ate', engine_type: 'cookie', kernel_effect: 'snack' },

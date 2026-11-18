@@ -618,7 +618,7 @@ async function main(): Promise<void> {
       minIntervalMs: 0,
       debounceMs: 20,
       debounceMaxMs: 60,
-      urgentDebounceMs: 0,
+      urgentDebounceMs: 80,
       waitSeconds: 1,
       reconnectBaseMs: 30,
       reconnectMaxMs: 200,

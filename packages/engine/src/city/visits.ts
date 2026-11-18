@@ -12,7 +12,7 @@ import { parseJson, type Row } from '../world/db.js';
 import { sha256, stableStringify } from '../world/service.js';
 import { CITY_CATALOG_VERSION, HOUSE_ENTRANCE, homeward, isCarryHome, itemName, place, publicPlace } from './catalog.js';
 import { CityError, cityBadRequest, cityConflict, cityPrecondition } from './errors.js';
-import { BRIDGE, addCarried, disposeHeldItem, ensurePurse, heldItems, ledger, moveItemToLocker, purseOf, sanitizeItemMeta, spendSummary, wallet, type ItemRow } from './ledger.js';
+import { BRIDGE, addCarried, disposeHeldItem, ensurePurse, heldItems, ledger, moveItemToLocker, purseOf, sanitizeItemMeta, spendSummary, trustedAssetIdOf, wallet, type ItemRow } from './ledger.js';
 import { MAPPINGS, engineTypeOf, kernelItemOf, walkEffect } from './mappings.js';
 import { runReconcile } from './reconcile.js';
 import type { CityResident, CityService } from './service.js';
@@ -276,16 +276,21 @@ export function settle(c: CityService, visit: VisitRow, at: number): Settlement 
       });
       continue;
     }
-    const kernel = kernelItemOf(it.type);
-    // 带出来的物品原样回家；城里得到的要映射表里有才能回家，否则留在城市储物柜
-    const fate = it.origin_ref !== null || kernel ? 'back' : 'locker';
+    const rawKernel = kernelItemOf(it.type);
+    let resolvedKernel = rawKernel;
+    if (it.origin_ref === null && rawKernel?.kind === 'wardrobe_asset') {
+      const aid = trustedAssetIdOf(it);
+      resolvedKernel = aid ? { kind: 'wardrobe_asset', item: aid } : null;
+    }
+    // 带出来的物品原样回家；城里得到的要映射表里有（且具名服饰具备可信 asset_id）才能回家，否则留在城市储物柜
+    const fate = it.origin_ref !== null || resolvedKernel ? 'back' : 'locker';
     items.push({
       engine_item_id: it.item_id,
       origin_ref: it.origin_ref,
       type: it.type,
       qty: it.quantity,
       fate,
-      ...(kernel && it.origin_ref === null ? { kernel } : {}),
+      ...(resolvedKernel && it.origin_ref === null ? { kernel: resolvedKernel } : {}),
       ...(meta ? { instance: true, meta } : {}),
     });
   }

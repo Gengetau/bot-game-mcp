@@ -1,3 +1,4 @@
+import { APPAREL_SHOP_PLACES, apparelWindowForPlace, shopApparelBySku } from './apparel-catalog.js';
 /**
  * 东京城市世界的目录（第一期）：片区、车站、线路、街区、地点、商品、来源。
  *
@@ -13,7 +14,7 @@
 
 export const CITY_WORLD_ID = 'tokyo';
 export const CITY_WORLD_NAME = '东京';
-export const CITY_CATALOG_VERSION = 'tokyo-p1.0';
+export const CITY_CATALOG_VERSION = 'tokyo-p1.1';
 export const FARE_RULE_VERSION = 'sim-2026-11';
 
 /** 小屋门口：交接点（规格 3.1）。不公开。 */
@@ -201,6 +202,7 @@ export const ITEM_TYPES: readonly ItemType[] = [
   { type: 'paperback', name: '文库本', kind: 'thing' },
   { type: 'postcard', name: '明信片', kind: 'thing' },
   { type: 'notebook', name: '笔记本', kind: 'thing' },
+  { type: 'apparel_bundle', name: '服饰礼盒', kind: 'thing' },
 ];
 
 const ITEM_BY_TYPE = new Map(ITEM_TYPES.map((i) => [i.type, i]));
@@ -215,6 +217,9 @@ export interface Good {
   type: string;
   name: string;
   priceYen: number;
+  /** 服饰礼盒绑定的可信图鉴资产 ID（仅服务端目录持有） */
+  assetId?: string;
+  contentTier?: 'sfw' | 'intimate';
 }
 
 export type PlaceType = 'station' | 'cafe' | 'shop' | 'park' | 'plaza' | 'riverside' | 'promenade' | 'entrance';
@@ -410,6 +415,31 @@ export const PLACES: readonly Place[] = [
     fictional: true,
   },
   {
+    id: 'ikebukuro:suzuran-closet',
+    area: 'ikebukuro',
+    neighborhood: 'ikebukuro:east',
+    name: '服饰店「铃兰衣橱」',
+    type: 'shop',
+    indoor: true,
+    hours: { open: '10:00', close: '21:00' },
+    capacity: 24,
+    station: 'st:ikebukuro',
+    walkMinutes: 5,
+    rain: 'none',
+    goods: apparelWindowForPlace('ikebukuro:suzuran-closet', '2026-11-18').map((e) => ({
+      sku: e.sku,
+      type: 'apparel_bundle',
+      name: e.name,
+      priceYen: e.priceYen,
+      assetId: e.assetId,
+      contentTier: e.tier,
+    })),
+    actions: [...BASE_ACTIONS, 'buy'],
+    blurb: '挂满当季针织衫、百褶裙与通勤外套的街角衣橱，木衣架按色系排得很整齐。',
+    source: 'fictional',
+    fictional: true,
+  },
+  {
     id: 'ikebukuro:minami-park',
     area: 'ikebukuro',
     neighborhood: 'ikebukuro:east',
@@ -504,6 +534,56 @@ export const PLACES: readonly Place[] = [
     ],
     actions: [...BASE_ACTIONS, 'buy'],
     blurb: '试写台上放着几十种墨水，纸是随便用的。',
+    source: 'fictional',
+    fictional: true,
+  },
+  {
+    id: 'shinjuku:lumiere-atelier',
+    area: 'shinjuku',
+    neighborhood: 'shinjuku:south',
+    name: '买手店「光廊成衣」',
+    type: 'shop',
+    indoor: true,
+    hours: { open: '11:00', close: '21:00' },
+    capacity: 22,
+    station: 'st:shinjuku',
+    walkMinutes: 6,
+    rain: 'none',
+    goods: apparelWindowForPlace('shinjuku:lumiere-atelier', '2026-11-18').map((e) => ({
+      sku: e.sku,
+      type: 'apparel_bundle',
+      name: e.name,
+      priceYen: e.priceYen,
+      assetId: e.assetId,
+      contentTier: e.tier,
+    })),
+    actions: [...BASE_ACTIONS, 'buy'],
+    blurb: '落地玻璃橱窗里陈列着都会连衣裙、派对礼服与度假泳装，试衣镜旁点着暖光灯。',
+    source: 'fictional',
+    fictional: true,
+  },
+  {
+    id: 'shinjuku:velours-intime',
+    area: 'shinjuku',
+    neighborhood: 'shinjuku:south',
+    name: '私密精品店「丝绒私语」',
+    type: 'shop',
+    indoor: true,
+    hours: { open: '12:00', close: '22:00' },
+    capacity: 14,
+    station: 'st:shinjuku',
+    walkMinutes: 7,
+    rain: 'none',
+    goods: apparelWindowForPlace('shinjuku:velours-intime', '2026-11-18').map((e) => ({
+      sku: e.sku,
+      type: 'apparel_bundle',
+      name: e.name,
+      priceYen: e.priceYen,
+      assetId: e.assetId,
+      contentTier: e.tier,
+    })),
+    actions: [...BASE_ACTIONS, 'buy'],
+    blurb: '深色丝绒帘幕后的安静买手店，所有贴身内衣与私密礼服都装在无字缎带礼盒里交付。',
     source: 'fictional',
     fictional: true,
   },
@@ -665,4 +745,42 @@ export function validateCatalog(): string[] {
   }
   if (!PLACE_BY_ID.get(HOUSE_ENTRANCE)?.hidden) problems.push('小屋门口必须是不公开的节点');
   return problems;
+}
+
+
+/** 按东京世界日返回地点当前陈列商品（服饰买手店按日确定性轮换 6 款橱窗）。 */
+export function goodsForPlace(p: Place, dateStr?: string): readonly Good[] {
+  if (p.id in APPAREL_SHOP_PLACES) {
+    return apparelWindowForPlace(p.id, dateStr ?? '2026-11-18').map((e) => ({
+      sku: e.sku,
+      type: 'apparel_bundle',
+      name: e.name,
+      priceYen: e.priceYen,
+      assetId: e.assetId,
+      contentTier: e.tier,
+    }));
+  }
+  return p.goods;
+}
+
+/** 查找地点可售或历史已下单商品（allowOffWindow=true 供跨日未决订单结算查找全池）。 */
+export function findGoodAtPlace(placeId: string, sku: string, dateStr?: string, allowOffWindow = false): Good | undefined {
+  const p = place(placeId);
+  if (!p) return undefined;
+  const active = goodsForPlace(p, dateStr).find((g) => g.sku === sku);
+  if (active) return active;
+  if (allowOffWindow && placeId in APPAREL_SHOP_PLACES) {
+    const hit = shopApparelBySku(placeId, sku);
+    if (hit) {
+      return {
+        sku: hit.sku,
+        type: 'apparel_bundle',
+        name: hit.name,
+        priceYen: hit.priceYen,
+        assetId: hit.assetId,
+        contentTier: hit.tier,
+      };
+    }
+  }
+  return undefined;
 }

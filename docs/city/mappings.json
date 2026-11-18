@@ -1,5 +1,5 @@
 {
-  "version": 2,
+  "version": 3,
   "items": [
     {
       "kernel": {
@@ -66,6 +66,16 @@
       "engine_type": "cheesecake",
       "stack": true,
       "edible": true,
+      "direction": "home"
+    },
+    {
+      "kernel": {
+        "kind": "wardrobe_asset",
+        "item": "*"
+      },
+      "engine_type": "apparel_bundle",
+      "stack": false,
+      "edible": false,
       "direction": "home"
     }
   ],

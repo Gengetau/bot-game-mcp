@@ -575,3 +575,56 @@ export function takeFromLocker(
 export function ledgerImbalance(c: CityService): number {
   return c.db.scalar('SELECT COALESCE(SUM(balance), 0) FROM accounts');
 }
+
+
+const TRUSTED_ASSET_ID_RE = /^pa_[a-z0-9_]{3,64}$/;
+
+/** 创建城内商店购买的具名实例物品（如服饰礼盒 instance=1，asset_id 仅存服务端可信 origin_json，防玩家 meta_json 伪造）。 */
+export function addPurchasedInstances(
+  c: CityService,
+  residentId: string,
+  type: string,
+  qty: number,
+  originData: Record<string, unknown>,
+  metaData: Record<string, unknown> | null,
+  visitId: string | null,
+  state: 'held' | 'locker' = 'held',
+): string[] {
+  if (!Number.isInteger(qty) || qty <= 0) throw new Error('物品数量必须是正整数');
+  const now = c.now();
+  const originJson = JSON.stringify(originData);
+  const cleanMeta = metaData ? sanitizeItemMeta(metaData) : null;
+  const metaJson = cleanMeta ? JSON.stringify(cleanMeta) : null;
+  const ids: string[] = [];
+  for (let i = 0; i < qty; i++) {
+    const itemId = c.id('it');
+    c.db.run(
+      'INSERT INTO items(item_id, owner_id, type, quantity, instance, origin_ref, origin_json, meta_json, borrowed_from, visit_id, state, created_at, updated_at) VALUES (?,?,?,1,1,NULL,?,?,NULL,?,?,?,?)',
+      itemId,
+      residentId,
+      type,
+      originJson,
+      metaJson,
+      visitId,
+      state,
+      now,
+      now,
+    );
+    logItem(c, { item_id: itemId, owner_id: residentId, type, origin_ref: null }, visitId, 1, state === 'locker' ? 'stored' : 'acquired');
+    ids.push(itemId);
+  }
+  return ids;
+}
+
+/** 从服务端可信 origin_json 提取服饰资产 ID；绝不信任玩家可改的 meta_json。 */
+export function trustedAssetIdOf(row: Pick<ItemRow, 'type' | 'origin_json'>): string | null {
+  if (row.type !== 'apparel_bundle' || !row.origin_json) return null;
+  let parsed: Record<string, unknown> | null = null;
+  try {
+    parsed = JSON.parse(row.origin_json) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+  if (!parsed || parsed.domain !== 'tokyo_shop' || typeof parsed.asset_id !== 'string') return null;
+  return TRUSTED_ASSET_ID_RE.test(parsed.asset_id) ? parsed.asset_id : null;
+}

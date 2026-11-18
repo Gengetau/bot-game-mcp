@@ -9,9 +9,9 @@
 import { sanitizeUserText } from '../core/text.js';
 import { parseJson, type Row } from '../world/db.js';
 import { REQUEST_ID_RE, sha256, stableStringify } from '../world/service.js';
-import { isCarryHome, itemName, itemType, place, publicPlace } from './catalog.js';
+import { findGoodAtPlace, isCarryHome, itemName, itemType, place, publicPlace } from './catalog.js';
 import { CityError, cityBadRequest, cityConflict, cityControlLost, cityPrecondition } from './errors.js';
-import { BRIDGE, SHOPS, addDisposed, addPlain, addPlainToLocker, heldItems, hold, ledger, lockerItems, purseOf, storeToLocker, takeFromLocker, takeItems, transferItems, unhold, wallet } from './ledger.js';
+import { BRIDGE, SHOPS, addDisposed, addPlain, addPlainToLocker, addPurchasedInstances, heldItems, hold, ledger, lockerItems, purseOf, storeToLocker, takeFromLocker, takeItems, transferItems, unhold, wallet } from './ledger.js';
 import { kernelEffectOf } from './mappings.js';
 import { runReconcile } from './reconcile.js';
 import { card, updateResidentProfile } from './residents.js';
@@ -104,7 +104,7 @@ function doSay(c: CityService, r: CityResident, a: Action, at: number, visit: Vi
 function doBuy(c: CityService, r: CityResident, a: Action, at: number, visit: VisitRow | null): Record<string, unknown> {
   const placeId = mustBeAtPlace(r);
   const p = place(placeId)!;
-  const good = p.goods.find((g) => g.sku === str(a.sku));
+  const good = findGoodAtPlace(placeId, str(a.sku), c.today(at), false);
   if (!good) throw cityPrecondition('这里不卖这个。看视图里 here.goods。', 'no_such_good');
   if (!placeOpen(c, p, at).open) throw cityPrecondition(`${p.name}现在不营业。`, 'place_closed');
   const qty = qtyOf(a.qty, 9);
@@ -128,10 +128,31 @@ function doBuy(c: CityService, r: CityResident, a: Action, at: number, visit: Vi
     return { status: 'pending', reason: 'outcome_unknown', order_id: orderId, held_yen: total, purse_yen: wallet(c, r.resident_id).balance };
   }
   insert('completed');
-  ledger(c, `order:${orderId}`, 'purchase', itemName(good.type), [[purseOf(r.resident_id), -total], [SHOPS, total]], visit?.visit_id ?? null);
-  const itemId = addPlain(c, r.resident_id, good.type, qty, visit?.visit_id ?? null, 'acquired');
+  ledger(c, `order:${orderId}`, 'purchase', good.assetId ? good.name : itemName(good.type), [[purseOf(r.resident_id), -total], [SHOPS, total]], visit?.visit_id ?? null);
+  let itemId: string;
+  if (good.assetId) {
+    const ids = addPurchasedInstances(
+      c,
+      r.resident_id,
+      good.type,
+      qty,
+      { domain: 'tokyo_shop', sku: good.sku, asset_id: good.assetId, place_id: placeId },
+      { title: good.name, created_at_ms: at },
+      visit?.visit_id ?? null,
+      'held',
+    );
+    itemId = ids[0]!;
+  } else {
+    itemId = addPlain(c, r.resident_id, good.type, qty, visit?.visit_id ?? null, 'acquired');
+  }
   if (visit) outboxPurchase(c, visit, at, { what: good.name, yen: -total, detail: { order_id: orderId, place: placeId, sku: good.sku, type: good.type, qty } });
-  return { status: 'completed', order_id: orderId, item: { item_id: itemId, type: good.type, name: itemName(good.type), qty }, paid_yen: total, purse_yen: wallet(c, r.resident_id).balance };
+  return {
+    status: 'completed',
+    order_id: orderId,
+    item: { item_id: itemId, type: good.type, name: good.assetId ? good.name : itemName(good.type), qty, ...(good.assetId ? { instance: true } : {}) },
+    paid_yen: total,
+    purse_yen: wallet(c, r.resident_id).balance,
+  };
 }
 
 /** 动作里指的是哪种物品：点名物品行（item_id）或只说类型（item）。 */
@@ -398,7 +419,19 @@ export function resolvePendingOrder(
     c.db.run('UPDATE orders SET status = ?, resolved_at = ? WHERE order_id = ?', outcome, now, orderId);
     if (outcome === 'completed') {
       ledger(c, `order:${orderId}`, 'purchase', itemName(itemTyp), [[purseOf(r.resident_id), -yen], [SHOPS, yen]], visit?.visit_id ?? null);
-      if (visitClosed) {
+      const resolvedGood = findGoodAtPlace(String(o.place_id), String(o.sku), c.today(now), true);
+      if (resolvedGood?.assetId) {
+        addPurchasedInstances(
+          c,
+          r.resident_id,
+          itemTyp,
+          qty,
+          { domain: 'tokyo_shop', sku: resolvedGood.sku, asset_id: resolvedGood.assetId, place_id: String(o.place_id) },
+          { title: resolvedGood.name, created_at_ms: now },
+          visit?.visit_id ?? null,
+          visitClosed ? 'locker' : 'held',
+        );
+      } else if (visitClosed) {
         if (!isCarryHome(itemTyp)) addDisposed(c, r.resident_id, itemTyp, qty, visit!.visit_id);
         else addPlainToLocker(c, r.resident_id, itemTyp, qty, visit!.visit_id);
       } else {

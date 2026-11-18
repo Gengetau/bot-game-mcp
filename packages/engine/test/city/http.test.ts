@@ -96,7 +96,7 @@ describe('桥接接口', () => {
     const k = t.kernel('nia');
 
     const catalog = await api('GET', '/catalog');
-    expect(catalog.body).toMatchObject({ protocol: 'city-bridge/1', city_catalog_version: 'tokyo-p1.0', mappings: { version: MAPPINGS.version }, handover_node: HOUSE_ENTRANCE });
+    expect(catalog.body).toMatchObject({ protocol: 'city-bridge/1', city_catalog_version: 'tokyo-p1.1', mappings: { version: MAPPINGS.version }, handover_node: HOUSE_ENTRANCE });
     expect(catalog.body.places.find((p: any) => p.id === KISSA).homeward).toEqual({ fare_yen: 200, minutes: 31 });
 
     const prepare = k.prepareBody({ yen: 20_000, items: [COOKIE], to: KISSA });
