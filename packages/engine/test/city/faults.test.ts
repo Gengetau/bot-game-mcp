@@ -212,15 +212,15 @@ describe('F5 / F7：适配器掉线', () => {
     expect(started.occurred_at_ms).toBe(k.describe().return_by_ms - 36 * MIN);
     expect(k.describe().times.settled_at_ms).toBeLessThanOrEqual(k.describe().return_by_ms);
     k.pull();
-    // 咖啡豆在映射表里（只回家）：回家变成内核的一包咖啡；那杯没喝的奶茶不在表里，留在寄存包裹
+    // 咖啡豆在映射表里（只回家）：回家变成内核的一包咖啡；没喝完的现点奶茶（carry_home: false）按 disposed 清理，访问正常 closed
     expect(k.settlement!.items.map((i) => [i.type, i.qty, i.fate, i.kernel ?? null]).sort((x, y) => String(x[0]).localeCompare(String(y[0])))).toEqual([
       ['coffee_beans', 1, 'back', { kind: 'food', item: 'coffee' }],
-      ['milk_tea', 1, 'locker', null],
+      ['milk_tea', 1, 'disposed', null],
     ]);
     expect(k.settlement!.purse_final_yen).toBe(20_000 - 200 - 900 - 500 - 200);
-    expect(k.release().state).toBe('reconcile');
+    expect(k.release().state).toBe('closed');
     expect(t.c.db.get("SELECT state FROM items WHERE type = 'coffee_beans'")!.state).toBe('returned');
-    expect(t.c.db.get("SELECT state FROM items WHERE type = 'milk_tea'")!.state).toBe('locker');
+    expect(t.c.db.get("SELECT state FROM items WHERE type = 'milk_tea'")!.state).toBe('disposed');
     expect(k.view().items).toEqual([]);
   });
 

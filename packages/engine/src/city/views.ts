@@ -18,15 +18,19 @@ import {
   STATIONS,
   TRANSIT_EDGES,
   homeward,
+  isCarryHome,
+  isStorable,
   itemName,
   itemType,
   place,
   planRoute,
+  publicPlace,
   publicPlaces,
   station,
   type Place,
 } from './catalog.js';
-import { heldItems, wallet } from './ledger.js';
+import { CityError } from './errors.js';
+import { heldItems, lockerItems, wallet } from './ledger.js';
 import { MAPPINGS, kernelItemOf } from './mappings.js';
 import { card } from './residents.js';
 import type { CityResident, CityService } from './service.js';
@@ -142,7 +146,9 @@ export function sceneView(c: CityService, placeId: string, viewer: CityResident,
       const o = placeOpen(c, x, at);
       return route ? { id: x.id, name: x.name, area: x.area, type: x.type, minutes: route.minutes, fare_yen: route.fareYen, open: o.open, ...(o.open ? {} : { closed_reason: o.why === 'closed_rain' ? 'rain' : 'hours' }) } : null;
     })
-    .filter(Boolean);
+    .filter((x): x is NonNullable<typeof x> => Boolean(x))
+    .sort((a, b) => Number(a.area !== p.area) - Number(b.area !== p.area) || a.minutes - b.minutes)
+    .slice(0, 24);
   if (p.hidden) {
     return { place: { id: p.id, name: p.name, area: p.area, type: p.type }, people: [], goods: [], exits, recent_chat: [], weather: weatherBrief(c, p.area) };
   }
@@ -173,8 +179,53 @@ function visitBrief(c: CityService, visit: VisitRow, r: CityResident): Record<st
   };
 }
 
+/** 公开地点之间的路线、耗时与模拟票价试算（隐藏节点一律返回 404 no_such_place）。 */
+export function routePreview(c: CityService, fromId: string, toId: string): Record<string, unknown> {
+  const from = publicPlace(fromId);
+  const to = publicPlace(toId);
+  if (!from || !to) throw new CityError('NOT_FOUND', '没有这个地点。', 'no_such_place');
+  const now = c.now();
+  if (fromId === toId) {
+    const o = placeOpen(c, to, now);
+    return {
+      from: fromId,
+      to: toId,
+      minutes: 0,
+      fare_yen: 0,
+      legs: [],
+      dest_open: o.open,
+      ...(o.open ? {} : { closed_reason: o.why === 'closed_rain' ? 'rain' : 'hours' }),
+      rule_version: FARE_RULE_VERSION,
+      source: 'simulated',
+    };
+  }
+  const r = planRoute(fromId, toId);
+  if (!r) throw new CityError('NOT_FOUND', '这两个地点之间没有可达路线。', 'no_route');
+  const o = placeOpen(c, to, now + r.minutes * 60_000);
+  return {
+    from: r.from,
+    to: r.to,
+    minutes: r.minutes,
+    fare_yen: r.fareYen,
+    legs: r.legs.map((l) => ({
+      mode: l.mode,
+      from: l.from,
+      from_name: place(l.from)?.name ?? l.from,
+      to: l.to,
+      to_name: place(l.to)?.name ?? l.to,
+      ...(l.line ? { line: l.line } : {}),
+      minutes: l.minutes,
+      fare_yen: l.fareYen,
+    })),
+    dest_open: o.open,
+    ...(o.open ? {} : { closed_reason: o.why === 'closed_rain' ? 'rain' : 'hours' }),
+    rule_version: FARE_RULE_VERSION,
+    source: 'simulated',
+  };
+}
+
 /** 本人视图。 */
-export function selfView(c: CityService, r: CityResident): Record<string, unknown> {
+export function selfView(c: CityService, r: CityResident, opts: { clientId?: string } = {}): Record<string, unknown> {
   const now = c.now();
   const w = wallet(c, r.resident_id);
   const can = spendable(c, r);
@@ -183,26 +234,62 @@ export function selfView(c: CityService, r: CityResident): Record<string, unknow
   const inCity = r.in_city === 1;
   const items = heldItems(c, r.resident_id).map((i) => {
     const t = itemType(i.type);
+    const carryHome = isCarryHome(i.type);
+    const storable = isStorable(i.type) && i.origin_ref === null;
+    const meta = i.instance === 1 ? parseJson<Record<string, unknown> | null>(i.meta_json, null) : null;
     return {
       item_id: i.item_id,
       type: i.type,
       name: itemName(i.type),
       qty: i.quantity,
+      instance: i.instance === 1,
+      storable,
+      ...(carryHome ? {} : { carry_home: false }),
+      ...(meta ? { meta } : {}),
       ...(t && t.kind !== 'thing' ? { edible: true } : {}),
       // 室友：这件东西能不能带回家（映射表里有才行，否则回家时留在寄存包裹）
-      ...(r.origin === 'house' ? { from_home: i.origin_ref !== null, can_go_home: i.origin_ref !== null || kernelItemOf(i.type) !== null } : {}),
+      ...(r.origin === 'house' ? { from_home: i.origin_ref !== null, can_go_home: carryHome && (i.origin_ref !== null || kernelItemOf(i.type) !== null) } : {}),
+    };
+  });
+  const locker = lockerItems(c, r.resident_id).map((i) => {
+    const meta = i.instance === 1 ? parseJson<Record<string, unknown> | null>(i.meta_json, null) : null;
+    return {
+      item_id: i.item_id,
+      type: i.type,
+      name: itemName(i.type),
+      qty: i.quantity,
+      instance: i.instance === 1,
+      stored_at_ms: i.updated_at,
+      ...(meta ? { meta } : {}),
     };
   });
   const pending = c.db.all<Row>("SELECT order_id, type, yen FROM orders WHERE resident_id = ? AND status = 'pending' ORDER BY created_at", r.resident_id).map((o) => ({ order_id: String(o.order_id), what: itemName(String(o.type)), yen: Number(o.yen) }));
-  const actions = !inCity ? [] : visit?.state === 'returning' ? ['say'] : trip ? [] : [...(r.place_id === HOUSE_ENTRANCE ? ['say', 'travel'] : (place(r.place_id ?? '')?.actions ?? ['travel'])), ...(visit ? ['go_home'] : [])];
+  const actions = !inCity
+    ? []
+    : visit?.state === 'returning'
+      ? ['say', 'go_home']
+      : trip
+        ? visit
+          ? ['go_home']
+          : []
+        : [
+            ...(r.place_id === HOUSE_ENTRANCE ? ['say', 'travel'] : (place(r.place_id ?? '')?.actions ?? ['travel'])),
+            ...(r.origin === 'house' ? (visit ? ['go_home'] : []) : ['update_profile']),
+          ];
+  const control =
+    r.origin === 'house'
+      ? { epoch: visit?.domain_epoch ?? 0, mine: Boolean(visit) }
+      : { epoch: r.control_epoch, mine: Boolean(inCity && (opts.clientId ? r.controller_id === opts.clientId : r.controller_id === null)) };
   return {
     world_id: c.worldId,
     at_ms: now,
     local_time: c.clock(now),
     me: { ...card(r), origin: r.origin, in_city: inCity },
+    control,
     location: !inCity ? null : trip ? { in_transit: true, trip: tripView(trip) } : { place: r.place_id },
     wallet: { yen: w.balance, held_yen: w.held, spendable_yen: can.yen, ...(visit ? { return_reserve_yen: can.returnReserveYen } : {}) },
     items,
+    locker_items: locker,
     ...(pending.length ? { pending_orders: pending } : {}),
     here: inCity && r.place_id && !trip ? sceneView(c, r.place_id, r, now) : null,
     ...(visit ? { visit: visitBrief(c, visit, r) } : {}),

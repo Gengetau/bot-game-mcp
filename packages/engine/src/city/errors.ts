@@ -18,7 +18,9 @@ export type CityErrorCode =
   | 'ENTRY_VIA_HOME_ONLY'
   | 'STALE_DOMAIN_EPOCH'
   | 'VISIT_NOT_ACTIVE'
-  | 'VERSION_MISMATCH';
+  | 'VERSION_MISMATCH'
+  | 'CONTROL_LOST'
+  | 'INTERNAL';
 
 export const CITY_HTTP_STATUS: Record<CityErrorCode, number> = {
   BAD_REQUEST: 400,
@@ -34,6 +36,8 @@ export const CITY_HTTP_STATUS: Record<CityErrorCode, number> = {
   STALE_DOMAIN_EPOCH: 409,
   VISIT_NOT_ACTIVE: 409,
   VERSION_MISMATCH: 422,
+  CONTROL_LOST: 409,
+  INTERNAL: 500,
 };
 
 export class CityError extends Error {
@@ -59,3 +63,7 @@ export const cityBadRequest = (message: string, reason?: string, data?: Record<s
 export const cityPrecondition = (message: string, reason?: string, data?: Record<string, unknown>) => new CityError('PRECONDITION_FAILED', message, reason, data);
 export const cityNotFound = (message = '找不到这个对象，或者你现在不能访问它。') => new CityError('NOT_FOUND', message);
 export const cityConflict = (message: string, reason?: string, data?: Record<string, unknown>) => new CityError('CONFLICT', message, reason, data);
+export const cityControlLost = (epoch: number) =>
+  new CityError('CONTROL_LOST', '这位居民当前由另一个客户端控制，如需接管请先调用 claim_control。', 'control_lost', {
+    control: { epoch, mine: false },
+  });

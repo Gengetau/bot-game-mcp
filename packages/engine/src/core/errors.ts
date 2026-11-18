@@ -23,7 +23,10 @@ export type GameErrorCode =
   | 'RECOVERING'
   | 'NOT_AVAILABLE'
   // 东京城市世界：见 src/city/errors.ts
-  | 'ENTRY_VIA_HOME_ONLY';
+  | 'ENTRY_VIA_HOME_ONLY'
+  | 'STALE_DOMAIN_EPOCH'
+  | 'VISIT_NOT_ACTIVE'
+  | 'VERSION_MISMATCH';
 
 export class GameError extends Error {
   readonly code: GameErrorCode;

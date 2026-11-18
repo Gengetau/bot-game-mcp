@@ -9,7 +9,7 @@
  * 位置只由这个模块写（residents.place_id / trip_id）；进城、出城那两处在 residents.ts 和 visits.ts 里，也只调这里的函数。
  */
 import { parseJson, type Row } from '../world/db.js';
-import { FARE_RULE_VERSION, HOUSE_ENTRANCE, homeward, openAt, place, planRoute, type Place } from './catalog.js';
+import { FARE_RULE_VERSION, HOUSE_ENTRANCE, homeward, openAt, place, planRoute, station, type Place } from './catalog.js';
 import { CityError, cityPrecondition } from './errors.js';
 import { TRANSIT, ledger, purseOf, wallet } from './ledger.js';
 import { card } from './residents.js';
@@ -293,8 +293,8 @@ export function installTrips(c: CityService): void {
 
 /** 一个地点最近的车站对应的地点编号。 */
 function PLACE_OF_STATION(p: Place): string | null {
-  const id = `${p.area}:station`;
-  return place(id) ? id : null;
+  const st = station(p.station);
+  return st && place(st.placeId) ? st.placeId : null;
 }
 
 /** 走回小屋门口。已经在门口就直接结算。 */

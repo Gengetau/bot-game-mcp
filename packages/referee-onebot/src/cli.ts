@@ -8,7 +8,7 @@
 import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
-import { runReferee, type TownOptions, type VoiceSpec } from './index.js';
+import { runReferee, type CityRefereeOptions, type TownOptions, type VoiceSpec } from './index.js';
 import { VERSION } from './version.js';
 
 const HELP = `bot-game-referee ${VERSION} —— bot-game-mcp 的代码裁判（OneBot v11）
@@ -21,6 +21,7 @@ const HELP = `bot-game-referee ${VERSION} —— bot-game-mcp 的代码裁判（
                    [--key-issuer QQ --issuer-key-file 管理员密钥文件 --public-url https://主机/mcp [--max-keys 3]]
                    [--town [--town-keywords 小镇,进小镇] [--town-cooldown 60] [--town-silent] [--town-open-private]
                     [--town-outbox [--town-outbox-group 群号] [--town-outbox-interval 300] [--town-outbox-limit 5]]]
+                   [--city [--city-keywords 东京,进城,东京都] [--city-cooldown 60] [--city-silent] [--city-open-private] [--no-legacy-town-hint]]
 
   用一个或多个 OneBot v11 账号（正向 WebSocket）把引擎的消息发到群里和私聊里，转交真人消息，响应「/桌游」指令。
   它只用裁判能用的那几个工具，没有任何能影响结果的接口。
@@ -45,10 +46,12 @@ const HELP = `bot-game-referee ${VERSION} —— bot-game-mcp 的代码裁判（
     --town-silent 引擎没开小镇时不回话（默认回「小镇没开」）；--town-open-private 私聊领取不要求对方在群里（默认要求，管理员不限）。
   --town-outbox：把小镇的稀疏公告（公共活动开场、每日小报）转发到群里（默认关）。发成功才向引擎确认，发送失败下个周期重发（至少一次）。
     --town-outbox-group 目标群（默认 --group）；--town-outbox-interval 取公告的间隔秒数（默认 300）；--town-outbox-limit 每次最多几条（默认 5）。
+  --city：接入东京都（持续城市世界，引擎要开 city 且本账号在 refereeIds 里）。真人在群里或私聊发关键词（默认「东京」「进城」「东京都」），
+    裁判用 city_issue_ticket 给本人签发 5 分钟一次性登录链接并私聊发送，群里只回提示；当 --city 开启且 --town 未开启时，收到「小镇」会温和引导发「东京」。
 
 环境变量：BOTGAME_URL BOTGAME_KEY BOTGAME_ONEBOT_URL BOTGAME_ONEBOT_TOKEN BOTGAME_GROUP BOTGAME_ADMINS BOTGAME_BOTS
           BOTGAME_VOICES BOTGAME_HOST_ID BOTGAME_WHEEL_FONT BOTGAME_KEY_ISSUER BOTGAME_ISSUER_KEY BOTGAME_PUBLIC_URL
-          BOTGAME_REFEREE_TOWN=1（等同 --town） BOTGAME_REFEREE_TOWN_OUTBOX=1（等同 --town-outbox）`;
+          BOTGAME_REFEREE_TOWN=1（等同 --town） BOTGAME_REFEREE_TOWN_OUTBOX=1（等同 --town-outbox） BOTGAME_REFEREE_CITY=1（等同 --city）`;
 
 /** --voices 文件：[{ "keyFile": "...", "onebot": "ws://...", "onebotTokenFile": "..." }, …]，路径相对文件所在目录。 */
 function loadVoices(file: string): VoiceSpec[] {
@@ -108,6 +111,12 @@ async function main(argv: string[]): Promise<void> {
       'town-outbox-group': { type: 'string' },
       'town-outbox-interval': { type: 'string' },
       'town-outbox-limit': { type: 'string' },
+      city: { type: 'boolean' },
+      'city-keywords': { type: 'string' },
+      'city-cooldown': { type: 'string' },
+      'city-silent': { type: 'boolean' },
+      'city-open-private': { type: 'boolean' },
+      'no-legacy-town-hint': { type: 'boolean' },
       help: { type: 'boolean', short: 'h' },
       version: { type: 'boolean', short: 'v' },
     },
@@ -130,6 +139,7 @@ async function main(argv: string[]): Promise<void> {
   const flag = (v: unknown, env: string) => Boolean(v) || process.env[env] === '1' || process.env[env] === 'true';
   const townOn = flag(values.town, 'BOTGAME_REFEREE_TOWN');
   const outboxOn = flag(values['town-outbox'], 'BOTGAME_REFEREE_TOWN_OUTBOX');
+  const cityOn = flag(values.city, 'BOTGAME_REFEREE_CITY');
   if (outboxOn && !townOn) throw new Error('--town-outbox 要和 --town 一起用');
   const num = (k: string) => (str(k) !== undefined ? Number(str(k)) : undefined);
   const town: TownOptions | undefined = townOn
@@ -139,6 +149,15 @@ async function main(argv: string[]): Promise<void> {
         whenOff: values['town-silent'] ? 'silent' : 'reply',
         requireGroupMember: !values['town-open-private'],
         ...(outboxOn ? { outbox: { groupId: str('town-outbox-group'), intervalSeconds: num('town-outbox-interval'), limit: num('town-outbox-limit') } } : {}),
+      }
+    : undefined;
+  const city: CityRefereeOptions | undefined = cityOn
+    ? {
+        keywords: str('city-keywords') || process.env.BOTGAME_CITY_KEYWORDS ? list(str('city-keywords') ?? process.env.BOTGAME_CITY_KEYWORDS) : undefined,
+        ticketCooldownSeconds: num('city-cooldown'),
+        whenOff: values['city-silent'] ? 'silent' : 'reply',
+        requireGroupMember: !values['city-open-private'],
+        legacyTownHint: !values['no-legacy-town-hint'],
       }
     : undefined;
   const ac = new AbortController();
@@ -183,6 +202,7 @@ async function main(argv: string[]): Promise<void> {
     publicUrl: str('public-url') ?? process.env.BOTGAME_PUBLIC_URL,
     maxKeysPerOwner: str('max-keys') ? Number(str('max-keys')) : undefined,
     ...(town ? { town } : {}),
+    ...(city ? { city } : {}),
     signal: ac.signal,
   });
 }

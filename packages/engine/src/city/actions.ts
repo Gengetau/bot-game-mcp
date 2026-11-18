@@ -9,16 +9,17 @@
 import { sanitizeUserText } from '../core/text.js';
 import { parseJson, type Row } from '../world/db.js';
 import { REQUEST_ID_RE, sha256, stableStringify } from '../world/service.js';
-import { itemName, itemType, place, publicPlace } from './catalog.js';
-import { CityError, cityBadRequest, cityConflict, cityPrecondition } from './errors.js';
-import { SHOPS, addPlain, heldItems, hold, ledger, purseOf, takeItems, unhold, wallet } from './ledger.js';
+import { isCarryHome, itemName, itemType, place, publicPlace } from './catalog.js';
+import { CityError, cityBadRequest, cityConflict, cityControlLost, cityPrecondition } from './errors.js';
+import { BRIDGE, SHOPS, addDisposed, addPlain, addPlainToLocker, heldItems, hold, ledger, lockerItems, purseOf, storeToLocker, takeFromLocker, takeItems, transferItems, unhold, wallet } from './ledger.js';
 import { kernelEffectOf } from './mappings.js';
-import { card } from './residents.js';
+import { runReconcile } from './reconcile.js';
+import { card, updateResidentProfile } from './residents.js';
 import type { CityResident, CityService } from './service.js';
 import { placeOpen, spendable, startTrip, tripView } from './trips.js';
-import { beginReturn, bodyEffect, clearChatWake, noteSpeech, openVisitOf, outboxPurchase, visitById, wake, wakeForChat, withReceipt, type BridgeReceipt, type VisitRow } from './visits.js';
+import { beginReturn, bodyEffect, clearChatWake, noteSpeech, openVisitOf, outboxOrderRefunded, outboxPurchase, visitById, wake, wakeForChat, withReceipt, type BridgeReceipt, type VisitRow } from './visits.js';
 
-export const CITY_ACTIONS = ['travel', 'say', 'buy', 'consume', 'give', 'go_home'] as const;
+export const CITY_ACTIONS = ['travel', 'say', 'buy', 'consume', 'give', 'store_locker', 'take_locker', 'update_profile', 'go_home'] as const;
 
 // ───────────────────────── 限速 ─────────────────────────
 
@@ -166,13 +167,55 @@ function doGive(c: CityService, r: CityResident, a: Action, at: number, visit: V
   if (!to) throw cityPrecondition('对方不在这里。', 'not_here');
   const { what, type } = resolveItem(c, r, a);
   const qty = qtyOf(a.qty, 9);
-  takeItems(c, r.resident_id, what, qty, visit?.visit_id ?? null, 'given', { counterparty: to.resident_id });
   const theirs = to.origin === 'house' ? (openVisitOf(c, to.resident_id) ?? null) : null;
-  addPlain(c, to.resident_id, type, qty, theirs?.visit_id ?? null, 'received', r.resident_id);
-  const gift = { type, name: itemName(type), qty };
+  const moved = transferItems(c, r.resident_id, to.resident_id, what, qty, visit?.visit_id ?? null, theirs?.visit_id ?? null);
+  const gift = { type, name: itemName(type), qty, ...(moved.instanceItemId ? { item_id: moved.instanceItemId, instance: true } : {}) };
   c.emitTo([to.resident_id], 'gift_received', { from: card(r), item: gift, place: placeId }, at);
   if (theirs && theirs.state === 'active') wake(c, theirs, 'gift_received', at, { from: { name: r.name }, item: gift, place: placeId });
   return { status: 'completed', given: gift, to: card(to) };
+}
+
+function mustBeAtLocker(r: CityResident): string {
+  const placeId = mustBeAtPlace(r);
+  const p = place(placeId);
+  if (!p || p.type !== 'station') {
+    throw cityPrecondition('这里没有公共储物柜，请先去车站大厅。', 'not_at_locker');
+  }
+  return placeId;
+}
+
+function resolveSelector(a: Action): { itemId?: string; type?: string } {
+  const itemId = str(a.item_id);
+  if (itemId) return { itemId };
+  const type = str(a.item);
+  if (type) return { type };
+  throw cityBadRequest('要说清楚是哪件东西：item_id 或 item（物品类型）。', 'no_such_item');
+}
+
+function doStoreLocker(c: CityService, r: CityResident, a: Action, visit: VisitRow | null): Record<string, unknown> {
+  mustBeAtLocker(r);
+  const what = resolveSelector(a);
+  const qty = qtyOf(a.qty, 99);
+  const stored = storeToLocker(c, r.resident_id, what, qty, visit?.visit_id ?? null);
+  return { status: 'completed', stored: { ...stored, name: itemName(stored.type) } };
+}
+
+function doTakeLocker(c: CityService, r: CityResident, a: Action, visit: VisitRow | null): Record<string, unknown> {
+  mustBeAtLocker(r);
+  const what = resolveSelector(a);
+  // 若传 item_id 但柜中没有，先做友好检查
+  if (what.itemId && !lockerItems(c, r.resident_id).some((i) => i.item_id === what.itemId)) {
+    throw cityPrecondition('你的储物柜里没有这件东西。', 'not_enough_items');
+  }
+  const qty = qtyOf(a.qty, 99);
+  const retrieved = takeFromLocker(c, r.resident_id, what, qty, visit?.visit_id ?? null);
+  return { status: 'completed', retrieved: { ...retrieved, name: itemName(retrieved.type) } };
+}
+
+function doUpdateProfile(c: CityService, r: CityResident, a: Action, visit: VisitRow | null): Record<string, unknown> {
+  if (visit) throw cityPrecondition('小屋室友的显示名和简介由家里同步，不在城里修改。', 'house_profile_managed');
+  const profile = updateResidentProfile(c, r, { name: a.name, bio: a.bio });
+  return { status: 'completed', profile };
 }
 
 /** 做一件事。调用方已经确认过身份、在场和限速。 */
@@ -190,6 +233,12 @@ function perform(c: CityService, r: CityResident, action: unknown, at: number, v
       return doConsume(c, r, a, at, visit);
     case 'give':
       return doGive(c, r, a, at, visit);
+    case 'store_locker':
+      return doStoreLocker(c, r, a, visit);
+    case 'take_locker':
+      return doTakeLocker(c, r, a, visit);
+    case 'update_profile':
+      return doUpdateProfile(c, r, a, visit);
     case 'go_home':
       // 外部 bot 没有这个动作，也不该从报错里知道有它
       if (!visit) throw unknownAction(false);
@@ -200,12 +249,25 @@ function perform(c: CityService, r: CityResident, action: unknown, at: number, v
 }
 
 const unknownAction = (house: boolean): CityError =>
-  cityBadRequest(`不认识的动作。能做的有：${CITY_ACTIONS.filter((x) => house || x !== 'go_home').join(' / ')}。`, 'unknown_action');
+  cityBadRequest(`不认识的动作。能做的有：${CITY_ACTIONS.filter((x) => (house ? x !== 'update_profile' : x !== 'go_home')).join(' / ')}。`, 'unknown_action');
 
 // ───────────────────────── 外部 bot 的入口 ─────────────────────────
 
-/** 外部 bot 提交一条动作。同一个 request_id 重试返回原来的结果，不会做两遍。 */
-export function cityCommand(c: CityService, residentId: string, requestId: unknown, action: unknown): Record<string, unknown> {
+export interface CityCommandOptions {
+  /** 归一化客户端标识（mcp:<id> 或 web:<id>）；提供时校验与 residents.controller_id 一致 */
+  clientId?: string;
+  /** 可选的控制权代次校验 */
+  expectedControlEpoch?: number;
+}
+
+/** 外部 bot 或真人网页提交一条动作。同一个 request_id 重试返回原来的结果，不会做两遍。 */
+export function cityCommand(
+  c: CityService,
+  residentId: string,
+  requestId: unknown,
+  action: unknown,
+  opts: CityCommandOptions = {},
+): Record<string, unknown> {
   if (typeof requestId !== 'string' || !REQUEST_ID_RE.test(requestId)) throw cityBadRequest('需要 request_id（8~80 个字符，只能是字母、数字、下划线和 . : -）。每个新动作一个新的，重试用同一个。');
   const hash = sha256(stableStringify(action ?? null));
   c.metrics.commands++;
@@ -222,8 +284,16 @@ export function cityCommand(c: CityService, residentId: string, requestId: unkno
       }
       c.assertRunning();
       const r = c.mustResident(residentId);
-      if (r.origin !== 'external') throw new CityError('ENTRY_VIA_HOME_ONLY', '小屋的室友在城里的动作只能由小屋那边代行。');
+      if (r.origin === 'house') throw new CityError('ENTRY_VIA_HOME_ONLY', '小屋的室友在城里的动作只能由小屋那边代行。');
       if (!r.in_city) throw cityPrecondition('你现在不在城里。先 enter_world。', 'not_in_city');
+      if (opts.clientId !== undefined || r.controller_id !== null) {
+        if (!opts.clientId || r.controller_id !== opts.clientId) {
+          throw cityControlLost(r.control_epoch);
+        }
+        if (opts.expectedControlEpoch !== undefined && opts.expectedControlEpoch !== r.control_epoch) {
+          throw cityControlLost(r.control_epoch);
+        }
+      }
       const subject = r.principal_id;
       rateCheck(c, subject, 'act', c.params.externalActsPerHour, 3600_000, now);
       rateCheck(c, subject, 'act', c.params.externalActsPerDay, 86_400_000, now);
@@ -296,26 +366,72 @@ export function visitAct(c: CityService, visitId: string, body: Record<string, u
 // ───────────────────────── 结果未知的订单 ─────────────────────────
 
 /**
- * 人工确认一笔结果未知的订单（对账之后由运维调用，不自动）。只处理居民还在城里的情况：
- * 访问已经关闭的室友，那笔钱留在城里的随身钱包里锁着，要按对账报告人工处理，这里拒绝。
+ * 人工确认一笔结果未知的订单（对账之后由管理端调用，不自动）。
+ * 支持在城期间与室友返家关单（reconcile / closed）后的跨关单平衡结算；settled 且尚未 release 的窗口返回 409 awaiting_release。
  */
-export function resolvePendingOrder(c: CityService, orderId: string, outcome: 'completed' | 'failed'): { order_id: string; status: string } {
+export function resolvePendingOrder(
+  c: CityService,
+  orderId: string,
+  outcome: 'completed' | 'failed',
+): { order_id: string; status: string; visit_state?: string; reconcile_ok: boolean } {
+  if (outcome !== 'completed' && outcome !== 'failed') {
+    throw cityBadRequest('outcome 只能是 completed 或 failed。', 'bad_outcome');
+  }
   return c.commit(() => {
+    c.assertRunning();
     const o = c.db.get<Row>("SELECT * FROM orders WHERE order_id = ? AND status = 'pending'", orderId);
     if (!o) throw new CityError('NOT_FOUND', '没有这笔待确认的订单。');
     const r = c.mustResident(String(o.resident_id));
     const visit = o.visit_id ? visitById(c, String(o.visit_id)) : null;
-    if (visit && visit.state !== 'active' && visit.state !== 'returning') throw cityPrecondition('这次访问已经结束，这笔订单要按对账报告人工处理。', 'visit_closed');
-    const now = c.now();
-    unhold(c, r.resident_id, Number(o.yen));
-    if (outcome === 'completed') {
-      ledger(c, `order:${orderId}`, 'purchase', itemName(String(o.type)), [[purseOf(r.resident_id), -Number(o.yen)], [SHOPS, Number(o.yen)]], visit?.visit_id ?? null);
-      addPlain(c, r.resident_id, String(o.type), Number(o.quantity), visit?.visit_id ?? null, 'acquired');
-      if (visit) outboxPurchase(c, visit, now, { what: itemName(String(o.type)), yen: -Number(o.yen), detail: { order_id: orderId, place: String(o.place_id), sku: String(o.sku), type: String(o.type), qty: Number(o.quantity), resolved: true } });
+    if (visit && (visit.state === 'settled' || visit.state === 'settling')) {
+      throw cityConflict('这次访问正在等待内核完成返家确认（release），请稍后再处理这笔订单。', 'awaiting_release', {
+        visit_id: visit.visit_id,
+        state: visit.state,
+      });
     }
+    const visitClosed = Boolean(visit && (visit.state === 'reconcile' || visit.state === 'closed'));
+    const now = c.now();
+    const yen = Number(o.yen);
+    const qty = Number(o.quantity);
+    const itemTyp = String(o.type);
+    unhold(c, r.resident_id, yen);
     c.db.run('UPDATE orders SET status = ?, resolved_at = ? WHERE order_id = ?', outcome, now, orderId);
+    if (outcome === 'completed') {
+      ledger(c, `order:${orderId}`, 'purchase', itemName(itemTyp), [[purseOf(r.resident_id), -yen], [SHOPS, yen]], visit?.visit_id ?? null);
+      if (visitClosed) {
+        if (!isCarryHome(itemTyp)) addDisposed(c, r.resident_id, itemTyp, qty, visit!.visit_id);
+        else addPlainToLocker(c, r.resident_id, itemTyp, qty, visit!.visit_id);
+      } else {
+        addPlain(c, r.resident_id, itemTyp, qty, visit?.visit_id ?? null, 'acquired');
+      }
+      if (visit && !visitClosed) {
+        outboxPurchase(c, visit, now, {
+          what: itemName(itemTyp),
+          yen: -yen,
+          detail: { order_id: orderId, place: String(o.place_id), sku: String(o.sku), type: itemTyp, qty, resolved: true },
+        });
+      }
+    } else if (visitClosed) {
+      // 室友已回家关单：解锁的钱从随身钱包划回桥接池，使随身钱包归零，并写 order_refunded 通知内核补回家庭钱包
+      ledger(c, `order:${orderId}:refund_bridge`, 'order_refund', '未决订单退款', [[purseOf(r.resident_id), -yen], [BRIDGE, yen]], visit!.visit_id);
+      const leftPending = c.db.scalar("SELECT COUNT(*) FROM orders WHERE visit_id = ? AND status = 'pending'", visit!.visit_id);
+      outboxOrderRefunded(c, visit!, now, { order_id: orderId, yen, all_pending_cleared: leftPending === 0 });
+    }
+    if (visitClosed) {
+      const leftPending = c.db.scalar("SELECT COUNT(*) FROM orders WHERE visit_id = ? AND status = 'pending'", visit!.visit_id);
+      if (leftPending === 0 && visit!.state === 'reconcile') {
+        c.db.run("UPDATE visits SET state = 'closed' WHERE visit_id = ?", visit!.visit_id);
+      }
+    }
     c.emitTo([r.resident_id], 'order_resolved', { order_id: orderId, status: outcome }, now);
-    return { order_id: orderId, status: outcome };
+    const report = runReconcile(c, 'order_resolved');
+    const freshVisit = visit ? visitById(c, visit.visit_id) : undefined;
+    return {
+      order_id: orderId,
+      status: outcome,
+      ...(freshVisit ? { visit_state: freshVisit.state } : {}),
+      reconcile_ok: report.ok,
+    };
   });
 }
 
@@ -324,6 +440,8 @@ export function installActions(c: CityService): void {
   c.jobHandlers.set('prune', (_payload, _job, now) => {
     c.db.run('DELETE FROM request_receipts WHERE expires_at <= ?', now);
     c.db.run('DELETE FROM rate_log WHERE at <= ?', now - 86_400_000);
+    c.db.run('DELETE FROM login_tickets WHERE expires_at <= ?', now - 7 * 86_400_000);
+    c.db.run('DELETE FROM web_sessions WHERE expires_at <= ? OR (revoked_at IS NOT NULL AND revoked_at <= ?)', now - 7 * 86_400_000, now - 7 * 86_400_000);
     const cut = now - c.params.eventRetentionMs;
     for (const row of c.db.all<{ resident_id: string; cut: number }>('SELECT resident_id, MAX(cursor) AS cut FROM resident_events WHERE created_at <= ? GROUP BY resident_id', cut)) {
       c.db.run('DELETE FROM resident_events WHERE resident_id = ? AND cursor <= ?', row.resident_id, row.cut);
