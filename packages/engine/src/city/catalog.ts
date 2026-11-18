@@ -14,7 +14,7 @@ import { APPAREL_SHOP_PLACES, apparelWindowForPlace, shopApparelBySku } from './
 
 export const CITY_WORLD_ID = 'tokyo';
 export const CITY_WORLD_NAME = '东京';
-export const CITY_CATALOG_VERSION = 'tokyo-p1.1';
+export const CITY_CATALOG_VERSION = 'tokyo-p1.2';
 export const FARE_RULE_VERSION = 'sim-2026-11';
 
 /** 小屋门口：交接点（规格 3.1）。不公开。 */
@@ -62,6 +62,13 @@ export const SOURCES: readonly SourceReference[] = [
     title: '模拟耗时',
     note: '乘车耗时参考白天时段的大致行驶时间，再加几分钟候车；步行耗时是估计。不是真实时刻表，标注为 simulated。',
     retrieved: '2026-11-17',
+  },
+  {
+    id: 'sim-hours',
+    kind: 'simulated',
+    title: '模拟铁道首末班运营时间窗',
+    note: '统一采用纯确定性的模拟首末班运营时间窗（首班 05:00、末班 00:20 JST），不依赖有许可期限的 ODPT 实时时刻表，标注为 simulated。',
+    retrieved: '2026-11-18',
   },
   {
     id: 'public-spaces',
@@ -148,6 +155,15 @@ export const STATIONS: readonly StationComplex[] = [
 ];
 
 /** 两站之间的一段车（无向）。minutes 含候车；fareYen 是这一段的票价。 */
+export interface TransitHours {
+  /** 首班发车时刻（世界时区 HH:MM，含） */
+  first: string;
+  /** 末班截止时刻（世界时区 HH:MM，不含；last < first 表示跨午夜） */
+  last: string;
+}
+
+export const TRANSIT_DEFAULT_HOURS: TransitHours = { first: '05:00', last: '00:20' };
+
 export interface TransitEdge {
   id: string;
   a: string;
@@ -155,13 +171,14 @@ export interface TransitEdge {
   line: string;
   minutes: number;
   fareYen: number;
+  hours: TransitHours;
   sources: string[];
 }
 
 export const TRANSIT_EDGES: readonly TransitEdge[] = [
-  { id: 'te:akabane-ikebukuro', a: 'st:akabane', b: 'st:ikebukuro', line: '埼京线', minutes: 13, fareYen: 200, sources: ['jreast-network', 'sim-fares', 'sim-times'] },
-  { id: 'te:akabane-shinjuku', a: 'st:akabane', b: 'st:shinjuku', line: '埼京线', minutes: 19, fareYen: 260, sources: ['jreast-network', 'sim-fares', 'sim-times'] },
-  { id: 'te:ikebukuro-shinjuku', a: 'st:ikebukuro', b: 'st:shinjuku', line: '山手线', minutes: 10, fareYen: 200, sources: ['jreast-network', 'sim-fares', 'sim-times'] },
+  { id: 'te:akabane-ikebukuro', a: 'st:akabane', b: 'st:ikebukuro', line: '埼京线', minutes: 13, fareYen: 200, hours: TRANSIT_DEFAULT_HOURS, sources: ['jreast-network', 'sim-fares', 'sim-times', 'sim-hours'] },
+  { id: 'te:akabane-shinjuku', a: 'st:akabane', b: 'st:shinjuku', line: '埼京线', minutes: 19, fareYen: 260, hours: TRANSIT_DEFAULT_HOURS, sources: ['jreast-network', 'sim-fares', 'sim-times', 'sim-hours'] },
+  { id: 'te:ikebukuro-shinjuku', a: 'st:ikebukuro', b: 'st:shinjuku', line: '山手线', minutes: 10, fareYen: 200, hours: TRANSIT_DEFAULT_HOURS, sources: ['jreast-network', 'sim-fares', 'sim-times', 'sim-hours'] },
 ];
 
 export interface Neighborhood {
@@ -696,12 +713,48 @@ export function homeward(fromId: string): { fareYen: number; minutes: number } {
 }
 
 /** 营业时间判断：minuteOfDay 是世界时区里这一刻是当天第几分钟。 */
+export function clockMinutes(hhmm: string): number {
+  return Number(hhmm.slice(0, 2)) * 60 + Number(hhmm.slice(3, 5));
+}
+
 export function openAt(p: Place, minuteOfDay: number): boolean {
   if (!p.hours) return true;
-  const toMin = (s: string): number => Number(s.slice(0, 2)) * 60 + Number(s.slice(3, 5));
-  const o = toMin(p.hours.open);
-  const c = toMin(p.hours.close);
+  const o = clockMinutes(p.hours.open);
+  const c = clockMinutes(p.hours.close);
   return o <= c ? minuteOfDay >= o && minuteOfDay < c : minuteOfDay >= o || minuteOfDay < c;
+}
+
+/** 铁道运营时间窗判断：first <= last 为日内区间 [first, last)，first > last 为跨午夜区间 [first, 24:00) ∪ [00:00, last)。 */
+export function transitHoursOpenAt(hours: TransitHours, minuteOfDay: number): boolean {
+  const f = clockMinutes(hours.first);
+  const l = clockMinutes(hours.last);
+  return f <= l ? minuteOfDay >= f && minuteOfDay < l : minuteOfDay >= f || minuteOfDay < l;
+}
+
+/** 按两端的车站编号或车站地点编号查找直连铁道边。 */
+export function transitEdgeBetween(fromPlaceOrStation: string, toPlaceOrStation: string): TransitEdge | undefined {
+  const sa = STATION_BY_ID.get(fromPlaceOrStation)?.id ?? PLACE_BY_ID.get(fromPlaceOrStation)?.station;
+  const sb = STATION_BY_ID.get(toPlaceOrStation)?.id ?? PLACE_BY_ID.get(toPlaceOrStation)?.station;
+  if (!sa || !sb || sa === sb) return undefined;
+  return TRANSIT_EDGES.find((e) => (e.a === sa && e.b === sb) || (e.a === sb && e.b === sa));
+}
+
+/** 判断一段铁道在某个本地分钟是否处于运营时间窗内。 */
+export function transitEdgeOpenAt(
+  fromPlaceOrStation: string,
+  toPlaceOrStation: string,
+  minuteOfDay: number,
+): { open: boolean; edge?: TransitEdge; hours: TransitHours } {
+  const edge = transitEdgeBetween(fromPlaceOrStation, toPlaceOrStation);
+  const hours = edge?.hours ?? TRANSIT_DEFAULT_HOURS;
+  return { open: transitHoursOpenAt(hours, minuteOfDay), ...(edge ? { edge } : {}), hours };
+}
+
+function validClock(hhmm: string): boolean {
+  if (!/^\d\d:\d\d$/.test(hhmm)) return false;
+  const h = Number(hhmm.slice(0, 2));
+  const m = Number(hhmm.slice(3, 5));
+  return h >= 0 && h < 24 && m >= 0 && m < 60;
 }
 
 /** 目录自检：启动时跑一次，写错了直接拒绝启动（比运行中走到坏数据再报错好查）。返回问题列表。 */
@@ -728,6 +781,9 @@ export function validateCatalog(): string[] {
   for (const e of TRANSIT_EDGES) {
     if (!STATION_BY_ID.has(e.a) || !STATION_BY_ID.has(e.b)) problems.push(`线路段 ${e.id} 的车站不存在`);
     if (!Number.isInteger(e.fareYen) || e.fareYen < 0 || !Number.isInteger(e.minutes) || e.minutes <= 0) problems.push(`线路段 ${e.id} 的耗时或票价不对`);
+    if (!e.hours || !validClock(e.hours.first) || !validClock(e.hours.last) || e.hours.first === e.hours.last) {
+      problems.push(`线路段 ${e.id} 的首末班时间格式不对`);
+    }
     for (const s of e.sources) if (!sourceIds.has(s)) problems.push(`线路段 ${e.id} 的来源 ${s} 不存在`);
   }
   for (const p of PLACES) {

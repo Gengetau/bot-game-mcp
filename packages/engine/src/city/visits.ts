@@ -10,7 +10,21 @@
  */
 import { parseJson, type Row } from '../world/db.js';
 import { sha256, stableStringify } from '../world/service.js';
-import { CITY_CATALOG_VERSION, HOUSE_ENTRANCE, homeward, isCarryHome, itemName, place, publicPlace } from './catalog.js';
+import { localParts, localToUtc, nextDate } from '../world/time.js';
+import {
+  CITY_CATALOG_VERSION,
+  HOUSE_ENTRANCE,
+  TRANSIT_DEFAULT_HOURS,
+  clockMinutes,
+  homeward,
+  isCarryHome,
+  itemName,
+  place,
+  planRoute,
+  publicPlace,
+  transitEdgeBetween,
+  type TransitHours,
+} from './catalog.js';
 import { CityError, cityBadRequest, cityConflict, cityPrecondition } from './errors.js';
 import { BRIDGE, addCarried, disposeHeldItem, ensurePurse, heldItems, ledger, moveItemToLocker, purseOf, sanitizeItemMeta, spendSummary, trustedAssetIdOf, wallet, type ItemRow } from './ledger.js';
 import { MAPPINGS, engineTypeOf, kernelItemOf, walkEffect } from './mappings.js';
@@ -198,14 +212,104 @@ export function noteSpeech(c: CityService, visit: VisitRow, other: CityResident,
 // ───────────────────────── 自动回程 ─────────────────────────
 
 /**
+ * 计算参考时刻所在（或刚刚结束）的铁道运营窗口起止 UTC 毫秒时间戳。
+ * 跨午夜运营窗（如 05:00–00:20）：
+ *  - 05:00..23:59：当日 05:00 开启，次日 00:20 收班；
+ *  - 00:00..00:19（跨午夜终电前）：前一日 05:00 开启，当日 00:20 收班；
+ *  - 00:20..04:59（夜间停运期）：上一运营窗已于当日 00:20 收班（closeMs <= refMs）。
+ */
+export function transitWindowAt(
+  tz: string,
+  hours: TransitHours,
+  refMs: number,
+): { open: boolean; openMs: number; closeMs: number } {
+  const p = localParts(tz, refMs);
+  const min = p.hour * 60 + p.minute;
+  const f = clockMinutes(hours.first);
+  const l = clockMinutes(hours.last);
+  const fh = Math.floor(f / 60);
+  const fm = f % 60;
+  const lh = Math.floor(l / 60);
+  const lm = l % 60;
+  if (f <= l) {
+    const openMs = localToUtc(tz, p.date, fh, fm);
+    const closeMs = localToUtc(tz, p.date, lh, lm);
+    return { open: min >= f && min < l, openMs, closeMs };
+  }
+  if (min >= f) {
+    return {
+      open: true,
+      openMs: localToUtc(tz, p.date, fh, fm),
+      closeMs: localToUtc(tz, nextDate(p.date, 1), lh, lm),
+    };
+  }
+  if (min < l) {
+    return {
+      open: true,
+      openMs: localToUtc(tz, nextDate(p.date, -1), fh, fm),
+      closeMs: localToUtc(tz, p.date, lh, lm),
+    };
+  }
+  return {
+    open: false,
+    openMs: localToUtc(tz, nextDate(p.date, -1), fh, fm),
+    closeMs: localToUtc(tz, p.date, lh, lm),
+  };
+}
+
+/**
+ * 从某个地点回赤羽小屋门口，在当前运营日终电停运前安全踏上归途的最晚动身时刻。
+ * 同片区纯步行返家（无需乘车）返回 null；含铁道乘车段时，确保每一段乘车都在末班截止前至少留出安全余量（不少于 1 分钟）。
+ */
+export function lastTrainSafeDepartMs(
+  c: CityService,
+  fromPlaceId: string,
+  refMs: number = c.now(),
+): { departByMs: number; closeMs: number } | null {
+  if (fromPlaceId === HOUSE_ENTRANCE) return null;
+  const r = planRoute(fromPlaceId, HOUSE_ENTRANCE);
+  if (!r) return null;
+  const marginMs = Math.max(60_000, c.params.returnMarginMs);
+  let offsetMin = 0;
+  let best: { departByMs: number; closeMs: number } | null = null;
+  for (const leg of r.legs) {
+    if (leg.mode === 'train') {
+      const hours = transitEdgeBetween(leg.from, leg.to)?.hours ?? TRANSIT_DEFAULT_HOURS;
+      const win = transitWindowAt(c.params.timezone, hours, refMs);
+      const departByMs = win.closeMs - offsetMin * 60_000 - marginMs;
+      if (!best || departByMs < best.departByMs) {
+        best = { departByMs, closeMs: win.closeMs };
+      }
+    }
+    offsetMin += leg.minutes;
+  }
+  return best;
+}
+
+/** 室友访问的实际自动返程截止时刻：min(原访问到期时刻回推, 当日终电前安全返程最晚动身时刻)。 */
+export function effectiveVisitReturnSchedule(
+  c: CityService,
+  visit: VisitRow,
+  contextPlaceId: string,
+  refMs: number = c.now(),
+): { dueMs: number; reason: 'return_by' | 'last_train'; lastTrainCloseMs: number | null } {
+  const normalDue = visit.return_by_ms - homeward(contextPlaceId).minutes * 60_000 - c.params.returnMarginMs;
+  const guard = lastTrainSafeDepartMs(c, contextPlaceId, refMs);
+  if (guard && guard.departByMs < normalDue) {
+    return { dueMs: guard.departByMs, reason: 'last_train', lastTrainCloseMs: guard.closeMs };
+  }
+  return { dueMs: normalDue, reason: 'return_by', lastTrainCloseMs: guard?.closeMs ?? null };
+}
+
+/**
  * 她的位置（或正在去的目的地）变了：重排「到点回家」的作业。
- * 出发时刻 = return_by − 从那里回小屋门口的耗时 − 余量。已经过了就立刻到期（引擎恢复后 return_by 已过，立即排回程）。
+ * 出发时刻取 min(原访问到期回推时刻, 当日终电前安全返程最晚动身时刻)。已经过了就立刻到期。
  */
 export function afterMove(c: CityService, visit: VisitRow, contextPlaceId: string): void {
   const fresh = visitById(c, visit.visit_id);
   if (!fresh || fresh.state !== 'active') return;
-  const due = fresh.return_by_ms - homeward(contextPlaceId).minutes * 60_000 - c.params.returnMarginMs;
-  c.reschedule('visit_return', `visit:${fresh.visit_id}:return`, due, { visitId: fresh.visit_id });
+  const sched = effectiveVisitReturnSchedule(c, fresh, contextPlaceId, c.now());
+  c.reschedule('visit_return', `visit:${fresh.visit_id}:return`, sched.dueMs, { visitId: fresh.visit_id, reason: sched.reason });
 }
 
 /** 进入 returning：不再接受新交易和新动作；回程行程开始（在路上的话，这一段走完就改走回程）。 */
@@ -659,7 +763,8 @@ export function installVisits(c: CityService): void {
   // 到点回家：还在城里就开始回程（适配器掉线也一样）
   c.jobHandlers.set('visit_return', (payload, _job, now) => {
     const visit = visitById(c, String(payload.visitId));
-    if (visit && visit.state === 'active') beginReturn(c, visit, 'return_by', now);
+    const reason = payload.reason === 'last_train' ? 'last_train' : 'return_by';
+    if (visit && visit.state === 'active') beginReturn(c, visit, reason, now);
   });
   // prepare 之后一直没有交接：到最晚回家时刻自动作废。迟到的 commit 会得到 409 visit_aborted，内核按取消处理（释放冻结）
   c.jobHandlers.set('visit_prepared_expire', (payload, _job, now) => {

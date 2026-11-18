@@ -1280,6 +1280,15 @@
             "$ref": "#/$defs/Leg"
           }
         },
+        "same_car_travellers": {
+          "description": "当前正处于铁道乘车段时，同线路同方向重叠时间窗内的匿名同乘人数（不含本人）。",
+          "type": "integer",
+          "minimum": 0
+        },
+        "car_ambiance": {
+          "description": "当前正处于铁道乘车段时的匿名车厢环境切片文本。",
+          "type": "string"
+        },
         "source": {
           "const": "simulated"
         },
@@ -2178,7 +2187,7 @@
       "additionalProperties": true
     },
     "ReturnStartedPayload": {
-      "description": "开始回家。reason：return_by（到点）、self（她自己决定）、kernel:<内核给的原因>。from 是出发的地点，在路上时是这一段的目的地，都没有时为 null。",
+      "description": "开始回家。reason：return_by（到点）、last_train（终电前安全返家护栏触发）、self（她自己决定）、kernel:<内核给的原因>。from 是出发的地点，在路上时是这一段的目的地，都没有时为 null。",
       "type": "object",
       "properties": {
         "actor_id": {
@@ -2881,6 +2890,22 @@
               },
               "fare_yen": {
                 "$ref": "#/$defs/Yen"
+              },
+              "hours": {
+                "description": "模拟首末班运营时间窗（世界时区 HH:MM，last 小于 first 表示跨午夜）。",
+                "type": "object",
+                "properties": {
+                  "first": {
+                    "type": "string"
+                  },
+                  "last": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "first",
+                  "last"
+                ]
               },
               "source": {
                 "const": "simulated"
