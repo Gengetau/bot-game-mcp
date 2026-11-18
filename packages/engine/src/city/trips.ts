@@ -208,7 +208,8 @@ export function tripView(t: TripRow, c?: CityService, at?: number): TripView {
 
 /**
  * 出发。调用方保证居民站在某个地点、没有进行中的行程。
- * purpose=travel 时检查目的地（到达时刻营业、现在没满）和车费（室友还要留得出回程车费）；purpose=return 是回小屋门口，不检查。
+ * 铁道运营时间窗按每段乘车的计划上车时刻（board_at_ms）对 travel 与 return 一致生效，停运时段绝不新发列车；
+ * purpose=travel 时额外检查目的地（到达时刻营业、现在没满）、室友终电安全返家余量及回程车费预留。
  */
 export function startTrip(c: CityService, r: CityResident, toId: string, purpose: 'travel' | 'return', at: number, visit: VisitRow | null): TripRow {
   const fromId = r.place_id;
@@ -217,22 +218,22 @@ export function startTrip(c: CityService, r: CityResident, toId: string, purpose
   const route = planRoute(fromId, toId);
   const dest = place(toId);
   if (!route || !dest) throw new CityError('NOT_FOUND', '没有这个地方，或者现在去不了。');
+  const transitCheck = routeTransitCheck(c, route, at);
+  if (!transitCheck.ok) {
+    throw cityPrecondition(
+      `现在电车已经停运了（首班 ${transitCheck.hours.first}，末班 ${transitCheck.hours.last}）。同片区步行和全天开放的地方照常能去。`,
+      'transit_closed_night',
+      {
+        line: transitCheck.line,
+        from: transitCheck.leg.from,
+        to: transitCheck.leg.to,
+        board_at_ms: transitCheck.boardAtMs,
+        hours: transitCheck.hours,
+        source: 'simulated',
+      },
+    );
+  }
   if (purpose === 'travel') {
-    const transitCheck = routeTransitCheck(c, route, at);
-    if (!transitCheck.ok) {
-      throw cityPrecondition(
-        `现在电车已经停运了（首班 ${transitCheck.hours.first}，末班 ${transitCheck.hours.last}）。同片区步行和全天开放的地方照常能去。`,
-        'transit_closed_night',
-        {
-          line: transitCheck.line,
-          from: transitCheck.leg.from,
-          to: transitCheck.leg.to,
-          board_at_ms: transitCheck.boardAtMs,
-          hours: transitCheck.hours,
-          source: 'simulated',
-        },
-      );
-    }
     const eta = at + route.minutes * 60_000;
     const enter = canEnter(c, dest, eta);
     if (!enter.ok) throw cityPrecondition(enter.message, enter.reason, { place: toId });
@@ -299,6 +300,10 @@ export function startTrip(c: CityService, r: CityResident, toId: string, purpose
 function beginLeg(c: CityService, trip: TripRow, legs: Leg[], n: number, visit: VisitRow | null): void {
   const leg = legs[n]!;
   const r = c.mustResident(trip.resident_id);
+  if (leg.mode === 'train' && !transitEdgeOpenAt(leg.from, leg.to, c.minuteOfDay(leg.depart_at_ms)).open) {
+    stopTrip(c, trip, leg.from, leg.depart_at_ms, 'transit_closed_night', visit);
+    return;
+  }
   if (leg.mode === 'train' && leg.fare_yen > 0) {
     const w = wallet(c, r.resident_id);
     let pay = leg.fare_yen;
@@ -366,7 +371,7 @@ export function installTrips(c: CityService): void {
     if (visit && visit.state === 'returning' && trip.purpose !== 'return') {
       const r = finishTrip(c, trip, 'cancelled', at, leg.to, 'returning');
       progress(c, visit, last ? 'arrived_place' : 'arrived_station', at, { place: leg.to });
-      startReturnTrip(c, r, visit, Math.max(at, visit.returning_at ?? at));
+      startReturnTrip(c, r, visit, Math.max(at, visit.returning_at ?? at, c.now()));
       return;
     }
 
@@ -412,11 +417,47 @@ function PLACE_OF_STATION(p: Place): string | null {
   return st && place(st.placeId) ? st.placeId : null;
 }
 
-/** 走回小屋门口。已经在门口就直接结算。 */
+/**
+ * 走回小屋门口。已经在门口就直接结算；
+ * 若因引擎停机或夜间召回导致出发时铁道已停运（错过终电），走无列车零扣费归家兜底：
+ * 绝不凭空新发停运列车或误扣回程电车票价，同时将室友安全接回小屋门口结算，避免滞留外区。
+ */
 export function startReturnTrip(c: CityService, r: CityResident, visit: VisitRow, at: number): void {
-  if (r.place_id === HOUSE_ENTRANCE) {
-    settle(c, visit, at);
+  const effectiveAt = Math.max(at, c.now());
+  const fromId = r.place_id;
+  if (!fromId || fromId === HOUSE_ENTRANCE) {
+    settle(c, visit, effectiveAt);
     return;
   }
-  startTrip(c, r, HOUSE_ENTRANCE, 'return', at, visit);
+  const route = planRoute(fromId, HOUSE_ENTRANCE);
+  if (route && !routeTransitCheck(c, route, effectiveAt).ok) {
+    if (!place(fromId)?.hidden && r.in_city) {
+      const others = c.presentAt(fromId).filter((x) => x.resident_id !== r.resident_id);
+      c.emitTo(others.map((x) => x.resident_id), 'left', { who: card(r), place: fromId }, effectiveAt);
+    }
+    c.db.run(
+      'UPDATE residents SET place_id = ?, trip_id = NULL, revision = revision + 1 WHERE resident_id = ?',
+      HOUSE_ENTRANCE,
+      r.resident_id,
+    );
+    if (visit.return_reason === 'last_train') {
+      c.db.run("UPDATE visits SET return_reason = 'missed_last_train' WHERE visit_id = ?", visit.visit_id);
+    }
+    const freshVisit = visitById(c, visit.visit_id)!;
+    progress(c, freshVisit, 'left_place', effectiveAt, {
+      place: fromId,
+      to: HOUSE_ENTRANCE,
+      eta_ms: effectiveAt,
+      purpose: 'return',
+    });
+    progress(c, freshVisit, 'arrived_place', effectiveAt, {
+      place: HOUSE_ENTRANCE,
+      reason: 'missed_last_train',
+    });
+    settle(c, freshVisit, effectiveAt, {
+      extraNotes: ['错过终电（铁道夜间停运），已按夜间无列车兜底归家，未搭乘停运列车、未扣回程车费。'],
+    });
+    return;
+  }
+  startTrip(c, r, HOUSE_ENTRANCE, 'return', effectiveAt, visit);
 }

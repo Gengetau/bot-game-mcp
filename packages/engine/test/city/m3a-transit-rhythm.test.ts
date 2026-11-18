@@ -114,6 +114,17 @@ describe('M3-A 1：模拟首末班运营时间窗（05:00–00:20 JST，source=s
     // 推进至 04:59 仍停运；05:00 首班车准点恢复通行
     t.run(jst('2026-11-18', 4, 59) - t.clock.t);
     rejects(() => rider.act({ type: 'travel', to: 'ikebukuro:station' }), 'PRECONDITION_FAILED', 'transit_closed_night');
+    // 04:56 从新宿南口露台出发（先步行 4m，05:00 整点才到新宿站上车）：按上车时刻 board_at_ms 判定，准予通行
+    const earlyWalker = makeCity({ at: jst('2026-11-18', 4, 56) });
+    const ew = earlyWalker.bot('早起行人', { entry: 'shinjuku:station' });
+    ew.act({ type: 'travel', to: 'shinjuku:southern-terrace' });
+    earlyWalker.run(4 * MIN); // 05:00 -> 回拨到 04:56 测先走后乘
+    earlyWalker.clock.t = jst('2026-11-18', 4, 56);
+    const walkThenFirstTrain = ew.act({ type: 'travel', to: 'ikebukuro:station' });
+    expect(walkThenFirstTrain.trip.legs[1]).toMatchObject({
+      mode: 'train',
+      depart_at_ms: jst('2026-11-18', 5, 0),
+    });
     t.run(1 * MIN); // 05:00 JST
     expect((publicCityView(t.c).transit as any).edges.every((e: any) => e.open === true)).toBe(true);
     rider.go('ikebukuro:station');
@@ -396,5 +407,99 @@ describe('M3-A 4：终电跨停运边界双重启对账探针（F10 持久恢复
     expect(report.ok).toBe(true);
     expect(report.findings).toEqual([]);
     t3.c.close();
+  });
+
+  it('R262-01：终电前尚未踏上返程即停机、停运后恢复时，走无列车零扣费归家兜底（不新开停运列车、不误扣车费、不误标 last_train、不滞留）', () => {
+    const dbPath = tmpDb();
+    const t1 = makeCity({ dbPath, at: jst('2026-11-18', 23, 35) });
+    const k1 = t1.kernel('nia');
+    const localBot = t1.bot('同站夜客', { entry: 'shinjuku:station', stay: false });
+
+    // 23:35 去新宿南口露台，11-19 00:10 到达且仍为 active（原定 00:11 自动返程）
+    k1.depart({ yen: 10_000, to: 'shinjuku:southern-terrace', returnIn: 3 * HOUR });
+    t1.run(35 * MIN); // 2026-11-19 00:10 JST
+    expect(k1.describe()).toMatchObject({ state: 'active', location: { place: 'shinjuku:southern-terrace' } });
+
+    // 00:10 停机至 00:25（跨过 00:11 自动返程时刻与 00:20 终电停运线）
+    t1.c.close();
+    t1.clock.t = jst('2026-11-19', 0, 25);
+    const t2 = makeCity({ dbPath, clock: t1.clock });
+    const k2 = t2.kernel('nia');
+    k2.visitId = k1.visitId;
+    k2.epoch = k1.epoch;
+
+    // 同站普通 travel 在 00:25 正常返回 transit_closed_night
+    rejects(
+      () =>
+        t2.c.commit(() =>
+          // 使用外部居民在 00:25 发起跨区乘车验证停运门禁仍在生效
+          t2.bot('停运验证客', { entry: 'shinjuku:station' }).act({ type: 'travel', to: 'ikebukuro:station' }),
+        ),
+      'PRECONDITION_FAILED',
+      'transit_closed_night',
+    );
+    expect(t2.c.mustResident(localBot.id).place_id).toBe('shinjuku:station');
+
+    // 室友未滞留外区，已安全兜底归家进入 settled，且明确区分 return_reason 为 missed_last_train（非 last_train）
+    const desc = k2.describe();
+    expect(desc.state).toBe('settled');
+    expect(desc.return_reason).toBe('missed_last_train');
+
+    // 严查未凭空新增任何停运期回程列车或 00:20 后的 boarded 记录
+    const returnTrips = t2.c.db.scalar(
+      "SELECT COUNT(*) FROM trips WHERE visit_id = ? AND purpose = 'return'",
+      k2.visitId,
+    );
+    expect(returnTrips).toBe(0);
+    const boardedRecords = t2
+      .outbox(k2.visitId)
+      .filter((r) => r.kind === 'visit_progress' && r.payload.phase === 'boarded');
+    expect(boardedRecords).toHaveLength(1); // 仅有 23:47 去程上车那 1 次，绝无 00:29 回程上车
+    expect(boardedRecords[0]!.occurred_at_ms).toBe(jst('2026-11-18', 23, 47));
+
+    const retStarted = t2.outbox(k2.visitId).find((r) => r.kind === 'return_started')!;
+    expect(retStarted.occurred_at_ms).toBe(jst('2026-11-19', 0, 25));
+    expect(retStarted.payload.reason).toBe('missed_last_train');
+
+    // 严查未误扣回程票价：全程仅去程 1 笔 ¥260 车费，回程预留的 ¥260 全额退回随身结算额
+    k2.pull();
+    expect(k2.settlement!.purse_final_yen).toBe(10_000 - 260);
+    expect(k2.settlement!.notes?.some((n) => n.includes('错过终电'))).toBe(true);
+    const fareTxCount = t2.c.db.scalar(
+      "SELECT COUNT(*) FROM ledger_transactions WHERE visit_id = ? AND kind = 'fare'",
+      k2.visitId,
+    );
+    expect(fareTxCount).toBe(1);
+
+    const rel = k2.release();
+    expect(rel).toMatchObject({ state: 'closed', payload: { reconcile_ok: true } });
+    expect(ledgerImbalance(t2.c)).toBe(0);
+    const report = runReconcile(t2.c, 'm3a_missed_last_train_recovery');
+    expect(report.ok).toBe(true);
+    expect(report.findings).toEqual([]);
+    t2.c.close();
+
+    // 补充子场景：去程途中已被 return-request 标为 returning，但停机跨过 00:20 后在 00:25 恢复到站转回程，同样不新发停运列车、不扣回程票价
+    const dbPath2 = tmpDb();
+    const p1 = makeCity({ dbPath: dbPath2, at: jst('2026-11-18', 23, 40) });
+    const kp1 = p1.kernel('claire');
+    kp1.depart({ yen: 8_000, to: 'shinjuku:station', returnIn: 3 * HOUR }); // 12m 步行 + 19m 埼京线 -> 00:11 到新宿站
+    p1.run(15 * MIN); // 23:55 在埼京线列车上
+    kp1.returnRequest('bedtime'); // 标为 returning，待 00:11 到新宿站后转回程
+    p1.c.close();
+    p1.clock.t = jst('2026-11-19', 0, 25); // 停机跨过 00:11 到站与 00:20 停运线
+    const p2 = makeCity({ dbPath: dbPath2, clock: p1.clock });
+    const kp2 = p2.kernel('claire');
+    kp2.visitId = kp1.visitId;
+    kp2.epoch = kp1.epoch;
+    expect(kp2.describe()).toMatchObject({ state: 'settled', return_reason: 'kernel:bedtime' });
+    expect(p2.c.db.scalar("SELECT COUNT(*) FROM trips WHERE visit_id = ? AND purpose = 'return'", kp2.visitId)).toBe(0);
+    expect(p2.c.db.scalar("SELECT COUNT(*) FROM ledger_transactions WHERE visit_id = ? AND kind = 'fare'", kp2.visitId)).toBe(1);
+    kp2.pull();
+    expect(kp2.settlement!.purse_final_yen).toBe(8_000 - 260);
+    expect(kp2.release().state).toBe('closed');
+    expect(ledgerImbalance(p2.c)).toBe(0);
+    expect(runReconcile(p2.c, 'm3a_inflight_return_missed_last_train').ok).toBe(true);
+    p2.c.close();
   });
 });

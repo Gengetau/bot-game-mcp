@@ -30,7 +30,7 @@ import { BRIDGE, addCarried, disposeHeldItem, ensurePurse, heldItems, ledger, mo
 import { MAPPINGS, engineTypeOf, kernelItemOf, walkEffect } from './mappings.js';
 import { runReconcile } from './reconcile.js';
 import type { CityResident, CityService } from './service.js';
-import { runningTrip, startReturnTrip, startTrip } from './trips.js';
+import { routeTransitCheck, runningTrip, startReturnTrip, startTrip } from './trips.js';
 
 export const BRIDGE_PROTOCOL = 'city-bridge/1';
 /** 桥接请求号：比居民动作的请求号宽一些（visit:<visit_id>:d<n>:a<n>） */
@@ -316,14 +316,23 @@ export function afterMove(c: CityService, visit: VisitRow, contextPlaceId: strin
 export function beginReturn(c: CityService, visit: VisitRow, reason: string, at: number): boolean {
   const fresh = visitById(c, visit.visit_id);
   if (!fresh || fresh.state !== 'active') return false;
-  c.db.run("UPDATE visits SET state = 'returning', return_reason = ?, returning_at = ? WHERE visit_id = ?", reason.slice(0, 120), at, fresh.visit_id);
+  const r = c.mustResident(fresh.resident_id);
+  const departAt = Math.max(at, c.now());
+  let effectiveReason = reason;
+  if (r.place_id && r.place_id !== HOUSE_ENTRANCE && reason === 'last_train') {
+    const route = planRoute(r.place_id, HOUSE_ENTRANCE);
+    if (route && !routeTransitCheck(c, route, departAt).ok) {
+      effectiveReason = 'missed_last_train';
+    }
+  }
+  const cleanReason = effectiveReason.slice(0, 120);
+  c.db.run("UPDATE visits SET state = 'returning', return_reason = ?, returning_at = ? WHERE visit_id = ?", cleanReason, departAt, fresh.visit_id);
   c.cancelJob(`visit:${fresh.visit_id}:return`);
   const returning = visitById(c, fresh.visit_id)!;
-  const r = c.mustResident(fresh.resident_id);
-  outbox(c, returning, 'return_started', at, { reason: reason.slice(0, 120), from: r.place_id ?? runningTrip(c, r.resident_id)?.to_place ?? null });
-  c.emitTo([r.resident_id], 'returning', { reason: reason.slice(0, 120), return_by_ms: fresh.return_by_ms }, at);
+  outbox(c, returning, 'return_started', departAt, { reason: cleanReason, from: r.place_id ?? runningTrip(c, r.resident_id)?.to_place ?? null });
+  c.emitTo([r.resident_id], 'returning', { reason: cleanReason, return_by_ms: fresh.return_by_ms }, departAt);
   // 站在某个地点：立刻动身。在路上：这一段照常走完，到站作业会改走回程（trips.ts）
-  if (r.place_id) startReturnTrip(c, r, returning, at);
+  if (r.place_id) startReturnTrip(c, r, returning, departAt);
   return true;
 }
 
@@ -359,12 +368,12 @@ export interface Settlement {
  * 到达小屋门口：在一个事务里生成结算清单、写 visit_settled、状态变成 settled。之后她在城里不能再做任何动作，等内核确认。
  * 结算清单一旦写入不再改。
  */
-export function settle(c: CityService, visit: VisitRow, at: number): Settlement {
+export function settle(c: CityService, visit: VisitRow, at: number, opts?: { extraNotes?: readonly string[] }): Settlement {
   const fresh = visitById(c, visit.visit_id)!;
   if (fresh.state !== 'returning' && fresh.state !== 'active') throw new Error(`访问 ${fresh.visit_id} 不在可结算的状态：${fresh.state}`);
   const w = wallet(c, fresh.resident_id);
   const items: Settlement['items'] = [];
-  const notes: string[] = [];
+  const notes: string[] = [...(opts?.extraNotes ?? [])];
   for (const it of heldItems(c, fresh.resident_id)) {
     const meta = it.instance === 1 ? parseJson<Record<string, unknown> | null>(it.meta_json, null) : null;
     if (!isCarryHome(it.type)) {

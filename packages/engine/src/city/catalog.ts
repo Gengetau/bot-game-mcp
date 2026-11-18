@@ -67,7 +67,7 @@ export const SOURCES: readonly SourceReference[] = [
     id: 'sim-hours',
     kind: 'simulated',
     title: '模拟铁道首末班运营时间窗',
-    note: '统一采用纯确定性的模拟首末班运营时间窗（首班 05:00、末班 00:20 JST），不依赖有许可期限的 ODPT 实时时刻表，标注为 simulated。',
+    note: '统一采用纯确定性的模拟首末班运营时间窗（首班 05:00、末班 00:20 JST），按每段铁道的计划上车时刻（board_at_ms）判定是否在运营窗内（如 04:56 先步行到站、05:00 准点上车获准通行；00:19 出发但 00:23 才到站上车前置拦截），不依赖有许可期限的 ODPT 实时时刻表，标注为 simulated。',
     retrieved: '2026-11-18',
   },
   {

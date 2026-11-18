@@ -2187,7 +2187,7 @@
       "additionalProperties": true
     },
     "ReturnStartedPayload": {
-      "description": "开始回家。reason：return_by（到点）、last_train（终电前安全返家护栏触发）、self（她自己决定）、kernel:<内核给的原因>。from 是出发的地点，在路上时是这一段的目的地，都没有时为 null。",
+      "description": "开始回家。reason：return_by（到点）、last_train（终电前安全返家护栏触发）、missed_last_train（停机/停运恢复时已错过终电，走无列车零扣费归家兜底）、self（她自己决定）、kernel:<内核给的原因>。from 是出发的地点，在路上时是这一段的目的地，都没有时为 null。",
       "type": "object",
       "properties": {
         "actor_id": {
@@ -2892,7 +2892,7 @@
                 "$ref": "#/$defs/Yen"
               },
               "hours": {
-                "description": "模拟首末班运营时间窗（世界时区 HH:MM，last 小于 first 表示跨午夜）。",
+                "description": "模拟首末班运营时间窗（世界时区 HH:MM，last 小于 first 表示跨午夜；按每段铁道的计划上车时刻 board_at_ms 判定是否在运营窗内）。",
                 "type": "object",
                 "properties": {
                   "first": {
