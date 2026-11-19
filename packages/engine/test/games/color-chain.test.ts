@@ -584,6 +584,53 @@ describe('彩牌接龙：保密和输入清洗', () => {
 });
 
 describe('彩牌接龙：超时和随机动作', () => {
+  it.each(
+    (['红', '黄', '蓝', '绿'] as const).flatMap((color) =>
+      (['3', '跳过', '反转', '+2'] as const).map((symbol) => ({ color, card: `${color}${symbol}` as Card }))),
+  )('托管出 $card 后保留颜色，下位仍可按颜色接牌', ({ color, card }) => {
+    const g = unit();
+    const follow: Card[] = [`${color}6`, `${color}8`, '变色'];
+    rig(g, {
+      currentColor: color,
+      discard: ['变色'],
+      hands: { 1: [card, '变色'], 2: follow, 3: follow },
+    });
+    timeout(g);
+    expect(g.rec.state.discard.at(-1)).toBe(card);
+    expect(g.game.publicView().current_color).toBe(color);
+    const next = g.rec.state.current;
+    expect(g.game.privateView(next).playable).toEqual(expect.arrayContaining([`${color}6`, `${color}8`]));
+    expect(g.rec.log.some((l) => l.text.includes('undefined'))).toBe(false);
+    play(g, `${color}6`);
+    expect(g.rec.state.discard.at(-1)).toBe(`${color}6`);
+  });
+
+  it('摸后超时出普通牌，恢复存档后下位仍可接同色牌', () => {
+    const g = unit();
+    rig(g, { hands: { 1: ['黄1', '黄2'], 2: ['红6', '蓝4', '绿3'] }, deck: ['红7'] });
+    step(g, { action: 'draw' });
+    timeout(g);
+    const restored = resume(g);
+    expect(restored.game.publicView().current_color).toBe('红');
+    expect(restored.game.privateView(2).playable).toEqual(['红6']);
+    play(restored, '红6');
+    expect(restored.rec.state.discard.at(-1)).toBe('红6');
+  });
+
+  it('已提交但未结算的超时反转动作可从存档恢复', () => {
+    const g = unit();
+    rig(g, { hands: { 1: ['红反转', '蓝1'], 3: ['红6', '红8', '蓝4'] } });
+    g.clock.advance(g.rec.options.turn_timeout_s * 1000 + 1);
+    g.game.onTimeout();
+    const restored = resume(g);
+    restored.game.advance();
+    unlock(restored);
+    expect(restored.game.publicView().current_color).toBe('红');
+    expect(restored.game.privateView(3).playable).toEqual(['红6', '红8']);
+    play(restored, '红6');
+    expect(restored.rec.state.discard.at(-1)).toBe('红6');
+  });
+
   it('托管按手牌原顺序出第一张合法牌，并自动喊最后一张', () => {
     const g = unit();
     rig(g, { hands: { 1: ['红9', '红1'] } });
