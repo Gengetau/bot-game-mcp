@@ -48,6 +48,10 @@ export const cityParamsSchema = z.object({
   maxLockerEntries: z.number().int().min(1).default(30),
   /** 个人城市储物柜累计物品总件数上限 */
   maxLockerQty: z.number().int().min(1).default(200),
+  /** 车站投币储物柜凭条/委托代取租期上限（毫秒），默认 72 小时 */
+  lockerLeaseMs: z.number().int().min(60_000).default(72 * 3600_000),
+  /** 单人同时占用的活跃公共代取柜位上限 */
+  maxActiveLockerDeposits: z.number().int().min(1).default(5),
 });
 
 export type CityParams = z.infer<typeof cityParamsSchema>;

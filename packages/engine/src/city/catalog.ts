@@ -17,6 +17,11 @@ export const CITY_WORLD_NAME = '东京';
 export const CITY_CATALOG_VERSION = 'tokyo-p1.2';
 export const FARE_RULE_VERSION = 'sim-2026-11';
 
+export const BOOK_SHELF_BUYBACK_YEN = 300;
+export const BOOK_SHELF_RESALE_YEN = 350;
+export const MAX_FLYLEAF_ENTRIES = 5;
+export const MAX_FLYLEAF_NOTE_CHARS = 50;
+
 /** 小屋门口：交接点（规格 3.1）。不公开。 */
 export const HOUSE_ENTRANCE = 'akabane:ai-house:entrance';
 
@@ -208,12 +213,18 @@ export interface ItemType {
 export const ITEM_TYPES: readonly ItemType[] = [
   { type: 'cookie', name: '曲奇', kind: 'food' },
   { type: 'onigiri', name: '饭团', kind: 'food' },
+  { type: 'egg_sandwich', name: '厚烧鸡蛋三明治', kind: 'food' },
+  { type: 'oden_cup', name: '热关东煮', kind: 'food' },
   { type: 'melon_pan', name: '菠萝包', kind: 'food' },
   { type: 'cream_bun', name: '奶油面包', kind: 'food' },
   { type: 'cheesecake', name: '芝士蛋糕', kind: 'food' },
   { type: 'coffee', name: '咖啡', kind: 'drink', carry_home: false },
   { type: 'milk_tea', name: '奶茶', kind: 'drink', carry_home: false },
   { type: 'green_tea', name: '瓶装绿茶', kind: 'drink' },
+  { type: 'roasted_tea', name: '焙茶', kind: 'drink' },
+  { type: 'hot_corn_soup', name: '热玉米浓汤', kind: 'drink' },
+  { type: 'hot_red_bean_soup', name: '热红豆汤', kind: 'drink' },
+  { type: 'salted_lychee', name: '盐味荔枝饮', kind: 'drink' },
   { type: 'coffee_beans', name: '咖啡豆', kind: 'thing' },
   { type: 'umbrella', name: '透明雨伞', kind: 'thing' },
   { type: 'paperback', name: '文库本', kind: 'thing' },
@@ -234,9 +245,65 @@ export interface Good {
   type: string;
   name: string;
   priceYen: number;
+  /** 折扣前原价（如「麦之灯」19:30 后余量八折） */
+  originalPriceYen?: number;
+  /** 折扣标签 */
+  discountLabel?: string;
   /** 服饰礼盒绑定的可信图鉴资产 ID（仅服务端目录持有） */
   assetId?: string;
   contentTier?: 'sfw' | 'intimate';
+}
+
+export interface CatalogTimeContext {
+  /** 世界业务日期 YYYY-MM-DD */
+  dateStr?: string;
+  /** 世界时区月份 1..12 */
+  jstMonth?: number;
+  /** 当天第几分钟 0..1439 */
+  minuteOfDay?: number;
+}
+
+const CONBINI_GOODS: Good[] = [
+  { sku: 'umbrella', type: 'umbrella', name: '透明雨伞', priceYen: 550 },
+  { sku: 'onigiri', type: 'onigiri', name: '饭团', priceYen: 160 },
+  { sku: 'egg_sandwich', type: 'egg_sandwich', name: '厚烧鸡蛋三明治', priceYen: 290 },
+  { sku: 'oden_cup', type: 'oden_cup', name: '热关东煮', priceYen: 360 },
+  { sku: 'green_tea', type: 'green_tea', name: '瓶装绿茶', priceYen: 150 },
+  { sku: 'cookie', type: 'cookie', name: '小袋曲奇', priceYen: 220 },
+];
+
+const VENDING_WINTER_GOODS: readonly Good[] = [
+  { sku: 'hot_corn_soup', type: 'hot_corn_soup', name: '热玉米浓汤', priceYen: 160 },
+  { sku: 'hot_red_bean_soup', type: 'hot_red_bean_soup', name: '热红豆汤', priceYen: 160 },
+  { sku: 'green_tea', type: 'green_tea', name: '瓶装绿茶', priceYen: 150 },
+];
+
+const VENDING_SUMMER_GOODS: readonly Good[] = [
+  { sku: 'salted_lychee', type: 'salted_lychee', name: '盐味荔枝饮', priceYen: 160 },
+  { sku: 'green_tea', type: 'green_tea', name: '瓶装绿茶', priceYen: 150 },
+];
+
+const VENDING_MILD_GOODS: readonly Good[] = [
+  { sku: 'green_tea', type: 'green_tea', name: '瓶装绿茶', priceYen: 150 },
+  { sku: 'roasted_tea', type: 'roasted_tea', name: '焙茶', priceYen: 150 },
+];
+
+const ALL_VENDING_GOODS: readonly Good[] = [
+  ...VENDING_WINTER_GOODS,
+  ...VENDING_SUMMER_GOODS,
+  ...VENDING_MILD_GOODS,
+];
+
+/** 24h 自动售货机纯函数冬夏轮换：冬季（11–3 月）热玉米浓汤/红豆汤，夏季（6–9 月）盐味荔枝饮，其余春秋常驻茶饮。 */
+export function vendingGoodsForMonth(jstMonth: number): readonly Good[] {
+  if (jstMonth >= 11 || jstMonth <= 3) return VENDING_WINTER_GOODS;
+  if (jstMonth >= 6 && jstMonth <= 9) return VENDING_SUMMER_GOODS;
+  return VENDING_MILD_GOODS;
+}
+
+/** 19:30 后「麦之灯」晚间余量八折判断（纯函数）。 */
+export function isMuginohiEveningDiscount(minuteOfDay?: number): boolean {
+  return minuteOfDay !== undefined && minuteOfDay >= 19 * 60 + 30;
 }
 
 export type PlaceType = 'station' | 'cafe' | 'shop' | 'park' | 'plaza' | 'riverside' | 'promenade' | 'entrance';
@@ -267,8 +334,8 @@ export interface Place {
   hidden?: boolean;
 }
 
-const BASE_ACTIONS = ['say', 'travel', 'consume', 'give'];
-const STATION_ACTIONS = [...BASE_ACTIONS, 'store_locker', 'take_locker'];
+const BASE_ACTIONS = ['say', 'travel', 'consume', 'give', 'read_item', 'inspect_item'];
+const STATION_ACTIONS = [...BASE_ACTIONS, 'buy', 'store_locker', 'take_locker', 'drift_book', 'take_book'];
 
 export const PLACES: readonly Place[] = [
   // ── 赤羽 ──
@@ -286,7 +353,7 @@ export const PLACES: readonly Place[] = [
     rain: 'none',
     goods: [],
     actions: STATION_ACTIONS,
-    blurb: '检票口外的大厅，人来人往。',
+    blurb: '检票口外的大厅，人来人往，角落摆着 24 小时自动售货机、投币储物柜和漂流书角。',
     source: 'jreast-network',
     fictional: false,
   },
@@ -320,14 +387,9 @@ export const PLACES: readonly Place[] = [
     station: 'st:akabane',
     walkMinutes: 3,
     rain: 'none',
-    goods: [
-      { sku: 'umbrella', type: 'umbrella', name: '透明雨伞', priceYen: 550 },
-      { sku: 'onigiri', type: 'onigiri', name: '饭团', priceYen: 160 },
-      { sku: 'green_tea', type: 'green_tea', name: '瓶装绿茶', priceYen: 150 },
-      { sku: 'cookie', type: 'cookie', name: '小袋曲奇', priceYen: 220 },
-    ],
+    goods: CONBINI_GOODS,
     actions: [...BASE_ACTIONS, 'buy'],
-    blurb: '二十四小时开着。下雨天门口的伞架会空得很快。',
+    blurb: '二十四小时开着，提供透明雨伞与夜间歇脚简餐。下雨天门口的伞架会空得很快。',
     source: 'fictional',
     fictional: true,
   },
@@ -383,7 +445,7 @@ export const PLACES: readonly Place[] = [
     rain: 'none',
     goods: [],
     actions: STATION_ACTIONS,
-    blurb: '东口的检票口外，头顶是百货店的连廊。',
+    blurb: '东口的检票口外，头顶是百货店的连廊，角落设 24 小时自动售货机、投币储物柜与漂流书角。',
     source: 'jreast-network',
     fictional: false,
   },
@@ -426,8 +488,26 @@ export const PLACES: readonly Place[] = [
       { sku: 'paperback', type: 'paperback', name: '文库本', priceYen: 800 },
       { sku: 'postcard', type: 'postcard', name: '明信片', priceYen: 150 },
     ],
+    actions: [...BASE_ACTIONS, 'buy', 'drift_book', 'take_book'],
+    blurb: '两层的小书店，楼梯转角摆着店员手写的推荐卡，一角还设着古书二手架。',
+    source: 'fictional',
+    fictional: true,
+  },
+  {
+    id: 'ikebukuro:ekimae-conbini',
+    area: 'ikebukuro',
+    neighborhood: 'ikebukuro:east',
+    name: '便利店「灯笼屋·池袋东口」',
+    type: 'shop',
+    indoor: true,
+    hours: null,
+    capacity: 20,
+    station: 'st:ikebukuro',
+    walkMinutes: 3,
+    rain: 'none',
+    goods: CONBINI_GOODS,
     actions: [...BASE_ACTIONS, 'buy'],
-    blurb: '两层的小书店，楼梯转角摆着店员手写的推荐卡。',
+    blurb: '二十四小时亮着灯的街角便利店，深夜也能买到透明雨伞与热简餐。',
     source: 'fictional',
     fictional: true,
   },
@@ -489,9 +569,27 @@ export const PLACES: readonly Place[] = [
     rain: 'none',
     goods: [],
     actions: STATION_ACTIONS,
-    blurb: '南口的检票口外。第一次来的人多半要在这里找一会儿方向。',
+    blurb: '南口的检票口外，立着 24 小时自动售货机、投币储物柜与漂流书角。',
     source: 'jreast-network',
     fictional: false,
+  },
+  {
+    id: 'shinjuku:south-conbini',
+    area: 'shinjuku',
+    neighborhood: 'shinjuku:south',
+    name: '便利店「灯笼屋·新宿南口」',
+    type: 'shop',
+    indoor: true,
+    hours: null,
+    capacity: 20,
+    station: 'st:shinjuku',
+    walkMinutes: 3,
+    rain: 'none',
+    goods: CONBINI_GOODS,
+    actions: [...BASE_ACTIONS, 'buy'],
+    blurb: '二十四小时开着，备有 ¥550 透明雨伞与晚归歇脚简餐。',
+    source: 'fictional',
+    fictional: true,
   },
   {
     id: 'shinjuku:southern-terrace',
@@ -799,15 +897,31 @@ export function validateCatalog(): string[] {
     }
     if (p.id !== HOUSE_ENTRANCE && !planRoute(p.id, HOUSE_ENTRANCE)) problems.push(`地点 ${p.id} 回不了小屋门口`);
   }
+  for (const g of ALL_VENDING_GOODS) {
+    if (!ITEM_BY_TYPE.has(g.type)) problems.push(`售货机商品 ${g.sku} 的物品类型不存在`);
+    if (!Number.isInteger(g.priceYen) || g.priceYen <= 0) problems.push(`售货机商品 ${g.sku} 价格不是正整数日元`);
+  }
   if (!PLACE_BY_ID.get(HOUSE_ENTRANCE)?.hidden) problems.push('小屋门口必须是不公开的节点');
   return problems;
 }
 
+function normalizeCatalogTime(ctx?: string | CatalogTimeContext): Required<CatalogTimeContext> {
+  if (typeof ctx === 'string') {
+    const m = Number(ctx.slice(5, 7));
+    return { dateStr: ctx, jstMonth: Number.isInteger(m) && m >= 1 && m <= 12 ? m : 11, minuteOfDay: 10 * 60 };
+  }
+  const dateStr = ctx?.dateStr ?? '2026-11-18';
+  const parsedMonth = Number(dateStr.slice(5, 7));
+  const jstMonth = ctx?.jstMonth ?? (Number.isInteger(parsedMonth) && parsedMonth >= 1 && parsedMonth <= 12 ? parsedMonth : 11);
+  const minuteOfDay = ctx?.minuteOfDay ?? 10 * 60;
+  return { dateStr, jstMonth, minuteOfDay };
+}
 
-/** 按东京世界日返回地点当前陈列商品（服饰买手店按日确定性轮换 6 款橱窗）。 */
-export function goodsForPlace(p: Place, dateStr?: string): readonly Good[] {
+/** 按东京世界日与时段返回地点当前陈列商品（纯函数，无随机与外部状态）。 */
+export function goodsForPlace(p: Place, ctx?: string | CatalogTimeContext): readonly Good[] {
+  const t = normalizeCatalogTime(ctx);
   if (p.id in APPAREL_SHOP_PLACES) {
-    return apparelWindowForPlace(p.id, dateStr ?? '2026-11-18').map((e) => ({
+    return apparelWindowForPlace(p.id, t.dateStr).map((e) => ({
       sku: e.sku,
       type: 'apparel_bundle',
       name: e.name,
@@ -816,14 +930,25 @@ export function goodsForPlace(p: Place, dateStr?: string): readonly Good[] {
       contentTier: e.tier,
     }));
   }
+  if (p.type === 'station') {
+    return vendingGoodsForMonth(t.jstMonth);
+  }
+  if (p.id === 'shinjuku:muginohi' && isMuginohiEveningDiscount(t.minuteOfDay)) {
+    return p.goods.map((g) => ({
+      ...g,
+      priceYen: Math.floor((g.priceYen * 8) / 10),
+      originalPriceYen: g.priceYen,
+      discountLabel: '晚间八折',
+    }));
+  }
   return p.goods;
 }
 
 /** 查找地点可售或历史已下单商品（allowOffWindow=true 供跨日未决订单结算查找全池）。 */
-export function findGoodAtPlace(placeId: string, sku: string, dateStr?: string, allowOffWindow = false): Good | undefined {
+export function findGoodAtPlace(placeId: string, sku: string, ctx?: string | CatalogTimeContext, allowOffWindow = false): Good | undefined {
   const p = place(placeId);
   if (!p) return undefined;
-  const active = goodsForPlace(p, dateStr).find((g) => g.sku === sku);
+  const active = goodsForPlace(p, ctx).find((g) => g.sku === sku);
   if (active) return active;
   if (allowOffWindow && placeId in APPAREL_SHOP_PLACES) {
     const hit = shopApparelBySku(placeId, sku);
@@ -837,6 +962,12 @@ export function findGoodAtPlace(placeId: string, sku: string, dateStr?: string, 
         contentTier: hit.tier,
       };
     }
+  }
+  if (allowOffWindow && p.type === 'station') {
+    return ALL_VENDING_GOODS.find((g) => g.sku === sku);
+  }
+  if (allowOffWindow) {
+    return p.goods.find((g) => g.sku === sku);
   }
   return undefined;
 }

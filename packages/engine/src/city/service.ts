@@ -14,7 +14,7 @@ import { dirname, join } from 'node:path';
 import { CryptoRng, type Rng } from '../core/rng.js';
 import { parseJson, type Row, type TownDb } from '../world/db.js';
 import { businessDate, localParts } from '../world/time.js';
-import { CITY_WORLD_ID, CITY_WORLD_NAME, validateCatalog } from './catalog.js';
+import { CITY_WORLD_ID, CITY_WORLD_NAME, validateCatalog, type CatalogTimeContext } from './catalog.js';
 import { openCityDb } from './db.js';
 import { CityError } from './errors.js';
 import { resolveCityParams, type CityParams } from './params.js';
@@ -81,6 +81,7 @@ export const CITY_JOB_PRIORITY: Record<string, number> = {
   trip_leg: 1,
   visit_return: 2,
   presence_expire: 3,
+  locker_expire: 4,
   reconcile_daily: 9,
   prune: 9,
 };
@@ -190,6 +191,16 @@ export class CityService {
 
   today(at: number = this.now()): string {
     return businessDate(this.params.timezone, at);
+  }
+
+  /** 给目录纯函数用的世界日历与时段切面（无副作用）。 */
+  catalogTime(at: number = this.now()): CatalogTimeContext {
+    const dateStr = this.today(at);
+    return {
+      dateStr,
+      jstMonth: Number(dateStr.slice(5, 7)),
+      minuteOfDay: this.minuteOfDay(at),
+    };
   }
 
   /** 世界时区里这一刻是当天第几分钟。 */

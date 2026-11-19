@@ -402,6 +402,55 @@ textarea:user-invalid {
   color: var(--fg);
   border-color: var(--border);
 }
+.btn-compact {
+  min-block-size: 2.375rem;
+  min-inline-size: 2.375rem;
+  min-height: unset;
+  padding: 0.35rem 0.75rem;
+  font-size: 0.925rem;
+}
+
+@media (pointer: coarse) {
+  .btn-compact {
+    min-block-size: 2.75rem;
+    min-inline-size: 2.75rem;
+  }
+}
+
+.pager-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-block-start: 0.75rem;
+  padding-block-start: 0.65rem;
+  border-block-start: 1px solid var(--border);
+}
+.pager-bar[hidden] {
+  display: none;
+}
+
+.pager-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.45rem;
+}
+
+.item-detail-box {
+  inline-size: 100%;
+  margin-block-start: 0.35rem;
+  padding: 0.5rem 0.65rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 0.4rem;
+  font-size: 0.875rem;
+}
+.item-detail-list {
+  margin: 0.35rem 0 0;
+  padding-inline-start: 1.25rem;
+}
 
 /* 无障碍标签页导航（::after 伪元素底部指示线，兼容 forced-colors，面板样式挂在 .panel-inner 上以兼容 hidden="until-found"） */
 .tablist {

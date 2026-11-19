@@ -28,7 +28,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import express, { type Express, type NextFunction, type Request, type Response } from 'express';
-import { cityCommand, requireActingVisit, resolvePendingOrder, visitAct } from './actions.js';
+import { cityCommand, inspectSingleItem, requireActingVisit, resolvePendingOrder, visitAct } from './actions.js';
 import {
   CITY_CATALOG_VERSION,
   FARE_RULE_VERSION,
@@ -60,7 +60,7 @@ import {
   type CityWebSession,
 } from './residents.js';
 import type { CityService } from './service.js';
-import { chatHistory, publicCityView, routePreview, selfView } from './views.js';
+import { MAX_SELF_VIEW_BYTES, chatHistory, publicCityView, routePreview, selfView } from './views.js';
 import { BRIDGE_PROTOCOL, abortVisit, commitVisit, describeVisit, prepareVisit, readOutbox, releaseVisit, requestReturn } from './visits.js';
 import { allWeather } from './weather.js';
 
@@ -222,7 +222,7 @@ export function renderCityPage(c: CityService): string {
       const places = (a.places as any[])
         .map((p) => {
           const people = (p.here as any[]).map((r) => esc(r.name)).join('、');
-          const goods = (p.goods as any[]).map((g) => `${esc(g.name)} ¥${esc(g.price_yen)}`).join('，');
+          const goods = (p.goods as any[]).map((g) => `${esc(g.name)} ¥${esc(g.price_yen)}${g.discount_label ? `（${esc(g.discount_label)}）` : ''}`).join('，');
           const state = p.open ? '' : p.closed_reason === 'rain' ? '（下雨，暂不开放）' : '（现在不营业）';
           return `<li><b>${esc(p.name)}</b>${state} <small>${esc(p.hours)}${p.fictional ? ' · 虚构店铺' : ''}</small><br>${esc(p.blurb)}${goods ? `<br><small>${goods}</small>` : ''}${people ? `<br>这里有：${people}` : ''}</li>`;
         })
@@ -271,6 +271,13 @@ export function mountCity(app: Express, c: CityService, log: (msg: string) => vo
       throw cityBadRequest('请求体要是一个 JSON 对象。');
     }
     return req.body as Record<string, unknown>;
+  };
+
+  const optionalOffset = (raw: unknown, field: string): number | undefined => {
+    if (raw === undefined || raw === '') return undefined;
+    const n = Number(raw);
+    if (!Number.isSafeInteger(n) || n < 0) throw cityBadRequest(`${field} 必须是非负整数。`, 'bad_offset');
+    return n;
   };
 
   app.get(['/city', '/city/'], guard, (_req, res) => {
@@ -453,8 +460,14 @@ export function mountCity(app: Express, c: CityService, log: (msg: string) => vo
       if (!session.resident) throw new CityError('UNAUTHENTICATED', '还没有进入东京，请先起名入城。', 'no_resident');
       const rawClient = req.query.client_id ?? req.headers['x-city-client'];
       const clientId = rawClient !== undefined ? normalizeClientId('web', rawClient) : undefined;
+      const itemOffset = optionalOffset(req.query.item_offset, 'item_offset');
+      const lockerOffset = optionalOffset(req.query.locker_offset, 'locker_offset');
       touchPresence(c, session.resident.resident_id);
-      return selfView(c, c.mustResident(session.resident.resident_id), { ...(clientId ? { clientId } : {}) });
+      return selfView(c, c.mustResident(session.resident.resident_id), {
+        ...(clientId ? { clientId } : {}),
+        ...(itemOffset !== undefined ? { itemOffset } : {}),
+        ...(lockerOffset !== undefined ? { lockerOffset } : {}),
+      });
     }),
   );
 
@@ -466,11 +479,26 @@ export function mountCity(app: Express, c: CityService, log: (msg: string) => vo
       if (!session.resident) throw new CityError('UNAUTHENTICATED', '还没有进入东京，请先起名入城。', 'no_resident');
       const b = jsonObj(req);
       const clientId = normalizeClientId('web', b.client_id ?? req.headers['x-city-client']);
+      const itemOffset = optionalOffset(b.item_offset, 'item_offset');
+      const lockerOffset = optionalOffset(b.locker_offset, 'locker_offset');
       const out = cityCommand(c, session.resident.resident_id, b.request_id, b.action, { clientId });
       return {
         ...out,
-        view: selfView(c, c.mustResident(session.resident.resident_id), { clientId }),
+        view: selfView(c, c.mustResident(session.resident.resident_id), {
+          clientId,
+          ...(itemOffset !== undefined ? { itemOffset } : {}),
+          ...(lockerOffset !== undefined ? { lockerOffset } : {}),
+        }),
       };
+    }),
+  );
+
+  api.get(
+    '/items/:id',
+    apiSync((req) => {
+      const { session } = requireSession(c, req);
+      if (!session.resident) throw new CityError('UNAUTHENTICATED', '还没有进入东京，请先起名入城。', 'no_resident');
+      return inspectSingleItem(c, c.mustResident(session.resident.resident_id), String(req.params.id ?? ''));
     }),
   );
 
@@ -495,10 +523,16 @@ export function mountCity(app: Express, c: CityService, log: (msg: string) => vo
       if (!session.resident) throw new CityError('UNAUTHENTICATED', '还没有进入东京，请先起名入城。', 'no_resident');
       const b = jsonObj(req);
       const clientId = normalizeClientId('web', b.client_id ?? req.headers['x-city-client']);
+      const itemOffset = optionalOffset(b.item_offset, 'item_offset');
+      const lockerOffset = optionalOffset(b.locker_offset, 'locker_offset');
       const out = claimCityControl(c, session.resident.resident_id, clientId);
       return {
         ...out,
-        view: selfView(c, c.mustResident(session.resident.resident_id), { clientId }),
+        view: selfView(c, c.mustResident(session.resident.resident_id), {
+          clientId,
+          ...(itemOffset !== undefined ? { itemOffset } : {}),
+          ...(lockerOffset !== undefined ? { lockerOffset } : {}),
+        }),
       };
     }),
   );
@@ -739,7 +773,9 @@ export function mountCity(app: Express, c: CityService, log: (msg: string) => vo
 
   bridge.get(
     '/catalog',
-    sync(() => ({
+    sync(() => {
+      const ct = c.catalogTime(c.now());
+      return {
       protocol: BRIDGE_PROTOCOL,
       city_catalog_version: CITY_CATALOG_VERSION,
       fare_rule_version: FARE_RULE_VERSION,
@@ -752,9 +788,10 @@ export function mountCity(app: Express, c: CityService, log: (msg: string) => vo
         carry_home: isCarryHome(i.type),
         storable: isStorable(i.type),
       })),
-      places: publicPlaces().map((p) => ({ id: p.id, name: p.name, area: p.area, type: p.type, hours: p.hours, rain: p.rain, homeward: { fare_yen: homeward(p.id).fareYen, minutes: homeward(p.id).minutes }, goods: goodsForPlace(p, c.today(c.now())).map((g) => ({ sku: g.sku, type: g.type, name: g.name, price_yen: g.priceYen })) })),
+      places: publicPlaces().map((p) => ({ id: p.id, name: p.name, area: p.area, type: p.type, hours: p.hours, rain: p.rain, homeward: { fare_yen: homeward(p.id).fareYen, minutes: homeward(p.id).minutes }, goods: goodsForPlace(p, ct).map((g) => ({ sku: g.sku, type: g.type, name: g.name, price_yen: g.priceYen })) })),
       transit: TRANSIT_EDGES.map((e) => ({ from: station(e.a)!.placeId, to: station(e.b)!.placeId, line: e.line, minutes: e.minutes, fare_yen: e.fareYen, hours: e.hours, source: 'simulated' })),
-    })),
+      };
+    }),
   );
   bridge.post('/visits/prepare', sync((req) => prepareVisit(c, body(req))));
   bridge.post('/visits/:id/commit', sync((req) => commitVisit(c, visitId(req), body(req))));
@@ -785,7 +822,18 @@ export function mountCity(app: Express, c: CityService, log: (msg: string) => vo
     '/visits/:id/view',
     sync((req) => {
       const visit = requireActingVisit(c, visitId(req), Number(req.query.domain_epoch));
-      return { visit_id: visit.visit_id, state: visit.state, ...selfView(c, c.mustResident(visit.resident_id)) };
+      const itemOffset = optionalOffset(req.query.item_offset, 'item_offset');
+      const lockerOffset = optionalOffset(req.query.locker_offset, 'locker_offset');
+      const headerOverhead = Buffer.byteLength(JSON.stringify({ visit_id: visit.visit_id, state: visit.state }), 'utf8');
+      return {
+        visit_id: visit.visit_id,
+        state: visit.state,
+        ...selfView(c, c.mustResident(visit.resident_id), {
+          ...(itemOffset !== undefined ? { itemOffset } : {}),
+          ...(lockerOffset !== undefined ? { lockerOffset } : {}),
+          maxBytes: MAX_SELF_VIEW_BYTES - headerOverhead,
+        }),
+      };
     }),
   );
   bridge.get('/visits/:id/wait', async (req, res) => {
