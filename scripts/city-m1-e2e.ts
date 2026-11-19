@@ -402,6 +402,12 @@ class Driver:
                 ]
                 encounters = [dict(r) for r in db.execute("SELECT * FROM city_encounters WHERE actor_id=?", (actor,)).fetchall()]
                 effs = [dict(r) for r in db.execute("SELECT effect_id, status, reason FROM city_body_effects").fetchall()]
+                custody = (
+                    [dict(r) for r in db.execute("SELECT ref, resource_id, state, qty FROM city_item_custody WHERE visit_id=?", (vid,)).fetchall()]
+                    if vid
+                    else []
+                )
+                free_qty = {rid: self.k._free_qty(db, rid) for rid in ("nia_cookie_1",)}
             carry = self.adapter._carry_row(vid) if vid else None
             return {
                 "ok": True,
@@ -415,6 +421,8 @@ class Driver:
                 "foods": foods,
                 "encounters": encounters,
                 "body_effects": effs,
+                "custody": custody,
+                "free_qty": free_qty,
                 "city_card": c.get("city_outing"),
             }
 
@@ -1608,7 +1616,8 @@ function mkdirSafe(dir: string): void {
  * 与 full 场景互相独立：自己的 harness / 内核库，不碰已审的故障变体。
  * 流程：真实 invite -> respond_invite 确认 -> 到点只靠 Life.step() 自动 T1（¥20,000 + 自动带的映射曲奇）
  *   -> prepare/commit 到引擎 active -> 到店 -> 回家 -> T3/release -> 计划 done -> 曲奇原样返家 -> 双侧对账。
- * S1_NEG=engine-reject：让引擎对所有 POST 回 503，场景必须在「引擎侧 active」断言处变红（反向验证）。
+ * S1_NEG=engine-reject：让引擎对所有 POST 回 503（模拟引擎不可达，不是 4xx 拒收载荷），
+ * 场景必须在「引擎侧 active」断言处变红（反向验证）；未知取值直接报错。
  */
 async function runS1Normal(ctx: {
   harness: Awaited<ReturnType<typeof createIsolatedCityHarness>>;
@@ -1618,7 +1627,11 @@ async function runS1Normal(ctx: {
   fetchWorldNow: (consumer: string, stageLabel: string) => Promise<Record<string, any>>;
 }): Promise<void> {
   const { harness, kernel, scanner, advanceBoth, fetchWorldNow } = ctx;
-  const negative = process.env.S1_NEG === 'engine-reject';
+  const negEnv = process.env.S1_NEG;
+  if (negEnv !== undefined && negEnv !== '' && negEnv !== 'engine-reject') {
+    throw new Error(`未知 S1_NEG=${negEnv}（只认 engine-reject；未知值不得静默当正例跑）`);
+  }
+  const negative = negEnv === 'engine-reject';
   const parseJson = (v: unknown): any => (typeof v === 'string' ? JSON.parse(v) : v);
   const engineVisit = (vid: string) =>
     harness.city.db.get<Record<string, any>>('SELECT * FROM visits WHERE visit_id = ?', vid);
@@ -1695,6 +1708,8 @@ async function runS1Normal(ctx: {
   assert.equal(niaT1.carry.plan_id, planId);
   assert.equal(niaT1.carry.actor_id, 'nia');
   assert.equal(Number(niaT1.carry.carry_yen), 20_000);
+  assert.equal(niaT1.wallet_balance, initialWallet, 'T1 只预留不扣款：账面余额不变');
+  assert.equal(niaT1.wallet_available, initialWallet - 20_000, 'T1 预留 ¥20,000');
   const carryItems = parseJson(niaT1.carry.carry_items) as any[];
   assert.deepEqual(
     carryItems.map((i) => i.ref),
@@ -1708,8 +1723,9 @@ async function runS1Normal(ctx: {
     await advanceBoth(60_000);
     await kernel.call({ op: 'life_step' });
   }
-  const engNiaActive = engineVisit(niaVisitId);
-  assert.equal(engNiaActive?.state, 'active', `引擎应接受自动 T1 的访问并进入 active，实际 ${engNiaActive?.state ?? '无此访问行'}`);
+  const engNiaActiveMaybe = engineVisit(niaVisitId);
+  assert.equal(engNiaActiveMaybe?.state, 'active', `引擎应接受自动 T1 的访问并进入 active，实际 ${engNiaActiveMaybe?.state ?? '无此访问行'}`);
+  const engNiaActive = engNiaActiveMaybe!;
   assert.equal(engineVisit(claireVisitId)?.state, 'active');
   assert.equal(Number(engNiaActive.carry_yen), 20_000);
   assert.ok(String(engNiaActive.carry_items_json).includes('nia_cookie_1'), `引擎收到的携带物应含映射曲奇: ${engNiaActive.carry_items_json}`);
@@ -1725,6 +1741,13 @@ async function runS1Normal(ctx: {
   assert.equal(niaActive.authority.domain, 'city');
   assert.equal(niaActive.authority.domain_epoch, 1);
   assert.equal(niaActive.wallet_available, initialWallet - 20_000);
+  // 全程断言「每件物品只在一边可用」：在城期间内核托管 in_city、家里只剩 1 份可用
+  assert.deepEqual(
+    (niaActive.custody as any[]).map((c) => [c.ref, c.state, c.qty]),
+    [['nia_cookie_1', 'in_city', 1]],
+    `在城期间内核托管应为 in_city: ${JSON.stringify(niaActive.custody)}`,
+  );
+  assert.equal(niaActive.free_qty.nia_cookie_1, 1, '曲奇在城期间家里只剩 1 份可用');
   scanner.scan('kernelProjections', 'S1-normal projection_snapshot (active)', await kernel.call({ op: 'projection_snapshot' }));
   const nowActive = await fetchWorldNow('mio', 'S1-normal active');
   assert.match(String(nowActive.text ?? ''), /外出中/);
@@ -1754,8 +1777,21 @@ async function runS1Normal(ctx: {
   assert.equal((niaEnd.foods as any[]).find((f) => f.resource_id === 'nia_cookie_1')?.qty, 2, '曲奇未消费、数量原样');
   assert.equal(Number(niaEnd.carry.release_confirmed), 1);
   assert.deepEqual(parseJson(niaEnd.carry.locker_items) ?? [], []);
+  assert.deepEqual(
+    (niaEnd.custody as any[]).map((c) => [c.ref, c.state, c.qty]),
+    [['nia_cookie_1', 'returned', 1]],
+    `返家后内核托管应为 returned: ${JSON.stringify(niaEnd.custody)}`,
+  );
+  assert.equal(niaEnd.free_qty.nia_cookie_1, 2, '曲奇返家后 2 份全部可用');
   const engNiaEnd = engineVisit(niaVisitId)!;
   assert.equal(engNiaEnd.state, 'closed');
+  // 回家必须是她到店后自己选的（return_reason='self'），而不是被 return_by / 末班车硬拉回
+  assert.equal(engNiaEnd.return_reason, 'self', `妮娅应主动回家，实际 return_reason=${engNiaEnd.return_reason}`);
+  assert.ok(
+    Number(engNiaEnd.returning_at) < Number(engNiaEnd.return_by_ms),
+    `主动回家应早于 return_by（returning_at=${engNiaEnd.returning_at}, return_by_ms=${engNiaEnd.return_by_ms}）`,
+  );
+  assert.equal(engineVisit(claireVisitId)?.return_reason, 'self');
   assert.equal(Number(engNiaEnd.purse_final_yen), 20_000 - 400, '引擎随身钱包结算 = 携带 − 来回车费');
   assert.equal(engineVisit(claireVisitId)?.state, 'closed');
   const cookiesEnd = engineCookieRows();
