@@ -75,10 +75,18 @@ class LegacyRuntimeScanner {
   };
   totalHits = 0;
 
-  scan(category: ScanCategory, label: string, payload: unknown): string {
+  scan(
+    category: ScanCategory,
+    label: string,
+    payload: unknown,
+    opts: { allowBridgeHandoverNode?: boolean } = {},
+  ): string {
     const raw = typeof payload === 'string' ? payload : JSON.stringify(payload);
     assert.ok(raw.length > 0, `运行时采样为空: [${category}] ${label}`);
-    const lower = raw.toLowerCase();
+    const sanitizedForScan = opts.allowBridgeHandoverNode
+      ? raw.replaceAll('"handover_node":"hiwatari:ai-house:entrance"', '"handover_node":"<valid_handover_node>"')
+      : raw;
+    const lower = sanitizedForScan.toLowerCase();
     const hits = FORBIDDEN_RUNTIME_TOKENS.filter((tok) => lower.includes(tok.toLowerCase()));
     this.totalHits += hits.length;
     assert.deepEqual(
@@ -96,10 +104,13 @@ class LegacyRuntimeScanner {
  * 内嵌只读加载 world-kernel/life1 的跨进程测试宿主（写入临时目录执行，无需污染内核源码目录）。
  */
 const PYTHON_KERNEL_DRIVER_SOURCE = String.raw`import argparse
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
 import sqlite3
 import sys
+import threading
+import types
 
 from worldkernel import city_projection, outings
 from worldkernel.city_bridge import CityBridgeAdapter, DeterministicCityModel
@@ -111,11 +122,68 @@ from worldkernel.statuscard import cards
 from worldkernel.store import Store, VirtualClock
 
 
+class _WorldHttpServer(ThreadingHTTPServer):
+    allow_reuse_address = True
+    daemon_threads = True
+
+
+def _make_world_http_handler(drv):
+    class _Handler(BaseHTTPRequestHandler):
+        def log_message(self, fmt, *args):
+            return
+
+        def do_POST(self):
+            parts = [p for p in self.path.split("?", 1)[0].strip("/").split("/") if p]
+            if len(parts) != 3 or parts[0] != "world" or parts[2] != "now":
+                self._send_json(404, {"error": "unknown"})
+                return
+            length = int(self.headers.get("Content-Length") or "0")
+            raw = self.rfile.read(length) if length > 0 else b"{}"
+            try:
+                _ = json.loads(raw or b"{}")
+                payload = drv.serve_world_now(parts[1])
+                self._send_json(200, payload)
+            except ValueError as exc:
+                self._send_json(400, {"error": str(exc)[:200]})
+            except Exception as exc:
+                self._send_json(503, {"error": f"{type(exc).__name__}: {exc}"})
+
+        def _send_json(self, status, obj):
+            body = json.dumps(obj, ensure_ascii=False).encode("utf-8")
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+    return _Handler
+
+
 class Driver:
-    def __init__(self, work_dir, bridge_url, bridge_key, start_ms):
+    def __init__(self, kernel_dir, shared_services_dir, work_dir, bridge_url, bridge_key, start_ms):
+        self._lock = threading.RLock()
+        self.kernel_dir = kernel_dir
+        self.shared_services_dir = shared_services_dir
         self.work_dir = work_dir
         self.db_path = os.path.join(work_dir, "life1-e2e.db")
         self.world_db = os.path.join(work_dir, "world-e2e.db")
+        os.environ["WORLD"] = "1"
+        os.environ["WORLD_KERNEL"] = "authority"
+        os.environ["WORLD_WEATHER"] = "0"
+        os.environ["WORLD_DB"] = self.world_db
+        os.environ["WORLD_SEED"] = os.path.join(work_dir, "world_seed.json")
+        os.environ["WORLD_KERNEL_DB"] = self.db_path
+        os.environ["WORLD_KERNEL_DIR"] = kernel_dir
+        if shared_services_dir not in sys.path:
+            sys.path.insert(0, shared_services_dir)
+        import roster as shared_roster  # type: ignore
+        import world as shared_world  # type: ignore
+
+        self._shared_roster = shared_roster
+        self._shared_world = shared_world
+        self._shared_world.DB_PATH = self.world_db
+        self._shared_world.WEATHER = False
+        self._shared_world.init()
         offline_world(self.world_db)
         self.bridge_url = bridge_url
         self.bridge_key = bridge_key
@@ -131,6 +199,33 @@ class Driver:
                 "INSERT INTO resources(resource_id,kind,item,location,holder,qty,source)"
                 " VALUES('nia_cookie_1','food','cookie',NULL,'nia',2,'e2e_seed')"
             )
+        self.proj.run()
+        self._http_server = _WorldHttpServer(("127.0.0.1", 0), _make_world_http_handler(self))
+        self.world_http_url = f"http://127.0.0.1:{self._http_server.server_address[1]}"
+        self.consumers = [r["consumer"] for r in self._shared_roster.ROSTER]
+        self._http_thread = threading.Thread(target=self._http_server.serve_forever, daemon=True)
+        self._http_thread.start()
+
+    def serve_world_now(self, consumer):
+        with self._lock:
+            sw = self._shared_world
+            prev_db = sw.DB_PATH
+            prev_weather = sw.WEATHER
+            prev_time = sw.time
+            now_ts = float(self.clock.now())
+            try:
+                sw.DB_PATH = self.world_db
+                sw.WEATHER = False
+                fake_time = types.SimpleNamespace(
+                    **{k: getattr(prev_time, k) for k in dir(prev_time) if not k.startswith("__")}
+                )
+                fake_time.time = lambda: now_ts
+                sw.time = fake_time
+                return sw.now_info(consumer)
+            finally:
+                sw.DB_PATH = prev_db
+                sw.WEATHER = prev_weather
+                sw.time = prev_time
 
     def _model_handler(self, ctx):
         if self._queued_actions:
@@ -173,7 +268,15 @@ class Driver:
             wr.close()
 
     def handle(self, cmd):
+        with self._lock:
+            return self._handle_locked(cmd)
+
+    def _handle_locked(self, cmd):
         op = cmd["op"]
+        if op == "sync_projection":
+            self.proj.run()
+            return {"ok": True}
+
         if op == "sync_clock":
             target_s = float(cmd["now_ms"]) / 1000.0
             if target_s > self.clock.now():
@@ -288,6 +391,17 @@ class Driver:
                     a: city_projection.resolve_projection_conn(db, a, now=self.clock.now())
                     for a in ROSTER
                 }
+            redact_inputs = {
+                "new_entrance": "hiwatari:ai-house:entrance",
+                "old_entrance": "akabane:ai-house:entrance",
+                "entrance_alias_new": "hiwatari_entrance",
+                "entrance_alias_old": "akabane_entrance",
+                "door_wording": "小屋门口（灯都绯渡西2-13-4 101号室 / 東京都北区赤羽西2-13-4 101号室）",
+                "mixed_address": "从绯渡3丁目5番地与赤羽二丁目经 Hiwatari 2-13-4 / Akabane 1-2-3 返回",
+                "benign_station": "绯渡站",
+                "benign_venue": "在镜池·喫茶「灯」",
+            }
+            redact_samples = {k: city_projection.redact_text(v) for k, v in redact_inputs.items()}
             return {
                 "ok": True,
                 "cards": cards_out,
@@ -295,12 +409,18 @@ class Driver:
                 "kernel_cards": kernel_cards,
                 "direct_projections": direct_proj,
                 "encounters": encounters,
+                "redact_samples": redact_samples,
             }
 
         if op == "reconcile":
             return {"ok": True, "report": self.adapter.reconcile()}
 
         if op == "close":
+            try:
+                self._http_server.shutdown()
+                self._http_server.server_close()
+            except Exception:
+                pass
             if self.s.epoch is not None:
                 self.s.release()
             self.s.close()
@@ -311,13 +431,24 @@ class Driver:
 
 def main():
     ap = argparse.ArgumentParser()
+    ap.add_argument("--kernel-dir", required=True)
+    ap.add_argument("--shared-services-dir", required=True)
     ap.add_argument("--work-dir", required=True)
     ap.add_argument("--bridge-url", required=True)
     ap.add_argument("--bridge-key", required=True)
     ap.add_argument("--start-ms", type=int, required=True)
     args = ap.parse_args()
-    drv = Driver(args.work_dir, args.bridge_url, args.bridge_key, args.start_ms)
-    sys.stdout.write(json.dumps({"ready": True}) + "\n")
+    drv = Driver(
+        args.kernel_dir,
+        args.shared_services_dir,
+        args.work_dir,
+        args.bridge_url,
+        args.bridge_key,
+        args.start_ms,
+    )
+    sys.stdout.write(
+        json.dumps({"ready": True, "world_http_url": drv.world_http_url, "consumers": drv.consumers}) + "\n"
+    )
     sys.stdout.flush()
     for line in sys.stdin:
         line = line.strip()
@@ -354,8 +485,17 @@ class KernelDriver {
   private seq = 0;
   private pending = new Map<number, { resolve: (v: KernelResponse) => void; reject: (e: Error) => void }>();
   private stderrBuf: string[] = [];
+  worldHttpUrl = '';
+  consumers: string[] = [];
 
-  async start(opts: { kernelDir: string; workDir: string; bridgeUrl: string; bridgeKey: string; startMs: number }): Promise<void> {
+  async start(opts: {
+    kernelDir: string;
+    sharedServicesDir: string;
+    workDir: string;
+    bridgeUrl: string;
+    bridgeKey: string;
+    startMs: number;
+  }): Promise<void> {
     const driverScript = join(opts.workDir, 'city_e2e_driver.py');
     writeFileSync(driverScript, PYTHON_KERNEL_DRIVER_SOURCE, 'utf8');
     this.proc = spawn(
@@ -364,6 +504,10 @@ class KernelDriver {
         '-B',
         '-u',
         driverScript,
+        '--kernel-dir',
+        opts.kernelDir,
+        '--shared-services-dir',
+        opts.sharedServicesDir,
         '--work-dir',
         opts.workDir,
         '--bridge-url',
@@ -405,6 +549,8 @@ class KernelDriver {
         const msg = JSON.parse(trimmed) as Record<string, any>;
         if (!readyResolved && msg.ready) {
           readyResolved = true;
+          this.worldHttpUrl = String(msg.world_http_url ?? '');
+          this.consumers = Array.isArray(msg.consumers) ? msg.consumers.map(String) : [];
           clearTimeout(timer);
           resolveReady();
           return;
@@ -493,10 +639,14 @@ async function main(): Promise<void> {
   const { values } = parseArgs({
     options: {
       'kernel-dir': { type: 'string' },
+      'shared-services-dir': { type: 'string' },
       keep: { type: 'boolean', default: false },
     },
   });
   const kernelDir = resolve(values['kernel-dir'] ?? process.env.WORLD_KERNEL_DIR ?? '/mcp-wt/world-kernel');
+  const sharedServicesDir = resolve(
+    values['shared-services-dir'] ?? process.env.SHARED_SERVICES_DIR ?? join(kernelDir, '..', 'shared-services'),
+  );
   const rootWorkDir = mkdtempSync(join(tmpdir(), 'city-m1-e2e-'));
   const engineDir = join(rootWorkDir, 'engine');
   const kernelWorkDir = join(rootWorkDir, 'kernel');
@@ -520,14 +670,34 @@ async function main(): Promise<void> {
     await kernel.call({ op: 'sync_clock', now_ms: harness.clock.t });
   };
 
+  const fetchWorldNow = async (consumer: string, stageLabel: string): Promise<Record<string, any>> => {
+    await kernel.call({ op: 'sync_projection' });
+    const resp = await fetch(`${kernel.worldHttpUrl}/world/${consumer}/now`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: '{}',
+    });
+    assert.equal(resp.status, 200, `POST /world/${consumer}/now (${stageLabel}) 应返回 200`);
+    const raw = await resp.text();
+    scanner.scan('kernelProjections', `POST /world/${consumer}/now (${stageLabel})`, raw);
+    return JSON.parse(raw) as Record<string, any>;
+  };
+
   try {
     await kernel.start({
       kernelDir,
+      sharedServicesDir,
       workDir: kernelWorkDir,
       bridgeUrl: harness.bridgeUrl,
       bridgeKey: harness.bridgeKey,
       startMs: harness.clock.t,
     });
+    assert.ok(kernel.worldHttpUrl.startsWith('http://127.0.0.1:'), '隔离 /world/{consumer}/now HTTP 服务应已就绪');
+    assert.deepEqual(
+      [...kernel.consumers].sort(),
+      ['alicia', 'claire', 'grok', 'mio', 'whale', 'xingli'],
+      'shared-services consumer 列表应完整覆盖六位室友',
+    );
 
     // ── 1. 隔离护栏与桌面游戏不受影响 ──
     assert.equal(harness.config.town.enabled, false);
@@ -567,6 +737,23 @@ async function main(): Promise<void> {
     const initRouteResp = await fetch(`${harness.baseUrl}/city/api/route?from=hiwatari:station&to=sentou:station`);
     assert.equal(initRouteResp.status, 200);
     scanner.scan('publicOutputs', 'GET /city/api/route raw JSON', await initRouteResp.text());
+
+    // 桥接 L3 管理面（docs/city/rename-r0.json bridge_l3_note）：除 handover_node 合法为 hiwatari:ai-house:entrance 外，其余旧词/旧编号零命中
+    const bridgeCatalogResp = await fetch(`${harness.bridgeUrl}/catalog`, {
+      headers: { authorization: `Bearer ${harness.bridgeKey}` },
+    });
+    assert.equal(bridgeCatalogResp.status, 200);
+    const bridgeCatalogRaw = await bridgeCatalogResp.text();
+    const bridgeCatalogJson = JSON.parse(bridgeCatalogRaw) as Record<string, any>;
+    assert.equal(bridgeCatalogJson.handover_node, 'hiwatari:ai-house:entrance');
+    scanner.scan('publicOutputs', 'GET /city/bridge/v1/catalog (L3)', bridgeCatalogRaw, {
+      allowBridgeHandoverNode: true,
+    });
+    const bridgeWeatherResp = await fetch(`${harness.bridgeUrl}/weather`, {
+      headers: { authorization: `Bearer ${harness.bridgeKey}` },
+    });
+    assert.equal(bridgeWeatherResp.status, 200);
+    scanner.scan('publicOutputs', 'GET /city/bridge/v1/weather (L3)', await bridgeWeatherResp.text());
 
     // 验证桌面游戏引擎（number_bomb）在同一进程内照常工作
     const refClient = await BotGameClient.connect({
@@ -651,6 +838,9 @@ async function main(): Promise<void> {
     const projPreparing = await kernel.call({ op: 'projection_snapshot' });
     assert.match(String(projPreparing.direct_projections?.nia?.place ?? ''), /镜池/, 'preparing 阶段内核投影应显示新片区中文名「镜池」');
     scanner.scan('kernelProjections', 'kernel projection_snapshot (nia preparing)', projPreparing);
+    const nowMioPreparing = await fetchWorldNow('mio', 'nia preparing');
+    assert.match(String(nowMioPreparing.text ?? ''), /外出中/, '/world/mio/now preparing 阶段应显示外出中');
+    assert.match(String(nowMioPreparing.text ?? ''), /镜池/, '/world/mio/now preparing 阶段应显示新片区中文名「镜池」');
     await advanceBoth(60_000); // 妮娅从客厅走到玄关 away（60s）
 
     // 注入桥接 503 RECOVERING x2 + 提交后丢回包（F4），验证 prepare/commit 幂等恢复且只入账一次
@@ -663,6 +853,8 @@ async function main(): Promise<void> {
     assert.equal(harness.faults.dropResponseOnce, false);
     await kernel.call({ op: 'poll_outbox' });
     scanner.scan('kernelProjections', 'kernel projection_snapshot (nia handed over / in-transit)', await kernel.call({ op: 'projection_snapshot' }));
+    const nowMioTransit = await fetchWorldNow('mio', 'nia handed over / in-transit');
+    assert.match(String(nowMioTransit.text ?? ''), /外出中/, '/world/mio/now 在途阶段应显示外出中');
 
     const niaResidentRow = harness.city.db.get<{ resident_id: string }>(
       "SELECT resident_id FROM house_members WHERE actor_id = 'nia'",
@@ -686,6 +878,13 @@ async function main(): Promise<void> {
     assert.equal(enterB1.granted_yen, 200_000);
     assert.deepEqual(enterB1.control, { epoch: 1, mine: true });
     scanner.scan('externalBotViews', 'botB1 enter_world', enterB1);
+    const initResidentsFromBot = await botB1.query('residents');
+    assert.ok(
+      Array.isArray(initResidentsFromBot.residents) &&
+        initResidentsFromBot.residents.some((r: any) => r.name === '旅人一叶'),
+      'MCP world_query(residents) 应返回当前在城居民目录',
+    );
+    scanner.scan('publicOutputs', 'MCP world_query(residents) via botB1 (in-transit)', initResidentsFromBot);
     scanner.scan('publicOutputs', 'MCP world_query(route) via botB1', await botB1.query('route', { from: 'hiwatari:station', to: 'sentou:station' }));
     scanner.scan('publicOutputs', 'MCP world_query(stamps) via botB1', await botB1.query('stamps'));
     const botBResidentId = enterB1.resident_id;
@@ -734,6 +933,7 @@ async function main(): Promise<void> {
     let botHeadedToCafe = false;
     let botRunnerSampledGreeting = false;
     let botBCurrent = botB1;
+    const runnerLogs: string[] = [];
     botRunner = new CityRunner({
       minIntervalMs: 0,
       debounceMs: 20,
@@ -742,6 +942,7 @@ async function main(): Promise<void> {
       waitSeconds: 1,
       reconnectBaseMs: 30,
       reconnectMaxMs: 200,
+      log: (line) => runnerLogs.push(line),
     });
     const botHandle = botRunner.add({
       label: 'tabibito-kazuha',
@@ -938,7 +1139,11 @@ async function main(): Promise<void> {
     assert.ok(!JSON.stringify(humanMeAfterRestart).includes('ai-house:entrance'), '人类视图严禁暴露小屋交接点');
 
     // CityRunner 在引擎断连后自动调用 reconnect() 重建 MCP 连接并恢复事件循环
-    await waitFor(() => botBCurrent !== botB1, 'CityRunner 跨引擎重启自动建立新 MCP 连接');
+    await waitFor(
+      () => botBCurrent !== botB1,
+      `CityRunner 跨引擎重启自动建立新 MCP 连接 (status=${botHandle.status}, logs=${runnerLogs.join(' | ')})`,
+      35_000,
+    );
     await waitFor(() => botHandle.status === 'running', 'CityRunner 重连后保持 running');
     const botViewAtCafe = await botBCurrent.view();
     assert.equal(botViewAtCafe.here?.place.id, 'kagamiike:kissa-tomoshibi');
@@ -1087,13 +1292,36 @@ async function main(): Promise<void> {
     );
     assert.equal(botRunnerSampledGreeting, true, '外部 Bot 事件流必须已采入阿澄改名后的问候');
 
+    const coPresentResidents = await botBCurrent.query('residents');
+    assert.deepEqual(
+      (coPresentResidents.residents as any[]).map((x) => x.name).sort(),
+      ['妮娅', '旅人一叶', '阿澄'].sort(),
+      'MCP world_query(residents) 必须完整返回同场三方居民且不暴露隐藏门口',
+    );
+    scanner.scan('publicOutputs', 'MCP world_query(residents) via botBCurrent (3-party co-present)', coPresentResidents);
+
+    const botHistoryAtCafe = await botBCurrent.query('history');
+    assert.ok(
+      JSON.stringify(botHistoryAtCafe).includes('刚从千灯坐灯环线过来'),
+      'MCP world_query(history) 必须包含阿澄改名后的千灯/灯环线台词',
+    );
+    scanner.scan('externalBotViews', 'MCP world_query(history) via botBCurrent (co-present)', botHistoryAtCafe);
+
     const projAtCafe = await kernel.call({ op: 'projection_snapshot' });
     assert.match(
       String(projAtCafe.direct_projections?.nia?.place ?? ''),
       /镜池/,
       '同场活动期内核投影必须使用新片区名「镜池」',
     );
+    assert.equal(projAtCafe.redact_samples?.new_entrance, '绯渡一带');
+    assert.equal(projAtCafe.redact_samples?.old_entrance, '绯渡一带');
+    assert.equal(projAtCafe.redact_samples?.benign_station, '绯渡站');
+    assert.equal(projAtCafe.redact_samples?.benign_venue, '在镜池·喫茶「灯」');
     scanner.scan('kernelProjections', 'kernel projection_snapshot (nia active at cafe)', projAtCafe);
+    scanner.scan('kernelProjections', 'city_projection.redact_text output', projAtCafe.redact_samples);
+    const nowMioAtCafe = await fetchWorldNow('mio', 'nia active at cafe');
+    assert.match(String(nowMioAtCafe.text ?? ''), /外出中/, '/world/mio/now 同场阶段应显示外出中');
+    assert.match(String(nowMioAtCafe.text ?? ''), /在镜池·喫茶「灯」/, '/world/mio/now 同场阶段应显示在镜池·喫茶「灯」');
 
     // ── 8. 注入交易结果未知（F9 purchaseUnknown='cheesecake'）+ 返家途中第二次引擎重启 + T3 + 关单后退款 ──
     harness.faults.purchaseUnknown = 'cheesecake';
@@ -1189,6 +1417,8 @@ async function main(): Promise<void> {
       '步行与饮用咖啡的身体效果必须幂等应用',
     );
     scanner.scan('kernelProjections', 'kernel projection_snapshot (nia closed)', await kernel.call({ op: 'projection_snapshot' }));
+    const nowMioClosed = await fetchWorldNow('mio', 'nia closed');
+    assert.doesNotMatch(String(nowMioClosed.text ?? ''), /外出中/, '/world/mio/now 返家结案后不应残留外出中');
 
     // ── 9. 全员放行（enable_all）+ 无挂单储物柜留存直接 closed 验收（claire 第二次访问） ──
     const enabled = await kernel.call({ op: 'enable_all' });
@@ -1232,6 +1462,10 @@ async function main(): Promise<void> {
     )!.resident_id;
     assert.equal(lockerItems(harness.city, claireResidentId)[0]?.type, 'paperback');
     scanner.scan('kernelProjections', 'kernel projection_snapshot (claire closed / final)', await kernel.call({ op: 'projection_snapshot' }));
+    for (const consumer of kernel.consumers) {
+      const nowFinal = await fetchWorldNow(consumer, `final all-consumers (${consumer})`);
+      assert.doesNotMatch(String(nowFinal.text ?? ''), /外出中/, `/world/${consumer}/now 终态不应残留外出中`);
+    }
 
     for (const [cat, stat] of Object.entries(scanner.stats)) {
       assert.ok(stat.samples >= 3, `扫描类别 ${cat} 采样数不足: ${stat.samples}`);
@@ -1288,6 +1522,10 @@ async function main(): Promise<void> {
             totalHits: scanner.totalHits,
             renamedHumanChatSampledInWebAndBot: true,
             sseCoPresentMessagesSampled: true,
+            worldNowHttpEndpointSampled: true,
+            mcpWorldQueryResidentsSampled: true,
+            redactTextOutputSampled: true,
+            bridgeL3CatalogAndWeatherSampled: true,
             categories: scanner.stats,
           },
         },
