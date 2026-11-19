@@ -1,0 +1,614 @@
+{
+  "$comment": "灯都 R0 改名统一对照表（#276）：引擎（Gengetau/bot-game-mcp）与世界内核（Gengetau/ai-house-world）唯一权威改名来源。两边确认并由 @nia-ext 审过前不改业务代码。",
+  "schema_version": 1,
+  "task_ref": 276,
+  "design_basis": "《架空 AI 都市 v0.3》（2026-11-19 主人定，第 3.4 / 9.1 节）",
+  "world": {
+    "world_id": {
+      "old": "tokyo",
+      "new": "city",
+      "keep_legacy_alias": false,
+      "legacy_world_id_error": "NOT_FOUND"
+    },
+    "display_name": {
+      "old": "东京",
+      "old_variants": [
+        "东京都",
+        "虚拟东京",
+        "虚拟东京都"
+      ],
+      "new": "灯都"
+    },
+    "city_catalog_version": {
+      "old": "tokyo-p1.2",
+      "new": "toto-p2.0"
+    },
+    "city_text_version": {
+      "constant": "CITY_TEXT_VERSION",
+      "initial": "toto-text-1.0"
+    },
+    "action_window": {
+      "old": "tokyo",
+      "new": "city"
+    },
+    "unchanged": {
+      "bridge_protocol": "city-bridge/1",
+      "fare_rule_version": "sim-2026-11",
+      "mappings_version": 3,
+      "timezone": "Asia/Tokyo"
+    }
+  },
+  "rivers_and_landmarks": [
+    {
+      "old_zh": "荒川",
+      "old_slug": "arakawa",
+      "new_zh": "澪川",
+      "new_slug": "mio"
+    }
+  ],
+  "areas": [
+    {
+      "old_id": "akabane",
+      "new_id": "hiwatari",
+      "old_district_id": "dist:akabane",
+      "new_district_id": "dist:hiwatari",
+      "old_name": "赤羽",
+      "new_name": "绯渡",
+      "weather_point_unchanged": {
+        "lat": 35.7776,
+        "lon": 139.7209
+      }
+    },
+    {
+      "old_id": "ikebukuro",
+      "new_id": "kagamiike",
+      "old_district_id": "dist:ikebukuro",
+      "new_district_id": "dist:kagamiike",
+      "old_name": "池袋",
+      "new_name": "镜池",
+      "weather_point_unchanged": {
+        "lat": 35.7295,
+        "lon": 139.7109
+      }
+    },
+    {
+      "old_id": "shinjuku",
+      "new_id": "sentou",
+      "old_district_id": "dist:shinjuku",
+      "new_district_id": "dist:sentou",
+      "old_name": "新宿",
+      "new_name": "千灯",
+      "weather_point_unchanged": {
+        "lat": 35.6896,
+        "lon": 139.7006
+      }
+    }
+  ],
+  "stations": [
+    {
+      "old_id": "st:akabane",
+      "new_id": "st:hiwatari",
+      "old_place_id": "akabane:station",
+      "new_place_id": "hiwatari:station",
+      "old_name": "赤羽站",
+      "new_name": "绯渡站",
+      "old_web_code": "AK",
+      "new_web_code": "HW",
+      "stops": [
+        {
+          "old_id": "st:akabane:saikyo",
+          "new_id": "st:hiwatari:hokkan",
+          "old_line": "埼京线",
+          "new_line": "北环快线",
+          "old_operator": "JR 东日本",
+          "new_operator": "灯都铁道"
+        },
+        {
+          "old_id": "st:akabane:shonan-shinjuku",
+          "new_id": null,
+          "old_line": "湘南新宿线",
+          "action": "delete"
+        }
+      ]
+    },
+    {
+      "old_id": "st:ikebukuro",
+      "new_id": "st:kagamiike",
+      "old_place_id": "ikebukuro:station",
+      "new_place_id": "kagamiike:station",
+      "old_name": "池袋站",
+      "new_name": "镜池站",
+      "old_web_code": "IK",
+      "new_web_code": "KG",
+      "stops": [
+        {
+          "old_id": "st:ikebukuro:saikyo",
+          "new_id": "st:kagamiike:hokkan",
+          "old_line": "埼京线",
+          "new_line": "北环快线",
+          "old_operator": "JR 东日本",
+          "new_operator": "灯都铁道"
+        },
+        {
+          "old_id": "st:ikebukuro:yamanote",
+          "new_id": "st:kagamiike:toukan",
+          "old_line": "山手线",
+          "new_line": "灯环线",
+          "old_operator": "JR 东日本",
+          "new_operator": "灯都铁道"
+        }
+      ]
+    },
+    {
+      "old_id": "st:shinjuku",
+      "new_id": "st:sentou",
+      "old_place_id": "shinjuku:station",
+      "new_place_id": "sentou:station",
+      "old_name": "新宿站",
+      "new_name": "千灯站",
+      "old_web_code": "SJ",
+      "new_web_code": "ST",
+      "stops": [
+        {
+          "old_id": "st:shinjuku:saikyo",
+          "new_id": "st:sentou:hokkan",
+          "old_line": "埼京线",
+          "new_line": "北环快线",
+          "old_operator": "JR 东日本",
+          "new_operator": "灯都铁道"
+        },
+        {
+          "old_id": "st:shinjuku:yamanote",
+          "new_id": "st:sentou:toukan",
+          "old_line": "山手线",
+          "new_line": "灯环线",
+          "old_operator": "JR 东日本",
+          "new_operator": "灯都铁道"
+        }
+      ]
+    }
+  ],
+  "neighborhoods": [
+    {
+      "old_id": "akabane:ekimae",
+      "new_id": "hiwatari:ekimae",
+      "old_name": "赤羽站前",
+      "new_name": "绯渡站前"
+    },
+    {
+      "old_id": "akabane:arakawa",
+      "new_id": "hiwatari:mio",
+      "old_name": "荒川河岸",
+      "new_name": "澪川河岸"
+    },
+    {
+      "old_id": "akabane:residential",
+      "new_id": "hiwatari:residential",
+      "old_name": "赤羽一带的住宅区",
+      "new_name": "绯渡一带的住宅区"
+    },
+    {
+      "old_id": "ikebukuro:east",
+      "new_id": "kagamiike:east",
+      "old_name": "池袋东口",
+      "new_name": "镜池东口"
+    },
+    {
+      "old_id": "shinjuku:south",
+      "new_id": "sentou:south",
+      "old_name": "新宿南口",
+      "new_name": "千灯南口"
+    }
+  ],
+  "handover_node": {
+    "old_id": "akabane:ai-house:entrance",
+    "new_id": "hiwatari:ai-house:entrance",
+    "name": "小屋门口",
+    "hidden": true,
+    "external_travel_behavior": "NOT_FOUND / no_such_place（报错文案与乱写不存在的地点逐字一致，不泄露节点存在）"
+  },
+  "public_places": [
+    {
+      "old_id": "akabane:station",
+      "new_id": "hiwatari:station",
+      "old_name": "赤羽站",
+      "new_name": "绯渡站",
+      "suffix_changed": false
+    },
+    {
+      "old_id": "akabane:ekimae-plaza",
+      "new_id": "hiwatari:ekimae-plaza",
+      "old_name": "赤羽站东口站前广场",
+      "new_name": "绯渡站东口站前广场",
+      "suffix_changed": false
+    },
+    {
+      "old_id": "akabane:ekimae-conbini",
+      "new_id": "hiwatari:ekimae-conbini",
+      "old_name": "便利店「灯笼屋·赤羽站前」",
+      "new_name": "便利店「灯笼屋·绯渡站前」",
+      "suffix_changed": false
+    },
+    {
+      "old_id": "akabane:arakawa-riverbank",
+      "new_id": "hiwatari:mio-riverbank",
+      "old_name": "荒川河岸",
+      "new_name": "澪川河岸",
+      "suffix_changed": true,
+      "note": "后半段含现实河名 arakawa，改为 mio-riverbank"
+    },
+    {
+      "old_id": "ikebukuro:station",
+      "new_id": "kagamiike:station",
+      "old_name": "池袋站",
+      "new_name": "镜池站",
+      "suffix_changed": false
+    },
+    {
+      "old_id": "ikebukuro:kissa-tomoshibi",
+      "new_id": "kagamiike:kissa-tomoshibi",
+      "old_name": "喫茶「灯」",
+      "new_name": "喫茶「灯」",
+      "suffix_changed": false
+    },
+    {
+      "old_id": "ikebukuro:shiorido",
+      "new_id": "kagamiike:shiorido",
+      "old_name": "书店「栞堂」",
+      "new_name": "书店「栞堂」",
+      "suffix_changed": false
+    },
+    {
+      "old_id": "ikebukuro:ekimae-conbini",
+      "new_id": "kagamiike:ekimae-conbini",
+      "old_name": "便利店「灯笼屋·池袋东口」",
+      "new_name": "便利店「灯笼屋·镜池东口」",
+      "suffix_changed": false
+    },
+    {
+      "old_id": "ikebukuro:suzuran-closet",
+      "new_id": "kagamiike:suzuran-closet",
+      "old_name": "服饰店「铃兰衣橱」",
+      "new_name": "服饰店「铃兰衣橱」",
+      "suffix_changed": false
+    },
+    {
+      "old_id": "ikebukuro:minami-park",
+      "new_id": "kagamiike:minami-park",
+      "old_name": "南池袋公园",
+      "new_name": "南镜池公园",
+      "suffix_changed": false
+    },
+    {
+      "old_id": "shinjuku:station",
+      "new_id": "sentou:station",
+      "old_name": "新宿站",
+      "new_name": "千灯站",
+      "suffix_changed": false
+    },
+    {
+      "old_id": "shinjuku:south-conbini",
+      "new_id": "sentou:south-conbini",
+      "old_name": "便利店「灯笼屋·新宿南口」",
+      "new_name": "便利店「灯笼屋·千灯南口」",
+      "suffix_changed": false
+    },
+    {
+      "old_id": "shinjuku:southern-terrace",
+      "new_id": "sentou:southern-terrace",
+      "old_name": "新宿南口露台步道",
+      "new_name": "千灯南口露台步道",
+      "suffix_changed": false
+    },
+    {
+      "old_id": "shinjuku:muginohi",
+      "new_id": "sentou:muginohi",
+      "old_name": "面包店「麦之灯」",
+      "new_name": "面包店「麦之灯」",
+      "suffix_changed": false
+    },
+    {
+      "old_id": "shinjuku:kamitsuki",
+      "new_id": "sentou:kamitsuki",
+      "old_name": "文具店「纸月」",
+      "new_name": "文具店「纸月」",
+      "suffix_changed": false
+    },
+    {
+      "old_id": "shinjuku:lumiere-atelier",
+      "new_id": "sentou:lumiere-atelier",
+      "old_name": "买手店「光廊成衣」",
+      "new_name": "买手店「光廊成衣」",
+      "suffix_changed": false
+    },
+    {
+      "old_id": "shinjuku:velours-intime",
+      "new_id": "sentou:velours-intime",
+      "old_name": "私密精品店「丝绒私语」",
+      "new_name": "私密精品店「丝绒私语」",
+      "suffix_changed": false
+    }
+  ],
+  "transit": {
+    "operators": [
+      {
+        "old_code": "jreast",
+        "new_code": "toto-rail",
+        "old_name": "JR 东日本",
+        "new_name": "灯都铁道"
+      }
+    ],
+    "lines": [
+      {
+        "old_name": "埼京线",
+        "new_name": "北环快线",
+        "old_style_key": "saikyo",
+        "new_style_key": "hokkan",
+        "action": "rename"
+      },
+      {
+        "old_name": "山手线",
+        "new_name": "灯环线",
+        "old_style_key": "yamanote",
+        "new_style_key": "toukan",
+        "action": "rename"
+      },
+      {
+        "old_name": "湘南新宿线",
+        "new_name": null,
+        "action": "delete"
+      }
+    ],
+    "edges": [
+      {
+        "old_id": "te:akabane-ikebukuro",
+        "new_id": "te:hiwatari-kagamiike",
+        "a": "st:hiwatari",
+        "b": "st:kagamiike",
+        "line": "北环快线",
+        "minutes": 13,
+        "fare_yen": 200
+      },
+      {
+        "old_id": "te:akabane-shinjuku",
+        "new_id": "te:hiwatari-sentou",
+        "a": "st:hiwatari",
+        "b": "st:sentou",
+        "line": "北环快线",
+        "minutes": 19,
+        "fare_yen": 260
+      },
+      {
+        "old_id": "te:ikebukuro-shinjuku",
+        "new_id": "te:kagamiike-sentou",
+        "a": "st:kagamiike",
+        "b": "st:sentou",
+        "line": "灯环线",
+        "minutes": 10,
+        "fare_yen": 200
+      }
+    ]
+  },
+  "sources": [
+    {
+      "old_id": "jreast-network",
+      "new_id": "prototype-network",
+      "old_title": "JR 东日本的线路（埼京线、湘南新宿线、山手线）",
+      "new_title": "灯都铁道干线骨架（北环快线、灯环线）",
+      "note_rule": "说明改为现实城市铁道拓扑原型映射，不含 JR 东日本、埼京线、山手线、湘南新宿线、赤羽、池袋、新宿等现实名称与外部站点链接"
+    },
+    {
+      "old_id": "public-spaces",
+      "new_id": "prototype-spaces",
+      "old_title": "真实存在的公共空间",
+      "new_title": "都市公共空间原型",
+      "note_rule": "列举绯渡站东口站前广场、澪川河岸、南镜池公园、千灯南口露台步道，不出现现实站名与河名"
+    },
+    {
+      "old_id": "sim-fares",
+      "new_id": "sim-fares",
+      "old_title": "模拟票价（按 JR 东日本 2026-03-14 运价改定后的幹線纸质车票运价档）",
+      "new_title": "模拟票价（按灯都铁道干线营业里程分段运价档）",
+      "note_rule": "保留不足 1 km 进位、4–6 km 档 ¥200、11–15 km 档 ¥260 的模拟计价说明（绯渡—镜池 5.5 km、镜池—千灯 4.8 km 为 ¥200，绯渡—千灯 10.3 km 进位 11 km 为 ¥260），去掉 JR 东日本字样与外部转载链接"
+    },
+    {
+      "old_id": "open-meteo",
+      "new_id": "open-meteo",
+      "note_rule": "保留 Open-Meteo (CC BY 4.0) 数据归属与真实气象坐标抓取，文案改为灯都各片区共用天气快照"
+    }
+  ],
+  "stamps": [
+    {
+      "old_id": "stamp:akabane",
+      "new_id": "stamp:hiwatari",
+      "station_id": "st:hiwatari",
+      "place_id": "hiwatari:station",
+      "old_title": "赤羽站 · 荒川铁桥与晚霞",
+      "new_title": "绯渡站 · 澪川铁桥与晚霞",
+      "old_motif": "跨越荒川河堤的桁架铁桥与归巢水鸟",
+      "new_motif": "跨越澪川河堤的桁架铁桥与归巢水鸟"
+    },
+    {
+      "old_id": "stamp:ikebukuro",
+      "new_id": "stamp:kagamiike",
+      "station_id": "st:kagamiike",
+      "place_id": "kagamiike:station",
+      "old_title": "池袋站 · 木雕猫头鹰与书灯",
+      "new_title": "镜池站 · 木雕猫头鹰与书灯",
+      "old_motif": "东口相聚的猫头鹰像与喫茶煤油灯",
+      "new_motif": "东口相聚的猫头鹰像与喫茶煤油灯"
+    },
+    {
+      "old_id": "stamp:shinjuku",
+      "new_id": "stamp:sentou",
+      "station_id": "st:sentou",
+      "place_id": "sentou:station",
+      "old_title": "新宿站 · 南口跨线露台与钟塔",
+      "new_title": "千灯站 · 南口跨线露台与钟塔",
+      "old_motif": "并列进站的轨道线群与南口步道灯柱",
+      "new_motif": "并列进站的轨道线群与南口步道灯柱"
+    }
+  ],
+  "weather_events": {
+    "rain_started_body_riverbank": {
+      "old": "荒川河岸",
+      "new": "澪川河岸"
+    },
+    "riverbank_evening": {
+      "area": "hiwatari",
+      "place_id": "hiwatari:mio-riverbank",
+      "old_title": "荒川河岸的傍晚",
+      "new_title": "澪川河岸的傍晚",
+      "old_river": "荒川",
+      "new_river": "澪川"
+    }
+  },
+  "params_and_entrypoints": {
+    "entryPlace": {
+      "old_allowed": [
+        "shinjuku:station",
+        "ikebukuro:station"
+      ],
+      "new_allowed": [
+        "sentou:station",
+        "kagamiike:station"
+      ],
+      "old_default": "shinjuku:station",
+      "new_default": "sentou:station"
+    },
+    "referee_onebot_city_keywords": {
+      "old_default": [
+        "东京",
+        "进城",
+        "东京都"
+      ],
+      "new_default": [
+        "灯都",
+        "进城"
+      ]
+    }
+  },
+  "kernel": {
+    "city_client": {
+      "area_order": [
+        "hiwatari",
+        "kagamiike",
+        "sentou"
+      ],
+      "home_area": {
+        "old": "akabane",
+        "new": "hiwatari"
+      },
+      "fallback_weather_default_area": {
+        "old": "akabane",
+        "new": "hiwatari"
+      }
+    },
+    "city_bridge": {
+      "prompt_outing_phrase": {
+        "old": "在东京都外出",
+        "new": "在灯都外出"
+      },
+      "home_weather_area_key": {
+        "old": "akabane",
+        "new": "hiwatari"
+      },
+      "default_city_place_targets": {
+        "old": {
+          "ikebukuro": "ikebukuro:kissa-tomoshibi",
+          "shinjuku": "shinjuku:muginohi"
+        },
+        "new": {
+          "kagamiike": "kagamiike:kissa-tomoshibi",
+          "sentou": "sentou:muginohi"
+        }
+      }
+    },
+    "city_projection": {
+      "area_labels": {
+        "hiwatari": "绯渡",
+        "kagamiike": "镜池",
+        "sentou": "千灯",
+        "city": "灯都"
+      },
+      "redaction_replacement_label": {
+        "old": "赤羽一带",
+        "new": "绯渡一带"
+      },
+      "entrance_and_address_redaction": {
+        "add_patterns": [
+          "hiwatari:ai-house:entrance",
+          "hiwatari_entrance",
+          "绯渡门牌写法（绯渡…丁目/番地/号）",
+          "Hiwatari 门牌写法（Hiwatari…\\d+-\\d+）"
+        ],
+        "keep_legacy_fallback_patterns": [
+          "akabane:ai-house:entrance",
+          "ai-house:entrance",
+          "akabane_entrance",
+          "house_entrance",
+          "小屋门口",
+          "旧赤羽门牌正则（赤羽…丁目/番地/号、Akabane…\\d+-\\d+）"
+        ]
+      }
+    },
+    "k8_catalog_pr160": {
+      "manifest_location_origin": {
+        "old": "赤羽一带（赤羽站与荒川之间的虚构旧洋馆）",
+        "new": "绯渡一带（绯渡站与澪川之间的虚构旧洋馆）"
+      },
+      "vocab_version": {
+        "old": "life1-0.3",
+        "new": "life1-0.4"
+      },
+      "near_and_town_places_replacements": [
+        {
+          "old": "赤羽",
+          "new": "绯渡"
+        },
+        {
+          "old": "荒川河岸",
+          "new": "澪川河岸"
+        },
+        {
+          "old": "荒川",
+          "new": "澪川"
+        }
+      ],
+      "distant_tiers_unchanged": [
+        "city",
+        "daytrip",
+        "overnight"
+      ]
+    }
+  },
+  "forbidden_legacy_tokens_in_public_and_views": [
+    "tokyo",
+    "akabane",
+    "ikebukuro",
+    "shinjuku",
+    "arakawa",
+    "jreast",
+    "jreast-network",
+    "public-spaces",
+    "saikyo",
+    "yamanote",
+    "shonan-shinjuku",
+    "akabane:ai-house:entrance",
+    "hiwatari:ai-house:entrance",
+    "东京",
+    "赤羽",
+    "池袋",
+    "新宿",
+    "荒川",
+    "埼京线",
+    "山手线",
+    "湘南新宿线",
+    "JR 东日本"
+  ],
+  "pending_director_confirmations": {
+    "m3d_content_packs": "集成分支（#275 PR #65）含 #63 挂载的 pack:jinbocho（神保町/千代田区/都营新宿线/靖国通）与 pack:shimokitazawa（下北泽/世田谷区/小田急线）。请 @jian 对照设计稿 3.4 确认：R0 是将 MOUNTED_CONTENT_PACKS 先暂卸（保持三片区 17 公开地点出城，待后续定名再挂），还是在 R0 按设计稿给定架空名一并改名？",
+    "ward_and_municipalities": "当前 catalog.ts Area.ward 与 MUNICIPALITIES 含『北区(mun:13117)』『丰岛区(mun:13116)』『新宿区(mun:13104)』（仅时区 Asia/Tokyo 与气象经纬度保留现实原型）。请 @jian 确认设计稿 3.4 中 ward / mun:* 的架空写法（如『北城区 / 镜池区 / 千灯区』+ mun:toto-*，或去掉现实区名展示）。",
+    "reserved_area_enum": "bridge-v1.schema.json 与内核 city_client.py _AREA_ORDER 原预留的 asakusa / shibuya / kichijoji 是否在 R0 直接移除、仅保留开放片区枚举 [\"hiwatari\", \"kagamiike\", \"sentou\"]？"
+  }
+}
