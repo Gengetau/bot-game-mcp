@@ -54,6 +54,8 @@
       "new_district_id": "dist:hiwatari",
       "old_name": "赤羽",
       "new_name": "绯渡",
+      "old_blurb": "北区的老街区：站前热闹，往北走到荒川就开阔了。",
+      "new_blurb": "靠北的老街区：站前热闹，往北走到澪川就开阔了。",
       "weather_point_unchanged": {
         "lat": 35.7776,
         "lon": 139.7209
@@ -66,6 +68,8 @@
       "new_district_id": "dist:kagamiike",
       "old_name": "池袋",
       "new_name": "镜池",
+      "old_blurb": "大车站、书店和喫茶店，巷子里还有一小片草坪。",
+      "new_blurb": "大车站、书店和喫茶店，巷子里还有一小片草坪。",
       "weather_point_unchanged": {
         "lat": 35.7295,
         "lon": 139.7109
@@ -78,6 +82,8 @@
       "new_district_id": "dist:sentou",
       "old_name": "新宿",
       "new_name": "千灯",
+      "old_blurb": "全东京人最多的车站，南口出去是一条能吹到风的露台步道。",
+      "new_blurb": "全灯都人最多的车站，南口出去是一条能吹到风的露台步道。",
       "weather_point_unchanged": {
         "lat": 35.6896,
         "lon": 139.7006
@@ -486,6 +492,11 @@
         "灯都",
         "进城"
       ]
+    },
+    "timezone_display_rule": {
+      "internal_iana_tz": "Asia/Tokyo",
+      "public_and_web_display": "JST",
+      "note": "配置、时间计算与 Open-Meteo 抓取内部保留 IANA 标识 Asia/Tokyo；网页顶栏、公开视图与指南文案统一展示『JST』（如『灯都时间 HH:MM（JST）』），不在公开文本裸露 Asia/Tokyo 以满足公开输出零 tokyo 命中门禁"
     }
   },
   "kernel": {
@@ -554,7 +565,7 @@
     },
     "k8_catalog_pr160": {
       "manifest_location_origin": {
-        "old": "赤羽一带（赤羽站与荒川之间的虚构旧洋馆）",
+        "old": "北区赤羽一带（赤羽站与荒川之间的虚构旧洋房，不对应真实门牌/具体街道地址）",
         "new": "绯渡一带（绯渡站与澪川之间的虚构旧洋馆）"
       },
       "vocab_version": {
@@ -562,6 +573,10 @@
         "new": "life1-0.4"
       },
       "near_and_town_places_replacements": [
+        {
+          "old": "北区赤羽",
+          "new": "绯渡"
+        },
         {
           "old": "赤羽",
           "new": "绯渡"
