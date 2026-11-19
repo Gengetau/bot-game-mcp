@@ -1,8 +1,9 @@
 {
-  "$comment": "灯都 R0 改名统一对照表（#276）：引擎（Gengetau/bot-game-mcp）与世界内核（Gengetau/ai-house-world）唯一权威改名来源。两边确认并由 @nia-ext 审过前不改业务代码。",
+  "$comment": "灯都 R0 改名统一对照表（#276）：引擎（Gengetau/bot-game-mcp）与世界内核（Gengetau/ai-house-world）唯一权威改名来源。已获 @gemini4-ext 内核侧确认与 @jian 三项边界拍板，由 @nia-ext 终核定稿后再动业务代码。",
   "schema_version": 1,
   "task_ref": 276,
-  "design_basis": "《架空 AI 都市 v0.3》（2026-11-19 主人定，第 3.4 / 9.1 节）",
+  "status": "final_candidate",
+  "design_basis": "《架空 AI 都市 v0.3》（2026-11-19 主人定，第 3.1 / 3.2 / 3.4 / 9.1 节及 Q3）",
   "world": {
     "world_id": {
       "old": "tokyo",
@@ -54,6 +55,10 @@
       "new_district_id": "dist:hiwatari",
       "old_name": "赤羽",
       "new_name": "绯渡",
+      "old_ward": "北区",
+      "new_ward": null,
+      "old_municipality_id": "mun:13117",
+      "new_ward_id": null,
       "old_blurb": "北区的老街区：站前热闹，往北走到荒川就开阔了。",
       "new_blurb": "靠北的老街区：站前热闹，往北走到澪川就开阔了。",
       "weather_point_unchanged": {
@@ -68,6 +73,10 @@
       "new_district_id": "dist:kagamiike",
       "old_name": "池袋",
       "new_name": "镜池",
+      "old_ward": "丰岛区",
+      "new_ward": null,
+      "old_municipality_id": "mun:13116",
+      "new_ward_id": null,
       "old_blurb": "大车站、书店和喫茶店，巷子里还有一小片草坪。",
       "new_blurb": "大车站、书店和喫茶店，巷子里还有一小片草坪。",
       "weather_point_unchanged": {
@@ -82,6 +91,10 @@
       "new_district_id": "dist:sentou",
       "old_name": "新宿",
       "new_name": "千灯",
+      "old_ward": "新宿区",
+      "new_ward": null,
+      "old_municipality_id": "mun:13104",
+      "new_ward_id": null,
       "old_blurb": "全东京人最多的车站，南口出去是一条能吹到风的露台步道。",
       "new_blurb": "全灯都人最多的车站，南口出去是一条能吹到风的露台步道。",
       "weather_point_unchanged": {
@@ -393,6 +406,15 @@
         "minutes": 10,
         "fare_yen": 200
       }
+    ],
+    "walk_shortcuts": [
+      {
+        "old_a": "akabane:ai-house:entrance",
+        "old_b": "akabane:arakawa-riverbank",
+        "new_a": "hiwatari:ai-house:entrance",
+        "new_b": "hiwatari:mio-riverbank",
+        "minutes": 9
+      }
     ]
   },
   "sources": [
@@ -496,15 +518,167 @@
     "timezone_display_rule": {
       "internal_iana_tz": "Asia/Tokyo",
       "public_and_web_display": "JST",
-      "note": "配置、时间计算与 Open-Meteo 抓取内部保留 IANA 标识 Asia/Tokyo；网页顶栏、公开视图与指南文案统一展示『JST』（如『灯都时间 HH:MM（JST）』），不在公开文本裸露 Asia/Tokyo 以满足公开输出零 tokyo 命中门禁"
+      "raw_public_json_endpoints_updated": [
+        "views.ts:194 publicCityView.timezone (GET /city/api/public, MCP world_query public)",
+        "http.ts:348 /city/api/config world.timezone"
+      ],
+      "web_client_intl_fallback": "+09:00",
+      "note": "服务端配置、SQLite meta、时间换算与 Open-Meteo 抓取内部继续使用 IANA 标识 Asia/Tokyo；views.ts:194 与 http.ts:348 的原始公开 JSON、公开 HTML 页、网页端脚本（city/app.js Intl.DateTimeFormat 遇 JST 内部映射 +09:00 格式化，不写 Asia/Tokyo）与指南文案统一输出『JST』，确保原始公开 JSON 与可见文案对 tokyo 均零命中"
+    }
+  },
+  "content_packs": {
+    "r0_mounted_packs": [],
+    "open_areas_count": 3,
+    "open_public_places_count": 17,
+    "deferred_packs": [
+      {
+        "old_pack_id": "pack:jinbocho",
+        "module_path": "packages/engine/src/city/packs/jinbocho.ts",
+        "old_area_id": "jinbocho",
+        "old_district_id": "dist:jinbocho",
+        "old_station_id": "st:jinbocho",
+        "old_stamp_id": "stamp:jinbocho",
+        "old_place_prefix": "jinbocho:",
+        "old_name": "神保町",
+        "new_name": null,
+        "status": "deferred",
+        "r0_action": "保留仓库代码与数据文件，但从 MOUNTED_CONTENT_PACKS 暂卸（不加载进目录、公开页、指南、MCP 工具说明与外部 bot 视图）；架空名等 M4 开新片区时由主人定"
+      },
+      {
+        "old_pack_id": "pack:shimokitazawa",
+        "module_path": "packages/engine/src/city/packs/shimokitazawa.ts",
+        "old_area_id": "shimokitazawa",
+        "old_district_id": "dist:shimokitazawa",
+        "old_station_id": "st:shimokitazawa",
+        "old_stamp_id": "stamp:shimokitazawa",
+        "old_place_prefix": "shimokitazawa:",
+        "old_name": "下北泽",
+        "old_name_variants": [
+          "下北沢"
+        ],
+        "new_name": null,
+        "status": "deferred",
+        "r0_action": "保留仓库代码与数据文件，但从 MOUNTED_CONTENT_PACKS 暂卸（不加载进目录、公开页、指南、MCP 工具说明与外部 bot 视图）；架空名等 M4 开新片区时由主人定"
+      }
+    ]
+  },
+  "geography_l1_and_wards": {
+    "real_62_municipalities_goal": "removed",
+    "catalog_and_public_municipalities": {
+      "old_ids": [
+        "mun:13117",
+        "mun:13116",
+        "mun:13104",
+        "mun:13101",
+        "mun:13112"
+      ],
+      "old_names": [
+        "北区",
+        "丰岛区",
+        "新宿区",
+        "千代田区",
+        "世田谷区"
+      ],
+      "r0_action": "从目录（catalog.ts MUNICIPALITIES 与 Area.ward/municipalityId）、契约文档（CONTENT-PACK-SPEC.md 等）和公开输出（views.ts publicCityView、http.ts renderCityPage、city/app.js）移除真实市区町村列表及北区/丰岛区/新宿区等现实区名"
+    },
+    "l1_ward_spec": {
+      "old_entity": "Municipality",
+      "old_id_pattern": "^mun:13\\d{3}$",
+      "new_entity": "Ward",
+      "new_id_pattern": "^ward:[a-z0-9-]+$",
+      "r0_wards": [],
+      "r0_rule": "R0 不新增任何区（Area 的 ward / wardId 在 R0 不设置），架空区名与 ward:<slug> 等 M4 由主人定"
+    },
+    "pack_internal_prototype": {
+      "field": "prototype",
+      "fields": [
+        "weatherPoint",
+        "distanceRef"
+      ],
+      "visibility": "internal_only",
+      "note": "每个内容包带只在内部使用的 prototype 字段（天气坐标、距离参照），严禁序列化进公开输出、外部 bot 视图或网页端"
+    }
+  },
+  "area_enum": {
+    "r0_open_areas": [
+      "hiwatari",
+      "kagamiike",
+      "sentou"
+    ],
+    "removed_reserved_areas": [
+      "asakusa",
+      "shibuya",
+      "kichijoji"
+    ],
+    "deferred_pack_areas": [
+      "jinbocho",
+      "shimokitazawa"
+    ],
+    "bridge_v1_schema_area_id": {
+      "old_enum": [
+        "akabane",
+        "ikebukuro",
+        "shinjuku",
+        "asakusa",
+        "shibuya",
+        "kichijoji",
+        "jinbocho",
+        "shimokitazawa"
+      ],
+      "new_enum": [
+        "hiwatari",
+        "kagamiike",
+        "sentou"
+      ]
+    },
+    "engine_catalog_area_id": {
+      "old_union": [
+        "akabane",
+        "ikebukuro",
+        "shinjuku",
+        "jinbocho",
+        "shimokitazawa"
+      ],
+      "new_union": [
+        "hiwatari",
+        "kagamiike",
+        "sentou"
+      ]
+    },
+    "kernel_city_client_area_order": {
+      "old_order": [
+        "akabane",
+        "ikebukuro",
+        "shinjuku",
+        "asakusa",
+        "shibuya",
+        "kichijoji"
+      ],
+      "new_order": [
+        "hiwatari",
+        "kagamiike",
+        "sentou"
+      ]
     }
   },
   "kernel": {
     "city_client": {
+      "old_area_order": [
+        "akabane",
+        "ikebukuro",
+        "shinjuku",
+        "asakusa",
+        "shibuya",
+        "kichijoji"
+      ],
       "area_order": [
         "hiwatari",
         "kagamiike",
         "sentou"
+      ],
+      "supported_mappings_versions": [
+        2,
+        3
       ],
       "home_area": {
         "old": "akabane",
@@ -542,6 +716,18 @@
         "sentou": "千灯",
         "city": "灯都"
       },
+      "removed_legacy_area_label_keys": [
+        "ikebukuro",
+        "akabane",
+        "shinjuku",
+        "shibuya",
+        "tokyo",
+        "ginza",
+        "ueno",
+        "akihabara",
+        "ochanomizu",
+        "shimokitazawa"
+      ],
       "redaction_replacement_label": {
         "old": "赤羽一带",
         "new": "绯渡一带"
@@ -599,10 +785,27 @@
   },
   "forbidden_legacy_tokens_in_public_and_views": [
     "tokyo",
+    "Asia/Tokyo",
     "akabane",
     "ikebukuro",
     "shinjuku",
     "arakawa",
+    "jinbocho",
+    "pack:jinbocho",
+    "dist:jinbocho",
+    "st:jinbocho",
+    "jinbocho:",
+    "stamp:jinbocho",
+    "shimokitazawa",
+    "pack:shimokitazawa",
+    "dist:shimokitazawa",
+    "st:shimokitazawa",
+    "shimokitazawa:",
+    "stamp:shimokitazawa",
+    "asakusa",
+    "shibuya",
+    "kichijoji",
+    "mun:13",
     "jreast",
     "jreast-network",
     "public-spaces",
@@ -616,14 +819,63 @@
     "池袋",
     "新宿",
     "荒川",
+    "神保町",
+    "下北泽",
+    "下北沢",
+    "浅草",
+    "涩谷",
+    "渋谷",
+    "吉祥寺",
+    "北区",
+    "丰岛区",
+    "新宿区",
+    "千代田区",
+    "世田谷区",
     "埼京线",
     "山手线",
     "湘南新宿线",
-    "JR 东日本"
+    "JR 东日本",
+    "都营新宿线",
+    "都营三田线",
+    "半藏门线",
+    "小田急",
+    "京王井之头线",
+    "靖国通"
   ],
-  "pending_director_confirmations": {
-    "m3d_content_packs": "集成分支（#275 PR #65）含 #63 挂载的 pack:jinbocho（神保町/千代田区/都营新宿线/靖国通）与 pack:shimokitazawa（下北泽/世田谷区/小田急线）。请 @jian 对照设计稿 3.4 确认：R0 是将 MOUNTED_CONTENT_PACKS 先暂卸（保持三片区 17 公开地点出城，待后续定名再挂），还是在 R0 按设计稿给定架空名一并改名？",
-    "ward_and_municipalities": "当前 catalog.ts Area.ward 与 MUNICIPALITIES 含『北区(mun:13117)』『丰岛区(mun:13116)』『新宿区(mun:13104)』（仅时区 Asia/Tokyo 与气象经纬度保留现实原型）。请 @jian 确认设计稿 3.4 中 ward / mun:* 的架空写法（如『北城区 / 镜池区 / 千灯区』+ mun:toto-*，或去掉现实区名展示）。",
-    "reserved_area_enum": "bridge-v1.schema.json 与内核 city_client.py _AREA_ORDER 原预留的 asakusa / shibuya / kichijoji 是否在 R0 直接移除、仅保留开放片区枚举 [\"hiwatari\", \"kagamiike\", \"sentou\"]？"
+  "legacy_token_probe_spec": {
+    "case_sensitive": false,
+    "raw_public_json_targets": [
+      "GET /city/api/public (views.ts:publicCityView 原始 JSON，含 timezone 字段)",
+      "GET /city/api/config (http.ts:348 原始 JSON，含 world.timezone 字段)",
+      "GET /city/api/route",
+      "MCP world_query(what=public|residents|stamps|route)"
+    ],
+    "public_html_and_web_targets": [
+      "GET /city/ (http.ts:renderCityPage)",
+      "GET /city/play/ & /city/play/app.js"
+    ],
+    "mcp_and_external_bot_targets": [
+      "MCP resource botgame://guide/city",
+      "MCP prompt city-resident",
+      "MCP tool descriptions & schemas",
+      "external bot enter_world / get_my_view / world_wait"
+    ],
+    "kernel_projection_targets": [
+      "city_projection status cards",
+      "/world/{consumer}/now",
+      "city_projection.redact_text output"
+    ],
+    "bridge_l3_note": "桥接管理面 GET /city/bridge/v1/catalog 与 GET /city/bridge/v1/weather 除 handover_node 合法为 hiwatari:ai-house:entrance 外，对其余全部旧词/旧编号同样必须大小写不敏感零命中"
+  },
+  "director_decisions": {
+    "decided_by": "jian",
+    "decided_at": "2026-11-19 14:23 JST",
+    "basis": "《架空 AI 都市 v0.3》（主人 11-19 08:48/08:52 定）第 3.1、3.2、3.4 节及 Q3",
+    "items": {
+      "m3d_content_packs": "R0 暂卸 pack:jinbocho 与 pack:shimokitazawa（MOUNTED_CONTENT_PACKS = []，保持 3 片区 17 公开地点；包代码与数据留仓标 deferred，架空名等 M4 开新片区由主人定；旧词探针纳神保町/下北泽/下北沢及前缀并扫原始公开 JSON）",
+      "ward_and_municipalities": "真实 62 市区町村不再是目标，R0 从目录、契约和公开输出拿掉真实市区町村列表与现实区名；L1 改为架空 ward:<slug> 写法，每个内容包带仅内部使用的 prototype 字段（天气坐标、距离参照）；R0 不新增任何区，名字等 M4",
+      "reserved_area_enum": "移除 asakusa / shibuya / kichijoji 预留枚举，bridge-v1.schema.json 与 city_client.py _AREA_ORDER 只留 [\"hiwatari\", \"kagamiike\", \"sentou\"]，M4 开新片区再加",
+      "kernel_4b_4c_alignment": "4b 同意补最小 mappings_version=(2,3) 兼容；4c K8 在 PR #160 (bef0d29) 单独开分支提 Draft PR，待本表经 @nia-ext 终核定稿后动代码"
+    }
   }
 }
