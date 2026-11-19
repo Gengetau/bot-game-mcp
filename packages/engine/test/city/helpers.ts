@@ -1,9 +1,9 @@
 /**
- * 东京城市世界的测试辅助：内存数据库 + 假时钟 + 固定种子 + 一个「假内核客户端」。
+ * 灯都城市世界的测试辅助：内存数据库 + 假时钟 + 固定种子 + 一个「假内核客户端」。
  *
  *   const t = makeCity();
  *   const k = t.kernel('nia');                 // 假内核：管她家里的钱、动作权代次、outbox 游标
- *   k.depart({ yen: 20000, items: [COOKIE], to: 'ikebukuro:kissa-tomoshibi' });   // prepare + commit
+ *   k.depart({ yen: 20000, items: [COOKIE], to: 'kagamiike:kissa-tomoshibi' });   // prepare + commit
  *   t.run(40 * MIN);                           // 推进时间，到期的行程作业照常结算
  *   k.act({ type: 'buy', sku: 'coffee' });
  *   const b = t.bot('小B');                    // 外部 bot
@@ -45,7 +45,7 @@ export const HOUSE: HouseMemberConfig[] = [
 ];
 
 export const COOKIE = { ref: 'res:cookie:1', kernel: { kind: 'food', item: 'cookie' }, qty: 1 };
-export const KISSA = 'ikebukuro:kissa-tomoshibi';
+export const KISSA = 'kagamiike:kissa-tomoshibi';
 
 export interface CityTestOpts {
   at?: number;

@@ -4,16 +4,17 @@ import {
   validateContentPack,
   type CityContentPack,
   type DistrictSpec,
-  type MunicipalitySpec,
   type OpennessLevel,
+  type PackPrototypeSpec,
   type StationStampSpec,
   type TransportKind,
+  type WardSpec,
 } from './packs/index.js';
 /**
- * 东京城市世界的目录（第一期）：片区、车站、线路、街区、地点、商品、来源。
+ * 灯都城市世界的目录：片区、车站、线路、街区、地点、商品、来源。
  *
- * 真实地理与线路骨架 + 明确标注为模拟的耗时和票价（规格 3.10）。店铺都是虚构的（source: fictional）；
- * 公园、广场、河岸是真实存在的公共空间，只用到「那里有这么个地方」这一层。
+ * 架空都市拓扑与线路骨架 + 明确标注为模拟的耗时和票价。店铺都是虚构的（source: fictional）；
+ * 公园、广场、河岸与露台为都市公共空间原型，天气取现实气象代表点坐标。
  *
  * 发布之后不原地改：动了地点、线路、耗时、票价或商品价格就换 CITY_CATALOG_VERSION（票价规则另有 FARE_RULE_VERSION）。
  * 这个模块是纯数据和纯函数：不读数据库、不取时间、不用随机数。
@@ -22,9 +23,10 @@ import {
  * 以后小屋做成城里的一栋建筑时，这个 ID 就是它的入口（规格 8.1）。
  */
 
-export const CITY_WORLD_ID = 'tokyo';
-export const CITY_WORLD_NAME = '东京';
-export const CITY_CATALOG_VERSION = 'tokyo-p1.2';
+export const CITY_WORLD_ID = 'city';
+export const CITY_WORLD_NAME = '灯都';
+export const CITY_CATALOG_VERSION = 'toto-p2.0';
+export const CITY_TEXT_VERSION = 'toto-text-1.0';
 export const FARE_RULE_VERSION = 'sim-2026-11';
 
 export const BOOK_SHELF_BUYBACK_YEN = 300;
@@ -33,9 +35,9 @@ export const MAX_FLYLEAF_ENTRIES = 5;
 export const MAX_FLYLEAF_NOTE_CHARS = 50;
 
 /** 小屋门口：交接点（规格 3.1）。不公开。 */
-export const HOUSE_ENTRANCE = 'akabane:ai-house:entrance';
+export const HOUSE_ENTRANCE = 'hiwatari:ai-house:entrance';
 
-export type { CityContentPack, DistrictSpec, MunicipalitySpec, OpennessLevel, StationStampSpec, TransportKind };
+export type { CityContentPack, DistrictSpec, OpennessLevel, PackPrototypeSpec, StationStampSpec, TransportKind, WardSpec };
 export { MOUNTED_CONTENT_PACKS };
 
 export interface SourceReference {
@@ -48,29 +50,23 @@ export interface SourceReference {
   retrieved?: string;
   /** 许可或使用条件（真实数据才有） */
   license?: string;
-  /**
-   * 对应《虚拟东京都建城资料源》表（Tokyo World Sourcebook，2026-11-17 版，不在仓库里）里的编号。
-   * 只表示「这一项和那条资料源有关」，不表示已经导入了那份数据。
-   */
   sourcebook?: readonly string[];
 }
 
 const BASE_SOURCES: readonly SourceReference[] = [
   {
-    id: 'jreast-network',
+    id: 'prototype-network',
     kind: 'operator',
-    title: 'JR 东日本的线路（埼京线、湘南新宿线、山手线）',
-    note: '赤羽、池袋、新宿三站之间有直达列车是公开的线路事实。这里只用「哪两站之间有车」，不用真实时刻表：JR 东日本在 ODPT 上的时刻资料是竞赛限定许可（到 2027-03-12），不作长期依赖；以后要铺开全网，站和线路的地理底座用国土数值信息 N02（CC BY 4.0）。第一期没有导入这两份数据。',
-    url: 'https://www.jreast.co.jp/',
+    title: '灯都铁道干线骨架（北环快线、灯环线）',
+    note: '绯渡、镜池、千灯三站之间的干线直达连接采用现实大都市铁道拓扑原型映射，仅刻画站间连通关系，不依赖外部实时时刻表。',
     retrieved: '2026-11-17',
     sourcebook: ['T01', 'T04'],
   },
   {
     id: 'sim-fares',
     kind: 'simulated',
-    title: '模拟票价（按 JR 东日本 2026-03-14 运价改定后的幹線纸质车票运价档）',
-    note: '改定后山手线内、电车特定区间并入幹線，营业里程不足 1 km 进位：4–6 km 档 ¥200，11–15 km 档 ¥260（2026-11-17 对照过运价表）。赤羽—池袋 5.5 km、池袋—新宿 4.8 km 在 4–6 km 档，赤羽—新宿 10.3 km 按 11 km 算在 11–15 km 档。数值和纸质车票的运价一致，但没有 IC 运价、换乘和折扣，也不随真实运价变动，所以仍然标注为 simulated。JR 东日本的官方网站这边读不到（拒绝访问），对照用的是 JR 集团运价表的转载页；公开的开放数据目录里没有 JR 东日本的独立票价集。',
-    url: 'https://jr-group.jp/higashinihon-fare/',
+    title: '模拟票价（按灯都铁道干线营业里程分段运价档）',
+    note: '按干线营业里程不足 1 km 进位模拟计价：4–6 km 档 ¥200，11–15 km 档 ¥260。绯渡—镜池 5.5 km、镜池—千灯 4.8 km 计入 4–6 km 档（¥200），绯渡—千灯 10.3 km 进位按 11 km 计入 11–15 km 档（¥260）。不设 IC 运价、换乘优惠或浮动调价，标注为 simulated。',
     retrieved: '2026-11-17',
     sourcebook: ['T04'],
   },
@@ -89,10 +85,10 @@ const BASE_SOURCES: readonly SourceReference[] = [
     retrieved: '2026-11-18',
   },
   {
-    id: 'public-spaces',
+    id: 'prototype-spaces',
     kind: 'public_space',
-    title: '真实存在的公共空间',
-    note: '赤羽站东口站前广场、荒川河岸（北区一侧的河川敷）、南池袋公园、新宿南口的露台步道。只借用地点本身，里面发生的事都是虚构的。',
+    title: '都市公共空间原型',
+    note: '绯渡站东口站前广场、澪川河岸、南镜池公园、千灯南口露台步道等都市公共空间原型；空间内发生的事件与互动均为架空模拟。',
     retrieved: '2026-11-17',
   },
   { id: 'fictional', kind: 'fictional', title: '虚构店铺', note: '店名、商品、价格、营业时间都是虚构的，不对应任何真实商家。' },
@@ -100,7 +96,7 @@ const BASE_SOURCES: readonly SourceReference[] = [
     id: 'open-meteo',
     kind: 'open_data',
     title: 'Open-Meteo 天气数据',
-    note: '当前和逐小时天气来自 Open-Meteo 的预报模型，不是街区实测。城市统一抓取（每 30 分钟一次请求，三个坐标），所有居民共用同一份快照。抓不到时先用最近一次快照，超过 3 小时退回合成天气并标注。',
+    note: '当前和逐小时天气来自 Open-Meteo 的预报模型，不是街区实测。灯都统一按各片区代表坐标抓取（每 30 分钟一次请求），全城各片区共用同一份天气快照。抓不到时先沿用最近一次快照，超过 3 小时退回合成天气并标注。',
     url: 'https://open-meteo.com/',
     license: '数据 CC BY 4.0；免费托管的接口只限非商业用途（每天少于 10,000 次调用），带订阅或广告的服务要用付费接口',
     sourcebook: ['L02'],
@@ -121,66 +117,54 @@ export const SOURCES: readonly SourceReference[] = mergeUniqueBy(
   (s) => s.id,
 );
 
-export type AreaId = 'akabane' | 'ikebukuro' | 'shinjuku' | 'jinbocho' | 'shimokitazawa';
+export type AreaId = 'hiwatari' | 'kagamiike' | 'sentou';
 
 export interface Area {
   id: AreaId;
   name: string;
-  ward: string;
+  ward?: string;
   blurb: string;
   /** 取天气用的代表点 */
   weatherPoint: { lat: number; lon: number };
   /** 四层地理标准字段（CONTENT-PACK-SPEC） */
   districtId?: string;
-  municipalityId?: string;
+  wardId?: string;
   openness?: OpennessLevel;
   hubStationId?: string;
 }
 
-const BASE_MUNICIPALITIES: readonly MunicipalitySpec[] = [
-  { id: 'mun:13117', name: '北区', region: 'ward23', source: 'public-spaces' },
-  { id: 'mun:13116', name: '丰岛区', region: 'ward23', source: 'public-spaces' },
-  { id: 'mun:13104', name: '新宿区', region: 'ward23', source: 'public-spaces' },
-];
-
-export const MUNICIPALITIES: readonly MunicipalitySpec[] = mergeUniqueBy(
-  [...BASE_MUNICIPALITIES, ...MOUNTED_CONTENT_PACKS.map((p) => p.municipality)],
-  (m) => m.id,
+export const WARDS: readonly WardSpec[] = mergeUniqueBy(
+  MOUNTED_CONTENT_PACKS.flatMap((p) => (p.ward ? [p.ward] : [])),
+  (w) => w.id,
 );
 
 const BASE_AREAS: readonly Area[] = [
   {
-    id: 'akabane',
-    name: '赤羽',
-    ward: '北区',
-    blurb: '北区的老街区：站前热闹，往北走到荒川就开阔了。',
+    id: 'hiwatari',
+    name: '绯渡',
+    blurb: '靠北的老街区：站前热闹，往北走到澪川就开阔了。',
     weatherPoint: { lat: 35.7776, lon: 139.7209 },
-    districtId: 'dist:akabane',
-    municipalityId: 'mun:13117',
+    districtId: 'dist:hiwatari',
     openness: 'livable',
-    hubStationId: 'st:akabane',
+    hubStationId: 'st:hiwatari',
   },
   {
-    id: 'ikebukuro',
-    name: '池袋',
-    ward: '丰岛区',
+    id: 'kagamiike',
+    name: '镜池',
     blurb: '大车站、书店和喫茶店，巷子里还有一小片草坪。',
     weatherPoint: { lat: 35.7295, lon: 139.7109 },
-    districtId: 'dist:ikebukuro',
-    municipalityId: 'mun:13116',
+    districtId: 'dist:kagamiike',
     openness: 'livable',
-    hubStationId: 'st:ikebukuro',
+    hubStationId: 'st:kagamiike',
   },
   {
-    id: 'shinjuku',
-    name: '新宿',
-    ward: '新宿区',
-    blurb: '全东京人最多的车站，南口出去是一条能吹到风的露台步道。',
+    id: 'sentou',
+    name: '千灯',
+    blurb: '全灯都人最多的车站，南口出去是一条能吹到风的露台步道。',
     weatherPoint: { lat: 35.6896, lon: 139.7006 },
-    districtId: 'dist:shinjuku',
-    municipalityId: 'mun:13104',
+    districtId: 'dist:sentou',
     openness: 'livable',
-    hubStationId: 'st:shinjuku',
+    hubStationId: 'st:sentou',
   },
 ];
 
@@ -189,11 +173,11 @@ export const AREAS: readonly Area[] = [
   ...MOUNTED_CONTENT_PACKS.map((p) => ({
     id: p.district.areaId,
     name: p.district.name,
-    ward: p.district.ward,
+    ...(p.district.ward ? { ward: p.district.ward } : {}),
     blurb: p.district.blurb,
     weatherPoint: p.district.weatherPoint,
     districtId: p.district.id,
-    municipalityId: p.district.municipalityId,
+    ...(p.district.wardId ? { wardId: p.district.wardId } : {}),
     openness: p.district.openness,
     hubStationId: p.district.hubStationId,
   })),
@@ -216,33 +200,32 @@ export interface StationComplex {
 
 const BASE_STATIONS: readonly StationComplex[] = [
   {
-    id: 'st:akabane',
-    name: '赤羽站',
-    area: 'akabane',
-    placeId: 'akabane:station',
+    id: 'st:hiwatari',
+    name: '绯渡站',
+    area: 'hiwatari',
+    placeId: 'hiwatari:station',
     stops: [
-      { id: 'st:akabane:saikyo', line: '埼京线', operator: 'JR 东日本' },
-      { id: 'st:akabane:shonan-shinjuku', line: '湘南新宿线', operator: 'JR 东日本' },
+      { id: 'st:hiwatari:hokkan', line: '北环快线', operator: '灯都铁道' },
     ],
   },
   {
-    id: 'st:ikebukuro',
-    name: '池袋站',
-    area: 'ikebukuro',
-    placeId: 'ikebukuro:station',
+    id: 'st:kagamiike',
+    name: '镜池站',
+    area: 'kagamiike',
+    placeId: 'kagamiike:station',
     stops: [
-      { id: 'st:ikebukuro:saikyo', line: '埼京线', operator: 'JR 东日本' },
-      { id: 'st:ikebukuro:yamanote', line: '山手线', operator: 'JR 东日本' },
+      { id: 'st:kagamiike:hokkan', line: '北环快线', operator: '灯都铁道' },
+      { id: 'st:kagamiike:toukan', line: '灯环线', operator: '灯都铁道' },
     ],
   },
   {
-    id: 'st:shinjuku',
-    name: '新宿站',
-    area: 'shinjuku',
-    placeId: 'shinjuku:station',
+    id: 'st:sentou',
+    name: '千灯站',
+    area: 'sentou',
+    placeId: 'sentou:station',
     stops: [
-      { id: 'st:shinjuku:saikyo', line: '埼京线', operator: 'JR 东日本' },
-      { id: 'st:shinjuku:yamanote', line: '山手线', operator: 'JR 东日本' },
+      { id: 'st:sentou:hokkan', line: '北环快线', operator: '灯都铁道' },
+      { id: 'st:sentou:toukan', line: '灯环线', operator: '灯都铁道' },
     ],
   },
 ];
@@ -277,9 +260,9 @@ export interface TransitEdge {
 }
 
 const BASE_TRANSIT_EDGES: readonly TransitEdge[] = [
-  { id: 'te:akabane-ikebukuro', a: 'st:akabane', b: 'st:ikebukuro', line: '埼京线', operator: 'jreast', transportKind: 'rail', distanceKm: 5.5, minutes: 13, fareYen: 200, hours: TRANSIT_DEFAULT_HOURS, sources: ['jreast-network', 'sim-fares', 'sim-times', 'sim-hours'] },
-  { id: 'te:akabane-shinjuku', a: 'st:akabane', b: 'st:shinjuku', line: '埼京线', operator: 'jreast', transportKind: 'rail', distanceKm: 10.3, minutes: 19, fareYen: 260, hours: TRANSIT_DEFAULT_HOURS, sources: ['jreast-network', 'sim-fares', 'sim-times', 'sim-hours'] },
-  { id: 'te:ikebukuro-shinjuku', a: 'st:ikebukuro', b: 'st:shinjuku', line: '山手线', operator: 'jreast', transportKind: 'rail', distanceKm: 4.8, minutes: 10, fareYen: 200, hours: TRANSIT_DEFAULT_HOURS, sources: ['jreast-network', 'sim-fares', 'sim-times', 'sim-hours'] },
+  { id: 'te:hiwatari-kagamiike', a: 'st:hiwatari', b: 'st:kagamiike', line: '北环快线', operator: 'toto-rail', transportKind: 'rail', distanceKm: 5.5, minutes: 13, fareYen: 200, hours: TRANSIT_DEFAULT_HOURS, sources: ['prototype-network', 'sim-fares', 'sim-times', 'sim-hours'] },
+  { id: 'te:hiwatari-sentou', a: 'st:hiwatari', b: 'st:sentou', line: '北环快线', operator: 'toto-rail', transportKind: 'rail', distanceKm: 10.3, minutes: 19, fareYen: 260, hours: TRANSIT_DEFAULT_HOURS, sources: ['prototype-network', 'sim-fares', 'sim-times', 'sim-hours'] },
+  { id: 'te:kagamiike-sentou', a: 'st:kagamiike', b: 'st:sentou', line: '灯环线', operator: 'toto-rail', transportKind: 'rail', distanceKm: 4.8, minutes: 10, fareYen: 200, hours: TRANSIT_DEFAULT_HOURS, sources: ['prototype-network', 'sim-fares', 'sim-times', 'sim-hours'] },
 ];
 
 export const TRANSIT_EDGES: readonly TransitEdge[] = [
@@ -294,11 +277,11 @@ export interface Neighborhood {
 }
 
 const BASE_NEIGHBORHOODS: readonly Neighborhood[] = [
-  { id: 'akabane:ekimae', area: 'akabane', name: '赤羽站前' },
-  { id: 'akabane:arakawa', area: 'akabane', name: '荒川河岸' },
-  { id: 'akabane:residential', area: 'akabane', name: '赤羽一带的住宅区' },
-  { id: 'ikebukuro:east', area: 'ikebukuro', name: '池袋东口' },
-  { id: 'shinjuku:south', area: 'shinjuku', name: '新宿南口' },
+  { id: 'hiwatari:ekimae', area: 'hiwatari', name: '绯渡站前' },
+  { id: 'hiwatari:mio', area: 'hiwatari', name: '澪川河岸' },
+  { id: 'hiwatari:residential', area: 'hiwatari', name: '绯渡一带的住宅区' },
+  { id: 'kagamiike:east', area: 'kagamiike', name: '镜池东口' },
+  { id: 'sentou:south', area: 'sentou', name: '千灯南口' },
 ];
 
 export const NEIGHBORHOODS: readonly Neighborhood[] = [
@@ -449,53 +432,53 @@ const BASE_ACTIONS = ['say', 'travel', 'consume', 'give', 'read_item', 'inspect_
 const STATION_ACTIONS = [...BASE_ACTIONS, 'buy', 'store_locker', 'take_locker', 'drift_book', 'take_book', 'stamp_station'];
 
 const BASE_PLACES: readonly Place[] = [
-  // ── 赤羽 ──
+  // ── 绯渡 ──
   {
-    id: 'akabane:station',
-    area: 'akabane',
-    neighborhood: 'akabane:ekimae',
-    name: '赤羽站',
+    id: 'hiwatari:station',
+    area: 'hiwatari',
+    neighborhood: 'hiwatari:ekimae',
+    name: '绯渡站',
     type: 'station',
     indoor: true,
     hours: null,
     capacity: 400,
-    station: 'st:akabane',
+    station: 'st:hiwatari',
     walkMinutes: 0,
     rain: 'none',
     goods: [],
     actions: STATION_ACTIONS,
     blurb: '检票口外的大厅，人来人往，角落摆着 24 小时自动售货机、投币储物柜和漂流书角。',
-    source: 'jreast-network',
+    source: 'prototype-network',
     fictional: false,
   },
   {
-    id: 'akabane:ekimae-plaza',
-    area: 'akabane',
-    neighborhood: 'akabane:ekimae',
-    name: '赤羽站东口站前广场',
+    id: 'hiwatari:ekimae-plaza',
+    area: 'hiwatari',
+    neighborhood: 'hiwatari:ekimae',
+    name: '绯渡站东口站前广场',
     type: 'plaza',
     indoor: false,
     hours: null,
     capacity: 80,
-    station: 'st:akabane',
+    station: 'st:hiwatari',
     walkMinutes: 2,
     rain: 'notice',
     goods: [],
     actions: BASE_ACTIONS,
     blurb: '等人的地方。长椅不多，傍晚最热闹。',
-    source: 'public-spaces',
+    source: 'prototype-spaces',
     fictional: false,
   },
   {
-    id: 'akabane:ekimae-conbini',
-    area: 'akabane',
-    neighborhood: 'akabane:ekimae',
-    name: '便利店「灯笼屋·赤羽站前」',
+    id: 'hiwatari:ekimae-conbini',
+    area: 'hiwatari',
+    neighborhood: 'hiwatari:ekimae',
+    name: '便利店「灯笼屋·绯渡站前」',
     type: 'shop',
     indoor: true,
     hours: null,
     capacity: 20,
-    station: 'st:akabane',
+    station: 'st:hiwatari',
     walkMinutes: 3,
     rain: 'none',
     goods: CONBINI_GOODS,
@@ -505,33 +488,33 @@ const BASE_PLACES: readonly Place[] = [
     fictional: true,
   },
   {
-    id: 'akabane:arakawa-riverbank',
-    area: 'akabane',
-    neighborhood: 'akabane:arakawa',
-    name: '荒川河岸',
+    id: 'hiwatari:mio-riverbank',
+    area: 'hiwatari',
+    neighborhood: 'hiwatari:mio',
+    name: '澪川河岸',
     type: 'riverside',
     indoor: false,
     hours: null,
     capacity: 120,
-    station: 'st:akabane',
+    station: 'st:hiwatari',
     walkMinutes: 18,
     rain: 'closed',
     goods: [],
     actions: BASE_ACTIONS,
     blurb: '河堤上的步道，天晴的傍晚能看到很远的桥。下雨时堤上很滑，不开放。',
-    source: 'public-spaces',
+    source: 'prototype-spaces',
     fictional: false,
   },
   {
     id: HOUSE_ENTRANCE,
-    area: 'akabane',
-    neighborhood: 'akabane:residential',
+    area: 'hiwatari',
+    neighborhood: 'hiwatari:residential',
     name: '小屋门口',
     type: 'entrance',
     indoor: false,
     hours: null,
     capacity: 12,
-    station: 'st:akabane',
+    station: 'st:hiwatari',
     walkMinutes: 12,
     rain: 'none',
     goods: [],
@@ -541,35 +524,35 @@ const BASE_PLACES: readonly Place[] = [
     fictional: true,
     hidden: true,
   },
-  // ── 池袋 ──
+  // ── 镜池 ──
   {
-    id: 'ikebukuro:station',
-    area: 'ikebukuro',
-    neighborhood: 'ikebukuro:east',
-    name: '池袋站',
+    id: 'kagamiike:station',
+    area: 'kagamiike',
+    neighborhood: 'kagamiike:east',
+    name: '镜池站',
     type: 'station',
     indoor: true,
     hours: null,
     capacity: 500,
-    station: 'st:ikebukuro',
+    station: 'st:kagamiike',
     walkMinutes: 0,
     rain: 'none',
     goods: [],
     actions: STATION_ACTIONS,
     blurb: '东口的检票口外，头顶是百货店的连廊，角落设 24 小时自动售货机、投币储物柜与漂流书角。',
-    source: 'jreast-network',
+    source: 'prototype-network',
     fictional: false,
   },
   {
-    id: 'ikebukuro:kissa-tomoshibi',
-    area: 'ikebukuro',
-    neighborhood: 'ikebukuro:east',
+    id: 'kagamiike:kissa-tomoshibi',
+    area: 'kagamiike',
+    neighborhood: 'kagamiike:east',
     name: '喫茶「灯」',
     type: 'cafe',
     indoor: true,
     hours: { open: '08:00', close: '21:00' },
     capacity: 16,
-    station: 'st:ikebukuro',
+    station: 'st:kagamiike',
     walkMinutes: 6,
     rain: 'none',
     goods: [
@@ -584,15 +567,15 @@ const BASE_PLACES: readonly Place[] = [
     fictional: true,
   },
   {
-    id: 'ikebukuro:shiorido',
-    area: 'ikebukuro',
-    neighborhood: 'ikebukuro:east',
+    id: 'kagamiike:shiorido',
+    area: 'kagamiike',
+    neighborhood: 'kagamiike:east',
     name: '书店「栞堂」',
     type: 'shop',
     indoor: true,
     hours: { open: '10:00', close: '21:00' },
     capacity: 30,
-    station: 'st:ikebukuro',
+    station: 'st:kagamiike',
     walkMinutes: 5,
     rain: 'none',
     goods: [
@@ -605,15 +588,15 @@ const BASE_PLACES: readonly Place[] = [
     fictional: true,
   },
   {
-    id: 'ikebukuro:ekimae-conbini',
-    area: 'ikebukuro',
-    neighborhood: 'ikebukuro:east',
-    name: '便利店「灯笼屋·池袋东口」',
+    id: 'kagamiike:ekimae-conbini',
+    area: 'kagamiike',
+    neighborhood: 'kagamiike:east',
+    name: '便利店「灯笼屋·镜池东口」',
     type: 'shop',
     indoor: true,
     hours: null,
     capacity: 20,
-    station: 'st:ikebukuro',
+    station: 'st:kagamiike',
     walkMinutes: 3,
     rain: 'none',
     goods: CONBINI_GOODS,
@@ -623,18 +606,18 @@ const BASE_PLACES: readonly Place[] = [
     fictional: true,
   },
   {
-    id: 'ikebukuro:suzuran-closet',
-    area: 'ikebukuro',
-    neighborhood: 'ikebukuro:east',
+    id: 'kagamiike:suzuran-closet',
+    area: 'kagamiike',
+    neighborhood: 'kagamiike:east',
     name: '服饰店「铃兰衣橱」',
     type: 'shop',
     indoor: true,
     hours: { open: '10:00', close: '21:00' },
     capacity: 24,
-    station: 'st:ikebukuro',
+    station: 'st:kagamiike',
     walkMinutes: 5,
     rain: 'none',
-    goods: apparelWindowForPlace('ikebukuro:suzuran-closet', '2026-11-18').map((e) => ({
+    goods: apparelWindowForPlace('kagamiike:suzuran-closet', '2026-11-18').map((e) => ({
       sku: e.sku,
       type: 'apparel_bundle',
       name: e.name,
@@ -648,52 +631,52 @@ const BASE_PLACES: readonly Place[] = [
     fictional: true,
   },
   {
-    id: 'ikebukuro:minami-park',
-    area: 'ikebukuro',
-    neighborhood: 'ikebukuro:east',
-    name: '南池袋公园',
+    id: 'kagamiike:minami-park',
+    area: 'kagamiike',
+    neighborhood: 'kagamiike:east',
+    name: '南镜池公园',
     type: 'park',
     indoor: false,
     hours: null,
     capacity: 100,
-    station: 'st:ikebukuro',
+    station: 'st:kagamiike',
     walkMinutes: 7,
     rain: 'notice',
     goods: [],
     actions: BASE_ACTIONS,
     blurb: '楼群中间的一片草坪，天好的时候坐满了人。',
-    source: 'public-spaces',
+    source: 'prototype-spaces',
     fictional: false,
   },
-  // ── 新宿 ──
+  // ── 千灯 ──
   {
-    id: 'shinjuku:station',
-    area: 'shinjuku',
-    neighborhood: 'shinjuku:south',
-    name: '新宿站',
+    id: 'sentou:station',
+    area: 'sentou',
+    neighborhood: 'sentou:south',
+    name: '千灯站',
     type: 'station',
     indoor: true,
     hours: null,
     capacity: 600,
-    station: 'st:shinjuku',
+    station: 'st:sentou',
     walkMinutes: 0,
     rain: 'none',
     goods: [],
     actions: STATION_ACTIONS,
     blurb: '南口的检票口外，立着 24 小时自动售货机、投币储物柜与漂流书角。',
-    source: 'jreast-network',
+    source: 'prototype-network',
     fictional: false,
   },
   {
-    id: 'shinjuku:south-conbini',
-    area: 'shinjuku',
-    neighborhood: 'shinjuku:south',
-    name: '便利店「灯笼屋·新宿南口」',
+    id: 'sentou:south-conbini',
+    area: 'sentou',
+    neighborhood: 'sentou:south',
+    name: '便利店「灯笼屋·千灯南口」',
     type: 'shop',
     indoor: true,
     hours: null,
     capacity: 20,
-    station: 'st:shinjuku',
+    station: 'st:sentou',
     walkMinutes: 3,
     rain: 'none',
     goods: CONBINI_GOODS,
@@ -703,33 +686,33 @@ const BASE_PLACES: readonly Place[] = [
     fictional: true,
   },
   {
-    id: 'shinjuku:southern-terrace',
-    area: 'shinjuku',
-    neighborhood: 'shinjuku:south',
-    name: '新宿南口露台步道',
+    id: 'sentou:southern-terrace',
+    area: 'sentou',
+    neighborhood: 'sentou:south',
+    name: '千灯南口露台步道',
     type: 'promenade',
     indoor: false,
     hours: null,
     capacity: 120,
-    station: 'st:shinjuku',
+    station: 'st:sentou',
     walkMinutes: 4,
     rain: 'notice',
     goods: [],
     actions: BASE_ACTIONS,
     blurb: '架在铁轨上方的步道，能看见电车一列一列地进站。',
-    source: 'public-spaces',
+    source: 'prototype-spaces',
     fictional: false,
   },
   {
-    id: 'shinjuku:muginohi',
-    area: 'shinjuku',
-    neighborhood: 'shinjuku:south',
+    id: 'sentou:muginohi',
+    area: 'sentou',
+    neighborhood: 'sentou:south',
     name: '面包店「麦之灯」',
     type: 'shop',
     indoor: true,
     hours: { open: '08:00', close: '20:00' },
     capacity: 18,
-    station: 'st:shinjuku',
+    station: 'st:sentou',
     walkMinutes: 5,
     rain: 'none',
     goods: [
@@ -743,15 +726,15 @@ const BASE_PLACES: readonly Place[] = [
     fictional: true,
   },
   {
-    id: 'shinjuku:kamitsuki',
-    area: 'shinjuku',
-    neighborhood: 'shinjuku:south',
+    id: 'sentou:kamitsuki',
+    area: 'sentou',
+    neighborhood: 'sentou:south',
     name: '文具店「纸月」',
     type: 'shop',
     indoor: true,
     hours: { open: '10:00', close: '20:00' },
     capacity: 20,
-    station: 'st:shinjuku',
+    station: 'st:sentou',
     walkMinutes: 6,
     rain: 'none',
     goods: [
@@ -764,18 +747,18 @@ const BASE_PLACES: readonly Place[] = [
     fictional: true,
   },
   {
-    id: 'shinjuku:lumiere-atelier',
-    area: 'shinjuku',
-    neighborhood: 'shinjuku:south',
+    id: 'sentou:lumiere-atelier',
+    area: 'sentou',
+    neighborhood: 'sentou:south',
     name: '买手店「光廊成衣」',
     type: 'shop',
     indoor: true,
     hours: { open: '11:00', close: '21:00' },
     capacity: 22,
-    station: 'st:shinjuku',
+    station: 'st:sentou',
     walkMinutes: 6,
     rain: 'none',
-    goods: apparelWindowForPlace('shinjuku:lumiere-atelier', '2026-11-18').map((e) => ({
+    goods: apparelWindowForPlace('sentou:lumiere-atelier', '2026-11-18').map((e) => ({
       sku: e.sku,
       type: 'apparel_bundle',
       name: e.name,
@@ -789,18 +772,18 @@ const BASE_PLACES: readonly Place[] = [
     fictional: true,
   },
   {
-    id: 'shinjuku:velours-intime',
-    area: 'shinjuku',
-    neighborhood: 'shinjuku:south',
+    id: 'sentou:velours-intime',
+    area: 'sentou',
+    neighborhood: 'sentou:south',
     name: '私密精品店「丝绒私语」',
     type: 'shop',
     indoor: true,
     hours: { open: '12:00', close: '22:00' },
     capacity: 14,
-    station: 'st:shinjuku',
+    station: 'st:sentou',
     walkMinutes: 7,
     rain: 'none',
-    goods: apparelWindowForPlace('shinjuku:velours-intime', '2026-11-18').map((e) => ({
+    goods: apparelWindowForPlace('sentou:velours-intime', '2026-11-18').map((e) => ({
       sku: e.sku,
       type: 'apparel_bundle',
       name: e.name,
@@ -822,28 +805,28 @@ export const PLACES: readonly Place[] = [
 
 const BASE_STAMPS: readonly StationStampSpec[] = [
   {
-    stampId: 'stamp:akabane',
-    stationId: 'st:akabane',
-    placeId: 'akabane:station',
-    title: '赤羽站 · 荒川铁桥与晚霞',
-    motif: '跨越荒川河堤的桁架铁桥与归巢水鸟',
+    stampId: 'stamp:hiwatari',
+    stationId: 'st:hiwatari',
+    placeId: 'hiwatari:station',
+    title: '绯渡站 · 澪川铁桥与晚霞',
+    motif: '跨越澪川河堤的桁架铁桥与归巢水鸟',
     inkColor: '#b91c1c',
     emblem: 'bridge',
   },
   {
-    stampId: 'stamp:ikebukuro',
-    stationId: 'st:ikebukuro',
-    placeId: 'ikebukuro:station',
-    title: '池袋站 · 木雕猫头鹰与书灯',
+    stampId: 'stamp:kagamiike',
+    stationId: 'st:kagamiike',
+    placeId: 'kagamiike:station',
+    title: '镜池站 · 木雕猫头鹰与书灯',
     motif: '东口相聚的猫头鹰像与喫茶煤油灯',
     inkColor: '#1d4ed8',
     emblem: 'owl',
   },
   {
-    stampId: 'stamp:shinjuku',
-    stationId: 'st:shinjuku',
-    placeId: 'shinjuku:station',
-    title: '新宿站 · 南口跨线露台与钟塔',
+    stampId: 'stamp:sentou',
+    stationId: 'st:sentou',
+    placeId: 'sentou:station',
+    title: '千灯站 · 南口跨线露台与钟塔',
     motif: '并列进站的轨道线群与南口步道灯柱',
     inkColor: '#15803d',
     emblem: 'terrace',
@@ -855,8 +838,8 @@ export const STATION_STAMPS: readonly StationStampSpec[] = [
   ...MOUNTED_CONTENT_PACKS.flatMap((p) => p.stamps ?? []),
 ];
 
-/** 不经过车站的步行近路（无向）。小屋在赤羽站和荒川之间，去河岸不用绕回站前。 */
-export const WALK_SHORTCUTS: readonly { a: string; b: string; minutes: number }[] = [{ a: HOUSE_ENTRANCE, b: 'akabane:arakawa-riverbank', minutes: 9 }];
+/** 不经过车站的步行近路（无向）。小屋在绯渡站和澪川之间，去河岸不用绕回站前。 */
+export const WALK_SHORTCUTS: readonly { a: string; b: string; minutes: number }[] = [{ a: HOUSE_ENTRANCE, b: 'hiwatari:mio-riverbank', minutes: 9 }];
 
 const PLACE_BY_ID = new Map(PLACES.map((p) => [p.id, p]));
 const STATION_BY_ID = new Map(STATIONS.map((s) => [s.id, s]));
@@ -1034,12 +1017,12 @@ export function validateCatalog(): string[] {
   dup(STATION_STAMPS.map((s) => s.stationId), '车站印章所属车站');
   dup(STATION_STAMPS.map((s) => s.placeId), '车站印章所属地点');
   const sourceIds = new Set(SOURCES.map((s) => s.id));
-  const munIds = new Set(MUNICIPALITIES.map((m) => m.id));
-  for (const m of MUNICIPALITIES) {
-    if (!sourceIds.has(m.source)) problems.push(`自治体 ${m.id} 的来源 ${m.source} 不存在`);
+  const wardIds = new Set(WARDS.map((w) => w.id));
+  for (const w of WARDS) {
+    if (!sourceIds.has(w.source)) problems.push(`架空区 ${w.id} 的来源 ${w.source} 不存在`);
   }
   for (const a of AREAS) {
-    if (a.municipalityId && !munIds.has(a.municipalityId)) problems.push(`片区 ${a.id} 的自治体 ${a.municipalityId} 不存在`);
+    if (a.wardId && !wardIds.has(a.wardId)) problems.push(`片区 ${a.id} 的架空区 ${a.wardId} 不存在`);
     if (a.hubStationId && !STATION_BY_ID.has(a.hubStationId)) problems.push(`片区 ${a.id} 的主车站 ${a.hubStationId} 不存在`);
   }
   for (const s of STATIONS) {
@@ -1096,7 +1079,7 @@ function normalizeCatalogTime(ctx?: string | CatalogTimeContext): Required<Catal
   return { dateStr, jstMonth, minuteOfDay };
 }
 
-/** 按东京世界日与时段返回地点当前陈列商品（纯函数，无随机与外部状态）。 */
+/** 按灯都世界日与时段返回地点当前陈列商品（纯函数，无随机与外部状态）。 */
 export function goodsForPlace(p: Place, ctx?: string | CatalogTimeContext): readonly Good[] {
   const t = normalizeCatalogTime(ctx);
   if (p.id in APPAREL_SHOP_PLACES) {
@@ -1112,7 +1095,7 @@ export function goodsForPlace(p: Place, ctx?: string | CatalogTimeContext): read
   if (p.type === 'station') {
     return vendingGoodsForMonth(t.jstMonth);
   }
-  if (p.id === 'shinjuku:muginohi' && isMuginohiEveningDiscount(t.minuteOfDay)) {
+  if (p.id === 'sentou:muginohi' && isMuginohiEveningDiscount(t.minuteOfDay)) {
     return p.goods.map((g) => ({
       ...g,
       priceYen: Math.floor((g.priceYen * 8) / 10),

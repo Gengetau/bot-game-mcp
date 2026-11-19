@@ -13,9 +13,9 @@ import {
   AREAS,
   BOOK_SHELF_RESALE_YEN,
   CITY_CATALOG_VERSION,
+  CITY_TEXT_VERSION,
   FARE_RULE_VERSION,
   HOUSE_ENTRANCE,
-  MUNICIPALITIES,
   SOURCES,
   STATIONS,
   TRANSIT_EDGES,
@@ -55,7 +55,7 @@ import { effectiveVisitReturnSchedule, openVisitOf, type VisitRow } from './visi
 import { eventsToday, weatherBrief } from './weather.js';
 
 /** 交给 world_act 的占位窗口：城市世界不用动作窗口，保留这个字段只为了和栖灯镇的工具签名一致。 */
-export const CITY_ACTION_WINDOW = 'tokyo';
+export const CITY_ACTION_WINDOW = 'city';
 /** 本人视图 UTF-8 JSON 字节硬上限（4 KB）。 */
 export const MAX_SELF_VIEW_BYTES = 4096;
 export const SELF_VIEW_MAX_BYTES = 4096;
@@ -186,21 +186,23 @@ export function publicCityView(c: CityService): Record<string, unknown> {
   const now = c.now();
   const ct = c.catalogTime(now);
   const places = publicPlaces();
+  const displayTimezone = c.params.timezone === 'Asia/Tokyo' ? 'JST' : c.params.timezone;
   return {
     world_id: c.worldId,
     name: c.worldName,
     at_ms: now,
     local_time: c.clock(now),
-    timezone: c.params.timezone,
+    timezone: displayTimezone,
     city_catalog_version: CITY_CATALOG_VERSION,
+    city_text_version: CITY_TEXT_VERSION,
     areas: AREAS.map((a) => ({
       id: a.id,
       ...(a.districtId ? { district_id: a.districtId } : {}),
-      ...(a.municipalityId ? { municipality_id: a.municipalityId } : {}),
+      ...(a.wardId ? { ward_id: a.wardId } : {}),
       ...(a.openness ? { openness: a.openness } : {}),
       ...(a.hubStationId ? { hub_station_id: a.hubStationId } : {}),
       name: a.name,
-      ward: a.ward,
+      ...(a.ward ? { ward: a.ward } : {}),
       blurb: a.blurb,
       weather: weatherBrief(c, a.id),
       places: places
@@ -220,7 +222,6 @@ export function publicCityView(c: CityService): Record<string, unknown> {
           here: c.presentAt(p.id).map((r) => ({ id: r.resident_id, name: r.name })),
         })),
     })),
-    municipalities: MUNICIPALITIES,
     transit: {
       note: '耗时、票价与首末班时间都是模拟值，不是真实时刻表和实时运价。',
       source: 'simulated',
@@ -358,7 +359,7 @@ export function sceneView(
     return { place: { id: p.id, name: p.name, area: p.area, type: p.type }, people: [], goods: [], exits, recent_chat: [], weather };
   }
   const ct = c.catalogTime(at);
-  const cornerMode = p.id === 'ikebukuro:shiorido' ? 'shelf' : p.type === 'station' ? 'drift' : null;
+  const cornerMode = p.id === 'kagamiike:shiorido' ? 'shelf' : p.type === 'station' ? 'drift' : null;
   const allBooks = cornerMode
     ? cornerBooksAt(c, cornerMode, p.id, 5).map((b) => {
         const m = parseJson<Record<string, unknown> | null>(b.meta_json, null);

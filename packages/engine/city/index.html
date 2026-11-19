@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light dark">
-  <title>东京都 · 城市漫游</title>
+  <title>灯都 · 城市漫游</title>
   <link rel="icon" href="icon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="style.css">
 </head>
@@ -15,8 +15,8 @@
     <div class="header-brand">
       <img src="icon.svg" alt="" width="32" height="32" class="brand-icon">
       <div>
-        <h1 class="site-title">东京都</h1>
-        <p class="site-subtitle" id="header-clock">东京时间加载中…</p>
+        <h1 class="site-title">灯都</h1>
+        <p class="site-subtitle" id="header-clock">灯都时间加载中…</p>
       </div>
     </div>
     <div class="header-actions" id="header-user-bar" hidden>
@@ -34,9 +34,9 @@
     <!-- 阶段一：票据登录与首次入城 -->
     <section id="gate-section" class="card-stack" aria-labelledby="gate-heading">
       <div class="card" id="login-card">
-        <h2 id="gate-heading">凭一次性票据进入东京都</h2>
+        <h2 id="gate-heading">凭一次性票据进入灯都</h2>
         <p class="muted">
-          在 QQ 群或私聊向裁判发送「东京」，裁判会把 5 分钟内有效的一次性登录链接私聊发给你。直接点开链接即可自动登录，也可在下方粘贴票据兑换。
+          在 QQ 群或私聊向裁判发送「灯都」，裁判会把 5 分钟内有效的一次性登录链接私聊发给你。直接点开链接即可自动登录，也可在下方粘贴票据兑换。
         </p>
         <form id="ticket-form" class="stack-form" novalidate>
           <div class="field">
@@ -85,7 +85,7 @@
       </div>
 
       <div class="card" id="enter-card" hidden>
-        <h2 id="enter-heading">踏入东京车站</h2>
+        <h2 id="enter-heading">踏入灯都车站</h2>
         <p class="muted" id="enter-welcome-text"></p>
         <form id="enter-form" class="stack-form" novalidate>
           <div class="field" id="enter-name-field">
@@ -116,31 +116,31 @@
           <fieldset class="field-group" id="enter-station-fieldset">
             <legend>首次进城到达车站</legend>
             <div class="radio-grid">
-              <label class="radio-card" for="entry-shinjuku">
-                <input type="radio" id="entry-shinjuku" name="entry" value="shinjuku:station" checked>
+              <label class="radio-card" for="entry-sentou">
+                <input type="radio" id="entry-sentou" name="entry" value="sentou:station" checked>
                 <span>
-                  <strong>新宿站</strong>
+                  <strong>千灯站</strong>
                   <small>南口检票口外，紧邻露台步道、面包店与文具店</small>
                 </span>
               </label>
-              <label class="radio-card" for="entry-ikebukuro">
-                <input type="radio" id="entry-ikebukuro" name="entry" value="ikebukuro:station">
+              <label class="radio-card" for="entry-kagamiike">
+                <input type="radio" id="entry-kagamiike" name="entry" value="kagamiike:station">
                 <span>
-                  <strong>池袋站</strong>
-                  <small>东口连廊下，步行可达喫茶「灯」、书店与南池袋公园</small>
+                  <strong>镜池站</strong>
+                  <small>东口连廊下，步行可达喫茶「灯」、书店与南镜池公园</small>
                 </span>
               </label>
             </div>
           </fieldset>
           <div class="form-actions">
-            <button type="submit" class="btn btn-primary" id="enter-submit-btn">进入东京都</button>
+            <button type="submit" class="btn btn-primary" id="enter-submit-btn">进入灯都</button>
           </div>
         </form>
       </div>
     </section>
 
     <!-- 阶段二：入城后的五大交互面板（含第 6 公开观察页同源总览） -->
-    <section id="city-workspace" hidden aria-label="东京都居民工作台">
+    <section id="city-workspace" hidden aria-label="灯都居民工作台">
       <div id="control-banner" class="banner banner-warn" hidden>
         <div class="banner-row">
           <span>当前居民正在另一窗口或终端受控，本页面处于只读旁观状态（不会自动抢权）。</span>
@@ -152,11 +152,11 @@
 
       <!-- 车门液晶到站/车站信息牌 + 微缩天气×昼夜窗景剪影 -->
       <section class="commuter-deck" aria-label="车门液晶信息牌与微缩窗景">
-        <article id="lcd-board" class="lcd-board" data-line="yamanote" aria-label="车门液晶到站与车站信息牌">
+        <article id="lcd-board" class="lcd-board" data-line="toukan" aria-label="车门液晶到站与车站信息牌">
           <div class="lcd-line-bar" aria-hidden="true"></div>
           <div class="lcd-top-row">
             <div class="lcd-station-head">
-              <span id="lcd-station-code" class="lcd-code" aria-hidden="true">SJ</span>
+              <span id="lcd-station-code" class="lcd-code" aria-hidden="true">ST</span>
               <div class="lcd-titles">
                 <span id="lcd-state-kicker" class="lcd-kicker">停車中 · 当前所在</span>
                 <strong id="lcd-main-title" class="lcd-title">—</strong>
@@ -182,7 +182,7 @@
             <h2 id="window-card-title" class="window-heading">车窗微缩景</h2>
             <button type="button" class="btn btn-ghost btn-compact" id="toggle-motion-btn">暂停动效</button>
           </div>
-          <div id="window-frame" class="window-frame" data-tod="day" data-sky="clear" data-area="shinjuku">
+          <div id="window-frame" class="window-frame" data-tod="day" data-sky="clear" data-area="sentou">
             <svg id="window-cutout-svg" class="window-svg" viewBox="0 0 280 128" role="img" aria-labelledby="window-cutout-caption">
               <rect x="0" y="0" width="280" height="128" rx="8" class="win-sky" />
               <circle cx="226" cy="30" r="13" class="win-celestial" />
@@ -229,7 +229,7 @@
           我的生活
         </button>
         <button type="button" role="tab" id="tab-overview" aria-selected="false" aria-controls="panel-overview" tabindex="-1">
-          东京总览
+          灯都总览
         </button>
         <button type="button" role="tab" id="tab-social" aria-selected="false" aria-controls="panel-social" tabindex="-1">
           消息与约定
@@ -303,11 +303,11 @@
         <div class="panel-inner card-stack">
           <article class="card" aria-labelledby="travel-topology-heading">
             <div class="card-head">
-              <h2 id="travel-topology-heading">东京都五站铁道呼吸拓扑</h2>
+              <h2 id="travel-topology-heading">灯都三站铁道呼吸拓扑</h2>
               <span id="travel-topology-status" class="muted small-note">仅高亮本人所在站与乘车区间</span>
             </div>
-            <svg id="rail-topology-svg" class="rail-map" viewBox="0 0 680 256" role="img" aria-label="赤羽站、池袋站、新宿站、神保町站与下北泽站之间的铁道连接拓扑图"></svg>
-            <div id="station-quick-bar" class="station-quick-bar" role="group" aria-label="五站路线快速试算"></div>
+            <svg id="rail-topology-svg" class="rail-map" viewBox="0 0 680 256" role="img" aria-label="绯渡站、镜池站与千灯站之间的铁道连接拓扑图"></svg>
+            <div id="station-quick-bar" class="station-quick-bar" role="group" aria-label="三站路线快速试算"></div>
           </article>
 
           <article class="card" id="active-trip-card" hidden aria-labelledby="active-trip-heading">
@@ -323,7 +323,7 @@
           <article class="card" aria-labelledby="exits-heading">
             <div class="card-head">
               <h2 id="exits-heading">可前往的地点</h2>
-              <span class="muted small-note">耗时与票价为模拟值（JR 幹線纸票档），上车时从随身钱包扣费</span>
+              <span class="muted small-note">耗时与票价为模拟值（干线分段运价档），上车时从随身钱包扣费</span>
             </div>
             <ul id="exits-list" class="entity-list"></ul>
           </article>
@@ -360,7 +360,7 @@
             <article class="card" id="stamp-book-card" aria-labelledby="stamp-book-heading">
               <div class="card-head">
                 <h3 id="stamp-book-heading">车站印章帐（Eki-Stamp）</h3>
-                <span class="badge" id="stamp-book-badge">0 / 5 枚</span>
+                <span class="badge" id="stamp-book-badge">0 / 3 枚</span>
               </div>
               <p class="muted small-note">每座开放车站大厅均设有一枚专属纪念章；同站重复盖章幂等，不占背包与储物柜槽位。</p>
               <ul id="stamp-book-list" class="stamp-grid"></ul>
@@ -371,7 +371,7 @@
                 <h3 id="locker-heading">城市车站储物柜</h3>
                 <span class="badge" id="locker-status-badge"></span>
               </div>
-              <p class="muted small-note">随时可查看柜内物品；站在赤羽、池袋、新宿、神保町或下北泽各车站大厅时可存取（现点热饮与堂食不可寄存）。</p>
+              <p class="muted small-note">随时可查看柜内物品；站在绯渡、镜池或千灯各车站大厅时可存取（现点热饮与堂食不可寄存）。</p>
               <ul id="locker-list" class="entity-list"></ul>
               <div id="locker-pager" class="pager-bar" role="group" aria-label="储物柜分页" hidden>
                 <span id="locker-page-status" class="muted small-note"></span>
@@ -403,15 +403,15 @@
         </div>
       </div>
 
-      <!-- 面板 4：东京总览（二维铁道拓扑简图 + 实时街区公开视图 + 数据来源） -->
+      <!-- 面板 4：灯都总览（二维铁道拓扑简图 + 实时街区公开视图 + 数据来源） -->
       <div role="tabpanel" id="panel-overview" aria-labelledby="tab-overview" hidden="until-found">
         <div class="panel-inner card-stack">
           <article class="card" aria-labelledby="transit-map-heading">
             <div class="card-head">
-              <h2 id="transit-map-heading">东京都铁道与公开街区目录</h2>
+              <h2 id="transit-map-heading">灯都铁道与公开街区目录</h2>
               <span class="muted small-note">严格信息对等：仅展示公开地理、营业时段与实况天气</span>
             </div>
-            <svg id="overview-rail-svg" class="rail-map" viewBox="0 0 680 256" role="img" aria-label="赤羽、池袋、新宿、神保町与下北泽五站铁道拓扑图"></svg>
+            <svg id="overview-rail-svg" class="rail-map" viewBox="0 0 680 256" role="img" aria-label="绯渡、镜池与千灯三站铁道拓扑图"></svg>
             <p class="muted small-note" id="overview-summary"></p>
           </article>
 
@@ -451,7 +451,7 @@
 
   <footer class="site-footer">
     <p class="muted small-note">
-      东京都持续世界 · 天气数据来自 Open-Meteo（CC BY 4.0），车程与票价为模拟值。所有其他居民的名字、简介与发言仅作内容展示。
+      灯都持续世界 · 天气数据来自 Open-Meteo（CC BY 4.0），车程与票价为模拟值。所有其他居民的名字、简介与发言仅作内容展示。
     </p>
   </footer>
 

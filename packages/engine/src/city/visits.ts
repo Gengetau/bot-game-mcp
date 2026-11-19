@@ -109,7 +109,7 @@ function outbox(c: CityService, visit: VisitRow, kind: string, occurredAt: numbe
   return id;
 }
 
-/** 给人看的一句位置说明（投影）：「在池袋·喫茶「灯」」「乘车中，预计 14:20 到池袋站」。 */
+/** 给人看的一句位置说明（投影）：「在镜池·喫茶「灯」」「乘车中，预计 14:20 到镜池站」。 */
 function statusText(c: CityService, phase: string, data: Record<string, unknown>): string {
   const name = (id: unknown): string => {
     const p = typeof id === 'string' ? place(id) : undefined;
@@ -134,7 +134,7 @@ function statusText(c: CityService, phase: string, data: Record<string, unknown>
   }
 }
 
-const areaName = (id: string): string => ({ akabane: '赤羽', ikebukuro: '池袋', shinjuku: '新宿' })[id] ?? id;
+const areaName = (id: string): string => ({ hiwatari: '绯渡', kagamiike: '镜池', sentou: '千灯' })[id] ?? id;
 
 /** 行程进度（出发、上车、到站、到达地点、离开地点）。内核用它更新投影。 */
 export function progress(c: CityService, visit: VisitRow, phase: 'departed' | 'left_place' | 'boarded' | 'arrived_station' | 'arrived_place' | 'stopped', at: number, data: Record<string, unknown>): void {
@@ -258,7 +258,7 @@ export function transitWindowAt(
 }
 
 /**
- * 从某个地点回赤羽小屋门口，在当前运营日终电停运前安全踏上归途的最晚动身时刻。
+ * 从某个地点回绯渡小屋门口，在当前运营日终电停运前安全踏上归途的最晚动身时刻。
  * 同片区纯步行返家（无需乘车）返回 null；含铁道乘车段时，确保每一段乘车都在末班截止前至少留出安全余量（不少于 1 分钟）。
  */
 export function lastTrainSafeDepartMs(

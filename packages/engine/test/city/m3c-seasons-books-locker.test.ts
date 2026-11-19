@@ -24,12 +24,12 @@ import { Authenticator } from '../../src/mcp/auth.js';
 import { createMcpServer } from '../../src/mcp/server.js';
 import { HOUR, MIN, T0, makeCity, rejects } from './helpers.js';
 
-describe('东京 M3-C：时令物候商品（晚间八折 / 冬夏售货机 / 24h便利店）', () => {
+describe('灯都 M3-C：时令物候商品（晚间八折 / 冬夏售货机 / 24h便利店）', () => {
   it('纯函数切面：19:30 后「麦之灯」晚间余量八折（整数日元取整入账），20:00 打烊后拒买', () => {
     // T0 = 2026-11-17 10:00 JST
     const t = makeCity({ at: T0 });
-    const b = t.bot('夜归面包客', { entry: 'shinjuku:station' });
-    b.go('shinjuku:muginohi');
+    const b = t.bot('夜归面包客', { entry: 'sentou:station' });
+    b.go('sentou:muginohi');
 
     // 10:00 JST 原价购买 1 个菠萝包（¥230）
     const morningBuy = b.act({ type: 'buy', sku: 'melon_pan', qty: 1 });
@@ -42,7 +42,7 @@ describe('东京 M3-C：时令物候商品（晚间八折 / 冬夏售货机 / 24
     // 推进 1 分钟到 19:30 JST：挂出晚间余量八折（¥230->¥184, ¥260->¥208, ¥280->¥224）
     t.run(1 * MIN);
     const pub = publicCityView(t.c) as any;
-    const pubMuginohi = pub.areas.find((a: any) => a.id === 'shinjuku').places.find((p: any) => p.id === 'shinjuku:muginohi');
+    const pubMuginohi = pub.areas.find((a: any) => a.id === 'sentou').places.find((p: any) => p.id === 'sentou:muginohi');
     expect(pubMuginohi.goods.find((g: any) => g.sku === 'melon_pan')).toMatchObject({
       price_yen: 184,
       original_price_yen: 230,
@@ -55,7 +55,7 @@ describe('东京 M3-C：时令物候商品（晚间八折 / 冬夏售货机 / 24
     expect(eveGoods.find((g: any) => g.sku === 'cookie').price_yen).toBe(224);
 
     // 纯函数多次调用确定性一致
-    const muginohi = place('shinjuku:muginohi')!;
+    const muginohi = place('sentou:muginohi')!;
     expect(goodsForPlace(muginohi, { dateStr: '2026-11-17', jstMonth: 11, minuteOfDay: 19 * 60 + 30 })).toEqual(
       goodsForPlace(muginohi, { dateStr: '2026-11-17', jstMonth: 11, minuteOfDay: 19 * 60 + 30 }),
     );
@@ -77,7 +77,7 @@ describe('东京 M3-C：时令物候商品（晚间八折 / 冬夏售货机 / 24
     // 冬季：2026-01-15 03:00 JST
     const winterAt = Date.UTC(2026, 0, 14, 18, 0, 0);
     const tw = makeCity({ at: winterAt });
-    const bw2 = tw.bot('冬夜旅人', { entry: 'shinjuku:station' });
+    const bw2 = tw.bot('冬夜旅人', { entry: 'sentou:station' });
     const wSkus = (bw2.view().here as any).goods.map((g: any) => g.sku);
     expect(wSkus).toContain('hot_corn_soup');
     expect(wSkus).toContain('hot_red_bean_soup');
@@ -89,7 +89,7 @@ describe('东京 M3-C：时令物候商品（晚间八折 / 冬夏售货机 / 24
     // 夏季：2026-07-20 14:00 JST
     const summerAt = Date.UTC(2026, 6, 20, 5, 0, 0);
     const ts = makeCity({ at: summerAt });
-    const bs = ts.bot('夏午旅人', { entry: 'ikebukuro:station' });
+    const bs = ts.bot('夏午旅人', { entry: 'kagamiike:station' });
     const sSkus = (bs.view().here as any).goods.map((g: any) => g.sku);
     expect(sSkus).toContain('salted_lychee');
     expect(sSkus).not.toContain('hot_corn_soup');
@@ -101,7 +101,7 @@ describe('东京 M3-C：时令物候商品（晚间八折 / 冬夏售货机 / 24
     // 春秋季：2026-05-10 12:00 JST
     const springAt = Date.UTC(2026, 4, 10, 3, 0, 0);
     const tp = makeCity({ at: springAt });
-    const bp = tp.bot('五月旅人', { entry: 'shinjuku:station' });
+    const bp = tp.bot('五月旅人', { entry: 'sentou:station' });
     const pSkus = (bp.view().here as any).goods.map((g: any) => g.sku);
     expect(pSkus).toEqual(['green_tea', 'roasted_tea']);
   });
@@ -110,16 +110,16 @@ describe('东京 M3-C：时令物候商品（晚间八折 / 冬夏售货机 / 24
     // 先在末班车前（00:05 JST）让赤羽旅人抵达赤羽站，再推进到凌晨 02:30 JST（铁道停运窗内，三区各自同片区步行前往 24h 便利店）
     const beforeLastTrain = Date.UTC(2026, 10, 17, 15, 5, 0);
     const t = makeCity({ at: beforeLastTrain });
-    const bIkebukuro = t.bot('池袋夜客', { entry: 'ikebukuro:station' });
-    const bShinjuku = t.bot('新宿夜客', { entry: 'shinjuku:station' });
-    const bAkabane = t.bot('赤羽夜客', { entry: 'ikebukuro:station' });
-    bAkabane.act({ type: 'travel', to: 'akabane:station' });
+    const bIkebukuro = t.bot('镜池夜客', { entry: 'kagamiike:station' });
+    const bShinjuku = t.bot('千灯夜客', { entry: 'sentou:station' });
+    const bAkabane = t.bot('绯渡夜客', { entry: 'kagamiike:station' });
+    bAkabane.act({ type: 'travel', to: 'hiwatari:station' });
     t.run(145 * MIN); // 02:30 JST
 
     const pairs: Array<[typeof bIkebukuro, string]> = [
-      [bIkebukuro, 'ikebukuro:ekimae-conbini'],
-      [bShinjuku, 'shinjuku:south-conbini'],
-      [bAkabane, 'akabane:ekimae-conbini'],
+      [bIkebukuro, 'kagamiike:ekimae-conbini'],
+      [bShinjuku, 'sentou:south-conbini'],
+      [bAkabane, 'hiwatari:ekimae-conbini'],
     ];
     for (const [walker, store] of pairs) {
       walker.act({ type: 'travel', to: store });
@@ -135,21 +135,21 @@ describe('东京 M3-C：时令物候商品（晚间八折 / 冬夏售货机 / 24
   });
 });
 
-describe('东京 M3-C：漂流文库本扉页流转与 4KB / 防注入硬护栏', () => {
+describe('灯都 M3-C：漂流文库本扉页流转与 4KB / 防注入硬护栏', () => {
   it('read_item 升级 instance=1 后，经「栞堂」二手架与车站漂流角多次流转，全程保持同一 item_id', () => {
     const t = makeCity({ at: T0 });
-    const a = t.bot('甲', { entry: 'ikebukuro:station' });
-    const b = t.bot('乙', { entry: 'ikebukuro:station' });
+    const a = t.bot('甲', { entry: 'kagamiike:station' });
+    const b = t.bot('乙', { entry: 'kagamiike:station' });
     const nia = t.kernel('nia');
 
-    a.go('ikebukuro:shiorido');
+    a.go('kagamiike:shiorido');
     a.act({ type: 'buy', sku: 'paperback', qty: 2 });
 
     // 未批注的 instance=0 文库本禁止直接上架/漂流
     rejects(() => a.act({ type: 'drift_book', item: 'paperback' }), 'PRECONDITION_FAILED', 'not_annotated');
 
     // 甲阅读第一本并写扉页批注，堆叠 2 -> 1 并拆出 instance=1
-    const read1 = a.act({ type: 'read_item', item: 'paperback', title: '东京散步手记', note: '雨前在池袋翻开第一章' });
+    const read1 = a.act({ type: 'read_item', item: 'paperback', title: '灯都散步手记', note: '雨前在镜池翻开第一章' });
     const bookId = read1.item.item_id as string;
     expect(read1.item.instance).toBe(true);
     expect(read1.item.flyleaf_count).toBe(1);
@@ -164,15 +164,15 @@ describe('东京 M3-C：漂流文库本扉页流转与 4KB / 防注入硬护栏'
     expect(a.view().wallet.yen).toBe(beforeSell + 300);
 
     // 乙来「栞堂」查看书架并用 take_book 买走同一本 item_id
-    b.go('ikebukuro:shiorido');
+    b.go('kagamiike:shiorido');
     const shelfBooks = (b.view().here as any).books;
-    expect(shelfBooks).toEqual([expect.objectContaining({ item_id: bookId, title: '东京散步手记', price_yen: 350, flyleaf_count: 2 })]);
+    expect(shelfBooks).toEqual([expect.objectContaining({ item_id: bookId, title: '灯都散步手记', price_yen: 350, flyleaf_count: 2 })]);
     // 书架列表绝不展开历任长批注
     expect(shelfBooks[0].flyleaf).toBeUndefined();
 
     const inspectedShelf = b.act({ type: 'inspect_item', item_id: bookId });
     expect(inspectedShelf.item.meta.flyleaf).toHaveLength(2);
-    expect(inspectedShelf.item.meta.flyleaf[0]).toMatchObject({ note: '雨前在池袋翻开第一章', untrusted: true });
+    expect(inspectedShelf.item.meta.flyleaf[0]).toMatchObject({ note: '雨前在镜池翻开第一章', untrusted: true });
 
     const beforeBuy = b.view().wallet.yen;
     const picked = b.act({ type: 'take_book', item_id: bookId });
@@ -180,12 +180,12 @@ describe('东京 M3-C：漂流文库本扉页流转与 4KB / 防注入硬护栏'
     expect(picked.paid_yen).toBe(350);
     expect(b.view().wallet.yen).toBe(beforeBuy - 350);
 
-    // 乙到赤羽站投入车站图书漂流角，小屋室友妮娅到赤羽站免费淘走同一本 item_id
-    b.go('akabane:station');
-    const drifted = b.act({ type: 'drift_book', item_id: bookId, note: '放在赤羽站漂流角' });
+    // 乙到绯渡站投入车站图书漂流角，小屋室友妮娅到绯渡站免费淘走同一本 item_id
+    b.go('hiwatari:station');
+    const drifted = b.act({ type: 'drift_book', item_id: bookId, note: '放在绯渡站漂流角' });
     expect(drifted.mode).toBe('drift');
 
-    nia.depart({ yen: 5000, items: [], to: 'akabane:station' });
+    nia.depart({ yen: 5000, items: [], to: 'hiwatari:station' });
     t.run(20 * MIN);
     const driftCorner = (nia.view().here as any).books;
     expect(driftCorner.map((x: any) => x.item_id)).toContain(bookId);
@@ -196,9 +196,9 @@ describe('东京 M3-C：漂流文库本扉页流转与 4KB / 防注入硬护栏'
 
   it('防膨胀与防注入硬护栏：最多保留最近 5 条 <=50 字批注且标 untrusted，selfView <= 4KB', () => {
     const t = makeCity({ at: T0 });
-    const a = t.bot('多产读者', { entry: 'ikebukuro:station' });
-    const b = t.bot('窥视者', { entry: 'ikebukuro:station' });
-    a.go('ikebukuro:shiorido');
+    const a = t.bot('多产读者', { entry: 'kagamiike:station' });
+    const b = t.bot('窥视者', { entry: 'kagamiike:station' });
+    a.go('kagamiike:shiorido');
     a.act({ type: 'buy', sku: 'paperback', qty: 6 });
 
     // 超 50 字批注被拒绝
@@ -229,7 +229,7 @@ describe('东京 M3-C：漂流文库本扉页流转与 4KB / 防注入硬护栏'
 
     // 把 1 本放上书架 + 带着其余 4 本去橱窗最满的「铃兰衣橱」校验 selfView <= 4KB
     a.act({ type: 'drift_book', item_id: bookIds[4]! });
-    a.go('ikebukuro:suzuran-closet');
+    a.go('kagamiike:suzuran-closet');
     const view = a.view();
     const rawJson = JSON.stringify(view);
     expect(Buffer.byteLength(rawJson, 'utf8')).toBeLessThanOrEqual(4096);
@@ -244,15 +244,15 @@ describe('东京 M3-C：漂流文库本扉页流转与 4KB / 防注入硬护栏'
     const t = makeCity({ at: T0 });
     const nia = t.kernel('nia');
     const niaResidentId = t.residentOf('nia');
-    const passerby1 = t.bot('逛街旅人甲', { entry: 'ikebukuro:station' });
-    const passerby2 = t.bot('逛街旅人乙', { entry: 'ikebukuro:station' });
-    passerby1.act({ type: 'update_profile', bio: '喜欢在雨天逛池袋的旧书店与服装橱窗。' });
+    const passerby1 = t.bot('逛街旅人甲', { entry: 'kagamiike:station' });
+    const passerby2 = t.bot('逛街旅人乙', { entry: 'kagamiike:station' });
+    passerby1.act({ type: 'update_profile', bio: '喜欢在雨天逛镜池的旧书店与服装橱窗。' });
     passerby2.act({ type: 'update_profile', bio: '周末常来铃兰衣橱挑应季外套。' });
-    passerby1.go('ikebukuro:suzuran-closet');
-    passerby2.go('ikebukuro:suzuran-closet');
+    passerby1.go('kagamiike:suzuran-closet');
+    passerby2.go('kagamiike:suzuran-closet');
     passerby1.act({ type: 'say', text: '今天橱窗里的冬装配色真好看。' });
 
-    nia.depart({ yen: 30_000, items: [], to: 'ikebukuro:shiorido' });
+    nia.depart({ yen: 30_000, items: [], to: 'kagamiike:shiorido' });
     t.run(40 * MIN);
 
     // 正常买入 9 本文库本并全部阅读写短标题与短批注
@@ -264,7 +264,7 @@ describe('东京 M3-C：漂流文库本扉页流转与 4KB / 防注入硬护栏'
           type: 'read_item',
           item: 'paperback',
           title: `铁道随笔第${i}卷`,
-          note: `在池袋翻完第${i}卷，窗外正飘着细雨。`,
+          note: `在镜池翻完第${i}卷，窗外正飘着细雨。`,
         }).payload as any
       ).item;
       readIds.push(res.item_id);
@@ -275,7 +275,7 @@ describe('东京 M3-C：漂流文库本扉页流转与 4KB / 防注入硬护栏'
     expect(Buffer.byteLength(JSON.stringify(shopView9), 'utf8')).toBeLessThanOrEqual(4096);
 
     // 2) 带着 9 本已读文库本逛橱窗最满的「铃兰衣橱」视图 <= 4096 B
-    nia.act({ type: 'travel', to: 'ikebukuro:suzuran-closet' });
+    nia.act({ type: 'travel', to: 'kagamiike:suzuran-closet' });
     t.run(10 * MIN);
     const closetView9 = nia.view();
     expect(Buffer.byteLength(JSON.stringify(closetView9), 'utf8')).toBeLessThanOrEqual(4096);
@@ -317,10 +317,10 @@ describe('东京 M3-C：漂流文库本扉页流转与 4KB / 防注入硬护栏'
     expect(lastDetail.meta.flyleaf[0].note).toContain('第9卷');
 
     // 4) 个人储物柜塞入 20 本已读文库本（+ 随身仍有多本）时，首页与 lockerOffset 翻页均 <= 4096 B
-    const collector = t.bot('藏书家', { entry: 'ikebukuro:station' });
+    const collector = t.bot('藏书家', { entry: 'kagamiike:station' });
     const lockerBookIds: string[] = [];
     for (let batch = 0; batch < 3; batch++) {
-      collector.go('ikebukuro:shiorido');
+      collector.go('kagamiike:shiorido');
       const count = batch < 2 ? 8 : 4;
       collector.act({ type: 'buy', sku: 'paperback', qty: count });
       for (let j = 0; j < count; j++) {
@@ -333,12 +333,12 @@ describe('东京 M3-C：漂流文库本扉页流转与 4KB / 防注入硬护栏'
         }).item;
         lockerBookIds.push(bItem.item_id);
       }
-      collector.go('ikebukuro:station');
+      collector.go('kagamiike:station');
       for (const bid of lockerBookIds.slice(-count)) {
         collector.act({ type: 'store_locker', item_id: bid, qty: 1 });
       }
     }
-    collector.go('ikebukuro:suzuran-closet');
+    collector.go('kagamiike:suzuran-closet');
     const cView0 = collector.view();
     expect(Buffer.byteLength(JSON.stringify(cView0), 'utf8')).toBeLessThanOrEqual(4096);
     const seenLocker: string[] = [...cView0.locker_items.map((x: any) => x.item_id)];
@@ -357,15 +357,15 @@ describe('东京 M3-C：漂流文库本扉页流转与 4KB / 防注入硬护栏'
   it('R264-P2-02b：MCP get_my_view（item_offset 与 section/page）及桥接 HTTP /visits/:id/view 均守住 4096 B 上限且可翻页查全', async () => {
     const t = makeCity({ at: T0 });
     const nia = t.kernel('nia');
-    nia.depart({ yen: 25_000, items: [], to: 'ikebukuro:shiorido' });
+    nia.depart({ yen: 25_000, items: [], to: 'kagamiike:shiorido' });
     t.run(40 * MIN);
     nia.act({ type: 'buy', sku: 'paperback', qty: 9 });
     const niaBookIds: string[] = [];
     for (let i = 1; i <= 9; i++) {
-      const it = (nia.act({ type: 'read_item', item: 'paperback', title: `池袋夜读第${i}本`, note: `短批注第${i}条` }).payload as any).item;
+      const it = (nia.act({ type: 'read_item', item: 'paperback', title: `镜池夜读第${i}本`, note: `短批注第${i}条` }).payload as any).item;
       niaBookIds.push(it.item_id);
     }
-    nia.act({ type: 'travel', to: 'ikebukuro:suzuran-closet' });
+    nia.act({ type: 'travel', to: 'kagamiike:suzuran-closet' });
     t.run(10 * MIN);
 
     // 1) 桥接 HTTP /visits/:id/view 完整外层 JSON 严格 <= 4096 B，且可通过 item_offset 翻页取全
@@ -424,22 +424,22 @@ describe('东京 M3-C：漂流文库本扉页流转与 4KB / 防注入硬护栏'
         expect(Buffer.byteLength(JSON.stringify(parsed), 'utf8')).toBeLessThanOrEqual(4096);
         return parsed;
       };
-      await mcpCall('enter_world', { world_id: 'tokyo', name: '爱书人', entry: 'ikebukuro:station' });
+      await mcpCall('enter_world', { world_id: 'city', name: '爱书人', entry: 'kagamiike:station' });
       let reqSeq = 0;
       const mcpAct = (action: Record<string, unknown>) =>
         mcpCall('world_act', { request_id: `m3c-mcp-${String(++reqSeq).padStart(4, '0')}`, action });
-      const tr1 = await mcpAct({ type: 'travel', to: 'ikebukuro:shiorido' });
+      const tr1 = await mcpAct({ type: 'travel', to: 'kagamiike:shiorido' });
       t.run(tr1.trip.ends_at_ms - t.clock.t);
-      await mcpCall('enter_world', { world_id: 'tokyo' });
+      await mcpCall('enter_world', { world_id: 'city' });
       await mcpAct({ type: 'buy', sku: 'paperback', qty: 9 });
       const botBooks: string[] = [];
       for (let i = 1; i <= 9; i++) {
         const r = await mcpAct({ type: 'read_item', item: 'paperback', title: `散步文库第${i}辑`, note: `第${i}辑随手记` });
         botBooks.push(r.item.item_id);
       }
-      const tr2 = await mcpAct({ type: 'travel', to: 'ikebukuro:suzuran-closet' });
+      const tr2 = await mcpAct({ type: 'travel', to: 'kagamiike:suzuran-closet' });
       t.run(tr2.trip.ends_at_ms - t.clock.t);
-      await mcpCall('enter_world', { world_id: 'tokyo' });
+      await mcpCall('enter_world', { world_id: 'city' });
 
       const v1 = await mcpCall('get_my_view', {});
       const mcpSeen = [...v1.items.map((x: any) => x.item_id)];
@@ -465,8 +465,8 @@ describe('东京 M3-C：漂流文库本扉页流转与 4KB / 防注入硬护栏'
 
   it('R264-P2-03：MCP 带 cursor 的 get_my_view 严格守住合并结果 <= 4096 B，且多事件分页绝不跳过未返回事件', async () => {
     const t = makeCity({ at: T0 });
-    const friend = t.bot('同行友', { entry: 'ikebukuro:station' });
-    friend.go('ikebukuro:suzuran-closet');
+    const friend = t.bot('同行友', { entry: 'kagamiike:station' });
+    friend.go('kagamiike:suzuran-closet');
 
     const manager = new GameManager({ registry: createRegistry(), rng: new SeededRng('m3c-cursor') });
     const auth = new Authenticator(
@@ -491,34 +491,34 @@ describe('东京 M3-C：漂流文库本扉页流转与 4KB / 防注入硬护栏'
         return parsed;
       };
 
-      await mcpCall('enter_world', { world_id: 'tokyo', name: '漫游读者', entry: 'ikebukuro:station' });
+      await mcpCall('enter_world', { world_id: 'city', name: '漫游读者', entry: 'kagamiike:station' });
       let seq = 0;
       const mcpAct = (action: Record<string, unknown>) =>
         mcpCall('world_act', { request_id: `m3c-cur-${String(++seq).padStart(4, '0')}`, action });
 
-      const trBook = await mcpAct({ type: 'travel', to: 'ikebukuro:shiorido' });
+      const trBook = await mcpAct({ type: 'travel', to: 'kagamiike:shiorido' });
       t.run(trBook.trip.ends_at_ms - t.clock.t);
-      await mcpCall('enter_world', { world_id: 'tokyo' });
+      await mcpCall('enter_world', { world_id: 'city' });
       await mcpAct({ type: 'buy', sku: 'paperback', qty: 9 });
       for (let i = 1; i <= 9; i++) {
         await mcpAct({
           type: 'read_item',
           item: 'paperback',
           title: `雨夜文库第${i}册`,
-          note: `在池袋旧书店记下第${i}则随想`,
+          note: `在镜池旧书店记下第${i}则随想`,
         });
       }
 
-      const trCloset = await mcpAct({ type: 'travel', to: 'ikebukuro:suzuran-closet' });
+      const trCloset = await mcpAct({ type: 'travel', to: 'kagamiike:suzuran-closet' });
       t.run(trCloset.trip.ends_at_ms - t.clock.t);
-      await mcpCall('enter_world', { world_id: 'tokyo' });
+      await mcpCall('enter_world', { world_id: 'city' });
 
       // 1) 记录同伴说话前的游标，同伴正常说 3 条消息：无游标与带 cursor 均须 <= 4096 B
       const beforeChat = await mcpCall('get_my_view', {});
       const cursor0 = beforeChat.cursor as string;
       const threeMsgs = [
         '这件浅米色风衣的领口剪裁很适合秋天散步。',
-        '刚才路过南池袋公园，银杏叶已经开始变黄了。',
+        '刚才路过南镜池公园，银杏叶已经开始变黄了。',
         '挑完衣服要不要一起去旁边的喫茶「灯」喝杯热咖啡？',
       ];
       for (const msg of threeMsgs) {
@@ -549,7 +549,7 @@ describe('东京 M3-C：漂流文库本扉页流转与 4KB / 防注入硬护栏'
       for (let i = 1; i <= 14; i++) {
         t.run(5 * MIN);
         await mcpCall('heartbeat', {});
-        const text = `第${String(i).padStart(2, '0')}条长谈：${'冬日东京铁道与街角书店漫步见闻录'.repeat(6)}`;
+        const text = `第${String(i).padStart(2, '0')}条长谈：${'冬日灯都铁道与街角书店漫步见闻录'.repeat(6)}`;
         burstExpected.push(text);
         friend.act({ type: 'say', text });
       }
@@ -869,11 +869,11 @@ describe('东京 M3-C：漂流文库本扉页流转与 4KB / 防注入硬护栏'
       });
       await flushAsync();
 
-      // 1) 网页启动自动兑换 #ticket= 票据登录，填写首次入城表单进入池袋站
-      const entryShinjuku = doc.getElementById('entry-shinjuku')!;
-      const entryIkebukuro = doc.getElementById('entry-ikebukuro')!;
-      entryShinjuku.checked = false;
-      entryIkebukuro.checked = true;
+      // 1) 网页启动自动兑换 #ticket= 票据登录，填写首次入城表单进入镜池站
+      const entrySentou = doc.getElementById('entry-sentou')!;
+      const entryKagamiike = doc.getElementById('entry-kagamiike')!;
+      entrySentou.checked = false;
+      entryKagamiike.checked = true;
       doc.getElementById('enter-name-input')!.value = '网页旅人';
       await doc.getElementById('enter-form')!.submitAsync();
       await flushAsync();
@@ -882,7 +882,7 @@ describe('东京 M3-C：漂流文库本扉页流转与 4KB / 防注入硬护栏'
       expect(humanRow).toBeTruthy();
       const humanId = humanRow.resident_id;
 
-      // 2) 准备 15 本储物柜具名文库本 + 9 本随身具名文库本，最终站在池袋站大厅（可存取柜）
+      // 2) 准备 15 本储物柜具名文库本 + 9 本随身具名文库本，最终站在镜池站大厅（可存取柜）
       let actSeq = 0;
       const postWebAct = async (action: Record<string, unknown>) => {
         const sessRes = await sandboxFetch('/city/api/session');
@@ -914,7 +914,7 @@ describe('东京 M3-C：漂流文库本扉页流转与 4KB / 防注入硬护栏'
       };
 
       for (let batch = 0; batch < 2; batch++) {
-        const tr = await postWebAct({ type: 'travel', to: 'ikebukuro:shiorido' });
+        const tr = await postWebAct({ type: 'travel', to: 'kagamiike:shiorido' });
         await advanceWeb(tr.trip.ends_at_ms - t.clock.t);
         const count = batch === 0 ? 8 : 7;
         await postWebAct({ type: 'buy', sku: 'paperback', qty: count });
@@ -927,7 +927,7 @@ describe('东京 M3-C：漂流文库本扉页流转与 4KB / 防注入硬护栏'
             note: `私柜第${idx}册批注`,
           });
         }
-        const back = await postWebAct({ type: 'travel', to: 'ikebukuro:station' });
+        const back = await postWebAct({ type: 'travel', to: 'kagamiike:station' });
         await advanceWeb(back.trip.ends_at_ms - t.clock.t);
         const allHeldRows = t.c.db.all<{ item_id: string }>(
           "SELECT item_id FROM items WHERE owner_id = ? AND state = 'held' AND quantity > 0 ORDER BY item_id",
@@ -938,7 +938,7 @@ describe('东京 M3-C：漂流文库本扉页流转与 4KB / 防注入硬护栏'
         }
       }
 
-      const trFinal = await postWebAct({ type: 'travel', to: 'ikebukuro:shiorido' });
+      const trFinal = await postWebAct({ type: 'travel', to: 'kagamiike:shiorido' });
       await advanceWeb(trFinal.trip.ends_at_ms - t.clock.t);
       await postWebAct({ type: 'buy', sku: 'paperback', qty: 9 });
       for (let i = 1; i <= 9; i++) {
@@ -949,7 +949,7 @@ describe('东京 M3-C：漂流文库本扉页流转与 4KB / 防注入硬护栏'
           note: `随身手记第${i}卷扉页心得`,
         });
       }
-      const backStation = await postWebAct({ type: 'travel', to: 'ikebukuro:station' });
+      const backStation = await postWebAct({ type: 'travel', to: 'kagamiike:station' });
       await advanceWeb(backStation.trip.ends_at_ms - t.clock.t);
 
       // 触发网页端自身刷新（经 claim 同步最新 view）并切换到「我的生活」面板
@@ -1061,23 +1061,23 @@ describe('东京 M3-C：漂流文库本扉页流转与 4KB / 防注入硬护栏'
   });
 });
 
-describe('东京 M3-C：车站投币储物柜凭条代取与 72h 超时退回防占柜', () => {
+describe('灯都 M3-C：车站投币储物柜凭条代取与 72h 超时退回防占柜', () => {
   it('支持指定 recipient_id 与一次性 voucher 凭条错峰代取，且校验同站与权限', () => {
     const t = makeCity({ at: T0 });
-    const a = t.bot('早班存物人', { entry: 'ikebukuro:station' });
-    const b = t.bot('夜班代取人', { entry: 'shinjuku:station' });
-    const c = t.bot('无关路人', { entry: 'ikebukuro:station' });
+    const a = t.bot('早班存物人', { entry: 'kagamiike:station' });
+    const b = t.bot('夜班代取人', { entry: 'sentou:station' });
+    const c = t.bot('无关路人', { entry: 'kagamiike:station' });
 
-    a.go('ikebukuro:shiorido');
+    a.go('kagamiike:shiorido');
     a.act({ type: 'buy', sku: 'paperback', qty: 1 });
     const bookId = a.act({ type: 'read_item', item: 'paperback', note: '托你转交的书' }).item.item_id as string;
-    a.go('ikebukuro:ekimae-conbini');
+    a.go('kagamiike:ekimae-conbini');
     a.act({ type: 'buy', sku: 'onigiri', qty: 2 });
 
-    // 1) 指定受托人存入池袋站投币柜
-    a.go('ikebukuro:station');
+    // 1) 指定受托人存入镜池站投币柜
+    a.go('kagamiike:station');
     const dep1 = a.act({ type: 'store_locker', item_id: bookId, qty: 1, recipient_id: b.id }).deposit;
-    expect(dep1).toMatchObject({ item_id: bookId, recipient_id: b.id, place_id: 'ikebukuro:station' });
+    expect(dep1).toMatchObject({ item_id: bookId, recipient_id: b.id, place_id: 'kagamiike:station' });
 
     // 2) 一次性凭条存入饭团
     const dep2Res = a.act({ type: 'store_locker', item: 'onigiri', qty: 2, voucher: true });
@@ -1092,8 +1092,8 @@ describe('东京 M3-C：车站投币储物柜凭条代取与 72h 超时退回防
     rejects(() => b.act({ type: 'take_locker', deposit_id: dep1.deposit_id }), 'PRECONDITION_FAILED', 'wrong_station');
     rejects(() => c.act({ type: 'take_locker', deposit_id: dep1.deposit_id }), 'FORBIDDEN', 'not_recipient');
 
-    // B 到池袋站领取两笔（保持原 bookId + 凭条一次有效）
-    b.go('ikebukuro:station');
+    // B 到镜池站领取两笔（保持原 bookId + 凭条一次有效）
+    b.go('kagamiike:station');
     const claim1 = b.act({ type: 'take_locker', deposit_id: dep1.deposit_id }).retrieved;
     expect(claim1.item_id).toBe(bookId);
     const claim2 = b.act({ type: 'take_locker', voucher: voucherCode }).retrieved;
@@ -1107,12 +1107,12 @@ describe('东京 M3-C：车站投币储物柜凭条代取与 72h 超时退回防
 
   it('防死号占柜硬门禁：单人占柜上限 + 72h 超时自动退回原主或转招领态释放柜位', () => {
     const t = makeCity({ at: T0, params: { maxLockerEntries: 2, maxActiveLockerDeposits: 2 } });
-    const a = t.bot('囤物者', { entry: 'shinjuku:station' });
-    const b = t.bot('收件人', { entry: 'shinjuku:station' });
+    const a = t.bot('囤物者', { entry: 'sentou:station' });
+    const b = t.bot('收件人', { entry: 'sentou:station' });
 
-    a.go('shinjuku:south-conbini');
+    a.go('sentou:south-conbini');
     a.act({ type: 'buy', sku: 'onigiri', qty: 6 });
-    a.go('shinjuku:station');
+    a.go('sentou:station');
 
     // 占满 maxActiveLockerDeposits = 2 个公共代取柜位
     const d1 = a.act({ type: 'store_locker', item: 'onigiri', qty: 1, voucher: true }).deposit;
@@ -1128,10 +1128,10 @@ describe('东京 M3-C：车站投币储物柜凭条代取与 72h 超时退回防
     rejects(() => b.act({ type: 'take_locker', deposit_id: d2.deposit_id }), 'PRECONDITION_FAILED', 'voucher_expired');
 
     // 填满原主个人柜（第 2 格放 umbrella）后，再存公共代取柜并超时 72h -> 转招领态（lost_found）释放公共柜位
-    a.go('shinjuku:south-conbini');
+    a.go('sentou:south-conbini');
     a.act({ type: 'buy', sku: 'umbrella', qty: 1 });
     a.act({ type: 'buy', sku: 'cookie', qty: 1 });
-    a.go('shinjuku:station');
+    a.go('sentou:station');
     a.act({ type: 'store_locker', item: 'umbrella', qty: 1 });
     expect(a.view().locker_items).toHaveLength(2);
 
@@ -1149,7 +1149,7 @@ describe('东京 M3-C：车站投币储物柜凭条代取与 72h 超时退回防
     const winterAt = Date.UTC(2026, 1, 10, 1, 0, 0);
     const t = makeCity({ at: winterAt });
     const nia = t.kernel('nia');
-    const bot = t.bot('跨季旅人', { entry: 'shinjuku:station' });
+    const bot = t.bot('跨季旅人', { entry: 'sentou:station' });
 
     // 冬季在车站售货机下热玉米浓汤订单遇 F9 结果未知
     t.c.failpoints.purchaseUnknown = () => true;
@@ -1163,20 +1163,20 @@ describe('东京 M3-C：车站投币储物柜凭条代取与 72h 超时退回防
     expect(res.reconcile_ok).toBe(true);
     expect(bot.view().items.some((i: any) => i.type === 'hot_corn_soup')).toBe(true);
 
-    // 室友妮娅在池袋站寄存一本已批注文库本给外部 Bot（带一次性凭条）
-    nia.depart({ yen: 5000, items: [], to: 'ikebukuro:shiorido' });
+    // 室友妮娅在镜池站寄存一本已批注文库本给外部 Bot（带一次性凭条）
+    nia.depart({ yen: 5000, items: [], to: 'kagamiike:shiorido' });
     t.run(40 * MIN);
     nia.act({ type: 'buy', sku: 'paperback', qty: 1 });
     const niaBook = (nia.act({ type: 'read_item', item: 'paperback', note: '从家里出门时给你留的一本书' }).payload as any).item.item_id as string;
-    nia.act({ type: 'travel', to: 'ikebukuro:station' });
+    nia.act({ type: 'travel', to: 'kagamiike:station' });
     t.run(10 * MIN);
     const dep = (nia.act({ type: 'store_locker', item_id: niaBook, qty: 1, recipient_id: bot.id, voucher: true }).payload as any).deposit;
     nia.act({ type: 'go_home' });
     t.run(30 * MIN);
     expect(nia.release().state).toBe('closed');
 
-    // 妮娅回家后，错峰的外部 Bot 去池袋站凭 voucher + 指定受托身份领取，保持同一 item_id
-    bot.go('ikebukuro:station');
+    // 妮娅回家后，错峰的外部 Bot 去镜池站凭 voucher + 指定受托身份领取，保持同一 item_id
+    bot.go('kagamiike:station');
     const got = bot.act({ type: 'take_locker', voucher: dep.voucher_code }).retrieved;
     expect(got.item_id).toBe(niaBook);
     expect(runReconcile(t.c, 'bridge-locker').ok).toBe(true);
@@ -1184,15 +1184,15 @@ describe('东京 M3-C：车站投币储物柜凭条代取与 72h 超时退回防
 
   it('R264-P2-01：统一隔离个人与代取储物柜行——个人存柜、室友返家托管、跨关单补发与代取领取数量严格守恒', () => {
     const t = makeCity({ at: T0 });
-    const a = t.bot('存物居民', { entry: 'ikebukuro:station' });
-    const b = t.bot('代取居民', { entry: 'ikebukuro:station' });
+    const a = t.bot('存物居民', { entry: 'kagamiike:station' });
+    const b = t.bot('代取居民', { entry: 'kagamiike:station' });
     const nia = t.kernel('nia');
     const claire = t.kernel('claire');
 
     // 1) 个人存柜 vs 代取柜：居民留 1 份饭团代取、另 1 份存自己个人柜 -> 不同 item_id，私柜为 1，领取数量严格守恒
-    a.go('ikebukuro:ekimae-conbini');
+    a.go('kagamiike:ekimae-conbini');
     a.act({ type: 'buy', sku: 'onigiri', qty: 2 });
-    a.go('ikebukuro:station');
+    a.go('kagamiike:station');
 
     const depRes = a.act({ type: 'store_locker', item: 'onigiri', qty: 1, recipient_id: b.id });
     const depItemId = depRes.deposit.item_id as string;
@@ -1215,10 +1215,10 @@ describe('东京 M3-C：车站投币储物柜凭条代取与 72h 超时退回防
     expect(a.view().locker_items).toEqual([]);
 
     // 2) 室友返家托管（零个人底仓子场景）：买 2 份未映射鸡蛋三明治（egg_sandwich），1 份代取、1 份随身返家 releaseVisit -> moveItemToLocker 绝不混入代取行
-    nia.depart({ yen: 5000, items: [], to: 'ikebukuro:ekimae-conbini' });
+    nia.depart({ yen: 5000, items: [], to: 'kagamiike:ekimae-conbini' });
     t.run(40 * MIN);
     nia.act({ type: 'buy', sku: 'egg_sandwich', qty: 2 });
-    nia.act({ type: 'travel', to: 'ikebukuro:station' });
+    nia.act({ type: 'travel', to: 'kagamiike:station' });
     t.run(10 * MIN);
     const niaDep = (nia.act({ type: 'store_locker', item: 'egg_sandwich', qty: 1, recipient_id: b.id, voucher: true }).payload as any).deposit;
     nia.act({ type: 'go_home' });
@@ -1230,7 +1230,7 @@ describe('东京 M3-C：车站投币储物柜凭条代取与 72h 超时退回防
     expect(bGotNia.qty).toBe(1);
     expect(b.view().items.find((i: any) => i.type === 'egg_sandwich')?.qty).toBe(1);
 
-    nia.depart({ yen: 3000, items: [], to: 'ikebukuro:station' });
+    nia.depart({ yen: 3000, items: [], to: 'kagamiike:station' });
     t.run(30 * MIN);
     expect(nia.view().locker_items).toEqual([expect.objectContaining({ type: 'egg_sandwich', qty: 1 })]);
     nia.act({ type: 'go_home' });
@@ -1238,13 +1238,13 @@ describe('东京 M3-C：车站投币储物柜凭条代取与 72h 超时退回防
     expect(nia.release().state).toBe('closed');
 
     // 3) 室友返家托管（有个人底仓 + 跨关单 F9 补发 addPlainToLocker 子场景）：买未映射透明伞（umbrella）1 代取 + 1 私柜 + 1 随身返家 + 1 关单后补发 = 1 代取 + 3 私柜
-    claire.depart({ yen: 5000, items: [], to: 'ikebukuro:ekimae-conbini' });
+    claire.depart({ yen: 5000, items: [], to: 'kagamiike:ekimae-conbini' });
     t.run(40 * MIN);
     claire.act({ type: 'buy', sku: 'umbrella', qty: 3 });
     t.c.failpoints.purchaseUnknown = () => true;
     const pendingOrd = (claire.act({ type: 'buy', sku: 'umbrella', qty: 1 }).payload as any).order_id as string;
     t.c.failpoints.purchaseUnknown = undefined;
-    claire.act({ type: 'travel', to: 'ikebukuro:station' });
+    claire.act({ type: 'travel', to: 'kagamiike:station' });
     t.run(10 * MIN);
 
     const claireDep = (claire.act({ type: 'store_locker', item: 'umbrella', qty: 1, voucher: true }).payload as any).deposit;
@@ -1261,7 +1261,7 @@ describe('东京 M3-C：车站投币储物柜凭条代取与 72h 超时退回防
     expect(bGotClaire.qty).toBe(1);
     expect(b.view().items.find((i: any) => i.type === 'umbrella')?.qty).toBe(1);
 
-    claire.depart({ yen: 3000, items: [], to: 'ikebukuro:station' });
+    claire.depart({ yen: 3000, items: [], to: 'kagamiike:station' });
     t.run(30 * MIN);
     expect(claire.view().locker_items).toEqual([expect.objectContaining({ item_id: clairePersonal.item_id, type: 'umbrella', qty: 3 })]);
     expect(runReconcile(t.c, 'locker-isolation-full').ok).toBe(true);

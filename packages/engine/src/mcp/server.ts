@@ -22,7 +22,7 @@ export interface ServerDeps {
   log?: (msg: string) => void;
   /** 开了持续世界（栖灯镇）时才有：注册小镇的工具，并让进入了世界上下文的会话走居民路由 */
   town?: TownDeps;
-  /** 开了东京城市世界时才有：进城的会话走城市路由 */
+  /** 开了灯都城市世界时才有：进城的会话走城市路由 */
   city?: CityDeps;
 }
 
@@ -384,11 +384,11 @@ export function createMcpServer(deps: ServerDeps, ctx: SessionContext): McpServe
         wake_on: z.enum(['turn', 'any']).optional().describe('等待时：turn=轮到我才返回（默认）；any=有任何你看得见的新事件就返回（别人的私密事件不算）'),
         full_log: z.boolean().optional().describe('返回你可见的全部历史事件（默认只返回上次查看后的新事件）'),
         cursor: z.string().optional().describe('栖灯镇：上次视图返回的 cursor。带上它会附带之后的新事件（一次最多 50 条；返回 more=true 时用返回的 cursor 接着取）；配合 wait_seconds 可以等到有新事件再返回'),
-        section: z.string().max(80).optional().describe('要取的段，名字见 you.sections 目录（例如 "role:3"、"act:2"、"truth"、"find:关键词"）；在东京城市世界中支持 "items"（随身背包）、"locker_items"（储物柜）或 "stamps"（印章帐）。带它时只返回这一段，忽略 wait_seconds / wake_on / full_log / cursor。'),
+        section: z.string().max(80).optional().describe('要取的段，名字见 you.sections 目录（例如 "role:3"、"act:2"、"truth"、"find:关键词"）；在灯都城市世界中支持 "items"（随身背包）、"locker_items"（储物柜）或 "stamps"（印章帐）。带它时只返回这一段，忽略 wait_seconds / wake_on / full_log / cursor。'),
         page: z.number().int().min(1).max(200).optional().describe('分页取段时的页码，从 1 开始，默认 1。'),
-        offset: z.number().int().min(0).max(10_000).optional().describe('东京城市世界列表起始偏移量（从 0 开始，可直接传入上一页 items_page.next_offset 或 locker_page.next_offset）。'),
-        item_offset: z.number().int().min(0).max(10_000).optional().describe('东京本人视图随身背包起始偏移量（从 0 开始）。'),
-        locker_offset: z.number().int().min(0).max(10_000).optional().describe('东京本人视图储物柜起始偏移量（从 0 开始）。'),
+        offset: z.number().int().min(0).max(10_000).optional().describe('灯都城市世界列表起始偏移量（从 0 开始，可直接传入上一页 items_page.next_offset 或 locker_page.next_offset）。'),
+        item_offset: z.number().int().min(0).max(10_000).optional().describe('灯都本人视图随身背包起始偏移量（从 0 开始）。'),
+        locker_offset: z.number().int().min(0).max(10_000).optional().describe('灯都本人视图储物柜起始偏移量（从 0 开始）。'),
       },
       readOnly: true,
     },
@@ -618,10 +618,10 @@ export function createMcpServer(deps: ServerDeps, ctx: SessionContext): McpServe
   if (city) {
     if (!town) registerCityTools(tool as never, city, ctx, me);
     registerCityDedicatedTools(tool as never, city, me);
-    server.registerResource('guide-city', 'botgame://guide/city', { title: '东京城市世界：进城说明', mimeType: 'text/markdown' }, (uri) => ({
+    server.registerResource('guide-city', 'botgame://guide/city', { title: '灯都城市世界：进城说明', mimeType: 'text/markdown' }, (uri) => ({
       contents: [{ uri: uri.href, mimeType: 'text/markdown', text: CITY_GUIDE }],
     }));
-    server.registerPrompt('city-resident', { title: '东京城市居民指南', description: '给进入东京城市世界的独立 AI 的系统提示词', argsSchema: {} }, () => ({
+    server.registerPrompt('city-resident', { title: '灯都城市居民指南', description: '给进入灯都城市世界的独立 AI 的系统提示词', argsSchema: {} }, () => ({
       messages: [{ role: 'user', content: { type: 'text', text: CITY_GUIDE } }],
     }));
   }

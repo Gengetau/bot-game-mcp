@@ -46,6 +46,7 @@
     ],
     "params": {
       "timezone": "Asia/Tokyo",
+      "entryPlace": "sentou:station",
       "backupKeep": 2
     }
   },

@@ -1,5 +1,5 @@
 /**
- * 东京城市世界的 HTTP 接口。
+ * 灯都城市世界的 HTTP 接口。
  *
  *  公开（不用登录，只有公开投影）：
  *   GET  /city/                          文字版的城市页面（服务器直接渲染，没有脚本）
@@ -31,6 +31,7 @@ import express, { type Express, type NextFunction, type Request, type Response }
 import { cityCommand, inspectSingleItem, requireActingVisit, resolvePendingOrder, visitAct } from './actions.js';
 import {
   CITY_CATALOG_VERSION,
+  CITY_TEXT_VERSION,
   FARE_RULE_VERSION,
   HOUSE_ENTRANCE,
   ITEM_TYPES,
@@ -228,7 +229,7 @@ export function renderCityPage(c: CityService): string {
           return `<li><b>${esc(p.name)}</b>${state} <small>${esc(p.hours)}${p.fictional ? ' · 虚构店铺' : ''}</small><br>${esc(p.blurb)}${goods ? `<br><small>${goods}</small>` : ''}${people ? `<br>这里有：${people}` : ''}</li>`;
         })
         .join('');
-      return `<section><h2>${esc(a.name)} <small>${esc(a.ward)}</small></h2><p>${esc(a.blurb)}</p>${weather}<ul>${places}</ul></section>`;
+      return `<section><h2>${esc(a.name)}${a.ward ? ` <small>${esc(a.ward)}</small>` : ''}</h2><p>${esc(a.blurb)}</p>${weather}<ul>${places}</ul></section>`;
     })
     .join('');
   const events = (v.events_today as any[]).map((e) => `<li><b>${esc(e.title)}</b> <small>${esc(clock(e.starts_at_ms))}–${esc(clock(e.ends_at_ms))}</small><br>${esc(e.body)}</li>`).join('');
@@ -240,13 +241,13 @@ export function renderCityPage(c: CityService): string {
     .join('');
   const sources = (v.sources as any[]).map((s) => `<li>${esc(s.title)}：${esc(s.note)}${s.license ? `<br><small>许可：${esc(s.license)}</small>` : ''}</li>`).join('');
   return `<!doctype html>
-<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>东京 · 城市页面</title>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>灯都 · 城市页面</title>
 <style>body{font:16px/1.7 system-ui,sans-serif;max-width:46rem;margin:0 auto;padding:1rem;color:#222;background:#fbfaf7}h1{font-size:1.5rem}h2{font-size:1.2rem;border-bottom:1px solid #ddd;padding-bottom:.2rem}small{color:#777}li{margin:.5rem 0}.w{background:#f1efe8;padding:.4rem .6rem;border-radius:.3rem}@media(prefers-color-scheme:dark){body{color:#ddd;background:#1c1b19}.w{background:#2a2925}h2{border-color:#444}small{color:#999}}</style></head>
-<body><h1>东京</h1><p>现在是 ${esc(v.local_time)}（${esc(v.timezone)}）。路上有 ${esc(v.in_transit)} 人。</p>
+<body><h1>灯都</h1><p>现在是 ${esc(v.local_time)}（${esc(v.timezone)}）。路上有 ${esc(v.in_transit)} 人。</p>
 ${events ? `<section><h2>今天</h2><ul>${events}</ul></section>` : ''}
 ${areas}
 <section><h2>电车</h2><p><small>${esc(v.transit.note)}（规则版本 ${esc(v.transit.rule_version)}）</small></p><ul>${edges}</ul></section>
-<section><h2>来源</h2><ul>${sources}</ul><p><small>天气数据：<a href="https://open-meteo.com/">Open-Meteo</a>（CC BY 4.0）。目录版本 ${esc(v.city_catalog_version)}。</small></p></section>
+<section><h2>来源</h2><ul>${sources}</ul><p><small>天气数据：<a href="https://open-meteo.com/">Open-Meteo</a>（CC BY 4.0）。目录版本 ${esc(v.city_catalog_version)}，文案版本 ${esc(v.city_text_version)}。</small></p></section>
 </body></html>`;
 }
 
@@ -345,8 +346,9 @@ export function mountCity(app: Express, c: CityService, log: (msg: string) => vo
   api.get(
     '/config',
     apiSync(() => ({
-      world: { id: c.worldId, name: c.worldName, timezone: c.params.timezone },
+      world: { id: c.worldId, name: c.worldName, timezone: c.params.timezone === 'Asia/Tokyo' ? 'JST' : c.params.timezone },
       catalog_version: CITY_CATALOG_VERSION,
+      text_version: CITY_TEXT_VERSION,
       fare_rule_version: FARE_RULE_VERSION,
       dev_login: c.devLogin,
       entry_places: [...ENTRY_PLACES],
@@ -459,7 +461,7 @@ export function mountCity(app: Express, c: CityService, log: (msg: string) => vo
     '/me',
     apiSync((req) => {
       const { session } = requireSession(c, req);
-      if (!session.resident) throw new CityError('UNAUTHENTICATED', '还没有进入东京，请先起名入城。', 'no_resident');
+      if (!session.resident) throw new CityError('UNAUTHENTICATED', '还没有进入灯都，请先起名入城。', 'no_resident');
       const rawClient = req.query.client_id ?? req.headers['x-city-client'];
       const clientId = rawClient !== undefined ? normalizeClientId('web', rawClient) : undefined;
       const itemOffset = parseOffset(req.query.item_offset);
@@ -478,7 +480,7 @@ export function mountCity(app: Express, c: CityService, log: (msg: string) => vo
     apiSync((req) => {
       requireJsonAndSameOrigin(req);
       const { session } = requireSession(c, req, { csrf: true });
-      if (!session.resident) throw new CityError('UNAUTHENTICATED', '还没有进入东京，请先起名入城。', 'no_resident');
+      if (!session.resident) throw new CityError('UNAUTHENTICATED', '还没有进入灯都，请先起名入城。', 'no_resident');
       const b = jsonObj(req);
       const clientId = normalizeClientId('web', b.client_id ?? req.headers['x-city-client']);
       const itemOffset = parseOffset(b.item_offset);
@@ -499,7 +501,7 @@ export function mountCity(app: Express, c: CityService, log: (msg: string) => vo
     '/items/:id',
     apiSync((req) => {
       const { session } = requireSession(c, req);
-      if (!session.resident) throw new CityError('UNAUTHENTICATED', '还没有进入东京，请先起名入城。', 'no_resident');
+      if (!session.resident) throw new CityError('UNAUTHENTICATED', '还没有进入灯都，请先起名入城。', 'no_resident');
       return inspectSingleItem(c, c.mustResident(session.resident.resident_id), String(req.params.id ?? ''));
     }),
   );
@@ -509,7 +511,7 @@ export function mountCity(app: Express, c: CityService, log: (msg: string) => vo
     apiSync((req) => {
       requireJsonAndSameOrigin(req);
       const { session } = requireSession(c, req, { csrf: true });
-      if (!session.resident) throw new CityError('UNAUTHENTICATED', '还没有进入东京，请先起名入城。', 'no_resident');
+      if (!session.resident) throw new CityError('UNAUTHENTICATED', '还没有进入灯都，请先起名入城。', 'no_resident');
       const b = jsonObj(req);
       const rawClient = b.client_id ?? req.headers['x-city-client'];
       const clientId = rawClient !== undefined ? normalizeClientId('web', rawClient) : undefined;
@@ -522,7 +524,7 @@ export function mountCity(app: Express, c: CityService, log: (msg: string) => vo
     apiSync((req) => {
       requireJsonAndSameOrigin(req);
       const { session } = requireSession(c, req, { csrf: true });
-      if (!session.resident) throw new CityError('UNAUTHENTICATED', '还没有进入东京，请先起名入城。', 'no_resident');
+      if (!session.resident) throw new CityError('UNAUTHENTICATED', '还没有进入灯都，请先起名入城。', 'no_resident');
       const b = jsonObj(req);
       const clientId = normalizeClientId('web', b.client_id ?? req.headers['x-city-client']);
       const itemOffset = parseOffset(b.item_offset);
@@ -553,7 +555,7 @@ export function mountCity(app: Express, c: CityService, log: (msg: string) => vo
     '/history',
     apiSync((req) => {
       const { session } = requireSession(c, req);
-      if (!session.resident) throw new CityError('UNAUTHENTICATED', '还没有进入东京，请先起名入城。', 'no_resident');
+      if (!session.resident) throw new CityError('UNAUTHENTICATED', '还没有进入灯都，请先起名入城。', 'no_resident');
       let before: number | null = null;
       if (req.query.before !== undefined && req.query.before !== '') {
         const n = Number(req.query.before);
@@ -569,7 +571,7 @@ export function mountCity(app: Express, c: CityService, log: (msg: string) => vo
     '/stamps',
     apiSync((req) => {
       const { session } = requireSession(c, req);
-      if (!session.resident) throw new CityError('UNAUTHENTICATED', '还没有进入东京，请先起名入城。', 'no_resident');
+      if (!session.resident) throw new CityError('UNAUTHENTICATED', '还没有进入灯都，请先起名入城。', 'no_resident');
       return stampBookView(c, session.resident.resident_id);
     }),
   );
@@ -577,7 +579,7 @@ export function mountCity(app: Express, c: CityService, log: (msg: string) => vo
   api.get('/stream', (req, res) => {
     try {
       const { rawToken, session } = requireSession(c, req);
-      if (!session.resident) throw new CityError('UNAUTHENTICATED', '还没有进入东京，请先起名入城。', 'no_resident');
+      if (!session.resident) throw new CityError('UNAUTHENTICATED', '还没有进入灯都，请先起名入城。', 'no_resident');
       const residentId = session.resident.resident_id;
       const ip = req.ip ?? 'unknown';
       const resCount = streamCountByResident.get(residentId) ?? 0;
@@ -789,6 +791,7 @@ export function mountCity(app: Express, c: CityService, log: (msg: string) => vo
       return {
       protocol: BRIDGE_PROTOCOL,
       city_catalog_version: CITY_CATALOG_VERSION,
+      city_text_version: CITY_TEXT_VERSION,
       fare_rule_version: FARE_RULE_VERSION,
       mappings: MAPPINGS,
       handover_node: HOUSE_ENTRANCE,

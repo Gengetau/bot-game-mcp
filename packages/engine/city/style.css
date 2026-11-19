@@ -1,4 +1,4 @@
-/* 东京都人类文字优先客户端样式（零外部依赖，支持明暗自适应与强制高对比度） */
+/* 灯都人类文字优先客户端样式（零外部依赖，支持明暗自适应与强制高对比度） */
 :root {
   color-scheme: light dark;
   --bg: #faf8f5;
@@ -450,17 +450,11 @@ textarea:user-invalid {
     --lcd-border: #475569;
   }
 }
-.lcd-board[data-line="saikyo"] {
+.lcd-board[data-line="hokkan"] {
   --lcd-line: #16a34a;
 }
-.lcd-board[data-line="yamanote"] {
+.lcd-board[data-line="toukan"] {
   --lcd-line: #65a30d;
-}
-.lcd-board[data-line="shinjuku"] {
-  --lcd-line: #84cc16;
-}
-.lcd-board[data-line="odakyu"] {
-  --lcd-line: #38bdf8;
 }
 .lcd-board[data-line="walk"] {
   --lcd-line: #f59e0b;
@@ -877,7 +871,7 @@ textarea:user-invalid {
   border-radius: 0.5rem;
   padding: 0.5rem;
 }
-.rail-saikyo {
+.rail-hokkan {
   stroke: #16a34a;
   stroke-width: 5;
   fill: none;
@@ -888,18 +882,8 @@ textarea:user-invalid {
   stroke-dasharray: 8 5;
   fill: none;
 }
-.rail-yamanote {
+.rail-toukan {
   stroke: #65a30d;
-  stroke-width: 5;
-  fill: none;
-}
-.rail-shinjuku {
-  stroke: #4d7c0f;
-  stroke-width: 5;
-  fill: none;
-}
-.rail-odakyu {
-  stroke: #0284c7;
   stroke-width: 5;
   fill: none;
 }
@@ -989,20 +973,14 @@ textarea:user-invalid {
   block-size: 3rem;
   flex-shrink: 0;
 }
-.stamp-ink-akabane {
+.stamp-ink-hiwatari {
   color: #b91c1c;
 }
-.stamp-ink-ikebukuro {
+.stamp-ink-kagamiike {
   color: #15803d;
 }
-.stamp-ink-shinjuku {
+.stamp-ink-sentou {
   color: #4338ca;
-}
-.stamp-ink-jinbocho {
-  color: #1e3a8a;
-}
-.stamp-ink-shimokitazawa {
-  color: #9a3412;
 }
 .stamp-ink-empty {
   color: var(--fg-muted);

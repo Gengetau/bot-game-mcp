@@ -180,7 +180,7 @@ function doBuy(c: CityService, r: CityResident, a: Action, at: number, visit: Vi
       r.resident_id,
       good.type,
       qty,
-      { domain: 'tokyo_shop', sku: good.sku, asset_id: good.assetId, place_id: placeId },
+      { domain: 'city_shop', sku: good.sku, asset_id: good.assetId, place_id: placeId },
       { title: good.name, created_at_ms: at },
       visit?.visit_id ?? null,
       'held',
@@ -412,7 +412,7 @@ function doDriftBook(c: CityService, r: CityResident, a: Action, at: number, vis
   const placeId = mustBeAtPlace(r);
   const p = place(placeId)!;
   const what = resolveSelector(a);
-  if (placeId === 'ikebukuro:shiorido') {
+  if (placeId === 'kagamiike:shiorido') {
     if (!placeOpen(c, p, at).open) throw cityPrecondition(`${p.name}现在不营业。`, 'place_closed');
     const res = driftBookToCorner(
       c,
@@ -468,7 +468,7 @@ function doTakeBook(c: CityService, r: CityResident, a: Action, at: number, visi
   const p = place(placeId)!;
   const itemId = str(a.item_id).trim();
   if (!itemId) throw cityBadRequest('take_book 需要传 item_id。', 'no_such_item');
-  if (placeId === 'ikebukuro:shiorido') {
+  if (placeId === 'kagamiike:shiorido') {
     if (!placeOpen(c, p, at).open) throw cityPrecondition(`${p.name}现在不营业。`, 'place_closed');
     const row = c.db.get<ItemRow & Row>(
       "SELECT * FROM items WHERE item_id = ? AND state = 'shelf' AND shelf_place_id = ? AND quantity = 1",
@@ -524,7 +524,7 @@ function doStampStation(c: CityService, r: CityResident, at: number, visit: Visi
 
 /** 做一件事。调用方已经确认过身份、在场和限速。 */
 function perform(c: CityService, r: CityResident, action: unknown, at: number, visit: VisitRow | null, subject: string): Record<string, unknown> {
-  if (!action || typeof action !== 'object' || Array.isArray(action)) throw cityBadRequest('action 要是一个对象，例如 {"type":"travel","to":"ikebukuro:kissa-tomoshibi"}。');
+  if (!action || typeof action !== 'object' || Array.isArray(action)) throw cityBadRequest('action 要是一个对象，例如 {"type":"travel","to":"kagamiike:kissa-tomoshibi"}。');
   const a = action as Action;
   switch (a.type) {
     case 'travel':
@@ -720,7 +720,7 @@ export function resolvePendingOrder(
           r.resident_id,
           itemTyp,
           qty,
-          { domain: 'tokyo_shop', sku: resolvedGood.sku, asset_id: resolvedGood.assetId, place_id: String(o.place_id) },
+          { domain: 'city_shop', sku: resolvedGood.sku, asset_id: resolvedGood.assetId, place_id: String(o.place_id) },
           { title: resolvedGood.name, created_at_ms: now },
           visit?.visit_id ?? null,
           visitClosed ? 'locker' : 'held',
