@@ -332,6 +332,7 @@ export function startTrip(c: CityService, r: CityResident, toId: string, purpose
     FARE_RULE_VERSION,
   );
   c.db.run('UPDATE residents SET place_id = NULL, trip_id = ?, revision = revision + 1 WHERE resident_id = ?', tripId, r.resident_id);
+  for (const fn of c.hooks.departPlace) fn(r.resident_id, fromId, purpose === 'return' ? 'trip_return' : 'trip_depart', at);
   // 别人只知道「走了」，不知道去哪儿（目的地可能是不公开的节点）
   if (!place(fromId)?.hidden && r.in_city) {
     const others = c.presentAt(fromId).filter((x) => x.resident_id !== r.resident_id);
@@ -463,6 +464,7 @@ export function installTrips(c: CityService): void {
       }
     }
     const r = finishTrip(c, trip, status, at, arriveAt, diverted);
+    for (const fn of c.hooks.arrivePlace) fn(r.resident_id, arriveAt, at);
     announceArrival(c, r, arriveAt, at);
     c.emitTo([r.resident_id], 'you_arrived', { trip_id: trip.trip_id, place: arriveAt, ...(diverted ? { diverted_from: dest.id, reason: diverted } : {}) }, at);
     if (!visit) return;

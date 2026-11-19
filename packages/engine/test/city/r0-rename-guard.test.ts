@@ -468,7 +468,7 @@ describe('灯都 R0 全量改名与暂卸内容包专项守卫', () => {
     expect(MOUNTED_CONTENT_PACKS).toEqual([]);
     expect(AREAS.map((a) => a.id)).toEqual(['hiwatari', 'kagamiike', 'sentou']);
     expect(WARDS).toEqual([]);
-    expect(publicPlaces()).toHaveLength(17);
+    expect(publicPlaces()).toHaveLength(18);
     expect(STATION_STAMPS.map((s) => s.stampId)).toEqual(['stamp:hiwatari', 'stamp:kagamiike', 'stamp:sentou']);
 
     expect(place('jinbocho:station')).toBeUndefined();

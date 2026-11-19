@@ -52,6 +52,7 @@ import type { CityResident, CityService } from './service.js';
 import { stampSummary } from './stamps.js';
 import { placeOpen, routeTransitCheck, runningTrip, spendable, tripView } from './trips.js';
 import { effectiveVisitReturnSchedule, openVisitOf, type VisitRow } from './visits.js';
+import { venueSceneProjection, venueSelfProjection } from './venue-games.js';
 import { eventsToday, weatherBrief } from './weather.js';
 
 /** 交给 world_act 的占位窗口：城市世界不用动作窗口，保留这个字段只为了和栖灯镇的工具签名一致。 */
@@ -404,6 +405,7 @@ export function sceneView(
     recent_chat: chatLimit > 0 ? recentChat(c, viewer.resident_id, placeId, chatLimit, at) : [],
     weather,
     events,
+    ...venueSceneProjection(c, placeId, viewer, at),
   };
 }
 
@@ -760,6 +762,7 @@ export function selfView(
             })
           : null,
       ...(visit ? { visit: visitBrief(c, visit, r) } : {}),
+      ...(inCity && r.place_id && !trip ? venueSelfProjection(c, r, now) : {}),
       can: actions,
       mappings_version: MAPPINGS.version,
       action_window: CITY_ACTION_WINDOW,
@@ -852,6 +855,115 @@ export function selfView(
       break;
     }
     out = build();
+  }
+  out = enforceSelfViewBudget(out, maxBytes, indent);
+  return out;
+}
+
+function truncateBudgetChars(text: string, maxChars: number): string {
+  const chars = Array.from(text);
+  if (chars.length <= maxChars) return text;
+  return `${chars.slice(0, Math.max(1, maxChars)).join('')}…`;
+}
+
+/**
+ * 兜底裁剪（含 M3-B 牌桌/竞拍投影与外部追加字段）：严格保证 UTF-8 JSON <= maxBytes，
+ * 优先保留本人私密牌桌状态（venue_table.you / venue_table.todo）与合法行动（can）。
+ */
+export function enforceSelfViewBudget(
+  out: Record<string, unknown>,
+  maxBytes = SELF_VIEW_MAX_BYTES,
+  prettyIndent = 0,
+): Record<string, unknown> {
+  const bytes = (v: unknown): number =>
+    Buffer.byteLength(prettyIndent > 0 ? JSON.stringify(v, null, prettyIndent) : JSON.stringify(v), 'utf8');
+  if (bytes(out) <= maxBytes) return out;
+
+  delete out.note;
+  if (bytes(out) <= maxBytes) return out;
+
+  if (Array.isArray(out.new_events) && out.new_events.length > 0) {
+    while ((out.new_events as unknown[]).length > 0 && bytes(out) > maxBytes) {
+      (out.new_events as unknown[]).pop();
+      out.more = true;
+    }
+    if (bytes(out) <= maxBytes) return out;
+  }
+
+  const here = out.here && typeof out.here === 'object' ? (out.here as Record<string, unknown>) : null;
+  if (here) {
+    if (Array.isArray(here.events) && here.events.length > 0) {
+      here.events = [];
+      if (bytes(out) <= maxBytes) return out;
+    }
+    if (Array.isArray(here.actions)) {
+      delete here.actions;
+      if (bytes(out) <= maxBytes) return out;
+    }
+    if (Array.isArray(here.recent_chat) && here.recent_chat.length > 0) {
+      here.recent_chat = [];
+      if (bytes(out) <= maxBytes) return out;
+    }
+    if (Array.isArray(here.exits) && here.exits.length > 0) {
+      here.exits = [];
+      if (bytes(out) <= maxBytes) return out;
+    }
+    if (Array.isArray(here.people) && here.people.length > 0) {
+      here.people = [];
+      if (bytes(out) <= maxBytes) return out;
+    }
+    if ('weather' in here) {
+      delete here.weather;
+      if (bytes(out) <= maxBytes) return out;
+    }
+    if (Array.isArray(here.goods) && here.goods.length > 0) {
+      here.goods = [];
+      if (bytes(out) <= maxBytes) return out;
+    }
+    for (const k of ['tables', 'auctions'] as const) {
+      if (Array.isArray(here[k])) {
+        while ((here[k] as unknown[]).length > 0 && bytes(out) > maxBytes) {
+          (here[k] as unknown[]).pop();
+        }
+        if (bytes(out) <= maxBytes) return out;
+      }
+    }
+  }
+
+  if (out.venue_table && typeof out.venue_table === 'object') {
+    const vt = out.venue_table as Record<string, unknown>;
+    const pub = vt.public && typeof vt.public === 'object' ? (vt.public as Record<string, unknown>) : null;
+    if (pub) {
+      for (const k of ['bid_history', 'last_challenges', 'last_rounds', 'eliminated_order'] as const) {
+        if (Array.isArray(pub[k]) && (pub[k] as unknown[]).length > 0) {
+          pub[k] = [];
+          if (bytes(out) <= maxBytes) return out;
+        }
+      }
+    }
+    if (vt.todo && typeof vt.todo === 'object') {
+      const todo = vt.todo as Record<string, unknown>;
+      if (typeof todo.prompt === 'string') {
+        todo.prompt = truncateBudgetChars(todo.prompt, 80);
+        if (bytes(out) <= maxBytes) return out;
+      }
+    }
+    if (pub) {
+      for (const k of Object.keys(pub)) {
+        if (k === 'current_bid' || k === 'min_next_bid' || k === 'top_card' || k === 'current_color') continue;
+        delete pub[k];
+        if (bytes(out) <= maxBytes) return out;
+      }
+    }
+  }
+
+  if (here) {
+    for (const k of ['events', 'recent_chat', 'exits', 'people', 'goods', 'tables', 'auctions'] as const) {
+      if (Array.isArray(here[k]) && (here[k] as unknown[]).length === 0) {
+        delete here[k];
+        if (bytes(out) <= maxBytes) return out;
+      }
+    }
   }
   return out;
 }

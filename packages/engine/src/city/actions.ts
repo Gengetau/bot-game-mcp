@@ -45,6 +45,7 @@ import { card, updateResidentProfile } from './residents.js';
 import type { CityResident, CityService } from './service.js';
 import { stampAtStation } from './stamps.js';
 import { placeOpen, spendable, startTrip, tripView } from './trips.js';
+import { VENUE_ACTIONS, performVenueGameAction } from './venue-games.js';
 import { MAX_SELF_VIEW_BYTES, cityItemsPage } from './views.js';
 import { beginReturn, bodyEffect, clearChatWake, noteSpeech, openVisitOf, outboxOrderRefunded, outboxPurchase, visitById, wake, wakeForChat, withReceipt, type BridgeReceipt, type VisitRow } from './visits.js';
 
@@ -63,6 +64,7 @@ export const CITY_ACTIONS = [
   'stamp_station',
   'update_profile',
   'go_home',
+  ...VENUE_ACTIONS,
 ] as const;
 
 // ───────────────────────── 限速 ─────────────────────────
@@ -558,7 +560,11 @@ function perform(c: CityService, r: CityResident, action: unknown, at: number, v
       if (!visit) throw unknownAction(false);
       return { status: 'accepted', returning: beginReturn(c, visit, 'self', at) || visitById(c, visit.visit_id)?.state === 'returning' };
     default:
-      throw unknownAction(visit !== null);
+      {
+        const venueOut = typeof a.type === 'string' ? performVenueGameAction(c, r, a.type, a, at, visit) : null;
+        if (venueOut) return venueOut;
+        throw unknownAction(visit !== null);
+      }
   }
 }
 
