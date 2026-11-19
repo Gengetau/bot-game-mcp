@@ -523,13 +523,31 @@
         "http.ts:348 /city/api/config world.timezone"
       ],
       "web_client_intl_fallback": "+09:00",
-      "note": "服务端配置、SQLite meta、时间换算与 Open-Meteo 抓取内部继续使用 IANA 标识 Asia/Tokyo；views.ts:194 与 http.ts:348 的原始公开 JSON、公开 HTML 页、网页端脚本（city/app.js Intl.DateTimeFormat 遇 JST 内部映射 +09:00 格式化，不写 Asia/Tokyo）与指南文案统一输出『JST』，确保原始公开 JSON 与可见文案对 tokyo 均零命中"
+      "web_client_error_fallback": "city/app.js:87 fmtClock catch 分支不得调用依赖宿主机设备本地时区的 d.getHours()/getMinutes()，须改为固定 UTC+9 算术换算 new Date(ms + 9 * 3600_000) 的 getUTCHours()/getUTCMinutes()；#277 须在非 JST 设备时区（如 TZ=UTC）实测 JST -> +09:00 的 Intl 正常路径与异常回退路径均输出东京时间",
+      "note": "服务端配置、SQLite meta、时间换算与 Open-Meteo 抓取内部继续使用 IANA 标识 Asia/Tokyo；views.ts:194 与 http.ts:348 的原始公开 JSON、公开 HTML 页、网页端脚本（city/app.js 默认参数改 'JST'，Intl.DateTimeFormat 遇 'JST' 映射 '+09:00'，异常分支固定 UTC+9 算术换算，全文件不写 Asia/Tokyo）与指南文案统一输出『JST』，确保原始公开 JSON 与可见文案对 tokyo 均零命中"
     }
   },
   "content_packs": {
     "r0_mounted_packs": [],
     "open_areas_count": 3,
     "open_public_places_count": 17,
+    "isolation_spec": {
+      "source_retention": "保留 packages/engine/src/city/packs/jinbocho.ts 与 packages/engine/src/city/packs/shimokitazawa.ts 原始源码与数据文件在仓库内（供 M4 主人定名后迁移），R0 不删除文件、也不编造临时架空名",
+      "active_registry_decoupling": [
+        "packages/engine/src/city/packs/index.ts:4-15 移除对 ./jinbocho.js 与 ./shimokitazawa.js 的静态 import、具名重导出（JINBOCHO_PACK / SHIMOKITAZAWA_PACK）及挂载项，MOUNTED_CONTENT_PACKS 置为空数组 []",
+        "packages/engine/src/city/index.ts:43 与 catalog.ts 公开导出面不再重导出 JINBOCHO_PACK / SHIMOKITAZAWA_PACK",
+        "packages/engine/src/city/packs/index.ts validateContentPack 同步切至 R0 架空内容包规范（移除 ^mun:13\\\\d{3}$ 与 municipalityId 校验，改为可选 ward: ^ward:[a-z0-9-]+$ 与仅内部使用的 prototype 字段校验）"
+      ],
+      "type_and_tsconfig_isolation": [
+        "活动类型严格收窄：catalog.ts AreaId 与 packs/types.ts:33 DistrictSpec.areaId 均绑定为 'hiwatari' | 'kagamiike' | 'sentou'，严禁将 'jinbocho' 或 'shimokitazawa' 留作或加回 AreaId、CityContentPack 或任何公开枚举/Schema",
+        "编译与类型检查隔离：packages/engine/tsconfig.json:4 与 packages/engine/tsconfig.build.json:7 显式在 exclude 中隔离 [\"src/city/packs/jinbocho.ts\", \"src/city/packs/shimokitazawa.ts\"]，使保留的两份旧 v1 源码（packs/jinbocho.ts:21、packs/shimokitazawa.ts:21）脱离 R0 活动类型检查与 dist/ 构建产物，零阻塞 CI npm run typecheck 与 npm run build",
+        "测试套件解耦：packages/engine/test/city/m3d-packs-stamps-lcd.test.ts 移除对 JINBOCHO_PACK / SHIMOKITAZAWA_PACK 的静态导入，改为验证 R0 MOUNTED_CONTENT_PACKS === []、暂卸旧包零出现在目录/路由/印章/公开视图，并以符合 R0 架空契约（三片区 + 可选 ward:<slug> + 内部 prototype）的合成 fixture 测 validateContentPack"
+      ],
+      "r0_verification_gates": [
+        "#277 全仓 npm run typecheck 与 npm run build 零报错，且 packages/engine/dist/ 不生成 jinbocho.* / shimokitazawa.* 产物",
+        "#277 暂卸回归测试断言 AREAS 仅 3 片区、公开 PLACES 仅 17 处、STATION_STAMPS 仅 3 枚，place('jinbocho:station') 与 place('shimokitazawa:station') 为 undefined，外部 bot travel 旧包地点与乱写地名一致返回 INVALID_MOVE，且 57 项旧词探针全绿"
+      ]
+    },
     "deferred_packs": [
       {
         "old_pack_id": "pack:jinbocho",
@@ -542,7 +560,7 @@
         "old_name": "神保町",
         "new_name": null,
         "status": "deferred",
-        "r0_action": "保留仓库代码与数据文件，但从 MOUNTED_CONTENT_PACKS 暂卸（不加载进目录、公开页、指南、MCP 工具说明与外部 bot 视图）；架空名等 M4 开新片区时由主人定"
+        "r0_action": "保留仓库源码与数据文件，从 packs/index.ts 移除静态导入/导出并置 MOUNTED_CONTENT_PACKS=[]，在 packages/engine/tsconfig.json 与 tsconfig.build.json 中 exclude 隔离出 R0 活动类型检查与 dist/ 产物（不将 'jinbocho' 加回 AreaId 或公开枚举）；架空名等 M4 开新片区时由主人定"
       },
       {
         "old_pack_id": "pack:shimokitazawa",
@@ -558,7 +576,7 @@
         ],
         "new_name": null,
         "status": "deferred",
-        "r0_action": "保留仓库代码与数据文件，但从 MOUNTED_CONTENT_PACKS 暂卸（不加载进目录、公开页、指南、MCP 工具说明与外部 bot 视图）；架空名等 M4 开新片区时由主人定"
+        "r0_action": "保留仓库源码与数据文件，从 packs/index.ts 移除静态导入/导出并置 MOUNTED_CONTENT_PACKS=[]，在 packages/engine/tsconfig.json 与 tsconfig.build.json 中 exclude 隔离出 R0 活动类型检查与 dist/ 产物（不将 'shimokitazawa' 加回 AreaId 或公开枚举）；架空名等 M4 开新片区时由主人定"
       }
     ]
   },
@@ -643,7 +661,8 @@
         "hiwatari",
         "kagamiike",
         "sentou"
-      ]
+      ],
+      "packs_types_district_area_id": "packages/engine/src/city/packs/types.ts:33 DistrictSpec.areaId 同步绑定三片区 AreaId，不保留旧包 ID；暂卸旧包通过 packs/index.ts 解绑静态导入导出 + tsconfig(.build).json exclude 与活动类型隔离（见 content_packs.isolation_spec）"
     },
     "kernel_city_client_area_order": {
       "old_order": [
@@ -872,7 +891,7 @@
     "decided_at": "2026-11-19 14:23 JST",
     "basis": "《架空 AI 都市 v0.3》（主人 11-19 08:48/08:52 定）第 3.1、3.2、3.4 节及 Q3",
     "items": {
-      "m3d_content_packs": "R0 暂卸 pack:jinbocho 与 pack:shimokitazawa（MOUNTED_CONTENT_PACKS = []，保持 3 片区 17 公开地点；包代码与数据留仓标 deferred，架空名等 M4 开新片区由主人定；旧词探针纳神保町/下北泽/下北沢及前缀并扫原始公开 JSON）",
+      "m3d_content_packs": "R0 暂卸 pack:jinbocho 与 pack:shimokitazawa（MOUNTED_CONTENT_PACKS = []，保持 3 片区 17 公开地点；包源码与数据留仓标 deferred，经 packs/index.ts 移除静态导入导出及 tsconfig.json/tsconfig.build.json exclude 与活动 AreaId/构建产物隔离，架空名等 M4 开新片区由主人定；旧词探针纳神保町/下北泽/下北沢及前缀并扫原始公开 JSON）",
       "ward_and_municipalities": "真实 62 市区町村不再是目标，R0 从目录、契约和公开输出拿掉真实市区町村列表与现实区名；L1 改为架空 ward:<slug> 写法，每个内容包带仅内部使用的 prototype 字段（天气坐标、距离参照）；R0 不新增任何区，名字等 M4",
       "reserved_area_enum": "移除 asakusa / shibuya / kichijoji 预留枚举，bridge-v1.schema.json 与 city_client.py _AREA_ORDER 只留 [\"hiwatari\", \"kagamiike\", \"sentou\"]，M4 开新片区再加",
       "kernel_4b_4c_alignment": "4b 同意补最小 mappings_version=(2,3) 兼容；4c K8 在 PR #160 (bef0d29) 单独开分支提 Draft PR，待本表经 @nia-ext 终核定稿后动代码"
