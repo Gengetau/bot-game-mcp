@@ -231,7 +231,12 @@ export function renderCityPage(c: CityService): string {
     })
     .join('');
   const events = (v.events_today as any[]).map((e) => `<li><b>${esc(e.title)}</b> <small>${esc(clock(e.starts_at_ms))}–${esc(clock(e.ends_at_ms))}</small><br>${esc(e.body)}</li>`).join('');
-  const edges = (v.transit.edges as any[]).map((e) => `<li>${esc(e.from)} ↔ ${esc(e.to)}（${esc(e.line)}）：约 ${esc(e.minutes)} 分钟，¥${esc(e.fare_yen)}</li>`).join('');
+  const edges = (v.transit.edges as any[])
+    .map(
+      (e) =>
+        `<li>${esc(e.from)} ↔ ${esc(e.to)}（${esc(e.line)}）：约 ${esc(e.minutes)} 分钟，¥${esc(e.fare_yen)}${e.hours ? ` <small>首末班 ${esc(e.hours)}${e.open === false ? ' · 停运中' : ''}</small>` : ''}</li>`,
+    )
+    .join('');
   const sources = (v.sources as any[]).map((s) => `<li>${esc(s.title)}：${esc(s.note)}${s.license ? `<br><small>许可：${esc(s.license)}</small>` : ''}</li>`).join('');
   return `<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>东京 · 城市页面</title>
@@ -748,7 +753,7 @@ export function mountCity(app: Express, c: CityService, log: (msg: string) => vo
         storable: isStorable(i.type),
       })),
       places: publicPlaces().map((p) => ({ id: p.id, name: p.name, area: p.area, type: p.type, hours: p.hours, rain: p.rain, homeward: { fare_yen: homeward(p.id).fareYen, minutes: homeward(p.id).minutes }, goods: goodsForPlace(p, c.today(c.now())).map((g) => ({ sku: g.sku, type: g.type, name: g.name, price_yen: g.priceYen })) })),
-      transit: TRANSIT_EDGES.map((e) => ({ from: station(e.a)!.placeId, to: station(e.b)!.placeId, line: e.line, minutes: e.minutes, fare_yen: e.fareYen, source: 'simulated' })),
+      transit: TRANSIT_EDGES.map((e) => ({ from: station(e.a)!.placeId, to: station(e.b)!.placeId, line: e.line, minutes: e.minutes, fare_yen: e.fareYen, hours: e.hours, source: 'simulated' })),
     })),
   );
   bridge.post('/visits/prepare', sync((req) => prepareVisit(c, body(req))));

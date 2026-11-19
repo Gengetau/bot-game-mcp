@@ -68,7 +68,7 @@ function doTravel(c: CityService, r: CityResident, a: Action, at: number, visit:
   const dest = publicPlace(str(a.to));
   if (!dest) throw new CityError('NOT_FOUND', '没有这个地方。看视图里 here.exits 列出的地点编号。', 'no_such_place');
   const trip = startTrip(c, r, dest.id, 'travel', at, visit);
-  return { status: 'accepted', trip: tripView(trip) };
+  return { status: 'accepted', trip: tripView(trip, c, at) };
 }
 
 function doSay(c: CityService, r: CityResident, a: Action, at: number, visit: VisitRow | null, subject: string): Record<string, unknown> {

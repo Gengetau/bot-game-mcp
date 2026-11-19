@@ -28,6 +28,7 @@ import {
   publicPlace,
   publicPlaces,
   station,
+  transitHoursOpenAt,
   type Place,
 } from './catalog.js';
 import { CityError } from './errors.js';
@@ -35,8 +36,8 @@ import { heldItems, lockerItems, trustedAssetIdOf, wallet } from './ledger.js';
 import { MAPPINGS, kernelItemOf } from './mappings.js';
 import { card } from './residents.js';
 import type { CityResident, CityService } from './service.js';
-import { placeOpen, runningTrip, spendable, tripView } from './trips.js';
-import { openVisitOf, type VisitRow } from './visits.js';
+import { placeOpen, routeTransitCheck, runningTrip, spendable, tripView } from './trips.js';
+import { effectiveVisitReturnSchedule, openVisitOf, type VisitRow } from './visits.js';
 import { eventsToday, weatherBrief } from './weather.js';
 
 /** 交给 world_act 的占位窗口：城市世界不用动作窗口，保留这个字段只为了和栖灯镇的工具签名一致。 */
@@ -86,11 +87,19 @@ export function publicCityView(c: CityService): Record<string, unknown> {
         })),
     })),
     transit: {
-      note: '耗时和票价都是模拟值，不是真实时刻表和实时运价。',
+      note: '耗时、票价与首末班时间都是模拟值，不是真实时刻表和实时运价。',
       source: 'simulated',
       rule_version: FARE_RULE_VERSION,
       stations: STATIONS.map((s) => ({ id: s.id, name: s.name, area: s.area, lines: s.stops.map((x) => x.line) })),
-      edges: TRANSIT_EDGES.map((e) => ({ from: station(e.a)!.name, to: station(e.b)!.name, line: e.line, minutes: e.minutes, fare_yen: e.fareYen })),
+      edges: TRANSIT_EDGES.map((e) => ({
+        from: station(e.a)!.name,
+        to: station(e.b)!.name,
+        line: e.line,
+        minutes: e.minutes,
+        fare_yen: e.fareYen,
+        hours: `${e.hours.first}–${e.hours.last}`,
+        open: transitHoursOpenAt(e.hours, c.minuteOfDay(now)),
+      })),
     },
     in_transit: c.db.scalar('SELECT COUNT(*) FROM residents WHERE in_city = 1 AND trip_id IS NOT NULL'),
     events_today: eventsToday(c, now),
@@ -145,7 +154,19 @@ export function sceneView(c: CityService, placeId: string, viewer: CityResident,
     .map((x) => {
       const route = planRoute(placeId, x.id);
       const o = placeOpen(c, x, at);
-      return route ? { id: x.id, name: x.name, area: x.area, type: x.type, minutes: route.minutes, fare_yen: route.fareYen, open: o.open, ...(o.open ? {} : { closed_reason: o.why === 'closed_rain' ? 'rain' : 'hours' }) } : null;
+      if (!route) return null;
+      const transitOk = routeTransitCheck(c, route, at).ok;
+      return {
+        id: x.id,
+        name: x.name,
+        area: x.area,
+        type: x.type,
+        minutes: route.minutes,
+        fare_yen: route.fareYen,
+        open: o.open,
+        ...(o.open ? {} : { closed_reason: o.why === 'closed_rain' ? 'rain' : 'hours' }),
+        ...(transitOk ? {} : { transit_closed: true }),
+      };
     })
     .filter((x): x is NonNullable<typeof x> => Boolean(x))
     .sort((a, b) => Number(a.area !== p.area) - Number(b.area !== p.area) || a.minutes - b.minutes)
@@ -168,12 +189,14 @@ export function sceneView(c: CityService, placeId: string, viewer: CityResident,
 function visitBrief(c: CityService, visit: VisitRow, r: CityResident): Record<string, unknown> {
   const here = r.place_id ?? runningTrip(c, r.resident_id)?.to_place ?? HOUSE_ENTRANCE;
   const home = homeward(here);
+  const sched = effectiveVisitReturnSchedule(c, visit, here, c.now());
   return {
     visit_id: visit.visit_id,
     state: visit.state,
     return_by_ms: visit.return_by_ms,
     /** 最晚这个时候得动身，否则程序会替她开始回程 */
-    leave_by_ms: visit.return_by_ms - home.minutes * 60_000 - c.params.returnMarginMs,
+    leave_by_ms: sched.dueMs,
+    ...(sched.reason === 'last_train' ? { last_train_guard: true } : {}),
     homeward: { minutes: home.minutes, fare_yen: home.fareYen },
     plan: parseJson(visit.plan_json, {}),
     ...(visit.return_reason ? { return_reason: visit.return_reason } : {}),
@@ -194,6 +217,7 @@ export function routePreview(c: CityService, fromId: string, toId: string): Reco
       minutes: 0,
       fare_yen: 0,
       legs: [],
+      transit_open: true,
       dest_open: o.open,
       ...(o.open ? {} : { closed_reason: o.why === 'closed_rain' ? 'rain' : 'hours' }),
       rule_version: FARE_RULE_VERSION,
@@ -202,6 +226,7 @@ export function routePreview(c: CityService, fromId: string, toId: string): Reco
   }
   const r = planRoute(fromId, toId);
   if (!r) throw new CityError('NOT_FOUND', '这两个地点之间没有可达路线。', 'no_route');
+  const transitCheck = routeTransitCheck(c, r, now);
   const o = placeOpen(c, to, now + r.minutes * 60_000);
   return {
     from: r.from,
@@ -218,6 +243,8 @@ export function routePreview(c: CityService, fromId: string, toId: string): Reco
       minutes: l.minutes,
       fare_yen: l.fareYen,
     })),
+    transit_open: transitCheck.ok,
+    ...(transitCheck.ok ? {} : { transit_closed_reason: 'transit_closed_night' }),
     dest_open: o.open,
     ...(o.open ? {} : { closed_reason: o.why === 'closed_rain' ? 'rain' : 'hours' }),
     rule_version: FARE_RULE_VERSION,
@@ -287,7 +314,7 @@ export function selfView(c: CityService, r: CityResident, opts: { clientId?: str
     local_time: c.clock(now),
     me: { ...card(r), origin: r.origin, in_city: inCity },
     control,
-    location: !inCity ? null : trip ? { in_transit: true, trip: tripView(trip) } : { place: r.place_id },
+    location: !inCity ? null : trip ? { in_transit: true, trip: tripView(trip, c, now) } : { place: r.place_id },
     wallet: { yen: w.balance, held_yen: w.held, spendable_yen: can.yen, ...(visit ? { return_reserve_yen: can.returnReserveYen } : {}) },
     items,
     locker_items: locker,
