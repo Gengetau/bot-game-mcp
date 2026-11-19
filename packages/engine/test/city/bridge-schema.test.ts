@@ -167,6 +167,8 @@ describe('协议产物和 schema 对得上', () => {
       { type: 'buy', sku: 'coffee', qty: 2 },
       { type: 'consume', item_id: 'itm_x', qty: 1 },
       { type: 'give', to: 'r1', item: 'cookie' },
+      { type: 'inspect_item', item_id: 'itm_x' },
+      { type: 'inspect_item', scope: 'held', offset: 0, limit: 10 },
       { type: 'go_home' },
     ]) {
       expectValid('Action', action);
@@ -201,15 +203,15 @@ describe('协议产物和 schema 对得上', () => {
     const body = { request_id: `${k.visitId}:release`, settlement_id: settled.settlement_id, domain_epoch: k.epoch + 1 };
     req('ReleaseRequest', body);
     const r = receipt('ReleaseReceipt', releaseVisit(c, k.visitId, body));
-    // 多买的那杯咖啡没喝，咖啡不在映射表里，回不了家，留在寄存包裹：访问进入 reconcile 而不是 closed
-    expect(settled.items.filter((i: any) => i.fate === 'locker')).toHaveLength(1);
-    expect(r.state).toBe('reconcile');
+    // 多买的那杯现点咖啡（carry_home: false）没喝完：返家前按 disposed 处理（不进储物柜、不代喝），无 pending 订单时正常 closed
+    expect(settled.items.filter((i: any) => i.fate === 'disposed')).toHaveLength(1);
+    expect(r.state).toBe('closed');
     expect(r.payload).toMatchObject({ reconcile_ok: true });
     const replay = receipt('ReleaseReceipt', releaseVisit(c, k.visitId, body));
     expect(replay.replayed).toBe(true);
     const closed = describeVisit(c, k.visitId) as any;
     expectValid('VisitDescription', closed, 'describe(closed)');
-    expect(closed.state).toBe('reconcile');
+    expect(closed.state).toBe('closed');
     expect(closed.receipts.map((x: any) => x.op)).toEqual(['prepare', 'commit', 'commit', 'return-request', 'release']);
   });
 
@@ -268,9 +270,9 @@ describe('协议产物和 schema 对得上', () => {
     c.commit(() => applyWeather(c, readings, t.clock.t));
     const wrap = () => ({ at_ms: c.now(), attribution: 'Weather data by Open-Meteo.com (CC BY 4.0)', areas: allWeather(c) });
     const live = wrap();
-    expect(live.areas).toHaveLength(3);
+    expect(live.areas).toHaveLength(AREAS.length);
     expectValid('WeatherResponse', live, 'weather(ok)');
-    expect(live.areas.map((a) => a.status)).toEqual(['ok', 'ok', 'ok']);
+    expect(live.areas.map((a) => a.status)).toEqual(AREAS.map(() => 'ok'));
     // 合成天气（没抓到）
     t.run(5 * MIN);
     c.commit(() => applyWeather(c, null, t.clock.t));

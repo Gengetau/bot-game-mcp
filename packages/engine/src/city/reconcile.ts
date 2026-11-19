@@ -60,10 +60,20 @@ export function runReconcile(c: CityService, trigger: string): ReconcileReport {
       }
       if (v.state === 'settled' && now - Number(v.settled_at ?? now) > 60 * 60_000) info('awaiting_release', { visit_id: v.visit_id, settled_at_ms: Number(v.settled_at) });
       if (v.state === 'reconcile') {
+        const pendingCount = c.db.scalar("SELECT COUNT(*) FROM orders WHERE visit_id = ? AND status = 'pending'", v.visit_id);
         const s = parseJson<{ pending?: unknown[]; items?: { fate: string }[] }>(v.settlement_json as string, {});
-        info('visit_needs_attention', { visit_id: v.visit_id, pending_orders: s.pending?.length ?? 0, locker_items: (s.items ?? []).filter((i) => i.fate === 'locker').length });
+        info('visit_needs_attention', {
+          visit_id: v.visit_id,
+          pending_orders: pendingCount || (s.pending?.length ?? 0),
+          locker_items: (s.items ?? []).filter((i) => i.fate === 'locker').length,
+        });
       }
     }
+    // 关单后确认为 failed 的未决订单会通过 order_refund 分录把解锁日元退回桥接池
+    expectedBridge += c.db.scalar(
+      "SELECT COALESCE(SUM(e.delta), 0) FROM ledger_entries e JOIN ledger_transactions t ON t.transaction_id = e.transaction_id WHERE t.kind = 'order_refund' AND e.account_id = ?",
+      BRIDGE,
+    );
     const bridge = accountBalance(c, BRIDGE);
     if (bridge !== expectedBridge) err('bridge_balance_mismatch', { expected: expectedBridge, found: bridge });
 
@@ -81,10 +91,41 @@ export function runReconcile(c: CityService, trigger: string): ReconcileReport {
     }
 
     const stray = c.db.all<Row>(
-      `SELECT i.item_id, i.visit_id FROM items i LEFT JOIN visits v ON v.visit_id = i.visit_id
-       WHERE i.origin_ref IS NOT NULL AND i.state = 'held' AND i.quantity > 0 AND (v.state IS NULL OR v.state NOT IN ('active','returning','settled'))`,
+      `SELECT i.item_id, i.owner_id, i.visit_id
+       FROM items i
+       JOIN residents r ON r.resident_id = i.owner_id
+       LEFT JOIN visits v ON v.visit_id = i.visit_id
+       WHERE r.origin = 'house'
+         AND i.state = 'held'
+         AND i.quantity > 0
+         AND (v.state IS NULL OR v.state NOT IN ('active','returning','settled') OR v.resident_id <> i.owner_id)`,
     );
     for (const s of stray) err('carried_item_outside_visit', { item_id: s.item_id, visit_id: s.visit_id });
+
+    const badDeposits = c.db.all<Row>(
+      `SELECT d.deposit_id, d.item_id, d.sender_id, d.type, d.quantity AS dep_qty,
+              i.owner_id, i.state, i.quantity AS item_qty
+       FROM locker_deposits d
+       LEFT JOIN items i ON i.item_id = d.item_id
+       WHERE d.status = 'active'
+         AND (
+           i.item_id IS NULL
+           OR i.state <> 'locker'
+           OR i.owner_id <> d.sender_id
+           OR i.type <> d.type
+           OR i.quantity <> d.quantity
+           OR (SELECT COUNT(*) FROM locker_deposits d2 WHERE d2.item_id = d.item_id AND d2.status = 'active') <> 1
+         )`,
+    );
+    for (const bd of badDeposits) {
+      err('locker_deposit_mismatch', {
+        deposit_id: bd.deposit_id,
+        item_id: bd.item_id,
+        deposit_qty: Number(bd.dep_qty),
+        item_qty: bd.item_qty === null ? null : Number(bd.item_qty),
+        item_state: bd.state ?? null,
+      });
+    }
 
     const failedJobs = c.db.scalar("SELECT COUNT(*) FROM scheduled_jobs WHERE status = 'failed'");
     if (failedJobs > 0) err('failed_jobs', { count: failedJobs });
@@ -126,13 +167,31 @@ export function installReconcile(c: CityService): void {
   c.hooks.tick.push((now) => {
     if (c.db.inMemory || c.params.backupKeep <= 0) return;
     const today = c.today(now);
-    if (c.db.getMeta('last_backup_date') === today) return;
+    if (c.db.getMeta('last_backup_ok_date') === today || c.db.getMeta('last_backup_date') === today) return;
+    const lastAttempt = Number(c.db.getMeta('last_backup_attempt_ms') ?? 0);
+    if (lastAttempt > 0 && now - lastAttempt < 5 * 60_000) return;
     try {
       const out = c.backup();
-      if (out) c.log(`[city] 已备份到 ${out.path}（${Math.round(out.bytes / 1024)} KiB，${Math.round(out.ms)} ms，已验证可恢复）`);
+      if (out) {
+        c.db.tx(() => {
+          c.db.setMeta('last_backup_ok_date', today);
+          c.db.setMeta('last_backup_date', today);
+          c.db.setMeta('last_backup_attempt_ms', String(now));
+          c.db.setMeta('last_backup_error', '');
+        });
+        c.log(`[city] 已备份到 ${out.path}（${Math.round(out.bytes / 1024)} KiB，${Math.round(out.ms)} ms，已验证可恢复）`);
+      }
     } catch (e) {
-      c.log(`[city] 备份失败：${e instanceof Error ? e.message : String(e)}`);
+      const msg = e instanceof Error ? e.message : String(e);
+      c.log(`[city] 备份失败：${msg}`);
+      try {
+        c.db.tx(() => {
+          c.db.setMeta('last_backup_attempt_ms', String(now));
+          c.db.setMeta('last_backup_error', msg.slice(0, 300));
+        });
+      } catch {
+        /* 数据库不可写时跳过元数据更新，待恢复后继续重试 */
+      }
     }
-    c.db.tx(() => c.db.setMeta('last_backup_date', today));
   });
 }

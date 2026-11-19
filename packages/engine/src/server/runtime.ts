@@ -91,6 +91,8 @@ export function createRuntime(config: BotGameConfig, log: (msg: string) => void 
     ? createCity({
         dbPath: config.city.dbFile,
         params: config.city.params,
+        publicUrl: config.city.publicUrl,
+        devLogin: config.city.devLogin,
         house: config.city.house.map((m) => ({ actorId: m.actorId, name: m.name, ...(m.bio ? { bio: m.bio } : {}), qqIds: m.qqIds })),
         log,
         ...(config.seed ? { rng: new SeededRng(`${config.seed}:city`) } : {}),
@@ -98,6 +100,9 @@ export function createRuntime(config: BotGameConfig, log: (msg: string) => void 
       })
     : undefined;
   if (city) {
+    if (config.city.allowedAgents) log(`东京城市世界准入名单已启用：${config.city.allowedAgents.length} 个身份可以经 MCP 进城`);
+    if (config.city.adminOnlyTickets) log('东京城市世界的真人登录票据只有管理员能签');
+    if (config.city.devLogin) log('⚠️  东京城市世界开了本机试玩登录（city.devLogin）：只应用于本机或隔离测试！');
     if (!config.city.bridgeKey) log('东京城市世界没有配置桥接密钥（city.bridgeKey）：桥接接口不开放，小屋的室友进不了城');
     void city.start().then(
       () => log(`东京城市世界已就绪：${config.city.dbFile}（室友 ${config.city.house.length} 位）`),

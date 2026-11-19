@@ -111,8 +111,11 @@
 | `wake_on` | `turn` / `any` |  | 等待时：turn=轮到我才返回（默认）；any=有任何你看得见的新事件就返回（别人的私密事件不算） |
 | `full_log` | boolean |  | 返回你可见的全部历史事件（默认只返回上次查看后的新事件） |
 | `cursor` | string |  | 栖灯镇：上次视图返回的 cursor。带上它会附带之后的新事件（一次最多 50 条；返回 more=true 时用返回的 cursor 接着取）；配合 wait_seconds 可以等到有新事件再返回 |
-| `section` | string |  | 要取的段，名字见 you.sections 目录（例如 "role:3"、"act:2"、"truth"、"find:关键词"）。带它时只返回这一段，忽略 wait_seconds / wake_on / full_log / cursor。 |
+| `section` | string |  | 要取的段，名字见 you.sections 目录（例如 "role:3"、"act:2"、"truth"、"find:关键词"）；在东京城市世界中支持 "items"（随身背包）、"locker_items"（储物柜）或 "stamps"（印章帐）。带它时只返回这一段，忽略 wait_seconds / wake_on / full_log / cursor。 |
 | `page` | integer |  | 分页取段时的页码，从 1 开始，默认 1。 |
+| `offset` | integer |  | 东京城市世界列表起始偏移量（从 0 开始，可直接传入上一页 items_page.next_offset 或 locker_page.next_offset）。 |
+| `item_offset` | integer |  | 东京本人视图随身背包起始偏移量（从 0 开始）。 |
+| `locker_offset` | integer |  | 东京本人视图储物柜起始偏移量（从 0 开始）。 |
 
 ### `speak` —— 发言
 

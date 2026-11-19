@@ -84,7 +84,7 @@ describe('桥接接口', () => {
     expect((await on.api('GET', '/weather', undefined, 'wrong-key')).body).toMatchObject({ error: 'UNAUTHENTICATED' });
     const ok = await on.api('GET', '/weather');
     expect(ok.status).toBe(200);
-    expect(ok.body.areas).toHaveLength(3);
+    expect(ok.body.areas).toHaveLength(5);
     expect(ok.headers.get('cache-control')).toBe('no-store');
     expect((await on.api('GET', '/nope')).status).toBe(404);
     expect((await on.api('POST', '/visits/prepare', '{bad json')).body).toMatchObject({ error: 'BAD_REQUEST' });
@@ -96,7 +96,7 @@ describe('桥接接口', () => {
     const k = t.kernel('nia');
 
     const catalog = await api('GET', '/catalog');
-    expect(catalog.body).toMatchObject({ protocol: 'city-bridge/1', city_catalog_version: 'tokyo-p1.0', mappings: { version: MAPPINGS.version }, handover_node: HOUSE_ENTRANCE });
+    expect(catalog.body).toMatchObject({ protocol: 'city-bridge/1', city_catalog_version: 'tokyo-p1.2', mappings: { version: MAPPINGS.version }, handover_node: HOUSE_ENTRANCE });
     expect(catalog.body.places.find((p: any) => p.id === KISSA).homeward).toEqual({ fare_yen: 200, minutes: 31 });
 
     const prepare = k.prepareBody({ yen: 20_000, items: [COOKIE], to: KISSA });

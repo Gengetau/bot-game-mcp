@@ -40,6 +40,18 @@ export const cityParamsSchema = z.object({
   reconcileHour: z.number().int().min(0).max(23).default(4),
   /** 每天一次的数据库备份保留几份（放在数据库同目录的 backups/ 下）；0 表示不备份 */
   backupKeep: z.number().int().min(0).max(365).default(14),
+  /** 人类网页登录票据有效期（毫秒），默认 5 分钟 */
+  loginTicketTtlMs: z.number().int().min(30_000).default(5 * 60_000),
+  /** 人类网页会话有效期（毫秒），默认 30 天 */
+  sessionTtlMs: z.number().int().min(60_000).default(30 * 24 * 3600_000),
+  /** 个人城市储物柜最多存放条目数 */
+  maxLockerEntries: z.number().int().min(1).default(30),
+  /** 个人城市储物柜累计物品总件数上限 */
+  maxLockerQty: z.number().int().min(1).default(200),
+  /** 车站投币储物柜凭条/委托代取租期上限（毫秒），默认 72 小时 */
+  lockerLeaseMs: z.number().int().min(60_000).default(72 * 3600_000),
+  /** 单人同时占用的活跃公共代取柜位上限 */
+  maxActiveLockerDeposits: z.number().int().min(1).default(5),
 });
 
 export type CityParams = z.infer<typeof cityParamsSchema>;

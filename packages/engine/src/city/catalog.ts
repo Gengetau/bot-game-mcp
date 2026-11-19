@@ -1,3 +1,14 @@
+import { APPAREL_SHOP_PLACES, apparelWindowForPlace, shopApparelBySku } from './apparel-catalog.js';
+import {
+  MOUNTED_CONTENT_PACKS,
+  validateContentPack,
+  type CityContentPack,
+  type DistrictSpec,
+  type MunicipalitySpec,
+  type OpennessLevel,
+  type StationStampSpec,
+  type TransportKind,
+} from './packs/index.js';
 /**
  * 东京城市世界的目录（第一期）：片区、车站、线路、街区、地点、商品、来源。
  *
@@ -13,11 +24,19 @@
 
 export const CITY_WORLD_ID = 'tokyo';
 export const CITY_WORLD_NAME = '东京';
-export const CITY_CATALOG_VERSION = 'tokyo-p1.0';
+export const CITY_CATALOG_VERSION = 'tokyo-p1.2';
 export const FARE_RULE_VERSION = 'sim-2026-11';
+
+export const BOOK_SHELF_BUYBACK_YEN = 300;
+export const BOOK_SHELF_RESALE_YEN = 350;
+export const MAX_FLYLEAF_ENTRIES = 5;
+export const MAX_FLYLEAF_NOTE_CHARS = 50;
 
 /** 小屋门口：交接点（规格 3.1）。不公开。 */
 export const HOUSE_ENTRANCE = 'akabane:ai-house:entrance';
+
+export type { CityContentPack, DistrictSpec, MunicipalitySpec, OpennessLevel, StationStampSpec, TransportKind };
+export { MOUNTED_CONTENT_PACKS };
 
 export interface SourceReference {
   id: string;
@@ -36,7 +55,7 @@ export interface SourceReference {
   sourcebook?: readonly string[];
 }
 
-export const SOURCES: readonly SourceReference[] = [
+const BASE_SOURCES: readonly SourceReference[] = [
   {
     id: 'jreast-network',
     kind: 'operator',
@@ -63,6 +82,13 @@ export const SOURCES: readonly SourceReference[] = [
     retrieved: '2026-11-17',
   },
   {
+    id: 'sim-hours',
+    kind: 'simulated',
+    title: '模拟铁道首末班运营时间窗',
+    note: '统一采用纯确定性的模拟首末班运营时间窗（首班 05:00、末班 00:20 JST），按每段铁道的计划上车时刻（board_at_ms）判定是否在运营窗内（如 04:56 先步行到站、05:00 准点上车获准通行；00:19 出发但 00:23 才到站上车前置拦截），不依赖有许可期限的 ODPT 实时时刻表，标注为 simulated。',
+    retrieved: '2026-11-18',
+  },
+  {
     id: 'public-spaces',
     kind: 'public_space',
     title: '真实存在的公共空间',
@@ -81,7 +107,21 @@ export const SOURCES: readonly SourceReference[] = [
   },
 ];
 
-export type AreaId = 'akabane' | 'ikebukuro' | 'shinjuku';
+function mergeUniqueBy<T>(items: readonly T[], keyOf: (item: T) => string): T[] {
+  const seen = new Map<string, T>();
+  for (const it of items) {
+    const k = keyOf(it);
+    if (!seen.has(k)) seen.set(k, it);
+  }
+  return [...seen.values()];
+}
+
+export const SOURCES: readonly SourceReference[] = mergeUniqueBy(
+  [...BASE_SOURCES, ...MOUNTED_CONTENT_PACKS.flatMap((p) => p.sources)],
+  (s) => s.id,
+);
+
+export type AreaId = 'akabane' | 'ikebukuro' | 'shinjuku' | 'jinbocho' | 'shimokitazawa';
 
 export interface Area {
   id: AreaId;
@@ -90,12 +130,73 @@ export interface Area {
   blurb: string;
   /** 取天气用的代表点 */
   weatherPoint: { lat: number; lon: number };
+  /** 四层地理标准字段（CONTENT-PACK-SPEC） */
+  districtId?: string;
+  municipalityId?: string;
+  openness?: OpennessLevel;
+  hubStationId?: string;
 }
 
+const BASE_MUNICIPALITIES: readonly MunicipalitySpec[] = [
+  { id: 'mun:13117', name: '北区', region: 'ward23', source: 'public-spaces' },
+  { id: 'mun:13116', name: '丰岛区', region: 'ward23', source: 'public-spaces' },
+  { id: 'mun:13104', name: '新宿区', region: 'ward23', source: 'public-spaces' },
+];
+
+export const MUNICIPALITIES: readonly MunicipalitySpec[] = mergeUniqueBy(
+  [...BASE_MUNICIPALITIES, ...MOUNTED_CONTENT_PACKS.map((p) => p.municipality)],
+  (m) => m.id,
+);
+
+const BASE_AREAS: readonly Area[] = [
+  {
+    id: 'akabane',
+    name: '赤羽',
+    ward: '北区',
+    blurb: '北区的老街区：站前热闹，往北走到荒川就开阔了。',
+    weatherPoint: { lat: 35.7776, lon: 139.7209 },
+    districtId: 'dist:akabane',
+    municipalityId: 'mun:13117',
+    openness: 'livable',
+    hubStationId: 'st:akabane',
+  },
+  {
+    id: 'ikebukuro',
+    name: '池袋',
+    ward: '丰岛区',
+    blurb: '大车站、书店和喫茶店，巷子里还有一小片草坪。',
+    weatherPoint: { lat: 35.7295, lon: 139.7109 },
+    districtId: 'dist:ikebukuro',
+    municipalityId: 'mun:13116',
+    openness: 'livable',
+    hubStationId: 'st:ikebukuro',
+  },
+  {
+    id: 'shinjuku',
+    name: '新宿',
+    ward: '新宿区',
+    blurb: '全东京人最多的车站，南口出去是一条能吹到风的露台步道。',
+    weatherPoint: { lat: 35.6896, lon: 139.7006 },
+    districtId: 'dist:shinjuku',
+    municipalityId: 'mun:13104',
+    openness: 'livable',
+    hubStationId: 'st:shinjuku',
+  },
+];
+
 export const AREAS: readonly Area[] = [
-  { id: 'akabane', name: '赤羽', ward: '北区', blurb: '北区的老街区：站前热闹，往北走到荒川就开阔了。', weatherPoint: { lat: 35.7776, lon: 139.7209 } },
-  { id: 'ikebukuro', name: '池袋', ward: '丰岛区', blurb: '大车站、书店和喫茶店，巷子里还有一小片草坪。', weatherPoint: { lat: 35.7295, lon: 139.7109 } },
-  { id: 'shinjuku', name: '新宿', ward: '新宿区', blurb: '全东京人最多的车站，南口出去是一条能吹到风的露台步道。', weatherPoint: { lat: 35.6896, lon: 139.7006 } },
+  ...BASE_AREAS,
+  ...MOUNTED_CONTENT_PACKS.map((p) => ({
+    id: p.district.areaId,
+    name: p.district.name,
+    ward: p.district.ward,
+    blurb: p.district.blurb,
+    weatherPoint: p.district.weatherPoint,
+    districtId: p.district.id,
+    municipalityId: p.district.municipalityId,
+    openness: p.district.openness,
+    hubStationId: p.district.hubStationId,
+  })),
 ];
 
 export interface StationStop {
@@ -113,7 +214,7 @@ export interface StationComplex {
   stops: StationStop[];
 }
 
-export const STATIONS: readonly StationComplex[] = [
+const BASE_STATIONS: readonly StationComplex[] = [
   {
     id: 'st:akabane',
     name: '赤羽站',
@@ -146,7 +247,21 @@ export const STATIONS: readonly StationComplex[] = [
   },
 ];
 
+export const STATIONS: readonly StationComplex[] = [
+  ...BASE_STATIONS,
+  ...MOUNTED_CONTENT_PACKS.flatMap((p) => p.stations),
+];
+
 /** 两站之间的一段车（无向）。minutes 含候车；fareYen 是这一段的票价。 */
+export interface TransitHours {
+  /** 首班发车时刻（世界时区 HH:MM，含） */
+  first: string;
+  /** 末班截止时刻（世界时区 HH:MM，不含；last < first 表示跨午夜） */
+  last: string;
+}
+
+export const TRANSIT_DEFAULT_HOURS: TransitHours = { first: '05:00', last: '00:20' };
+
 export interface TransitEdge {
   id: string;
   a: string;
@@ -154,13 +269,22 @@ export interface TransitEdge {
   line: string;
   minutes: number;
   fareYen: number;
+  hours: TransitHours;
   sources: string[];
+  operator?: string;
+  transportKind?: TransportKind;
+  distanceKm?: number;
 }
 
+const BASE_TRANSIT_EDGES: readonly TransitEdge[] = [
+  { id: 'te:akabane-ikebukuro', a: 'st:akabane', b: 'st:ikebukuro', line: '埼京线', operator: 'jreast', transportKind: 'rail', distanceKm: 5.5, minutes: 13, fareYen: 200, hours: TRANSIT_DEFAULT_HOURS, sources: ['jreast-network', 'sim-fares', 'sim-times', 'sim-hours'] },
+  { id: 'te:akabane-shinjuku', a: 'st:akabane', b: 'st:shinjuku', line: '埼京线', operator: 'jreast', transportKind: 'rail', distanceKm: 10.3, minutes: 19, fareYen: 260, hours: TRANSIT_DEFAULT_HOURS, sources: ['jreast-network', 'sim-fares', 'sim-times', 'sim-hours'] },
+  { id: 'te:ikebukuro-shinjuku', a: 'st:ikebukuro', b: 'st:shinjuku', line: '山手线', operator: 'jreast', transportKind: 'rail', distanceKm: 4.8, minutes: 10, fareYen: 200, hours: TRANSIT_DEFAULT_HOURS, sources: ['jreast-network', 'sim-fares', 'sim-times', 'sim-hours'] },
+];
+
 export const TRANSIT_EDGES: readonly TransitEdge[] = [
-  { id: 'te:akabane-ikebukuro', a: 'st:akabane', b: 'st:ikebukuro', line: '埼京线', minutes: 13, fareYen: 200, sources: ['jreast-network', 'sim-fares', 'sim-times'] },
-  { id: 'te:akabane-shinjuku', a: 'st:akabane', b: 'st:shinjuku', line: '埼京线', minutes: 19, fareYen: 260, sources: ['jreast-network', 'sim-fares', 'sim-times'] },
-  { id: 'te:ikebukuro-shinjuku', a: 'st:ikebukuro', b: 'st:shinjuku', line: '山手线', minutes: 10, fareYen: 200, sources: ['jreast-network', 'sim-fares', 'sim-times'] },
+  ...BASE_TRANSIT_EDGES,
+  ...MOUNTED_CONTENT_PACKS.flatMap((p) => p.transitEdges),
 ];
 
 export interface Neighborhood {
@@ -169,12 +293,17 @@ export interface Neighborhood {
   name: string;
 }
 
-export const NEIGHBORHOODS: readonly Neighborhood[] = [
+const BASE_NEIGHBORHOODS: readonly Neighborhood[] = [
   { id: 'akabane:ekimae', area: 'akabane', name: '赤羽站前' },
   { id: 'akabane:arakawa', area: 'akabane', name: '荒川河岸' },
   { id: 'akabane:residential', area: 'akabane', name: '赤羽一带的住宅区' },
   { id: 'ikebukuro:east', area: 'ikebukuro', name: '池袋东口' },
   { id: 'shinjuku:south', area: 'shinjuku', name: '新宿南口' },
+];
+
+export const NEIGHBORHOODS: readonly Neighborhood[] = [
+  ...BASE_NEIGHBORHOODS,
+  ...MOUNTED_CONTENT_PACKS.flatMap((p) => p.neighborhoods),
 ];
 
 export type ItemKind = 'food' | 'drink' | 'thing';
@@ -183,27 +312,43 @@ export interface ItemType {
   type: string;
   name: string;
   kind: ItemKind;
+  /** 是否可带回家或存入储物柜；未设默认 true，现点杯装热饮为 false */
+  carry_home?: boolean;
 }
 
-export const ITEM_TYPES: readonly ItemType[] = [
+const BASE_ITEM_TYPES: readonly ItemType[] = [
   { type: 'cookie', name: '曲奇', kind: 'food' },
   { type: 'onigiri', name: '饭团', kind: 'food' },
+  { type: 'egg_sandwich', name: '厚烧鸡蛋三明治', kind: 'food' },
+  { type: 'oden_cup', name: '热关东煮', kind: 'food' },
   { type: 'melon_pan', name: '菠萝包', kind: 'food' },
   { type: 'cream_bun', name: '奶油面包', kind: 'food' },
   { type: 'cheesecake', name: '芝士蛋糕', kind: 'food' },
-  { type: 'coffee', name: '咖啡', kind: 'drink' },
-  { type: 'milk_tea', name: '奶茶', kind: 'drink' },
+  { type: 'coffee', name: '咖啡', kind: 'drink', carry_home: false },
+  { type: 'milk_tea', name: '奶茶', kind: 'drink', carry_home: false },
   { type: 'green_tea', name: '瓶装绿茶', kind: 'drink' },
+  { type: 'roasted_tea', name: '焙茶', kind: 'drink' },
+  { type: 'hot_corn_soup', name: '热玉米浓汤', kind: 'drink' },
+  { type: 'hot_red_bean_soup', name: '热红豆汤', kind: 'drink' },
+  { type: 'salted_lychee', name: '盐味荔枝饮', kind: 'drink' },
   { type: 'coffee_beans', name: '咖啡豆', kind: 'thing' },
   { type: 'umbrella', name: '透明雨伞', kind: 'thing' },
   { type: 'paperback', name: '文库本', kind: 'thing' },
   { type: 'postcard', name: '明信片', kind: 'thing' },
   { type: 'notebook', name: '笔记本', kind: 'thing' },
+  { type: 'apparel_bundle', name: '服饰礼盒', kind: 'thing' },
+];
+
+export const ITEM_TYPES: readonly ItemType[] = [
+  ...BASE_ITEM_TYPES,
+  ...MOUNTED_CONTENT_PACKS.flatMap((p) => p.itemTypes ?? []),
 ];
 
 const ITEM_BY_TYPE = new Map(ITEM_TYPES.map((i) => [i.type, i]));
 export const itemType = (type: string): ItemType | undefined => ITEM_BY_TYPE.get(type);
 export const itemName = (type: string): string => ITEM_BY_TYPE.get(type)?.name ?? type;
+export const isCarryHome = (type: string): boolean => ITEM_BY_TYPE.get(type)?.carry_home !== false;
+export const isStorable = (type: string): boolean => isCarryHome(type);
 
 export interface Good {
   sku: string;
@@ -211,9 +356,68 @@ export interface Good {
   type: string;
   name: string;
   priceYen: number;
+  /** 折扣前原价（如「麦之灯」19:30 后余量八折） */
+  originalPriceYen?: number;
+  /** 折扣标签 */
+  discountLabel?: string;
+  /** 服饰礼盒绑定的可信图鉴资产 ID（仅服务端目录持有） */
+  assetId?: string;
+  contentTier?: 'sfw' | 'intimate';
 }
 
-export type PlaceType = 'station' | 'cafe' | 'shop' | 'park' | 'plaza' | 'riverside' | 'promenade' | 'entrance';
+export interface CatalogTimeContext {
+  /** 世界业务日期 YYYY-MM-DD */
+  dateStr?: string;
+  /** 世界时区月份 1..12 */
+  jstMonth?: number;
+  /** 当天第几分钟 0..1439 */
+  minuteOfDay?: number;
+}
+
+const CONBINI_GOODS: Good[] = [
+  { sku: 'umbrella', type: 'umbrella', name: '透明雨伞', priceYen: 550 },
+  { sku: 'onigiri', type: 'onigiri', name: '饭团', priceYen: 160 },
+  { sku: 'egg_sandwich', type: 'egg_sandwich', name: '厚烧鸡蛋三明治', priceYen: 290 },
+  { sku: 'oden_cup', type: 'oden_cup', name: '热关东煮', priceYen: 360 },
+  { sku: 'green_tea', type: 'green_tea', name: '瓶装绿茶', priceYen: 150 },
+  { sku: 'cookie', type: 'cookie', name: '小袋曲奇', priceYen: 220 },
+];
+
+const VENDING_WINTER_GOODS: readonly Good[] = [
+  { sku: 'hot_corn_soup', type: 'hot_corn_soup', name: '热玉米浓汤', priceYen: 160 },
+  { sku: 'hot_red_bean_soup', type: 'hot_red_bean_soup', name: '热红豆汤', priceYen: 160 },
+  { sku: 'green_tea', type: 'green_tea', name: '瓶装绿茶', priceYen: 150 },
+];
+
+const VENDING_SUMMER_GOODS: readonly Good[] = [
+  { sku: 'salted_lychee', type: 'salted_lychee', name: '盐味荔枝饮', priceYen: 160 },
+  { sku: 'green_tea', type: 'green_tea', name: '瓶装绿茶', priceYen: 150 },
+];
+
+const VENDING_MILD_GOODS: readonly Good[] = [
+  { sku: 'green_tea', type: 'green_tea', name: '瓶装绿茶', priceYen: 150 },
+  { sku: 'roasted_tea', type: 'roasted_tea', name: '焙茶', priceYen: 150 },
+];
+
+const ALL_VENDING_GOODS: readonly Good[] = [
+  ...VENDING_WINTER_GOODS,
+  ...VENDING_SUMMER_GOODS,
+  ...VENDING_MILD_GOODS,
+];
+
+/** 24h 自动售货机纯函数冬夏轮换：冬季（11–3 月）热玉米浓汤/红豆汤，夏季（6–9 月）盐味荔枝饮，其余春秋常驻茶饮。 */
+export function vendingGoodsForMonth(jstMonth: number): readonly Good[] {
+  if (jstMonth >= 11 || jstMonth <= 3) return VENDING_WINTER_GOODS;
+  if (jstMonth >= 6 && jstMonth <= 9) return VENDING_SUMMER_GOODS;
+  return VENDING_MILD_GOODS;
+}
+
+/** 19:30 后「麦之灯」晚间余量八折判断（纯函数）。 */
+export function isMuginohiEveningDiscount(minuteOfDay?: number): boolean {
+  return minuteOfDay !== undefined && minuteOfDay >= 19 * 60 + 30;
+}
+
+export type PlaceType = 'station' | 'cafe' | 'shop' | 'park' | 'plaza' | 'riverside' | 'promenade' | 'theatre' | 'entrance';
 /** 雨天策略：none 不受影响；notice 照常开放但提示；closed 下雨时关闭（已经在里面的人不赶，只是不能再进） */
 export type RainPolicy = 'none' | 'notice' | 'closed';
 
@@ -241,9 +445,10 @@ export interface Place {
   hidden?: boolean;
 }
 
-const BASE_ACTIONS = ['say', 'travel', 'consume', 'give'];
+const BASE_ACTIONS = ['say', 'travel', 'consume', 'give', 'read_item', 'inspect_item'];
+const STATION_ACTIONS = [...BASE_ACTIONS, 'buy', 'store_locker', 'take_locker', 'drift_book', 'take_book', 'stamp_station'];
 
-export const PLACES: readonly Place[] = [
+const BASE_PLACES: readonly Place[] = [
   // ── 赤羽 ──
   {
     id: 'akabane:station',
@@ -258,8 +463,8 @@ export const PLACES: readonly Place[] = [
     walkMinutes: 0,
     rain: 'none',
     goods: [],
-    actions: BASE_ACTIONS,
-    blurb: '检票口外的大厅，人来人往。',
+    actions: STATION_ACTIONS,
+    blurb: '检票口外的大厅，人来人往，角落摆着 24 小时自动售货机、投币储物柜和漂流书角。',
     source: 'jreast-network',
     fictional: false,
   },
@@ -293,14 +498,9 @@ export const PLACES: readonly Place[] = [
     station: 'st:akabane',
     walkMinutes: 3,
     rain: 'none',
-    goods: [
-      { sku: 'umbrella', type: 'umbrella', name: '透明雨伞', priceYen: 550 },
-      { sku: 'onigiri', type: 'onigiri', name: '饭团', priceYen: 160 },
-      { sku: 'green_tea', type: 'green_tea', name: '瓶装绿茶', priceYen: 150 },
-      { sku: 'cookie', type: 'cookie', name: '小袋曲奇', priceYen: 220 },
-    ],
+    goods: CONBINI_GOODS,
     actions: [...BASE_ACTIONS, 'buy'],
-    blurb: '二十四小时开着。下雨天门口的伞架会空得很快。',
+    blurb: '二十四小时开着，提供透明雨伞与夜间歇脚简餐。下雨天门口的伞架会空得很快。',
     source: 'fictional',
     fictional: true,
   },
@@ -355,8 +555,8 @@ export const PLACES: readonly Place[] = [
     walkMinutes: 0,
     rain: 'none',
     goods: [],
-    actions: BASE_ACTIONS,
-    blurb: '东口的检票口外，头顶是百货店的连廊。',
+    actions: STATION_ACTIONS,
+    blurb: '东口的检票口外，头顶是百货店的连廊，角落设 24 小时自动售货机、投币储物柜与漂流书角。',
     source: 'jreast-network',
     fictional: false,
   },
@@ -399,8 +599,51 @@ export const PLACES: readonly Place[] = [
       { sku: 'paperback', type: 'paperback', name: '文库本', priceYen: 800 },
       { sku: 'postcard', type: 'postcard', name: '明信片', priceYen: 150 },
     ],
+    actions: [...BASE_ACTIONS, 'buy', 'drift_book', 'take_book'],
+    blurb: '两层的小书店，楼梯转角摆着店员手写的推荐卡，一角还设着古书二手架。',
+    source: 'fictional',
+    fictional: true,
+  },
+  {
+    id: 'ikebukuro:ekimae-conbini',
+    area: 'ikebukuro',
+    neighborhood: 'ikebukuro:east',
+    name: '便利店「灯笼屋·池袋东口」',
+    type: 'shop',
+    indoor: true,
+    hours: null,
+    capacity: 20,
+    station: 'st:ikebukuro',
+    walkMinutes: 3,
+    rain: 'none',
+    goods: CONBINI_GOODS,
     actions: [...BASE_ACTIONS, 'buy'],
-    blurb: '两层的小书店，楼梯转角摆着店员手写的推荐卡。',
+    blurb: '二十四小时亮着灯的街角便利店，深夜也能买到透明雨伞与热简餐。',
+    source: 'fictional',
+    fictional: true,
+  },
+  {
+    id: 'ikebukuro:suzuran-closet',
+    area: 'ikebukuro',
+    neighborhood: 'ikebukuro:east',
+    name: '服饰店「铃兰衣橱」',
+    type: 'shop',
+    indoor: true,
+    hours: { open: '10:00', close: '21:00' },
+    capacity: 24,
+    station: 'st:ikebukuro',
+    walkMinutes: 5,
+    rain: 'none',
+    goods: apparelWindowForPlace('ikebukuro:suzuran-closet', '2026-11-18').map((e) => ({
+      sku: e.sku,
+      type: 'apparel_bundle',
+      name: e.name,
+      priceYen: e.priceYen,
+      assetId: e.assetId,
+      contentTier: e.tier,
+    })),
+    actions: [...BASE_ACTIONS, 'buy'],
+    blurb: '挂满当季针织衫、百褶裙与通勤外套的街角衣橱，木衣架按色系排得很整齐。',
     source: 'fictional',
     fictional: true,
   },
@@ -436,10 +679,28 @@ export const PLACES: readonly Place[] = [
     walkMinutes: 0,
     rain: 'none',
     goods: [],
-    actions: BASE_ACTIONS,
-    blurb: '南口的检票口外。第一次来的人多半要在这里找一会儿方向。',
+    actions: STATION_ACTIONS,
+    blurb: '南口的检票口外，立着 24 小时自动售货机、投币储物柜与漂流书角。',
     source: 'jreast-network',
     fictional: false,
+  },
+  {
+    id: 'shinjuku:south-conbini',
+    area: 'shinjuku',
+    neighborhood: 'shinjuku:south',
+    name: '便利店「灯笼屋·新宿南口」',
+    type: 'shop',
+    indoor: true,
+    hours: null,
+    capacity: 20,
+    station: 'st:shinjuku',
+    walkMinutes: 3,
+    rain: 'none',
+    goods: CONBINI_GOODS,
+    actions: [...BASE_ACTIONS, 'buy'],
+    blurb: '二十四小时开着，备有 ¥550 透明雨伞与晚归歇脚简餐。',
+    source: 'fictional',
+    fictional: true,
   },
   {
     id: 'shinjuku:southern-terrace',
@@ -502,6 +763,96 @@ export const PLACES: readonly Place[] = [
     source: 'fictional',
     fictional: true,
   },
+  {
+    id: 'shinjuku:lumiere-atelier',
+    area: 'shinjuku',
+    neighborhood: 'shinjuku:south',
+    name: '买手店「光廊成衣」',
+    type: 'shop',
+    indoor: true,
+    hours: { open: '11:00', close: '21:00' },
+    capacity: 22,
+    station: 'st:shinjuku',
+    walkMinutes: 6,
+    rain: 'none',
+    goods: apparelWindowForPlace('shinjuku:lumiere-atelier', '2026-11-18').map((e) => ({
+      sku: e.sku,
+      type: 'apparel_bundle',
+      name: e.name,
+      priceYen: e.priceYen,
+      assetId: e.assetId,
+      contentTier: e.tier,
+    })),
+    actions: [...BASE_ACTIONS, 'buy'],
+    blurb: '落地玻璃橱窗里陈列着都会连衣裙、派对礼服与度假泳装，试衣镜旁点着暖光灯。',
+    source: 'fictional',
+    fictional: true,
+  },
+  {
+    id: 'shinjuku:velours-intime',
+    area: 'shinjuku',
+    neighborhood: 'shinjuku:south',
+    name: '私密精品店「丝绒私语」',
+    type: 'shop',
+    indoor: true,
+    hours: { open: '12:00', close: '22:00' },
+    capacity: 14,
+    station: 'st:shinjuku',
+    walkMinutes: 7,
+    rain: 'none',
+    goods: apparelWindowForPlace('shinjuku:velours-intime', '2026-11-18').map((e) => ({
+      sku: e.sku,
+      type: 'apparel_bundle',
+      name: e.name,
+      priceYen: e.priceYen,
+      assetId: e.assetId,
+      contentTier: e.tier,
+    })),
+    actions: [...BASE_ACTIONS, 'buy'],
+    blurb: '深色丝绒帘幕后的安静买手店，所有贴身内衣与私密礼服都装在无字缎带礼盒里交付。',
+    source: 'fictional',
+    fictional: true,
+  },
+];
+
+export const PLACES: readonly Place[] = [
+  ...BASE_PLACES,
+  ...MOUNTED_CONTENT_PACKS.flatMap((p) => p.places),
+];
+
+const BASE_STAMPS: readonly StationStampSpec[] = [
+  {
+    stampId: 'stamp:akabane',
+    stationId: 'st:akabane',
+    placeId: 'akabane:station',
+    title: '赤羽站 · 荒川铁桥与晚霞',
+    motif: '跨越荒川河堤的桁架铁桥与归巢水鸟',
+    inkColor: '#b91c1c',
+    emblem: 'bridge',
+  },
+  {
+    stampId: 'stamp:ikebukuro',
+    stationId: 'st:ikebukuro',
+    placeId: 'ikebukuro:station',
+    title: '池袋站 · 木雕猫头鹰与书灯',
+    motif: '东口相聚的猫头鹰像与喫茶煤油灯',
+    inkColor: '#1d4ed8',
+    emblem: 'owl',
+  },
+  {
+    stampId: 'stamp:shinjuku',
+    stationId: 'st:shinjuku',
+    placeId: 'shinjuku:station',
+    title: '新宿站 · 南口跨线露台与钟塔',
+    motif: '并列进站的轨道线群与南口步道灯柱',
+    inkColor: '#15803d',
+    emblem: 'terrace',
+  },
+];
+
+export const STATION_STAMPS: readonly StationStampSpec[] = [
+  ...BASE_STAMPS,
+  ...MOUNTED_CONTENT_PACKS.flatMap((p) => p.stamps ?? []),
 ];
 
 /** 不经过车站的步行近路（无向）。小屋在赤羽站和荒川之间，去河岸不用绕回站前。 */
@@ -510,10 +861,14 @@ export const WALK_SHORTCUTS: readonly { a: string; b: string; minutes: number }[
 const PLACE_BY_ID = new Map(PLACES.map((p) => [p.id, p]));
 const STATION_BY_ID = new Map(STATIONS.map((s) => [s.id, s]));
 const AREA_BY_ID = new Map(AREAS.map((a) => [a.id, a]));
+const STAMP_BY_STATION = new Map(STATION_STAMPS.map((s) => [s.stationId, s]));
+const STAMP_BY_PLACE = new Map(STATION_STAMPS.map((s) => [s.placeId, s]));
 
 export const place = (id: string): Place | undefined => PLACE_BY_ID.get(id);
 export const station = (id: string): StationComplex | undefined => STATION_BY_ID.get(id);
 export const area = (id: string): Area | undefined => AREA_BY_ID.get(id as AreaId);
+export const stationStamp = (stationId: string): StationStampSpec | undefined => STAMP_BY_STATION.get(stationId);
+export const stationStampAtPlace = (placeId: string): StationStampSpec | undefined => STAMP_BY_PLACE.get(placeId);
 /** 公开的地点（外部 bot 能去、能看到的）。 */
 export const publicPlace = (id: string): Place | undefined => {
   const p = PLACE_BY_ID.get(id);
@@ -611,17 +966,56 @@ export function homeward(fromId: string): { fareYen: number; minutes: number } {
 }
 
 /** 营业时间判断：minuteOfDay 是世界时区里这一刻是当天第几分钟。 */
+export function clockMinutes(hhmm: string): number {
+  return Number(hhmm.slice(0, 2)) * 60 + Number(hhmm.slice(3, 5));
+}
+
 export function openAt(p: Place, minuteOfDay: number): boolean {
   if (!p.hours) return true;
-  const toMin = (s: string): number => Number(s.slice(0, 2)) * 60 + Number(s.slice(3, 5));
-  const o = toMin(p.hours.open);
-  const c = toMin(p.hours.close);
+  const o = clockMinutes(p.hours.open);
+  const c = clockMinutes(p.hours.close);
   return o <= c ? minuteOfDay >= o && minuteOfDay < c : minuteOfDay >= o || minuteOfDay < c;
+}
+
+/** 铁道运营时间窗判断：first <= last 为日内区间 [first, last)，first > last 为跨午夜区间 [first, 24:00) ∪ [00:00, last)。 */
+export function transitHoursOpenAt(hours: TransitHours, minuteOfDay: number): boolean {
+  const f = clockMinutes(hours.first);
+  const l = clockMinutes(hours.last);
+  return f <= l ? minuteOfDay >= f && minuteOfDay < l : minuteOfDay >= f || minuteOfDay < l;
+}
+
+/** 按两端的车站编号或车站地点编号查找直连铁道边。 */
+export function transitEdgeBetween(fromPlaceOrStation: string, toPlaceOrStation: string): TransitEdge | undefined {
+  const sa = STATION_BY_ID.get(fromPlaceOrStation)?.id ?? PLACE_BY_ID.get(fromPlaceOrStation)?.station;
+  const sb = STATION_BY_ID.get(toPlaceOrStation)?.id ?? PLACE_BY_ID.get(toPlaceOrStation)?.station;
+  if (!sa || !sb || sa === sb) return undefined;
+  return TRANSIT_EDGES.find((e) => (e.a === sa && e.b === sb) || (e.a === sb && e.b === sa));
+}
+
+/** 判断一段铁道在某个本地分钟是否处于运营时间窗内。 */
+export function transitEdgeOpenAt(
+  fromPlaceOrStation: string,
+  toPlaceOrStation: string,
+  minuteOfDay: number,
+): { open: boolean; edge?: TransitEdge; hours: TransitHours } {
+  const edge = transitEdgeBetween(fromPlaceOrStation, toPlaceOrStation);
+  const hours = edge?.hours ?? TRANSIT_DEFAULT_HOURS;
+  return { open: transitHoursOpenAt(hours, minuteOfDay), ...(edge ? { edge } : {}), hours };
+}
+
+function validClock(hhmm: string): boolean {
+  if (!/^\d\d:\d\d$/.test(hhmm)) return false;
+  const h = Number(hhmm.slice(0, 2));
+  const m = Number(hhmm.slice(3, 5));
+  return h >= 0 && h < 24 && m >= 0 && m < 60;
 }
 
 /** 目录自检：启动时跑一次，写错了直接拒绝启动（比运行中走到坏数据再报错好查）。返回问题列表。 */
 export function validateCatalog(): string[] {
   const problems: string[] = [];
+  for (const pack of MOUNTED_CONTENT_PACKS) {
+    problems.push(...validateContentPack(pack));
+  }
   const dup = (ids: string[], what: string) => {
     const seen = new Set<string>();
     for (const id of ids) {
@@ -630,19 +1024,43 @@ export function validateCatalog(): string[] {
     }
   };
   dup(AREAS.map((a) => a.id), '片区');
+  dup(AREAS.map((a) => a.districtId ?? a.id), '四层街区');
+  dup(MOUNTED_CONTENT_PACKS.map((p) => p.packId), '内容包');
   dup(STATIONS.map((s) => s.id), '车站');
   dup(PLACES.map((p) => p.id), '地点');
   dup(TRANSIT_EDGES.map((e) => e.id), '线路段');
   dup(ITEM_TYPES.map((i) => i.type), '物品类型');
+  dup(STATION_STAMPS.map((s) => s.stampId), '车站印章');
+  dup(STATION_STAMPS.map((s) => s.stationId), '车站印章所属车站');
+  dup(STATION_STAMPS.map((s) => s.placeId), '车站印章所属地点');
   const sourceIds = new Set(SOURCES.map((s) => s.id));
+  const munIds = new Set(MUNICIPALITIES.map((m) => m.id));
+  for (const m of MUNICIPALITIES) {
+    if (!sourceIds.has(m.source)) problems.push(`自治体 ${m.id} 的来源 ${m.source} 不存在`);
+  }
+  for (const a of AREAS) {
+    if (a.municipalityId && !munIds.has(a.municipalityId)) problems.push(`片区 ${a.id} 的自治体 ${a.municipalityId} 不存在`);
+    if (a.hubStationId && !STATION_BY_ID.has(a.hubStationId)) problems.push(`片区 ${a.id} 的主车站 ${a.hubStationId} 不存在`);
+  }
   for (const s of STATIONS) {
     if (!AREA_BY_ID.has(s.area)) problems.push(`车站 ${s.id} 的片区不存在`);
     const p = PLACE_BY_ID.get(s.placeId);
     if (!p || p.type !== 'station' || p.station !== s.id || p.walkMinutes !== 0) problems.push(`车站 ${s.id} 的地点 ${s.placeId} 不对`);
+    const a = AREA_BY_ID.get(s.area);
+    if (a?.openness !== 'cataloged' && !STAMP_BY_STATION.has(s.id)) {
+      problems.push(`开放车站 ${s.id} 缺少唯一站章配置`);
+    }
+  }
+  for (const st of STATION_STAMPS) {
+    const s = STATION_BY_ID.get(st.stationId);
+    if (!s || s.placeId !== st.placeId) problems.push(`站章 ${st.stampId} 绑定的车站/地点不匹配`);
   }
   for (const e of TRANSIT_EDGES) {
     if (!STATION_BY_ID.has(e.a) || !STATION_BY_ID.has(e.b)) problems.push(`线路段 ${e.id} 的车站不存在`);
     if (!Number.isInteger(e.fareYen) || e.fareYen < 0 || !Number.isInteger(e.minutes) || e.minutes <= 0) problems.push(`线路段 ${e.id} 的耗时或票价不对`);
+    if (!e.hours || !validClock(e.hours.first) || !validClock(e.hours.last) || e.hours.first === e.hours.last) {
+      problems.push(`线路段 ${e.id} 的首末班时间格式不对`);
+    }
     for (const s of e.sources) if (!sourceIds.has(s)) problems.push(`线路段 ${e.id} 的来源 ${s} 不存在`);
   }
   for (const p of PLACES) {
@@ -658,6 +1076,77 @@ export function validateCatalog(): string[] {
     }
     if (p.id !== HOUSE_ENTRANCE && !planRoute(p.id, HOUSE_ENTRANCE)) problems.push(`地点 ${p.id} 回不了小屋门口`);
   }
+  for (const g of ALL_VENDING_GOODS) {
+    if (!ITEM_BY_TYPE.has(g.type)) problems.push(`售货机商品 ${g.sku} 的物品类型不存在`);
+    if (!Number.isInteger(g.priceYen) || g.priceYen <= 0) problems.push(`售货机商品 ${g.sku} 价格不是正整数日元`);
+  }
   if (!PLACE_BY_ID.get(HOUSE_ENTRANCE)?.hidden) problems.push('小屋门口必须是不公开的节点');
   return problems;
+}
+
+function normalizeCatalogTime(ctx?: string | CatalogTimeContext): Required<CatalogTimeContext> {
+  if (typeof ctx === 'string') {
+    const m = Number(ctx.slice(5, 7));
+    return { dateStr: ctx, jstMonth: Number.isInteger(m) && m >= 1 && m <= 12 ? m : 11, minuteOfDay: 10 * 60 };
+  }
+  const dateStr = ctx?.dateStr ?? '2026-11-18';
+  const parsedMonth = Number(dateStr.slice(5, 7));
+  const jstMonth = ctx?.jstMonth ?? (Number.isInteger(parsedMonth) && parsedMonth >= 1 && parsedMonth <= 12 ? parsedMonth : 11);
+  const minuteOfDay = ctx?.minuteOfDay ?? 10 * 60;
+  return { dateStr, jstMonth, minuteOfDay };
+}
+
+/** 按东京世界日与时段返回地点当前陈列商品（纯函数，无随机与外部状态）。 */
+export function goodsForPlace(p: Place, ctx?: string | CatalogTimeContext): readonly Good[] {
+  const t = normalizeCatalogTime(ctx);
+  if (p.id in APPAREL_SHOP_PLACES) {
+    return apparelWindowForPlace(p.id, t.dateStr).map((e) => ({
+      sku: e.sku,
+      type: 'apparel_bundle',
+      name: e.name,
+      priceYen: e.priceYen,
+      assetId: e.assetId,
+      contentTier: e.tier,
+    }));
+  }
+  if (p.type === 'station') {
+    return vendingGoodsForMonth(t.jstMonth);
+  }
+  if (p.id === 'shinjuku:muginohi' && isMuginohiEveningDiscount(t.minuteOfDay)) {
+    return p.goods.map((g) => ({
+      ...g,
+      priceYen: Math.floor((g.priceYen * 8) / 10),
+      originalPriceYen: g.priceYen,
+      discountLabel: '晚间八折',
+    }));
+  }
+  return p.goods;
+}
+
+/** 查找地点可售或历史已下单商品（allowOffWindow=true 供跨日未决订单结算查找全池）。 */
+export function findGoodAtPlace(placeId: string, sku: string, ctx?: string | CatalogTimeContext, allowOffWindow = false): Good | undefined {
+  const p = place(placeId);
+  if (!p) return undefined;
+  const active = goodsForPlace(p, ctx).find((g) => g.sku === sku);
+  if (active) return active;
+  if (allowOffWindow && placeId in APPAREL_SHOP_PLACES) {
+    const hit = shopApparelBySku(placeId, sku);
+    if (hit) {
+      return {
+        sku: hit.sku,
+        type: 'apparel_bundle',
+        name: hit.name,
+        priceYen: hit.priceYen,
+        assetId: hit.assetId,
+        contentTier: hit.tier,
+      };
+    }
+  }
+  if (allowOffWindow && p.type === 'station') {
+    return ALL_VENDING_GOODS.find((g) => g.sku === sku);
+  }
+  if (allowOffWindow) {
+    return p.goods.find((g) => g.sku === sku);
+  }
+  return undefined;
 }

@@ -10,13 +10,27 @@
  */
 import { parseJson, type Row } from '../world/db.js';
 import { sha256, stableStringify } from '../world/service.js';
-import { CITY_CATALOG_VERSION, HOUSE_ENTRANCE, homeward, itemName, place, publicPlace } from './catalog.js';
+import { localParts, localToUtc, nextDate } from '../world/time.js';
+import {
+  CITY_CATALOG_VERSION,
+  HOUSE_ENTRANCE,
+  TRANSIT_DEFAULT_HOURS,
+  clockMinutes,
+  homeward,
+  isCarryHome,
+  itemName,
+  place,
+  planRoute,
+  publicPlace,
+  transitEdgeBetween,
+  type TransitHours,
+} from './catalog.js';
 import { CityError, cityBadRequest, cityConflict, cityPrecondition } from './errors.js';
-import { BRIDGE, addCarried, ensurePurse, heldItems, ledger, purseOf, spendSummary, wallet } from './ledger.js';
+import { BRIDGE, addCarried, disposeHeldItem, ensurePurse, heldItems, ledger, moveItemToLocker, purseOf, sanitizeItemMeta, spendSummary, trustedAssetIdOf, wallet, type ItemRow } from './ledger.js';
 import { MAPPINGS, engineTypeOf, kernelItemOf, walkEffect } from './mappings.js';
 import { runReconcile } from './reconcile.js';
 import type { CityResident, CityService } from './service.js';
-import { runningTrip, startReturnTrip, startTrip } from './trips.js';
+import { routeReturnMissedLastTrain, runningTrip, startReturnTrip, startTrip } from './trips.js';
 
 export const BRIDGE_PROTOCOL = 'city-bridge/1';
 /** 桥接请求号：比居民动作的请求号宽一些（visit:<visit_id>:d<n>:a<n>） */
@@ -62,6 +76,7 @@ export interface CarryItem {
   kernel: { kind: string; item: string };
   qty: number;
   engine_type: string;
+  meta?: Record<string, unknown> | null;
 }
 
 export interface VisitPlan {
@@ -138,6 +153,16 @@ export function outboxPurchase(c: CityService, visit: VisitRow, at: number, data
   outbox(c, visit, 'purchase', at, { what: data.what, yen: data.yen, purse_yen: wallet(c, visit.resident_id).balance, ...(data.detail ?? {}) });
 }
 
+/** 访问关单后未决订单确认为 failed：钱退回桥接账户，写一条幂等 order_refunded 供内核补回家庭钱包。 */
+export function outboxOrderRefunded(
+  c: CityService,
+  visit: VisitRow,
+  at: number,
+  data: { order_id: string; yen: number; all_pending_cleared: boolean },
+): string {
+  return outbox(c, visit, 'order_refunded', at, data, `${visit.visit_id}:refund:${data.order_id}`);
+}
+
 /** 身体效果：吃喝、步行、活动。effect_id = <visit_id>:<引擎记录号>，内核按它去重。返回 effect_id。 */
 export function bodyEffect(c: CityService, visit: VisitRow, at: number, effect: { engine_kind: 'ate' | 'drank' | 'walked'; engine_type?: string; qty?: number; minutes?: number; kernel_effect: string | null }): string {
   const effectId = nextRecordId(c, visit);
@@ -187,28 +212,139 @@ export function noteSpeech(c: CityService, visit: VisitRow, other: CityResident,
 // ───────────────────────── 自动回程 ─────────────────────────
 
 /**
+ * 计算参考时刻所在（或刚刚结束）的铁道运营窗口起止 UTC 毫秒时间戳。
+ * 跨午夜运营窗（如 05:00–00:20）：
+ *  - 05:00..23:59：当日 05:00 开启，次日 00:20 收班；
+ *  - 00:00..00:19（跨午夜终电前）：前一日 05:00 开启，当日 00:20 收班；
+ *  - 00:20..04:59（夜间停运期）：上一运营窗已于当日 00:20 收班（closeMs <= refMs）。
+ */
+export function transitWindowAt(
+  tz: string,
+  hours: TransitHours,
+  refMs: number,
+): { open: boolean; openMs: number; closeMs: number } {
+  const p = localParts(tz, refMs);
+  const min = p.hour * 60 + p.minute;
+  const f = clockMinutes(hours.first);
+  const l = clockMinutes(hours.last);
+  const fh = Math.floor(f / 60);
+  const fm = f % 60;
+  const lh = Math.floor(l / 60);
+  const lm = l % 60;
+  if (f <= l) {
+    const openMs = localToUtc(tz, p.date, fh, fm);
+    const closeMs = localToUtc(tz, p.date, lh, lm);
+    return { open: min >= f && min < l, openMs, closeMs };
+  }
+  if (min >= f) {
+    return {
+      open: true,
+      openMs: localToUtc(tz, p.date, fh, fm),
+      closeMs: localToUtc(tz, nextDate(p.date, 1), lh, lm),
+    };
+  }
+  if (min < l) {
+    return {
+      open: true,
+      openMs: localToUtc(tz, nextDate(p.date, -1), fh, fm),
+      closeMs: localToUtc(tz, p.date, lh, lm),
+    };
+  }
+  return {
+    open: false,
+    openMs: localToUtc(tz, nextDate(p.date, -1), fh, fm),
+    closeMs: localToUtc(tz, p.date, lh, lm),
+  };
+}
+
+/**
+ * 从某个地点回赤羽小屋门口，在当前运营日终电停运前安全踏上归途的最晚动身时刻。
+ * 同片区纯步行返家（无需乘车）返回 null；含铁道乘车段时，确保每一段乘车都在末班截止前至少留出安全余量（不少于 1 分钟）。
+ */
+export function lastTrainSafeDepartMs(
+  c: CityService,
+  fromPlaceId: string,
+  refMs: number = c.now(),
+  arrivalAtMs?: number,
+): { departByMs: number; closeMs: number } | null {
+  if (fromPlaceId === HOUSE_ENTRANCE) return null;
+  const r = planRoute(fromPlaceId, HOUSE_ENTRANCE);
+  if (!r) return null;
+  const marginMs = Math.max(60_000, c.params.returnMarginMs);
+  let offsetMin = 0;
+  let best: { departByMs: number; closeMs: number } | null = null;
+  for (const leg of r.legs) {
+    if (leg.mode === 'train') {
+      const hours = transitEdgeBetween(leg.from, leg.to)?.hours ?? TRANSIT_DEFAULT_HOURS;
+      const winAt = transitWindowAt(c.params.timezone, hours, refMs);
+      // 若出发时刻处于夜间停运窗（如 04:50 步行去车站衔接 05:00+ 首班车），按实际抵达时刻所在的新运营窗计算当晚终电
+      const win =
+        !winAt.open && arrivalAtMs !== undefined && arrivalAtMs > refMs
+          ? transitWindowAt(c.params.timezone, hours, arrivalAtMs)
+          : winAt;
+      const departByMs = win.closeMs - offsetMin * 60_000 - marginMs;
+      if (!best || departByMs < best.departByMs) {
+        best = { departByMs, closeMs: win.closeMs };
+      }
+    }
+    offsetMin += leg.minutes;
+  }
+  return best;
+}
+
+/** 室友访问的实际自动返程截止时刻：min(原访问到期时刻回推, 当日终电前安全返程最晚动身时刻)。 */
+export function effectiveVisitReturnSchedule(
+  c: CityService,
+  visit: VisitRow,
+  contextPlaceId: string,
+  refMs: number = c.now(),
+): { dueMs: number; reason: 'return_by' | 'last_train'; lastTrainCloseMs: number | null } {
+  const normalDue = visit.return_by_ms - homeward(contextPlaceId).minutes * 60_000 - c.params.returnMarginMs;
+  const trip = runningTrip(c, visit.resident_id);
+  const arrivalAtMs = trip && trip.purpose === 'travel' && trip.to_place === contextPlaceId ? trip.ends_at : undefined;
+  const guard = lastTrainSafeDepartMs(c, contextPlaceId, refMs, arrivalAtMs);
+  if (guard && guard.departByMs < normalDue) {
+    return { dueMs: guard.departByMs, reason: 'last_train', lastTrainCloseMs: guard.closeMs };
+  }
+  return { dueMs: normalDue, reason: 'return_by', lastTrainCloseMs: guard?.closeMs ?? null };
+}
+
+/**
  * 她的位置（或正在去的目的地）变了：重排「到点回家」的作业。
- * 出发时刻 = return_by − 从那里回小屋门口的耗时 − 余量。已经过了就立刻到期（引擎恢复后 return_by 已过，立即排回程）。
+ * 出发时刻取 min(原访问到期回推时刻, 当日终电前安全返程最晚动身时刻)。已经过了就立刻到期。
  */
 export function afterMove(c: CityService, visit: VisitRow, contextPlaceId: string): void {
   const fresh = visitById(c, visit.visit_id);
   if (!fresh || fresh.state !== 'active') return;
-  const due = fresh.return_by_ms - homeward(contextPlaceId).minutes * 60_000 - c.params.returnMarginMs;
-  c.reschedule('visit_return', `visit:${fresh.visit_id}:return`, due, { visitId: fresh.visit_id });
+  const key = `visit:${fresh.visit_id}:return`;
+  const existing = c.db.get<{ due_at: number }>("SELECT due_at FROM scheduled_jobs WHERE dedupe_key = ? AND status = 'pending'", key);
+  if (existing && Number(existing.due_at) <= c.now()) return;
+  const sched = effectiveVisitReturnSchedule(c, fresh, contextPlaceId, c.now());
+  c.reschedule('visit_return', key, sched.dueMs, { visitId: fresh.visit_id, reason: sched.reason });
 }
 
 /** 进入 returning：不再接受新交易和新动作；回程行程开始（在路上的话，这一段走完就改走回程）。 */
-export function beginReturn(c: CityService, visit: VisitRow, reason: string, at: number): boolean {
+export function beginReturn(c: CityService, visit: VisitRow, reason: string, at: number, scheduledAt?: number): boolean {
   const fresh = visitById(c, visit.visit_id);
   if (!fresh || fresh.state !== 'active') return false;
-  c.db.run("UPDATE visits SET state = 'returning', return_reason = ?, returning_at = ? WHERE visit_id = ?", reason.slice(0, 120), at, fresh.visit_id);
+  const r = c.mustResident(fresh.resident_id);
+  const departAt = Math.max(at, c.now());
+  const fromPlace = r.place_id ?? runningTrip(c, r.resident_id)?.to_place ?? null;
+  let effectiveReason = reason;
+  if (fromPlace && fromPlace !== HOUSE_ENTRANCE && reason === 'last_train') {
+    const route = planRoute(fromPlace, HOUSE_ENTRANCE);
+    if (route && routeReturnMissedLastTrain(c, route, departAt, scheduledAt)) {
+      effectiveReason = 'missed_last_train';
+    }
+  }
+  const cleanReason = effectiveReason.slice(0, 120);
+  c.db.run("UPDATE visits SET state = 'returning', return_reason = ?, returning_at = ? WHERE visit_id = ?", cleanReason, departAt, fresh.visit_id);
   c.cancelJob(`visit:${fresh.visit_id}:return`);
   const returning = visitById(c, fresh.visit_id)!;
-  const r = c.mustResident(fresh.resident_id);
-  outbox(c, returning, 'return_started', at, { reason: reason.slice(0, 120), from: r.place_id ?? runningTrip(c, r.resident_id)?.to_place ?? null });
-  c.emitTo([r.resident_id], 'returning', { reason: reason.slice(0, 120), return_by_ms: fresh.return_by_ms }, at);
+  outbox(c, returning, 'return_started', departAt, { reason: cleanReason, from: fromPlace });
+  c.emitTo([r.resident_id], 'returning', { reason: cleanReason, return_by_ms: fresh.return_by_ms }, departAt);
   // 站在某个地点：立刻动身。在路上：这一段照常走完，到站作业会改走回程（trips.ts）
-  if (r.place_id) startReturnTrip(c, r, returning, at);
+  if (r.place_id) startReturnTrip(c, r, returning, departAt, scheduledAt);
   return true;
 }
 
@@ -222,11 +358,21 @@ export interface Settlement {
   cutoff_seq: number;
   carry_yen: number;
   purse_final_yen: number;
-  items: { engine_item_id: string; origin_ref: string | null; type: string; qty: number; fate: 'back' | 'consumed' | 'given' | 'sold' | 'locker'; kernel?: { kind: string; item: string } }[];
+  items: {
+    engine_item_id: string;
+    origin_ref: string | null;
+    type: string;
+    qty: number;
+    fate: 'back' | 'consumed' | 'given' | 'sold' | 'locker' | 'disposed';
+    kernel?: { kind: string; item: string };
+    instance?: boolean;
+    meta?: Record<string, unknown> | null;
+  }[];
   consumed: { type: string; qty: number; effect_id: string | null; origin_ref: string | null }[];
   given: { type: string; qty: number; origin_ref: string | null; to: string }[];
   pending: { order_id: string; what: string; yen: number; place: string }[];
   spend_summary: { what: string; yen: number }[];
+  notes?: string[];
   settled_at_ms: number;
 }
 
@@ -234,16 +380,61 @@ export interface Settlement {
  * 到达小屋门口：在一个事务里生成结算清单、写 visit_settled、状态变成 settled。之后她在城里不能再做任何动作，等内核确认。
  * 结算清单一旦写入不再改。
  */
-export function settle(c: CityService, visit: VisitRow, at: number): Settlement {
+export function settle(c: CityService, visit: VisitRow, at: number, opts?: { extraNotes?: readonly string[] }): Settlement {
   const fresh = visitById(c, visit.visit_id)!;
   if (fresh.state !== 'returning' && fresh.state !== 'active') throw new Error(`访问 ${fresh.visit_id} 不在可结算的状态：${fresh.state}`);
   const w = wallet(c, fresh.resident_id);
   const items: Settlement['items'] = [];
+  const notes: string[] = [...(opts?.extraNotes ?? [])];
   for (const it of heldItems(c, fresh.resident_id)) {
-    const kernel = kernelItemOf(it.type);
-    // 带出来的物品原样回家；城里得到的要映射表里有才能回家，否则留在寄存包裹
-    const fate = it.origin_ref !== null || kernel ? 'back' : 'locker';
-    items.push({ engine_item_id: it.item_id, origin_ref: it.origin_ref, type: it.type, qty: it.quantity, fate, ...(kernel && it.origin_ref === null ? { kernel } : {}) });
+    const meta = it.instance === 1 ? parseJson<Record<string, unknown> | null>(it.meta_json, null) : null;
+    if (!isCarryHome(it.type)) {
+      // carry_home: false 的现点杯装热饮：返家前清理，绝不代喝写 body_effect，也不进储物柜
+      notes.push(`未饮完的${itemName(it.type)}（${it.quantity} 份）已在返家前处理，未带回或寄存。`);
+      items.push({
+        engine_item_id: it.item_id,
+        origin_ref: it.origin_ref,
+        type: it.type,
+        qty: it.quantity,
+        fate: 'disposed',
+        ...(meta ? { instance: true, meta } : {}),
+      });
+      continue;
+    }
+    const rawKernel = kernelItemOf(it.type);
+    let resolvedKernel = rawKernel;
+    if (it.origin_ref === null && rawKernel?.kind === 'wardrobe_asset') {
+      const aid = trustedAssetIdOf(it);
+      resolvedKernel = aid ? { kind: 'wardrobe_asset', item: aid } : null;
+    }
+    // 带出来的物品原样回家；城里得到的要映射表里有（且具名服饰具备可信 asset_id）才能回家，否则留在城市储物柜
+    const fate = it.origin_ref !== null || resolvedKernel ? 'back' : 'locker';
+    items.push({
+      engine_item_id: it.item_id,
+      origin_ref: it.origin_ref,
+      type: it.type,
+      qty: it.quantity,
+      fate,
+      ...(resolvedKernel && it.origin_ref === null ? { kernel: resolvedKernel } : {}),
+      ...(meta ? { instance: true, meta } : {}),
+    });
+  }
+  // 本次访问期间她在车站主动存入储物柜且仍留在柜中的物品，也记入结算摘要（fate = 'locker'）
+  const manualStored = c.db.all<ItemRow & Row>(
+    "SELECT * FROM items WHERE owner_id = ? AND visit_id = ? AND state = 'locker' AND quantity > 0 ORDER BY item_id",
+    fresh.resident_id,
+    fresh.visit_id,
+  );
+  for (const it of manualStored) {
+    const meta = it.instance === 1 ? parseJson<Record<string, unknown> | null>(it.meta_json, null) : null;
+    items.push({
+      engine_item_id: it.item_id,
+      origin_ref: null,
+      type: it.type,
+      qty: it.quantity,
+      fate: 'locker',
+      ...(meta ? { instance: true, meta } : {}),
+    });
   }
   const moves = c.db.all<Row>("SELECT item_id, type, origin_ref, quantity, fate, effect_id, counterparty FROM item_events WHERE visit_id = ? AND resident_id = ? AND fate IN ('consumed','given','sold') ORDER BY event_id", fresh.visit_id, fresh.resident_id);
   const consumed: Settlement['consumed'] = [];
@@ -269,6 +460,7 @@ export function settle(c: CityService, visit: VisitRow, at: number): Settlement 
     given,
     pending,
     spend_summary: spendSummary(c, fresh.visit_id, fresh.resident_id),
+    ...(notes.length > 0 ? { notes } : {}),
     settled_at_ms: at,
   };
   c.db.run(
@@ -372,7 +564,8 @@ export function prepareVisit(c: CityService, body: Record<string, unknown>): Bri
       // 映射表里没有的类型出门不能带（规格 3.5.1）。内核出门前就该拦下，这里再拦一次
       if (!engineType) throw cityPrecondition('这件东西不在映射表里，不能带进城。', 'item_not_mapped', { ref });
       refs.add(ref);
-      items.push({ ref, kernel: { kind: String(kernel.kind), item: String(kernel.item) }, qty: raw.qty, engine_type: engineType });
+      const meta = raw.meta !== undefined ? sanitizeItemMeta(raw.meta) : null;
+      items.push({ ref, kernel: { kind: String(kernel.kind), item: String(kernel.item) }, qty: raw.qty, engine_type: engineType, ...(meta ? { meta } : {}) });
     }
     const plan = (body.plan ?? {}) as Record<string, unknown>;
     const dest = typeof plan.destination === 'string' ? publicPlace(plan.destination) : undefined;
@@ -441,7 +634,7 @@ export function commitVisit(c: CityService, visitId: string, body: Record<string
       ref: it.ref,
       engine_type: it.engine_type,
       qty: it.qty,
-      engine_item_id: addCarried(c, r.resident_id, it.engine_type, it.qty, it.ref, { domain: 'ai-house', ref: it.ref, transfer_id: transferId }, visitId),
+      engine_item_id: addCarried(c, r.resident_id, it.engine_type, it.qty, it.ref, { domain: 'ai-house', ref: it.ref, transfer_id: transferId }, visitId, it.meta),
     }));
     c.db.run('UPDATE house_members SET last_epoch = ? WHERE actor_id = ?', body.domain_epoch, member.actor_id);
     c.db.run("UPDATE visits SET state = 'active', transfer_id = ?, domain_epoch = ?, committed_at = ? WHERE visit_id = ?", transferId, body.domain_epoch, now, visitId);
@@ -520,10 +713,12 @@ export function releaseVisit(c: CityService, visitId: string, body: Record<strin
     const final = visit.purse_final_yen ?? 0;
     ledger(c, `visit:${visitId}:out`, 'visit_out', '回家', [[purseOf(visit.resident_id), -final], [BRIDGE, final]], visitId);
     for (const it of settlement.items) {
-      if (it.fate === 'back') c.db.run("UPDATE items SET state = 'returned' WHERE item_id = ? AND state = 'held'", it.engine_item_id);
-      else if (it.fate === 'locker') c.db.run("UPDATE items SET state = 'locker' WHERE item_id = ? AND state = 'held'", it.engine_item_id);
+      if (it.fate === 'back') c.db.run("UPDATE items SET state = 'returned', updated_at = ? WHERE item_id = ? AND state = 'held'", now, it.engine_item_id);
+      else if (it.fate === 'locker') moveItemToLocker(c, it.engine_item_id, now);
+      else if (it.fate === 'disposed') disposeHeldItem(c, it.engine_item_id, now);
     }
-    const needsReconcile = settlement.pending.length > 0 || settlement.items.some((i) => i.fate === 'locker');
+    // 储物柜寄存属正常流转；仅存在结果未知的 pending 订单时访问进入异常态 reconcile
+    const needsReconcile = settlement.pending.length > 0;
     const state: VisitState = needsReconcile ? 'reconcile' : 'closed';
     c.db.run('UPDATE visits SET state = ?, released_at = ? WHERE visit_id = ?', state, now, visitId);
     c.db.run('UPDATE house_members SET last_epoch = MAX(last_epoch, ?) WHERE actor_id = ?', body.domain_epoch, visit.actor_id);
@@ -587,9 +782,10 @@ export function readOutbox(c: CityService, after: number, limit: number): { reco
 
 export function installVisits(c: CityService): void {
   // 到点回家：还在城里就开始回程（适配器掉线也一样）
-  c.jobHandlers.set('visit_return', (payload, _job, now) => {
+  c.jobHandlers.set('visit_return', (payload, job, now) => {
     const visit = visitById(c, String(payload.visitId));
-    if (visit && visit.state === 'active') beginReturn(c, visit, 'return_by', now);
+    const reason = payload.reason === 'last_train' ? 'last_train' : 'return_by';
+    if (visit && visit.state === 'active') beginReturn(c, visit, reason, now, job.due_at);
   });
   // prepare 之后一直没有交接：到最晚回家时刻自动作废。迟到的 commit 会得到 409 visit_aborted，内核按取消处理（释放冻结）
   c.jobHandlers.set('visit_prepared_expire', (payload, _job, now) => {
