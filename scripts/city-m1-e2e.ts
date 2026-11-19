@@ -191,6 +191,7 @@ class Driver:
         self._boot_seq = 0
         self._allowed_actors = ("nia",)
         self._queued_actions = []
+        self._arrival_go_home = False
         self._boot()
         with self.s.tx() as db:
             for a in ROSTER:
@@ -228,6 +229,9 @@ class Driver:
                 sw.time = prev_time
 
     def _model_handler(self, ctx):
+        # S1 正常路径：到店（wake.reason == arrived）即回家，且按人区分，不走全局 FIFO 队列
+        if self._arrival_go_home and ((ctx.get("wake") or {}).get("reason") == "arrived"):
+            return [{"type": "go_home"}]
         if self._queued_actions:
             return self._queued_actions.pop(0)
         return []
@@ -320,6 +324,47 @@ class Driver:
         if op == "step":
             self.adapter.step()
             return {"ok": True}
+
+        if op == "life_step":
+            # 与线上同一入口：Life.step() 内部依次跑 plans.sync / cog.advance_plans / 各 extension.step（含桥接适配器）
+            self.life.step()
+            return {"ok": True}
+
+        if op == "enable_actor":
+            self._allowed_actors = tuple(sorted(set(self._allowed_actors) | {cmd["actor"]}))
+            self.adapter.enable_actor(cmd["actor"])
+            return {"ok": True, "allowed": sorted(self.adapter.allowed_actors)}
+
+        if op == "set_arrival_policy":
+            self._arrival_go_home = bool(cmd.get("go_home", False))
+            return {"ok": True, "go_home": self._arrival_go_home}
+
+        if op == "submit":
+            actor = cmd["actor"]
+            res = self.k.submit(
+                {
+                    "idempotency_key": cmd["key"],
+                    "principal": f"channel:{actor}",
+                    "actor_id": actor,
+                    "origin": "self",
+                    "domain_epoch": self.k.city_visits.authority(actor)["domain_epoch"],
+                    "action_type": cmd["action"],
+                    "args": cmd["args"],
+                }
+            )
+            return {"ok": True, "result": res}
+
+        if op == "pending_invites":
+            return {
+                "ok": True,
+                "pending": [
+                    {"inv_id": p["inv_id"], "plan_id": p["plan_id"]}
+                    for p in self.life.plans.pending_for(cmd["actor"])
+                ],
+            }
+
+        if op == "plan_state":
+            return {"ok": True, "state": self.life.plans.plan(cmd["plan_id"])["state"]}
 
         if op == "restart_kernel":
             if cmd.get("bridge_url"):
@@ -640,9 +685,13 @@ async function main(): Promise<void> {
     options: {
       'kernel-dir': { type: 'string' },
       'shared-services-dir': { type: 'string' },
+      scenario: { type: 'string', default: 'full' },
       keep: { type: 'boolean', default: false },
     },
   });
+  if (values.scenario !== 'full' && values.scenario !== 's1-normal') {
+    throw new Error(`未知 --scenario=${String(values.scenario)}（可选 full | s1-normal）`);
+  }
   const kernelDir = resolve(values['kernel-dir'] ?? process.env.WORLD_KERNEL_DIR ?? '/mcp-wt/world-kernel');
   const sharedServicesDir = resolve(
     values['shared-services-dir'] ?? process.env.SHARED_SERVICES_DIR ?? join(kernelDir, '..', 'shared-services'),
@@ -698,6 +747,11 @@ async function main(): Promise<void> {
       ['alicia', 'claire', 'grok', 'mio', 'whale', 'xingli'],
       'shared-services consumer 列表应完整覆盖六位室友',
     );
+
+    if (values.scenario === 's1-normal') {
+      await runS1Normal({ harness, kernel, scanner, advanceBoth, fetchWorldNow });
+      return;
+    }
 
     // ── 1. 隔离护栏与桌面游戏不受影响 ──
     assert.equal(harness.config.town.enabled, false);
@@ -1547,6 +1601,203 @@ async function main(): Promise<void> {
 
 function mkdirSafe(dir: string): void {
   mkdirSync(dir, { recursive: true });
+}
+
+/**
+ * #279 补测：正常无故障 S1（真实引擎 + 真实内核，同一进程组）。
+ * 与 full 场景互相独立：自己的 harness / 内核库，不碰已审的故障变体。
+ * 流程：真实 invite -> respond_invite 确认 -> 到点只靠 Life.step() 自动 T1（¥20,000 + 自动带的映射曲奇）
+ *   -> prepare/commit 到引擎 active -> 到店 -> 回家 -> T3/release -> 计划 done -> 曲奇原样返家 -> 双侧对账。
+ * S1_NEG=engine-reject：让引擎对所有 POST 回 503，场景必须在「引擎侧 active」断言处变红（反向验证）。
+ */
+async function runS1Normal(ctx: {
+  harness: Awaited<ReturnType<typeof createIsolatedCityHarness>>;
+  kernel: KernelDriver;
+  scanner: LegacyRuntimeScanner;
+  advanceBoth: (ms: number) => Promise<void>;
+  fetchWorldNow: (consumer: string, stageLabel: string) => Promise<Record<string, any>>;
+}): Promise<void> {
+  const { harness, kernel, scanner, advanceBoth, fetchWorldNow } = ctx;
+  const negative = process.env.S1_NEG === 'engine-reject';
+  const parseJson = (v: unknown): any => (typeof v === 'string' ? JSON.parse(v) : v);
+  const engineVisit = (vid: string) =>
+    harness.city.db.get<Record<string, any>>('SELECT * FROM visits WHERE visit_id = ?', vid);
+  const engineCookieRows = () =>
+    harness.city.db.all<Record<string, any>>(
+      "SELECT item_id, owner_id, type, quantity, instance, origin_ref, state, visit_id FROM items WHERE origin_ref = 'nia_cookie_1'",
+    );
+
+  harness.setAreaRain({ hiwatari: false, kagamiike: false, sentou: false });
+  assert.equal((await kernel.call({ op: 'enable_actor', actor: 'claire' })).allowed.includes('claire'), true);
+  await kernel.call({ op: 'set_arrival_policy', go_home: true });
+
+  // ── 0. 起点：钱全可用、没有任何外出记录、家里 2 份曲奇 ──
+  const nia0 = await kernel.call({ op: 'inspect', actor: 'nia' });
+  const initialWallet = Number(nia0.wallet_balance);
+  assert.equal(nia0.wallet_available, initialWallet);
+  assert.equal(nia0.holds.length, 0);
+  assert.equal(nia0.authority.domain, 'home');
+  assert.equal(nia0.visit, null);
+  assert.equal((nia0.foods as any[]).find((f) => f.resource_id === 'nia_cookie_1')?.qty, 2);
+  assert.equal(harness.city.db.scalar('SELECT COUNT(*) FROM visits'), 0);
+  const claire0 = await kernel.call({ op: 'inspect', actor: 'claire' });
+  const claireInitialWallet = Number(claire0.wallet_balance);
+
+  // ── 1. 真实邀约：妮娅发起 -> 克蕾雅答应；确认前后都不应有任何外出/携带记录（不直接 depart、不直接插计划） ──
+  const startAtS = Math.floor(harness.clock.t / 1000) + 600;
+  const inv = await kernel.call({
+    op: 'submit',
+    actor: 'nia',
+    key: 's1n:inv',
+    action: 'invite',
+    args: { to: ['claire'], kind: 'outing', what: 'cafe_time', location: 'place:kagamiike', start_at: startAtS, end_at: startAtS + 6600 },
+  });
+  assert.equal(inv.result.status, 'succeeded', JSON.stringify(inv.result));
+  const planId = String(inv.result.plan_id);
+  const pending = ((await kernel.call({ op: 'pending_invites', actor: 'claire' })).pending as any[]).filter(
+    (p) => p.plan_id === planId,
+  );
+  assert.equal(pending.length, 1, '克蕾雅应收到恰好一份对应邀约');
+  const ans = await kernel.call({
+    op: 'submit',
+    actor: 'claire',
+    key: 's1n:yes',
+    action: 'respond_invite',
+    args: { inv_id: pending[0].inv_id, answer: 'yes' },
+  });
+  assert.equal(ans.result.status, 'succeeded', JSON.stringify(ans.result));
+  assert.equal((await kernel.call({ op: 'plan_state', plan_id: planId })).state, 'confirmed');
+  assert.equal(harness.city.db.scalar('SELECT COUNT(*) FROM visits'), 0, '确认邀约本身不得让引擎出现访问');
+  assert.equal((await kernel.call({ op: 'inspect', actor: 'nia' })).visit, null);
+  assert.equal((await kernel.call({ op: 'inspect', actor: 'nia' })).wallet_available, initialWallet);
+
+  // ── 2. start_at 之前不出门；之后只靠 Life.step() 自动 T1 ──
+  await advanceBoth(300_000);
+  await kernel.call({ op: 'life_step' });
+  assert.equal((await kernel.call({ op: 'inspect', actor: 'nia' })).visit, null, 'start_at 之前不得出门');
+  assert.equal(harness.city.db.scalar('SELECT COUNT(*) FROM visits'), 0);
+  if (negative) harness.faults.bridge503Count = 1_000_000; // 反向验证：引擎拒收所有 POST
+  await advanceBoth(300_000);
+  let niaVisitId = '';
+  let claireVisitId = '';
+  for (let i = 0; i < 4 && !(niaVisitId && claireVisitId); i++) {
+    await kernel.call({ op: 'life_step' });
+    niaVisitId = String((await kernel.call({ op: 'inspect', actor: 'nia' })).visit?.visit_id ?? '');
+    claireVisitId = String((await kernel.call({ op: 'inspect', actor: 'claire' })).visit?.visit_id ?? '');
+    if (!(niaVisitId && claireVisitId)) await advanceBoth(60_000);
+  }
+  assert.ok(niaVisitId && claireVisitId, '到点后 Life.step() 应自动为两人建立外出访问');
+  assert.notEqual(niaVisitId, claireVisitId);
+
+  // ── 3. T1（内核侧）：同一 plan_id，¥20,000 预留，自动带 1 份映射曲奇 ──
+  const niaT1 = await kernel.call({ op: 'inspect', actor: 'nia', visit_id: niaVisitId });
+  assert.equal(niaT1.visit.plan.destination, 'kagamiike:kissa-tomoshibi');
+  assert.equal(niaT1.carry.plan_id, planId);
+  assert.equal(niaT1.carry.actor_id, 'nia');
+  assert.equal(Number(niaT1.carry.carry_yen), 20_000);
+  const carryItems = parseJson(niaT1.carry.carry_items) as any[];
+  assert.deepEqual(
+    carryItems.map((i) => i.ref),
+    ['nia_cookie_1'],
+    `自动携带物应恰为 1 份映射曲奇: ${JSON.stringify(carryItems)}`,
+  );
+
+  // ── 4. prepare -> commit：引擎侧必须真的接受（active）并持有这份曲奇 ──
+  for (let i = 0; i < 6; i++) {
+    if (engineVisit(niaVisitId)?.state === 'active' && engineVisit(claireVisitId)?.state === 'active') break;
+    await advanceBoth(60_000);
+    await kernel.call({ op: 'life_step' });
+  }
+  const engNiaActive = engineVisit(niaVisitId);
+  assert.equal(engNiaActive?.state, 'active', `引擎应接受自动 T1 的访问并进入 active，实际 ${engNiaActive?.state ?? '无此访问行'}`);
+  assert.equal(engineVisit(claireVisitId)?.state, 'active');
+  assert.equal(Number(engNiaActive.carry_yen), 20_000);
+  assert.ok(String(engNiaActive.carry_items_json).includes('nia_cookie_1'), `引擎收到的携带物应含映射曲奇: ${engNiaActive.carry_items_json}`);
+  assert.equal(engNiaActive.domain_epoch, 1);
+  const cookiesActive = engineCookieRows();
+  assert.equal(cookiesActive.length, 1, '引擎侧应恰有 1 件来源为 nia_cookie_1 的实例');
+  assert.equal(cookiesActive[0]!.state, 'held');
+  assert.equal(cookiesActive[0]!.visit_id, niaVisitId);
+  assert.equal(cookiesActive[0]!.type, 'cookie');
+  assert.equal(cookiesActive[0]!.instance, 1);
+  assert.equal(cookiesActive[0]!.quantity, 1);
+  const niaActive = await kernel.call({ op: 'inspect', actor: 'nia', visit_id: niaVisitId });
+  assert.equal(niaActive.authority.domain, 'city');
+  assert.equal(niaActive.authority.domain_epoch, 1);
+  assert.equal(niaActive.wallet_available, initialWallet - 20_000);
+  scanner.scan('kernelProjections', 'S1-normal projection_snapshot (active)', await kernel.call({ op: 'projection_snapshot' }));
+  const nowActive = await fetchWorldNow('mio', 'S1-normal active');
+  assert.match(String(nowActive.text ?? ''), /外出中/);
+
+  // ── 5. 在途 -> 到店 -> 脚本回家 -> 引擎结算 -> 内核 T3 + release；只用 Life.step() 推进 ──
+  let closed = false;
+  for (let i = 0; i < 36 && !closed; i++) {
+    await advanceBoth(5 * 60_000);
+    await kernel.call({ op: 'life_step' });
+    closed =
+      (await kernel.call({ op: 'inspect', actor: 'nia', visit_id: niaVisitId })).visit.state === 'closed' &&
+      (await kernel.call({ op: 'inspect', actor: 'claire', visit_id: claireVisitId })).visit.state === 'closed';
+  }
+  assert.ok(closed, '3 小时内两人的访问应在两侧都收敛到 closed');
+  await kernel.call({ op: 'life_step' });
+
+  // ── 6. 收尾核对：计划 done、权威域回家、曲奇原样返家、钱只花了来回车费 ──
+  assert.equal((await kernel.call({ op: 'plan_state', plan_id: planId })).state, 'done');
+  const niaEnd = await kernel.call({ op: 'inspect', actor: 'nia', visit_id: niaVisitId });
+  assert.equal(niaEnd.authority.domain, 'home');
+  assert.equal(niaEnd.authority.domain_epoch, 2);
+  assert.equal(niaEnd.holds.length, 0);
+  assert.equal(niaEnd.wallet_balance, initialWallet - 400, '只应花掉来回车费 2×¥200');
+  assert.equal(niaEnd.wallet_available, initialWallet - 400);
+  const claireEnd = await kernel.call({ op: 'inspect', actor: 'claire', visit_id: claireVisitId });
+  assert.equal(claireEnd.wallet_balance, claireInitialWallet - 400);
+  assert.equal((niaEnd.foods as any[]).find((f) => f.resource_id === 'nia_cookie_1')?.qty, 2, '曲奇未消费、数量原样');
+  assert.equal(Number(niaEnd.carry.release_confirmed), 1);
+  assert.deepEqual(parseJson(niaEnd.carry.locker_items) ?? [], []);
+  const engNiaEnd = engineVisit(niaVisitId)!;
+  assert.equal(engNiaEnd.state, 'closed');
+  assert.equal(Number(engNiaEnd.purse_final_yen), 20_000 - 400, '引擎随身钱包结算 = 携带 − 来回车费');
+  assert.equal(engineVisit(claireVisitId)?.state, 'closed');
+  const cookiesEnd = engineCookieRows();
+  assert.equal(cookiesEnd.length, 1);
+  assert.equal(cookiesEnd[0]!.state, 'returned', '引擎侧曲奇应标记 returned（回家），而不是 locker/disposed/被送出');
+  assert.equal(cookiesEnd[0]!.visit_id, niaVisitId);
+  const niaResidentId = harness.city.db.get<{ resident_id: string }>(
+    "SELECT resident_id FROM house_members WHERE actor_id = 'nia'",
+  )!.resident_id;
+  assert.equal(lockerItems(harness.city, niaResidentId).length, 0);
+  scanner.scan('kernelProjections', 'S1-normal projection_snapshot (closed)', await kernel.call({ op: 'projection_snapshot' }));
+  for (const consumer of kernel.consumers) {
+    const nowFinal = await fetchWorldNow(consumer, `S1-normal final (${consumer})`);
+    assert.doesNotMatch(String(nowFinal.text ?? ''), /外出中/);
+  }
+  assert.equal(scanner.totalHits, 0);
+
+  // ── 7. 双侧对账 ──
+  const engineImbalance = ledgerImbalance(harness.city);
+  const engineRec = runReconcile(harness.city, 's1_normal_final');
+  const kernelRec = await kernel.call({ op: 'reconcile' });
+  assert.equal(engineImbalance, 0, `引擎总账必须平衡，实际差额=${engineImbalance}`);
+  assert.equal(engineRec.ok, true, `引擎对账发现异常: ${JSON.stringify(engineRec.findings)}`);
+  assert.equal(kernelRec.report.ok, true, `内核跨库对账发现异常: ${JSON.stringify(kernelRec.report.findings)}`);
+
+  process.stdout.write(
+    `${JSON.stringify(
+      {
+        ok: true,
+        scenario: 'city-s1-normal-invite-real-engine',
+        planId,
+        visits: { nia: niaVisitId, claire: claireVisitId },
+        t1: { carryYen: 20_000, carryItems: carryItems.map((i) => i.ref) },
+        engine: { cookieStateActive: cookiesActive[0]!.state, cookieStateEnd: cookiesEnd[0]!.state, niaPurseFinalYen: engNiaEnd.purse_final_yen },
+        wallets: { niaNetSpentYen: initialWallet - Number(niaEnd.wallet_balance), claireNetSpentYen: claireInitialWallet - Number(claireEnd.wallet_balance) },
+        reconcile: { engineLedgerImbalance: engineImbalance, engineReconcileOk: engineRec.ok, kernelReconcileOk: kernelRec.report.ok },
+        legacyRuntimeScan: { forbiddenTokenCount: FORBIDDEN_RUNTIME_TOKENS.length, totalHits: scanner.totalHits, categories: scanner.stats },
+      },
+      null,
+      2,
+    )}\n`,
+  );
 }
 
 main().catch((err) => {
