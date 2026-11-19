@@ -268,8 +268,8 @@ export function mountCity(app: Express, c: CityService, log: (msg: string) => vo
     }
     return req.body as Record<string, unknown>;
   };
-  const parseOffset = (raw: unknown): number => {
-    if (raw === undefined || raw === null || raw === '') return 0;
+  const parseOffset = (raw: unknown): number | undefined => {
+    if (raw === undefined || raw === null || raw === '') return undefined;
     const n = Number(raw);
     if (!Number.isSafeInteger(n) || n < 0 || n > 10_000) {
       throw cityBadRequest('分页偏移量必须是非负整数。', 'bad_offset');
@@ -462,8 +462,8 @@ export function mountCity(app: Express, c: CityService, log: (msg: string) => vo
       touchPresence(c, session.resident.resident_id);
       return selfView(c, c.mustResident(session.resident.resident_id), {
         ...(clientId ? { clientId } : {}),
-        itemOffset,
-        lockerOffset,
+        ...(itemOffset !== undefined ? { itemOffset } : {}),
+        ...(lockerOffset !== undefined ? { lockerOffset } : {}),
       });
     }),
   );
@@ -481,7 +481,11 @@ export function mountCity(app: Express, c: CityService, log: (msg: string) => vo
       const out = cityCommand(c, session.resident.resident_id, b.request_id, b.action, { clientId });
       return {
         ...out,
-        view: selfView(c, c.mustResident(session.resident.resident_id), { clientId, itemOffset, lockerOffset }),
+        view: selfView(c, c.mustResident(session.resident.resident_id), {
+          clientId,
+          ...(itemOffset !== undefined ? { itemOffset } : {}),
+          ...(lockerOffset !== undefined ? { lockerOffset } : {}),
+        }),
       };
     }),
   );
@@ -512,7 +516,11 @@ export function mountCity(app: Express, c: CityService, log: (msg: string) => vo
       const out = claimCityControl(c, session.resident.resident_id, clientId);
       return {
         ...out,
-        view: selfView(c, c.mustResident(session.resident.resident_id), { clientId, itemOffset, lockerOffset }),
+        view: selfView(c, c.mustResident(session.resident.resident_id), {
+          clientId,
+          ...(itemOffset !== undefined ? { itemOffset } : {}),
+          ...(lockerOffset !== undefined ? { lockerOffset } : {}),
+        }),
       };
     }),
   );
@@ -826,8 +834,8 @@ export function mountCity(app: Express, c: CityService, log: (msg: string) => vo
         state: visit.state,
         ...selfView(c, c.mustResident(visit.resident_id), {
           maxBytes: Math.max(1024, SELF_VIEW_MAX_BYTES - prefixBytes),
-          itemOffset,
-          lockerOffset,
+          ...(itemOffset !== undefined ? { itemOffset } : {}),
+          ...(lockerOffset !== undefined ? { lockerOffset } : {}),
         }),
       };
     }),

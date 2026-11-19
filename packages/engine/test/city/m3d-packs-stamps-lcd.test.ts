@@ -378,6 +378,300 @@ describe('挂载全部五片街区后的 selfView <= 4 KB 与网页端 /city/pla
     }
   });
 
+  it('R265-01 & R265-02 回归：双会话在新宿光廊成衣满载 12 件独立服饰背包 + 12 件柜件 + 80 字简介 + 300 字聊天时严守 <= 4096 B，且分段/offset 完整枚举 12/12', async () => {
+    const h = await createIsolatedCityHarness();
+    try {
+      const auth = new Authenticator(
+        {
+          mode: 'keys',
+          adminKeys: [],
+          agents: [
+            { key: 'k-r265-a', id: '7911', name: '成衣藏家甲' },
+            { key: 'k-r265-b', id: '7912', name: '同行买手乙' },
+          ],
+        },
+        h.manager ?? new GameManager({ registry: createRegistry(), rng: new SeededRng('r265') }),
+      );
+      const connectSession = async (id: string, name: string) => {
+        const srv = createMcpServer(
+          { manager: h.manager, auth, version: 'test', city: { city: h.city } },
+          { identity: { id, name }, fixed: true, transport: 'memory' },
+        );
+        const [cliSide, srvSide] = InMemoryTransport.createLinkedPair();
+        const cli = new Client({ name: `r265-${id}`, version: '1.0.0' });
+        await srv.connect(srvSide);
+        await cli.connect(cliSide);
+        let seq = 0;
+        const call = async (tool: string, args: Record<string, unknown>) => {
+          const res = await cli.callTool({ name: tool, arguments: args });
+          const text = (res.content as Array<{ type: string; text?: string }>)[0]?.text ?? '{}';
+          expect(res.isError, `${name}:${tool} 报错: ${text}`).toBeFalsy();
+          return { rawText: text, bytes: Buffer.byteLength(text, 'utf8'), data: JSON.parse(text) };
+        };
+        const act = async (action: Record<string, unknown>) => {
+          seq += 1;
+          return (
+            await call('world_act', {
+              request_id: `r265_${id}_${String(seq).padStart(4, '0')}`,
+              action_window: 'tokyo',
+              context_version: 0,
+              action,
+            })
+          ).data;
+        };
+        return { cli, call, act };
+      };
+
+      const sessA = await connectSession('7911', '成衣藏家甲');
+      const sessB = await connectSession('7912', '同行买手乙');
+
+      // 推进到 12:00 JST，新宿光廊成衣（11:00–21:00）正常营业
+      h.advance(2 * HOUR);
+      const bio80A = '偏爱在新宿光廊成衣与神保町书街之间漫步搜集四季成衣礼盒与初版诗集，每逢雨天便在窗边记录东京街景与电车时刻的旅人甲。'.padEnd(80, '甲').slice(0, 80);
+      const bio80B = '常驻新宿与下北泽窄巷寻访独立设计师礼服与深夜喫茶手冲咖啡的买手同伴，习惯用长句分享每一套成衣剪裁细节的旅人乙。'.padEnd(80, '乙').slice(0, 80);
+      expect([...bio80A]).toHaveLength(80);
+      expect([...bio80B]).toHaveLength(80);
+
+      const enterA = await sessA.call('enter_world', {
+        world_id: 'tokyo',
+        name: '成衣藏家甲',
+        bio: bio80A,
+        entry: 'shinjuku:station',
+        client_id: 'r265_cli_a',
+      });
+      const resIdA = enterA.data.resident_id as string;
+      await sessB.call('enter_world', {
+        world_id: 'tokyo',
+        name: '同行买手乙',
+        bio: bio80B,
+        entry: 'shinjuku:station',
+        client_id: 'r265_cli_b',
+      });
+
+      const advanceBoth = async (mins: number) => {
+        for (let m = 0; m < mins; m += 2) {
+          h.advance(Math.min(2, mins - m) * MIN);
+          await sessA.call('heartbeat', {});
+          await sessB.call('heartbeat', {});
+        }
+      };
+
+      // 双人步行至新宿光廊成衣：甲买 12 件独立服饰，回新宿站全部存入个人储物柜；乙买 12 件独立服饰在店内当面送给甲
+      await sessA.act({ type: 'travel', to: 'shinjuku:lumiere-atelier' });
+      await sessB.act({ type: 'travel', to: 'shinjuku:lumiere-atelier' });
+      await advanceBoth(10);
+
+      const shopViewA = await sessA.call('get_my_view', {});
+      const sortedGoods = [...(shopViewA.data.here.goods as Array<{ sku: string; price_yen: number }>)].sort(
+        (x, y) => x.price_yen - y.price_yen,
+      );
+      const cheapSku = sortedGoods[0]!.sku;
+
+      const lockerExpectedIds: string[] = [];
+      for (let i = 0; i < 12; i++) {
+        const bought = await sessA.act({ type: 'buy', sku: cheapSku, qty: 1 });
+        lockerExpectedIds.push(String(bought.item.item_id));
+      }
+      await sessA.act({ type: 'travel', to: 'shinjuku:station' });
+      await advanceBoth(10);
+      for (const id of lockerExpectedIds) {
+        await sessA.act({ type: 'store_locker', item_id: id, qty: 1 });
+      }
+
+      await sessA.act({ type: 'travel', to: 'shinjuku:lumiere-atelier' });
+      await advanceBoth(10);
+
+      const bagExpectedIds: string[] = [];
+      for (let i = 0; i < 12; i++) {
+        const bought = await sessB.act({ type: 'buy', sku: cheapSku, qty: 1 });
+        const itemId = String(bought.item.item_id);
+        await sessB.act({ type: 'give', to: resIdA, item_id: itemId, qty: 1 });
+        bagExpectedIds.push(itemId);
+      }
+
+      // ── 验证 R265-01a：同处满载 12 背包服饰 + 12 柜件服饰 + 双人 80 字简介时，get_my_view 与重连 enter_world 均 <= 4096 B ──
+      const fullPlain = await sessA.call('get_my_view', {});
+      expect(fullPlain.bytes).toBeLessThanOrEqual(SELF_VIEW_MAX_BYTES);
+      const baseCursor = fullPlain.data.cursor as string;
+
+      const reEnter = await sessA.call('enter_world', {
+        world_id: 'tokyo',
+        client_id: 'r265_cli_a',
+      });
+      expect(reEnter.bytes).toBeLessThanOrEqual(SELF_VIEW_MAX_BYTES);
+
+      // ── 验证 R265-01b：同伴正常发 300 字长聊天（连发 2 条）后从旧游标读取，每页 <= 4096 B 且可续游标零漏事件 ──
+      const chat300_1 = '今天光廊成衣橱窗里的礼服裙摆层次感真好，从新宿南口一路走过来正好赶上换季陈列，每一套缎面与蕾丝的配色都很适合带回小屋衣柜珍藏。'.repeat(6).slice(0, 300);
+      const chat300_2 = '等会儿逛完新宿我们还可以乘都营新宿线去神保町古书街淘两本旧诗集，顺便在车站大厅把纪念印章也盖进印章帐里，晚上再去下北泽喝咖啡。'.repeat(6).slice(0, 300);
+      expect([...chat300_1]).toHaveLength(300);
+      expect([...chat300_2]).toHaveLength(300);
+      await sessB.call('speak', { text: chat300_1, request_id: 'r265_speak_0001' });
+      await sessB.call('speak', { text: chat300_2, request_id: 'r265_speak_0002' });
+
+      const receivedTexts: string[] = [];
+      let cur = baseCursor;
+      for (let guard = 0; guard < 10; guard++) {
+        const evPage = await sessA.call('get_my_view', { cursor: cur });
+        expect(evPage.bytes).toBeLessThanOrEqual(SELF_VIEW_MAX_BYTES);
+        for (const ev of evPage.data.new_events ?? []) {
+          if (ev.type === 'chat') receivedTexts.push(String(ev.text));
+        }
+        cur = evPage.data.cursor;
+        if (!evPage.data.more) break;
+      }
+      expect(receivedTexts).toEqual([chat300_1, chat300_2]);
+
+      // ── 验证 R265-02a：section="items" 与 section="locker_items" 按 page=1,2,... 逐页去重完整枚举全部 12 件 ──
+      const seenBagByPage: string[] = [];
+      for (let page = 1; page <= 15; page++) {
+        const pRes = await sessA.call('get_my_view', { section: 'items', page });
+        expect(pRes.bytes).toBeLessThanOrEqual(SELF_VIEW_MAX_BYTES);
+        const ids = (pRes.data.items as Array<{ item_id: string }>).map((x) => x.item_id);
+        if (ids.length === 0) break;
+        seenBagByPage.push(...ids);
+        if (pRes.data.items_page?.next_offset === null) break;
+      }
+      expect(new Set(seenBagByPage).size).toBe(12);
+      expect(seenBagByPage).toHaveLength(12);
+      expect(new Set(seenBagByPage)).toEqual(new Set(bagExpectedIds));
+
+      const seenLockerByPage: string[] = [];
+      for (let page = 1; page <= 15; page++) {
+        const pRes = await sessA.call('get_my_view', { section: 'locker_items', page });
+        expect(pRes.bytes).toBeLessThanOrEqual(SELF_VIEW_MAX_BYTES);
+        const ids = (pRes.data.locker_items as Array<{ item_id: string }>).map((x) => x.item_id);
+        if (ids.length === 0) break;
+        seenLockerByPage.push(...ids);
+        if (pRes.data.locker_page?.next_offset === null) break;
+      }
+      expect(new Set(seenLockerByPage).size).toBe(12);
+      expect(seenLockerByPage).toHaveLength(12);
+      expect(new Set(seenLockerByPage)).toEqual(new Set(lockerExpectedIds));
+
+      // ── 验证 R265-02b：首屏返回的 next_offset 可直接传入 get_my_view(section, offset) 及全视图 item_offset 续读完整 12 件 ──
+      const firstFull = await sessA.call('get_my_view', {});
+      expect(firstFull.bytes).toBeLessThanOrEqual(SELF_VIEW_MAX_BYTES);
+      const seenBagByOffset = new Set<string>((firstFull.data.items as Array<{ item_id: string }>).map((x) => x.item_id));
+      let nextBagOff: number | null = firstFull.data.items_page?.next_offset ?? null;
+      for (let guard = 0; nextBagOff !== null && guard < 15; guard++) {
+        const offRes = await sessA.call('get_my_view', { section: 'items', offset: nextBagOff });
+        expect(offRes.bytes).toBeLessThanOrEqual(SELF_VIEW_MAX_BYTES);
+        expect(offRes.data.items.length).toBeGreaterThan(0);
+        for (const it of offRes.data.items) seenBagByOffset.add(String(it.item_id));
+        nextBagOff = offRes.data.items_page?.next_offset ?? null;
+      }
+      expect(seenBagByOffset.size).toBe(12);
+
+      const seenFullViewOffsets = new Set<string>((firstFull.data.items as Array<{ item_id: string }>).map((x) => x.item_id));
+      let fvOff: number | null = firstFull.data.items_page?.next_offset ?? null;
+      for (let guard = 0; fvOff !== null && guard < 20; guard++) {
+        const fvPage = await sessA.call('get_my_view', { item_offset: fvOff });
+        expect(fvPage.bytes).toBeLessThanOrEqual(SELF_VIEW_MAX_BYTES);
+        expect(fvPage.data.items.length).toBeGreaterThan(0);
+        for (const it of fvPage.data.items) seenFullViewOffsets.add(String(it.item_id));
+        fvOff = fvPage.data.items_page?.next_offset ?? null;
+      }
+      expect(seenFullViewOffsets.size).toBe(12);
+
+      const seenLockerByOffset = new Set<string>((firstFull.data.locker_items as Array<{ item_id: string }>).map((x) => x.item_id));
+      let nextLkOff: number | null = firstFull.data.locker_page?.next_offset ?? null;
+      for (let guard = 0; nextLkOff !== null && guard < 15; guard++) {
+        const lkOffRes = await sessA.call('get_my_view', { section: 'locker_items', offset: nextLkOff });
+        expect(lkOffRes.bytes).toBeLessThanOrEqual(SELF_VIEW_MAX_BYTES);
+        expect(lkOffRes.data.locker_items.length).toBeGreaterThan(0);
+        for (const lk of lkOffRes.data.locker_items) seenLockerByOffset.add(String(lk.item_id));
+        nextLkOff = lkOffRes.data.locker_page?.next_offset ?? null;
+      }
+      expect(seenLockerByOffset.size).toBe(12);
+
+      const seenFullLockerOffsets = new Set<string>((firstFull.data.locker_items as Array<{ item_id: string }>).map((x) => x.item_id));
+      let fvLkOff: number | null = firstFull.data.locker_page?.next_offset ?? null;
+      for (let guard = 0; fvLkOff !== null && guard < 20; guard++) {
+        const fvLkPage = await sessA.call('get_my_view', { locker_offset: fvLkOff });
+        expect(fvLkPage.bytes).toBeLessThanOrEqual(SELF_VIEW_MAX_BYTES);
+        expect(fvLkPage.data.locker_items.length).toBeGreaterThan(0);
+        for (const lk of fvLkPage.data.locker_items) seenFullLockerOffsets.add(String(lk.item_id));
+        fvLkOff = fvLkPage.data.locker_page?.next_offset ?? null;
+      }
+      expect(seenFullLockerOffsets.size).toBe(12);
+
+      // ── 验证极端边界 1：超长单事件（> 3.2 KB 文本 & 巨型非文本载荷）依然 <= 4096 B 且保留可续游标零漏事件 ──
+      const beforeOversizeCur = (await sessA.call('get_my_view', {})).data.cursor as string;
+      h.city.commit(() => {
+        h.city.emitTo(
+          [resIdA],
+          'chat',
+          {
+            message_id: 99001,
+            place: 'shinjuku:lumiere-atelier',
+            from: { id: 'res_oversize', name: '长文客', bio: bio80B },
+            text: '超长书信段落'.repeat(300),
+            untrusted: true,
+          },
+          h.city.now(),
+        );
+      });
+      const oversizeTextPage = await sessA.call('get_my_view', { cursor: beforeOversizeCur });
+      expect(oversizeTextPage.bytes).toBeLessThanOrEqual(SELF_VIEW_MAX_BYTES);
+      expect(oversizeTextPage.data.new_events).toHaveLength(1);
+      expect(oversizeTextPage.data.new_events[0]).toMatchObject({ type: 'chat', message_id: 99001, text_truncated: true });
+      expect(oversizeTextPage.data.cursor).not.toBe(beforeOversizeCur);
+
+      const beforeBlobCur = oversizeTextPage.data.cursor as string;
+      h.city.commit(() => {
+        h.city.emitTo(
+          [resIdA],
+          'custom_huge',
+          { huge_blob: 'X'.repeat(4200) },
+          h.city.now(),
+        );
+      });
+      const deferredPage = await sessA.call('get_my_view', { cursor: beforeBlobCur });
+      expect(deferredPage.bytes).toBeLessThanOrEqual(SELF_VIEW_MAX_BYTES);
+      expect(deferredPage.data).toMatchObject({
+        new_events: [],
+        more: true,
+        events_deferred: true,
+        cursor: beforeBlobCur,
+      });
+      // 用保留的原可续游标调 world_wait 可无损读出该条巨型原始事件，零静默漏事件
+      const waitedHuge = await sessA.call('world_wait', { cursor: beforeBlobCur, wait_seconds: 0 });
+      expect(waitedHuge.data.events).toHaveLength(1);
+      expect(waitedHuge.data.events[0].type).toBe('custom_huge');
+
+      // ── 验证极端边界 2：当 12 件实例均携带 300 字长 summary 时，section 分页自动收紧一致 page_size 且 <= 4096 B 完整枚举 ──
+      h.city.commit(() => {
+        for (const id of bagExpectedIds) {
+          h.city.db.run(
+            'UPDATE items SET meta_json = ? WHERE item_id = ?',
+            JSON.stringify({
+              title: '附长篇手写穿搭札记与季节剪裁卡片的限量礼服典藏盒',
+              summary: '在新宿光廊成衣试穿后附上三百字面料保养说明与搭配手记，记录东京秋日街景。'.repeat(9).slice(0, 300),
+              untrusted: true,
+            }),
+            id,
+          );
+        }
+      });
+      const heavyBagSeen: string[] = [];
+      for (let page = 1; page <= 20; page++) {
+        const pRes = await sessA.call('get_my_view', { section: 'items', page });
+        expect(pRes.bytes).toBeLessThanOrEqual(SELF_VIEW_MAX_BYTES);
+        const ids = (pRes.data.items as Array<{ item_id: string }>).map((x) => x.item_id);
+        if (ids.length === 0) break;
+        heavyBagSeen.push(...ids);
+        if (pRes.data.items_page?.next_offset === null) break;
+      }
+      expect(new Set(heavyBagSeen).size).toBe(12);
+      expect(heavyBagSeen).toHaveLength(12);
+
+      await sessA.cli.close();
+      await sessB.cli.close();
+    } finally {
+      await h.close();
+    }
+  });
+
   it('/city/play/ 静态契约、CSP、Modern Web Guidance 规范、严格信息对等与人类会话盖章全链路成立', async () => {
     const html = readFileSync(new URL('index.html', CITY_WEB_DIR), 'utf8');
     const css = readFileSync(new URL('style.css', CITY_WEB_DIR), 'utf8');

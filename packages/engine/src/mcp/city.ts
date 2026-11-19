@@ -28,6 +28,7 @@ import {
   publicCityView,
   routePreview,
   SELF_VIEW_MAX_BYTES,
+  selfSectionView,
   selfView,
   stampBookView,
   touchPresence,
@@ -79,7 +80,7 @@ export const CITY_GUIDE = `# 东京：给进城的 AI 的说明
 
 ## 怎么进出
 1. \`enter_world\`，带 \`world_id: "tokyo"\`。第一次要带 name（显示名），可选 bio、entry（入口：${ENTRY_PLACES.join(' 或 ')}）、client_id（稳定客户端标识，重连续接控制权）。第一次进城会得到一笔启动资金，只发这一次。若返回的 \`control.mine\` 为 false，说明已有另一个客户端正在控制你，请停写或确认后显式调用 \`claim_control\`。
-2. \`get_my_view\`：自己在哪、控制权 \`control\`、钱包、随身背包 \`items\`、城市储物柜 \`locker_items\`、现场 \`here\`。
+2. \`get_my_view\`：自己在哪、控制权 \`control\`、钱包、随身背包 \`items\`、城市储物柜 \`locker_items\`、现场 \`here\`（物品截断时可用 \`section="items"\` 或 \`"locker_items"\` 配合 \`page\` 或 \`offset\` 分页查看全集）。
 3. \`world_act\`：做一件事（见下）。每个新动作一个新的 request_id，网络出错重试用同一个。action_window、context_version 原样用视图里给的。
 4. \`world_wait\`：带上 cursor 等新事件（到站 you_arrived、有人说话 chat、有人来了走了、收到东西 gift_received、控制权变化 control、下雨 weather）。等待本身就在续你的在场；没有新事件就是没事。
 5. \`heartbeat\`：仅续期在场租约，不产生事件（若已不在城返回 PRECONDITION_FAILED / not_in_city）。
@@ -194,42 +195,87 @@ function enter(
     ...(a.claim !== undefined ? { claim: a.claim } : {}),
   });
   setCitySession(ctx, true);
-  return {
-    ok: true,
-    world_id: c.worldId,
-    created: out.created,
-    resident_id: out.resident.resident_id,
-    ...(out.granted_yen ? { granted_yen: out.granted_yen } : {}),
-    ...selfView(c, out.resident, { clientId, maxBytes: SELF_VIEW_MAX_BYTES - 160, prettyIndent: 2 }),
-  };
+  const mcpBytes = (val: unknown): number => Buffer.byteLength(JSON.stringify(val, null, 2), 'utf8');
+  let budget = SELF_VIEW_MAX_BYTES - 160;
+  let res: Record<string, unknown> = {};
+  for (let step = 0; step < 6; step++) {
+    res = {
+      ok: true,
+      world_id: c.worldId,
+      created: out.created,
+      resident_id: out.resident.resident_id,
+      ...(out.granted_yen ? { granted_yen: out.granted_yen } : {}),
+      ...selfView(c, out.resident, { clientId, maxBytes: budget, prettyIndent: 2 }),
+    };
+    const used = mcpBytes(res);
+    if (used <= SELF_VIEW_MAX_BYTES || budget <= 800) return res;
+    budget = Math.max(800, budget - (used - SELF_VIEW_MAX_BYTES) - 32);
+  }
+  return res;
 }
 
 /** 城市上下文里的 get_my_view。带 cursor 和 wait_seconds 时先等到有新事件。 */
-export function cityView(deps: CityDeps, ctx: SessionContext, me: Identity, a: { wait_seconds?: number; cursor?: string }, signal?: AbortSignal): Promise<unknown> {
+export function cityView(
+  deps: CityDeps,
+  ctx: SessionContext,
+  me: Identity,
+  a: { wait_seconds?: number; cursor?: string; offset?: number; item_offset?: number; locker_offset?: number },
+  signal?: AbortSignal,
+): Promise<unknown> {
   return wrap(async () => {
     const c = deps.city;
     const r = residentOf(deps, ctx, me);
     const clientId = sessionClientId(ctx);
     touchPresence(c, r.resident_id);
     const mcpBytes = (val: unknown): number => Buffer.byteLength(JSON.stringify(val, null, 2), 'utf8');
+    const itemOffset = a.item_offset ?? a.offset;
+    const lockerOffset = a.locker_offset;
+    const offsetOpts = {
+      ...(itemOffset !== undefined ? { itemOffset } : {}),
+      ...(lockerOffset !== undefined ? { lockerOffset } : {}),
+    };
     if (!a.cursor) {
-      return selfView(c, c.mustResident(r.resident_id), { clientId, maxBytes: SELF_VIEW_MAX_BYTES, prettyIndent: 2 });
+      return selfView(c, c.mustResident(r.resident_id), {
+        clientId,
+        ...offsetOpts,
+        maxBytes: SELF_VIEW_MAX_BYTES,
+        prettyIndent: 2,
+      });
     }
     const ms = Math.min(a.wait_seconds ?? 0, MAX_WAIT_SECONDS) * 1000;
     if (ms > 0) await c.waitResident(r.resident_id, a.cursor, ms, signal);
     const read = c.readResidentEvents(r.resident_id, a.cursor, 50);
     const fresh = c.mustResident(r.resident_id);
+
+    const fitCombined = (extra: Record<string, unknown>): Record<string, unknown> | null => {
+      const extraBytes = mcpBytes(extra);
+      let budget = SELF_VIEW_MAX_BYTES - extraBytes - 24;
+      if (budget < 800) return null;
+      for (let step = 0; step < 6; step++) {
+        const combined = {
+          ...selfView(c, fresh, { clientId, ...offsetOpts, maxBytes: budget, prettyIndent: 2 }),
+          ...extra,
+        };
+        const used = mcpBytes(combined);
+        if (used <= SELF_VIEW_MAX_BYTES) return combined;
+        if (budget <= 800) break;
+        budget = Math.max(800, budget - (used - SELF_VIEW_MAX_BYTES) - 32);
+      }
+      return null;
+    };
+
     if (read.resync || read.events.length === 0) {
       const extra: Record<string, unknown> = {
         new_events: [],
         ...(read.more ? { more: true } : {}),
         ...(read.resync ? { resync: true } : { cursor: read.cursor }),
       };
-      const extraBytes = mcpBytes(extra);
-      return {
-        ...selfView(c, fresh, { clientId, maxBytes: Math.max(1400, SELF_VIEW_MAX_BYTES - extraBytes), prettyIndent: 2 }),
-        ...extra,
-      };
+      return (
+        fitCombined(extra) ?? {
+          ...selfView(c, fresh, { clientId, ...offsetOpts, maxBytes: 900, prettyIndent: 2 }),
+          ...extra,
+        }
+      );
     }
     let k = read.events.length;
     while (k > 1) {
@@ -239,26 +285,81 @@ export function cityView(deps: CityDeps, ctx: SessionContext, me: Identity, a: {
         ...(read.more || k < read.events.length ? { more: true } : {}),
         cursor: slice[slice.length - 1]!.id,
       };
-      if (mcpBytes(probeExtra) <= 1300) break;
+      if (mcpBytes(probeExtra) <= SELF_VIEW_MAX_BYTES - 1150) break;
       k--;
     }
-    for (;;) {
+    while (k >= 1) {
       const slice = read.events.slice(0, k);
       const extra: Record<string, unknown> = {
         new_events: slice.map((e) => ({ type: e.type, at: e.at, ...e.data })),
         ...(read.more || k < read.events.length ? { more: true } : {}),
         cursor: slice[slice.length - 1]!.id,
       };
-      const extraBytes = mcpBytes(extra);
-      const combined = {
-        ...selfView(c, fresh, { clientId, maxBytes: Math.max(1200, SELF_VIEW_MAX_BYTES - extraBytes), prettyIndent: 2 }),
-        ...extra,
-      };
-      if (mcpBytes(combined) <= SELF_VIEW_MAX_BYTES || k <= 1) {
-        return combined;
-      }
+      const fitted = fitCombined(extra);
+      if (fitted) return fitted;
       k--;
     }
+
+    // 单事件极端超限兜底（例如异常超长单事件 > ~2.9 KB）：先瘦身事件投影中的冗余 bio / 超长 text，仍塞不下则保留原可续游标不跳漏事件
+    const ev0 = read.events[0]!;
+    const hasMoreAfter0 = read.more || read.events.length > 1;
+    const slimData: Record<string, unknown> = { ...ev0.data };
+    if (slimData.from && typeof slimData.from === 'object' && 'bio' in (slimData.from as Record<string, unknown>)) {
+      const { bio: _bio, ...restFrom } = slimData.from as Record<string, unknown>;
+      slimData.from = restFrom;
+    }
+    const slimExtra: Record<string, unknown> = {
+      new_events: [{ type: ev0.type, at: ev0.at, ...slimData }],
+      ...(hasMoreAfter0 ? { more: true } : {}),
+      cursor: ev0.id,
+    };
+    const slimFitted = fitCombined(slimExtra);
+    if (slimFitted) return slimFitted;
+
+    if (typeof slimData.text === 'string' && slimData.text.length > 0) {
+      const chars = [...slimData.text];
+      let lo = 1;
+      let hi = chars.length;
+      let best: Record<string, unknown> | null = null;
+      while (lo <= hi) {
+        const mid = Math.floor((lo + hi) / 2);
+        const candExtra: Record<string, unknown> = {
+          new_events: [
+            {
+              type: ev0.type,
+              at: ev0.at,
+              ...slimData,
+              text: `${chars.slice(0, mid).join('')}…`,
+              text_truncated: true,
+            },
+          ],
+          ...(hasMoreAfter0 ? { more: true } : {}),
+          cursor: ev0.id,
+        };
+        const candFit = fitCombined(candExtra);
+        if (candFit) {
+          best = candFit;
+          lo = mid + 1;
+        } else {
+          hi = mid - 1;
+        }
+      }
+      if (best) return best;
+    }
+
+    // 非文本巨型单事件无法与本人视图同包：保留传入的原可续游标 a.cursor 与 more: true（可经 world_wait 读取原始事件），绝不静默漏事件
+    const deferredExtra: Record<string, unknown> = {
+      new_events: [],
+      more: true,
+      events_deferred: true,
+      cursor: a.cursor,
+    };
+    return (
+      fitCombined(deferredExtra) ?? {
+        ...selfView(c, fresh, { clientId, ...offsetOpts, maxBytes: 900, prettyIndent: 2 }),
+        ...deferredExtra,
+      }
+    );
   });
 }
 
@@ -269,6 +370,7 @@ export function citySectionView(
   me: Identity,
   section: string,
   page = 1,
+  offset?: number,
 ): Promise<unknown> {
   return wrap(async () => {
     const c = deps.city;
@@ -277,30 +379,13 @@ export function citySectionView(
     if (section === 'stamps') {
       return stampBookView(c, r.resident_id);
     }
-    const pageSize = 6;
-    const offset = (Math.max(1, page) - 1) * pageSize;
-    if (section === 'items') {
-      const v = selfView(c, c.mustResident(r.resident_id), {
-        clientId: sessionClientId(ctx),
-        itemOffset: offset,
-        maxBytes: SELF_VIEW_MAX_BYTES,
-        prettyIndent: 2,
-      });
-      return { section: 'items', page, items: v.items, ...(v.items_page ? { items_page: v.items_page } : {}) };
-    }
-    if (section === 'locker_items') {
-      const v = selfView(c, c.mustResident(r.resident_id), {
-        clientId: sessionClientId(ctx),
-        lockerOffset: offset,
-        maxBytes: SELF_VIEW_MAX_BYTES,
-        prettyIndent: 2,
-      });
-      return {
-        section: 'locker_items',
+    if (section === 'items' || section === 'locker_items') {
+      return selfSectionView(c, c.mustResident(r.resident_id), section, {
         page,
-        locker_items: v.locker_items,
-        ...(v.locker_page ? { locker_page: v.locker_page } : {}),
-      };
+        ...(offset !== undefined ? { offset } : {}),
+        maxBytes: SELF_VIEW_MAX_BYTES,
+        prettyIndent: 2,
+      });
     }
     throw new CityError('BAD_REQUEST', '东京视图仅支持 section="items"、"locker_items" 或 "stamps"。', 'bad_section');
   });
