@@ -1,5 +1,5 @@
 /**
- * 东京城市世界的失败码。
+ * 灯都城市世界的失败码。
  *
  * 桥接协议（docs/city/bridge-v1.schema.json）里出现的码都在这里；对外一律大写。
  * 调用方只对 RECOVERING 和 RATE_LIMITED 用同一个请求号重试；CONFLICT、STALE_DOMAIN_EPOCH 之类重试也没用。

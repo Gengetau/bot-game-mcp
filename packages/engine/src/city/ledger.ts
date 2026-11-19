@@ -681,7 +681,7 @@ export function trustedAssetIdOf(row: Pick<ItemRow, 'type' | 'origin_json'>): st
   } catch {
     return null;
   }
-  if (!parsed || parsed.domain !== 'tokyo_shop' || typeof parsed.asset_id !== 'string') return null;
+  if (!parsed || (parsed.domain !== 'city_shop' && parsed.domain !== 'tokyo_shop') || typeof parsed.asset_id !== 'string') return null;
   return TRUSTED_ASSET_ID_RE.test(parsed.asset_id) ? parsed.asset_id : null;
 }
 

@@ -51,7 +51,7 @@ describe('M0 桥接协议与 life1 词表对齐守门', () => {
         ],
       },
       plan: {
-        destination: 'ikebukuro:kissa-tomoshibi',
+        destination: 'kagamiike:kissa-tomoshibi',
         start_at_ms: 1_794_900_000_000,
         return_by_ms: 1_794_910_000_000,
       },
@@ -188,11 +188,13 @@ describe('M0 桥接协议与 life1 词表对齐守门', () => {
     expect(validateDef('OutboxRecord', refundOutbox)).toBe(true);
   });
 
-  it('AreaId 预留 v1 六大生活街区并拒绝非东京地区，ErrorCode 包含 CONTROL_LOST', () => {
-    for (const area of ['akabane', 'ikebukuro', 'shinjuku', 'asakusa', 'shibuya', 'kichijoji']) {
+  it('AreaId 严格锁定 R0 三片区并拒绝旧现实地名与未知地区，ErrorCode 包含 CONTROL_LOST', () => {
+    for (const area of ['hiwatari', 'kagamiike', 'sentou']) {
       expect(validateDef('AreaId', area)).toBe(true);
     }
-    expect(validateDef('AreaId', 'osaka')).toBe(false);
+    for (const bad of ['akabane', 'ikebukuro', 'shinjuku', 'jinbocho', 'shimokitazawa', 'asakusa', 'osaka']) {
+      expect(validateDef('AreaId', bad)).toBe(false);
+    }
     expect(
       validateDef('Error', {
         error: 'CONTROL_LOST',

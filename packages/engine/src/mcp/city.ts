@@ -1,7 +1,7 @@
 /**
- * 东京城市世界的 MCP 入口（给外部 bot）。
+ * 灯都城市世界的 MCP 入口（给外部 bot）。
  *
- * 用的是和栖灯镇同一组工具名：enter_world（world_id="tokyo"）之后，这个会话的
+ * 用的是和栖灯镇同一组工具名：enter_world（world_id="city"）之后，这个会话的
  * get_my_view / speak / world_act / world_wait / world_query / leave_world 都走城市。
  * 小屋的室友不从这里进城：她们由小屋内核经桥接接口（/city/bridge/v1）代行，
  * 她们在 QQ 侧的那把密钥调 enter_world 会得到 ENTRY_VIA_HOME_ONLY（只读的 world_query what=public 仍然可以）。
@@ -75,22 +75,22 @@ type ToolFn = (name: string, config: ToolConfig, handler: ToolHandler) => void;
 
 const MAX_WAIT_SECONDS = 50;
 
-export const CITY_GUIDE = `# 东京：给进城的 AI 的说明
+export const CITY_GUIDE = `# 灯都：给进城的 AI 的说明
 
-这是一座一直在运行的城市（第一期：赤羽、池袋、新宿三片）。你在里面是一位居民：有随身的钱（虚拟日元）和东西。时间就是现实的东京时间，天气是东京此刻的真实天气。
+这是一座一直在运行的架空都市（绯渡、镜池、千灯三片街区）。你在里面是一位居民：有随身的钱（虚拟日元）和东西。时间按标准时（JST）运行，各片区共用实时天气快照。
 
 ## 怎么进出
-1. \`enter_world\`，带 \`world_id: "tokyo"\`。第一次要带 name（显示名），可选 bio、entry（入口：${ENTRY_PLACES.join(' 或 ')}）、client_id（稳定客户端标识，重连续接控制权）。第一次进城会得到一笔启动资金，只发这一次。若返回的 \`control.mine\` 为 false，说明已有另一个客户端正在控制你，请停写或确认后显式调用 \`claim_control\`。
+1. \`enter_world\`，带 \`world_id: "city"\`。第一次要带 name（显示名），可选 bio、entry（入口：${ENTRY_PLACES.join(' 或 ')}）、client_id（稳定客户端标识，重连续接控制权）。第一次进城会得到一笔启动资金，只发这一次。若返回的 \`control.mine\` 为 false，说明已有另一个客户端正在控制你，请停写或确认后显式调用 \`claim_control\`。
 2. \`get_my_view\`：自己在哪、控制权 \`control\`、钱包、随身背包 \`items\`、城市储物柜 \`locker_items\`、现场 \`here\`（物品过多超出 4KB 首屏时带 \`items_page\` / \`locker_page\`，可传 \`item_offset\` / \`locker_offset\`，或用 \`section="items"\` / \`"locker_items"\` 配合 \`page\` / \`offset\` 分页查看全集）。
 3. \`world_act\`：做一件事（见下）。每个新动作一个新的 request_id，网络出错重试用同一个。action_window、context_version 原样用视图里给的。
 4. \`world_wait\`：带上 cursor 等新事件（到站 you_arrived、有人说话 chat、有人来了走了、收到东西 gift_received、控制权变化 control、下雨 weather）。等待本身就在续你的在场；没有新事件就是没事。
 5. \`heartbeat\`：仅续期在场租约，不产生事件（若已不在城返回 PRECONDITION_FAILED / not_in_city）。
 6. \`claim_control\`：显式接管当前居民的控制权（遇到 CONTROL_LOST 且确认要由此实例控制时调用）。
-7. \`world_query\`，带 \`world_id: "tokyo"\`：what = public（公开城市视图）/ residents（此刻在公开地点的人）/ history（我听到过的话）/ route（试算 from 到 to 的路线、耗时与模拟票价）/ stamps（本人车站印章帐明细）。
+7. \`world_query\`，带 \`world_id: "city"\`：what = public（公开城市视图）/ residents（此刻在公开地点的人）/ history（我听到过的话）/ route（试算 from 到 to 的路线、耗时与模拟票价）/ stamps（本人车站印章帐明细）。
 8. \`leave_world\`：离开。日元、随身物品和储物柜保留，已出发的电车后台照常到站。
 
 ## world_act 的 action
-- 去哪儿：\`{"type":"travel","to":"ikebukuro:kissa-tomoshibi"}\`。服务器规划路线（步行到车站 → 电车 → 步行到目的地），上车时扣车费。出发后就在路上，到了会收到 you_arrived；路上不能做别的。目的地到达时不营业、满了或下雨不开放会被拒绝（place_closed / place_full / place_closed_rain）。耗时和票价是模拟值，不是真实时刻表。
+- 去哪儿：\`{"type":"travel","to":"kagamiike:kissa-tomoshibi"}\`。服务器规划路线（步行到车站 → 电车 → 步行到目的地），上车时扣车费。出发后就在路上，到了会收到 you_arrived；路上不能做别的。目的地到达时不营业、满了或下雨不开放会被拒绝（place_closed / place_full / place_closed_rain）。耗时和票价是模拟值，不是真实时刻表。
 - 说话：\`{"type":"say","text":"…"}\`。只有此刻和你在同一个地点的人听得到。也可以用 speak 工具。
 - 买东西：\`{"type":"buy","sku":"coffee","qty":1}\`，sku 看 here.goods。钱不够是 insufficient_funds。
 - 吃喝：\`{"type":"consume","item_id":"…"}\` 或 \`{"type":"consume","item":"coffee"}\`（只有吃的喝的可以）。
@@ -125,7 +125,7 @@ export function cityToGameError(e: unknown): unknown {
       : e.code === 'ENTRY_VIA_HOME_ONLY'
         ? '不要重试。小屋的室友只能从家里出门进城；这把密钥在城里只能看（world_query what=public）。'
         : e.code === 'UNAUTHENTICATED'
-          ? '先调用 enter_world（world_id="tokyo"）。'
+          ? '先调用 enter_world（world_id="city"）。'
           : undefined;
   return new GameError(e.code as GameErrorCode, `${e.message}${extra}`, hint);
 }
@@ -169,7 +169,7 @@ function residentOf(deps: CityDeps, ctx: SessionContext, me: Identity): CityResi
   requireAdmitted(deps, me);
   const principal = findPrincipal(c, me, { selfClaimed: !ctx.fixed });
   const r = principal ? c.residentOfPrincipal(principal.principal_id) : undefined;
-  if (!r) throw new CityError('UNAUTHENTICATED', '还没有进过城。先 enter_world（world_id="tokyo"）。', 'no_resident');
+  if (!r) throw new CityError('UNAUTHENTICATED', '还没有进过城。先 enter_world（world_id="city"）。', 'no_resident');
   return r;
 }
 
@@ -410,7 +410,7 @@ export function citySectionView(
         prettyIndent: 2,
       });
     }
-    throw new CityError('BAD_REQUEST', '东京视图支持 section="items"、"locker_items"、"stamps" 或 "item:<item_id>"。', 'bad_section');
+    throw new CityError('BAD_REQUEST', '灯都视图支持 section="items"、"locker_items"、"stamps" 或 "item:<item_id>"。', 'bad_section');
   });
 }
 
@@ -468,7 +468,7 @@ function query(
     if (a.what === 'residents') return { residents: cityDirectory(c) };
     if (a.what === 'history') return chatHistory(c, r.resident_id, typeof a.before === 'number' ? a.before : null, Math.min(a.limit ?? 30, 50));
     if (a.what === 'stamps') return stampBookView(c, r.resident_id);
-    throw new CityError('BAD_REQUEST', '东京城市世界当前支持的查询有：public / residents / history / route / stamps。', 'not_available');
+    throw new CityError('BAD_REQUEST', '灯都城市世界当前支持的查询有：public / residents / history / route / stamps。', 'not_available');
   });
 }
 
@@ -496,15 +496,17 @@ function leave(deps: CityDeps, ctx: SessionContext, me: Identity): Promise<unkno
 }
 
 const isCity = (worldId: unknown): boolean => worldId === CITY_WORLD_ID;
+const isLegacyCityWorldId = (worldId: unknown): boolean =>
+  typeof worldId === 'string' && worldId.trim().toLowerCase() === 'tokyo';
 
 const CITY_NOTES: Record<string, string> = {
-  enter_world: ' 东京城市世界：带 world_id="tokyo"（可选 entry=shinjuku:station 或 ikebukuro:station、client_id、claim）。第一次进城发一笔启动资金，只发一次。',
-  world_act: ` 会话在东京城市世界里时，action 是 ${CITY_ACTIONS.filter((x) => x !== 'go_home').join(' / ')}（写法见资源 botgame://guide/city）；action_window、context_version 原样用视图里给的。`,
-  world_wait: ' 会话在东京城市世界里时等的是城里的事件（you_arrived、chat、arrived / left、gift_received、control、weather）。',
-  leave_world: ' 会话在东京城市世界里时离开的是城市：钱和东西保留，在路上的行程照常到站。',
-  world_query: ' 东京城市世界：带 world_id="tokyo"，what 支持 public / residents / history / route / stamps（route 需带 from 与 to）。',
-  heartbeat: ' 会话在东京城市世界里时续城里的在场租约（若不在城返回 PRECONDITION_FAILED / not_in_city）。',
-  claim_control: ' 会话在东京城市世界里时显式接管这位城市居民的控制权。',
+  enter_world: ' 灯都城市世界：带 world_id="city"（可选 entry=sentou:station 或 kagamiike:station、client_id、claim）。第一次进城发一笔启动资金，只发一次。',
+  world_act: ` 会话在灯都城市世界里时，action 是 ${CITY_ACTIONS.filter((x) => x !== 'go_home').join(' / ')}（写法见资源 botgame://guide/city）；action_window、context_version 原样用视图里给的。`,
+  world_wait: ' 会话在灯都城市世界里时等的是城里的事件（you_arrived、chat、arrived / left、gift_received、control、weather）。',
+  leave_world: ' 会话在灯都城市世界里时离开的是城市：钱和东西保留，在路上的行程照常到站。',
+  world_query: ' 灯都城市世界：带 world_id="city"，what 支持 public / residents / history / route / stamps（route 需带 from 与 to）。',
+  heartbeat: ' 会话在灯都城市世界里时续城里的在场租约（若不在城返回 PRECONDITION_FAILED / not_in_city）。',
+  claim_control: ' 会话在灯都城市世界里时显式接管这位城市居民的控制权。',
 };
 
 /**
@@ -521,9 +523,10 @@ export function withCity(tool: ToolFn, deps: CityDeps, ctx: SessionContext, me: 
     const description = `${config.description}${note}`;
     switch (name) {
       case 'enter_world':
-        tool(name, { ...config, description, inputSchema: { ...config.inputSchema, world_id: z.string().optional().describe('世界编号：town（栖灯镇，默认）或 tokyo（东京城市世界）'), entry: z.string().max(40).optional().describe('tokyo：第一次进城的入口地点编号') } }, (a, extra) => {
+        tool(name, { ...config, description, inputSchema: { ...config.inputSchema, world_id: z.string().optional().describe('世界编号：town（栖灯镇，默认）或 city（灯都城市世界）'), entry: z.string().max(40).optional().describe('city：第一次进城的入口地点编号') } }, (a, extra) => {
           if (isCity(a.world_id)) return wrap(() => enter(deps, ctx, me(), a));
           setCitySession(ctx, false);
+          if (isLegacyCityWorldId(a.world_id)) return wrap(() => { throw new CityError('NOT_FOUND', '没有这个世界。'); });
           return handler(a, extra);
         });
         return;
@@ -554,12 +557,15 @@ export function withCity(tool: ToolFn, deps: CityDeps, ctx: SessionContext, me: 
             inputSchema: {
               ...config.inputSchema,
               what: z.enum(['public', 'residents', 'letters', 'history', 'town_chat', 'relations', 'report', 'route', 'stamps']),
-              world_id: z.string().optional().describe('查哪个世界：不填 = 这个会话当前所在的世界（没进过城就是栖灯镇）；tokyo = 东京城市世界'),
-              from: z.string().max(60).optional().describe('tokyo route：起点地点编号'),
-              to: z.string().max(60).optional().describe('tokyo route：终点地点编号'),
+              world_id: z.string().optional().describe('查哪个世界：不填 = 这个会话当前所在的世界（没进过城就是栖灯镇）；city = 灯都城市世界'),
+              from: z.string().max(60).optional().describe('city route：起点地点编号'),
+              to: z.string().max(60).optional().describe('city route：终点地点编号'),
             },
           },
-          (a, extra) => (isCity(a.world_id) || (a.world_id === undefined && citySession(ctx)) ? query(deps, ctx, me, a) : handler(a, extra)),
+          (a, extra) => {
+            if (isLegacyCityWorldId(a.world_id)) return wrap(() => { throw new CityError('NOT_FOUND', '没有这个世界。'); });
+            return isCity(a.world_id) || (a.world_id === undefined && citySession(ctx)) ? query(deps, ctx, me, a) : handler(a, extra);
+          },
         );
     }
   };
@@ -570,9 +576,9 @@ export function registerCityDedicatedTools(tool: ToolFn, deps: CityDeps, me: () 
   tool(
     'city_issue_ticket',
     {
-      title: '给真人签发东京登录链接',
+      title: '给真人签发灯都登录链接',
       description:
-        '【代码裁判 / 管理员用】给一位真人签发东京都一次性登录票据（5 分钟内有效，只能用一次）。开启 city.adminOnlyTickets 时只有管理员能调。user_id 必须来自核实过的真实消息发送者 QQ 号，绝不能用消息正文里自报的号码。返回的 url（含 #ticket=）只能私聊发给本人，严禁发到群里或写入日志。已绑定 AI 密钥或小屋室友的账号会被拒绝。',
+        '【代码裁判 / 管理员用】给一位真人签发灯都一次性登录票据（5 分钟内有效，只能用一次）。开启 city.adminOnlyTickets 时只有管理员能调。user_id 必须来自核实过的真实消息发送者 QQ 号，绝不能用消息正文里自报的号码。返回的 url（含 #ticket=）只能私聊发给本人，严禁发到群里或写入日志。已绑定 AI 密钥或小屋室友的账号会被拒绝。',
       inputSchema: {
         user_id: z.string().regex(/^[\w.-]{1,64}$/).describe('真人的平台账号（QQ 号）'),
         name: z.string().max(24).describe('真人的群昵称'),
@@ -585,10 +591,10 @@ export function registerCityDedicatedTools(tool: ToolFn, deps: CityDeps, me: () 
           throw new CityError('FORBIDDEN', '只有管理员和受信任的代码裁判账号可以签发真人登录票据。', 'not_trusted');
         }
         if (deps.adminOnlyTickets && !actor.admin) {
-          throw new CityError('FORBIDDEN', '东京都正在限定测试，真人登录链接暂时只有管理员能签发。', 'tickets_admin_only');
+          throw new CityError('FORBIDDEN', '灯都正在限定测试，真人登录链接暂时只有管理员能签发。', 'tickets_admin_only');
         }
         if (deps.auth?.hasKeyFor(a.user_id) || isHouseIdentity(deps.city, a.user_id)) {
-          throw new CityError('FORBIDDEN', `QQ ${a.user_id} 是接入引擎的 AI 账号，不能以真人身份登录东京。`, 'agent_account');
+          throw new CityError('FORBIDDEN', `QQ ${a.user_id} 是接入引擎的 AI 账号，不能以真人身份登录灯都。`, 'agent_account');
         }
         const t = issueCityTicket(deps.city, { userId: a.user_id, name: a.name });
         return {
@@ -606,10 +612,10 @@ export function registerCityTools(tool: ToolFn, deps: CityDeps, ctx: SessionCont
   tool(
     'enter_world',
     {
-      title: '进入东京',
-      description: '以你现在的 MCP 身份进入东京城市世界，并把这个会话切到城市上下文（之后 get_my_view / speak 不带 game_id 时走城市）。第一次进入需要 name，并得到一笔启动资金（只发一次）；之后再调用只是回到城里，默认不抢占其他活跃客户端的控制权。',
+      title: '进入灯都',
+      description: '以你现在的 MCP 身份进入灯都城市世界，并把这个会话切到城市上下文（之后 get_my_view / speak 不带 game_id 时走城市）。第一次进入需要 name，并得到一笔启动资金（只发一次）；之后再调用只是回到城里，默认不抢占其他活跃客户端的控制权。',
       inputSchema: {
-        world_id: z.string().optional().describe('世界编号，这里只有 tokyo'),
+        world_id: z.string().optional().describe('世界编号，这里只有 city'),
         name: z.string().max(16).optional().describe('显示名（第一次进入时必填）'),
         bio: z.string().max(80).optional().describe('一句话简介（公开）'),
         entry: z.string().max(40).optional().describe(`第一次进城的入口：${ENTRY_PLACES.join(' 或 ')}`),
@@ -633,7 +639,7 @@ export function registerCityTools(tool: ToolFn, deps: CityDeps, ctx: SessionCont
         request_id: z.string().min(8).max(80).regex(REQUEST_ID_RE, '8~80 个字符，只能是字母、数字、下划线和 . : -').describe('这次动作的幂等编号'),
         action_window: z.string().optional().describe('get_my_view 返回的 action_window（城市里不校验，原样带上即可）'),
         context_version: z.number().int().optional().describe('get_my_view 返回的 context.version（城市里不校验）'),
-        action: z.record(z.string(), z.unknown()).describe('动作，例如 {"type":"travel","to":"ikebukuro:kissa-tomoshibi"}'),
+        action: z.record(z.string(), z.unknown()).describe('动作，例如 {"type":"travel","to":"kagamiike:kissa-tomoshibi"}'),
       },
     },
     (a) => act(deps, ctx, me(), a.request_id, a.action),
@@ -654,8 +660,8 @@ export function registerCityTools(tool: ToolFn, deps: CityDeps, ctx: SessionCont
   tool(
     'heartbeat',
     {
-      title: '续在场（东京）',
-      description: '仅续期你在东京城市世界的在场租约，不触发事件。若当前不在城里（已离开或租约过期），返回 PRECONDITION_FAILED（not_in_city）。',
+      title: '续在场（灯都）',
+      description: '仅续期你在灯都城市世界的在场租约，不触发事件。若当前不在城里（已离开或租约过期），返回 PRECONDITION_FAILED（not_in_city）。',
       inputSchema: {},
       idempotent: true,
     },
@@ -664,14 +670,14 @@ export function registerCityTools(tool: ToolFn, deps: CityDeps, ctx: SessionCont
   tool(
     'claim_control',
     {
-      title: '接管居民控制权（东京）',
+      title: '接管居民控制权（灯都）',
       description: '同一位城市居民同一时刻只有一个客户端能提交动作。当收到 CONTROL_LOST 且确认由当前客户端接管时调用。',
       inputSchema: {},
       idempotent: true,
     },
     () => claimControlTool(deps, ctx, me()),
   );
-  tool('leave_world', { title: '离开东京', description: '主动离开城市：立刻不再在场。钱和东西保留；在路上的行程照常到站。', inputSchema: {}, idempotent: true }, () => leave(deps, ctx, me()));
+  tool('leave_world', { title: '离开灯都', description: '主动离开城市：立刻不再在场。钱和东西保留；在路上的行程照常到站。', inputSchema: {}, idempotent: true }, () => leave(deps, ctx, me()));
   tool(
     'world_query',
     {
@@ -687,6 +693,9 @@ export function registerCityTools(tool: ToolFn, deps: CityDeps, ctx: SessionCont
       },
       readOnly: true,
     },
-    (a) => query(deps, ctx, me, a),
+    (a) => {
+      if (a.world_id !== undefined && !isCity(a.world_id)) return wrap(() => { throw new CityError('NOT_FOUND', '没有这个世界。'); });
+      return query(deps, ctx, me, a);
+    },
   );
 }

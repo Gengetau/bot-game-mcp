@@ -1,6 +1,6 @@
 // @ts-check
 /**
- * 东京都（/city/play/）人类文字优先单页客户端。
+ * 灯都（/city/play/）人类文字优先单页客户端。
  *
  * 遵循原则：
  *  - 零外部依赖，离线/内网环境直接可用；
@@ -84,18 +84,20 @@ function newRequestId() {
  * @param {string} tz
  * @returns {string}
  */
-function fmtClock(ms, tz = 'Asia/Tokyo') {
+function fmtClock(ms, tz = 'JST') {
   if (typeof ms !== 'number' || !Number.isFinite(ms)) return '';
+  const zone = tz === 'JST' ? '+09:00' : tz;
   try {
     return new Intl.DateTimeFormat('zh-CN', {
-      timeZone: tz,
+      timeZone: zone,
       hour: '2-digit',
       minute: '2-digit',
       hour12: false,
+      hourCycle: 'h23',
     }).format(new Date(ms));
   } catch {
-    const d = new Date(ms);
-    return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+    const d = new Date(ms + 9 * 3600_000);
+    return `${String(d.getUTCHours()).padStart(2, '0')}:${String(d.getUTCMinutes()).padStart(2, '0')}`;
   }
 }
 
@@ -126,7 +128,7 @@ function make(tag, opts = {}) {
 const state = {
   clientId: getOrCreateClientId(),
   csrfToken: '',
-  timezone: 'Asia/Tokyo',
+  timezone: 'JST',
   heartbeatMs: 60_000,
   chatMaxChars: 300,
   loggedIn: false,
@@ -212,7 +214,7 @@ const lcdStampBtn = /** @type {HTMLButtonElement} */ (mustEl('lcd-stamp-btn'));
 const sceneStampBtn = /** @type {HTMLButtonElement} */ (mustEl('scene-stamp-btn'));
 const toggleMotionBtn = /** @type {HTMLButtonElement} */ (mustEl('toggle-motion-btn'));
 
-// ───────────────────────── 五站铁道拓扑与印章常量 ─────────────────────────
+// ───────────────────────── 三站铁道拓扑与印章常量 ─────────────────────────
 
 /**
  * @typedef {{
@@ -221,7 +223,6 @@ const toggleMotionBtn = /** @type {HTMLButtonElement} */ (mustEl('toggle-motion-
  *   area: string;
  *   code: string;
  *   name: string;
- *   ward: string;
  *   lineKey: string;
  *   lineSummary: string;
  *   stampTitle: string;
@@ -234,127 +235,76 @@ const toggleMotionBtn = /** @type {HTMLButtonElement} */ (mustEl('toggle-motion-
 /** @type {readonly StationMeta[]} */
 const RAIL_STATIONS = [
   {
-    id: 'st:akabane',
-    placeId: 'akabane:station',
-    area: 'akabane',
-    code: 'AK',
-    name: '赤羽站',
-    ward: '北区',
-    lineKey: 'saikyo',
-    lineSummary: 'JR 埼京线',
-    stampTitle: '赤羽站 · 荒川铁桥与一番街',
-    x: 118,
-    y: 54,
-    labelDy: 31,
-  },
-  {
-    id: 'st:ikebukuro',
-    placeId: 'ikebukuro:station',
-    area: 'ikebukuro',
-    code: 'IK',
-    name: '池袋站',
-    ward: '丰岛区',
-    lineKey: 'yamanote',
-    lineSummary: 'JR 山手线 · 埼京线',
-    stampTitle: '池袋站 · 猫头鹰与书影',
-    x: 266,
-    y: 116,
+    id: 'st:hiwatari',
+    placeId: 'hiwatari:station',
+    area: 'hiwatari',
+    code: 'HW',
+    name: '绯渡站',
+    lineKey: 'hokkan',
+    lineSummary: '灯都铁道 北环快线',
+    stampTitle: '绯渡站 · 澪川铁桥与晚霞',
+    x: 148,
+    y: 64,
     labelDy: 32,
   },
   {
-    id: 'st:shinjuku',
-    placeId: 'shinjuku:station',
-    area: 'shinjuku',
-    code: 'SJ',
-    name: '新宿站',
-    ward: '新宿区',
-    lineKey: 'yamanote',
-    lineSummary: 'JR 山手线 · 都营新宿线 · 小田急线',
-    stampTitle: '新宿站 · 南口跨线露台与西口高楼',
-    x: 392,
-    y: 146,
+    id: 'st:kagamiike',
+    placeId: 'kagamiike:station',
+    area: 'kagamiike',
+    code: 'KG',
+    name: '镜池站',
+    lineKey: 'toukan',
+    lineSummary: '灯都铁道 灯环线 · 北环快线',
+    stampTitle: '镜池站 · 木雕猫头鹰与书灯',
+    x: 336,
+    y: 138,
     labelDy: 32,
   },
   {
-    id: 'st:jinbocho',
-    placeId: 'jinbocho:station',
-    area: 'jinbocho',
-    code: 'JB',
-    name: '神保町站',
-    ward: '千代田区',
-    lineKey: 'shinjuku',
-    lineSummary: '都营新宿线（距新宿 4.8km · ¥220）',
-    stampTitle: '神保町站 · 靖国通古书街与钢笔尖',
-    x: 566,
-    y: 112,
+    id: 'st:sentou',
+    placeId: 'sentou:station',
+    area: 'sentou',
+    code: 'ST',
+    name: '千灯站',
+    lineKey: 'toukan',
+    lineSummary: '灯都铁道 灯环线 · 北环快线',
+    stampTitle: '千灯站 · 南口跨线露台与钟塔',
+    x: 524,
+    y: 178,
     labelDy: 32,
-  },
-  {
-    id: 'st:shimokitazawa',
-    placeId: 'shimokitazawa:station',
-    area: 'shimokitazawa',
-    code: 'SK',
-    name: '下北泽站',
-    ward: '世田谷区',
-    lineKey: 'odakyu',
-    lineSummary: '小田急小田原线（距新宿 4.9km · ¥170）',
-    stampTitle: '下北泽站 · 路地小剧场与绿道木叶',
-    x: 252,
-    y: 214,
-    labelDy: 30,
   },
 ];
 
 const RAIL_EDGES = [
   {
-    id: 'te:akabane-ikebukuro',
-    fromPlace: 'akabane:station',
-    toPlace: 'ikebukuro:station',
-    d: 'M 118 54 L 266 116',
-    className: 'rail-saikyo',
-    label: '埼京线 · 13分 · ¥200',
-    lx: 176,
-    ly: 100,
+    id: 'te:hiwatari-kagamiike',
+    fromPlace: 'hiwatari:station',
+    toPlace: 'kagamiike:station',
+    d: 'M 148 64 L 336 138',
+    className: 'rail-hokkan',
+    label: '北环快线 · 13分 · ¥200',
+    lx: 232,
+    ly: 118,
   },
   {
-    id: 'te:akabane-shinjuku',
-    fromPlace: 'akabane:station',
-    toPlace: 'shinjuku:station',
-    d: 'M 118 54 Q 282 14 392 146',
+    id: 'te:hiwatari-sentou',
+    fromPlace: 'hiwatari:station',
+    toPlace: 'sentou:station',
+    d: 'M 148 64 Q 368 18 524 178',
     className: 'rail-direct',
-    label: '埼京线直达 · 19分 · ¥260',
-    lx: 284,
-    ly: 42,
+    label: '北环快线直达 · 19分 · ¥260',
+    lx: 364,
+    ly: 52,
   },
   {
-    id: 'te:ikebukuro-shinjuku',
-    fromPlace: 'ikebukuro:station',
-    toPlace: 'shinjuku:station',
-    d: 'M 266 116 L 392 146',
-    className: 'rail-yamanote',
-    label: '山手线 · 10分 · ¥200',
-    lx: 324,
-    ly: 150,
-  },
-  {
-    id: 'te:shinjuku-jinbocho',
-    fromPlace: 'shinjuku:station',
-    toPlace: 'jinbocho:station',
-    d: 'M 392 146 L 566 112',
-    className: 'rail-shinjuku',
-    label: '都营新宿线 · 11分 · ¥220',
-    lx: 486,
-    ly: 116,
-  },
-  {
-    id: 'te:shinjuku-shimokitazawa',
-    fromPlace: 'shinjuku:station',
-    toPlace: 'shimokitazawa:station',
-    d: 'M 392 146 L 252 214',
-    className: 'rail-odakyu',
-    label: '小田急线 · 9分 · ¥170',
-    lx: 344,
-    ly: 202,
+    id: 'te:kagamiike-sentou',
+    fromPlace: 'kagamiike:station',
+    toPlace: 'sentou:station',
+    d: 'M 336 138 L 524 178',
+    className: 'rail-toukan',
+    label: '灯环线 · 10分 · ¥200',
+    lx: 424,
+    ly: 176,
   },
 ];
 
@@ -376,10 +326,8 @@ function stationMetaFor(areaOrPlace) {
 function lineKeyOf(lineName, mode) {
   if (mode === 'walk') return 'walk';
   const s = String(lineName || '');
-  if (s.includes('都营新宿')) return 'shinjuku';
-  if (s.includes('小田急')) return 'odakyu';
-  if (s.includes('埼京')) return 'saikyo';
-  return 'yamanote';
+  if (s.includes('北环')) return 'hokkan';
+  return 'toukan';
 }
 
 /**
@@ -862,11 +810,11 @@ function canControl() {
 function renderHeaderAndControl() {
   const v = state.view;
   if (v?.local_time) {
-    headerClock.textContent = `东京时间 ${v.local_time}（${state.timezone}）`;
+    headerClock.textContent = `灯都时间 ${v.local_time}（${state.timezone}）`;
   } else if (state.publicView?.local_time) {
-    headerClock.textContent = `东京时间 ${state.publicView.local_time}（${state.timezone}）`;
+    headerClock.textContent = `灯都时间 ${state.publicView.local_time}（${state.timezone}）`;
   } else {
-    headerClock.textContent = `东京都持续世界（${state.timezone}）`;
+    headerClock.textContent = `灯都持续世界（${state.timezone}）`;
   }
 
   headerUserBar.hidden = !state.loggedIn;
@@ -901,33 +849,13 @@ function renderWindowSilhouette(areaKey) {
   // 地面基底
   g.appendChild(makeSvg('rect', { x: 0, y: 96, width: 280, height: 32 }));
 
-  if (areaKey === 'jinbocho') {
-    // 神保町：靖国通连排旧书店书脊招牌与暖色橱窗
-    g.appendChild(makeSvg('rect', { x: 18, y: 54, width: 46, height: 42 }));
-    g.appendChild(makeSvg('rect', { x: 68, y: 46, width: 52, height: 50 }));
-    g.appendChild(makeSvg('rect', { x: 126, y: 58, width: 44, height: 38 }));
-    g.appendChild(makeSvg('rect', { x: 176, y: 42, width: 56, height: 54 }));
-    g.appendChild(makeSvg('rect', { x: 236, y: 62, width: 30, height: 34 }));
-    g.appendChild(makeSvg('rect', { x: 26, y: 74, width: 12, height: 14, class: 'win-lamp' }));
-    g.appendChild(makeSvg('rect', { x: 80, y: 72, width: 16, height: 16, class: 'win-lamp' }));
-    g.appendChild(makeSvg('rect', { x: 190, y: 68, width: 18, height: 18, class: 'win-lamp' }));
-  } else if (areaKey === 'shimokitazawa') {
-    // 下北泽：低层三角坡顶小剧场、街角路灯与绿道树冠
-    g.appendChild(makeSvg('polygon', { points: '24,96 24,66 56,48 88,66 88,96' }));
-    g.appendChild(makeSvg('rect', { x: 98, y: 64, width: 48, height: 32 }));
-    g.appendChild(makeSvg('circle', { cx: 178, cy: 76, r: 16 }));
-    g.appendChild(makeSvg('circle', { cx: 204, cy: 72, r: 19 }));
-    g.appendChild(makeSvg('rect', { x: 228, y: 58, width: 38, height: 38 }));
-    g.appendChild(makeSvg('rect', { x: 48, y: 74, width: 14, height: 16, class: 'win-lamp' }));
-    g.appendChild(makeSvg('circle', { cx: 154, cy: 66, r: 3.5, class: 'win-lamp' }));
-    g.appendChild(makeSvg('rect', { x: 238, y: 72, width: 14, height: 12, class: 'win-lamp' }));
-  } else if (areaKey === 'akabane') {
-    // 赤羽：荒川铁桥桁架与商店街屋檐
+  if (areaKey === 'hiwatari') {
+    // 绯渡：澪川铁桥桁架与商店街屋檐
     g.appendChild(makeSvg('path', { d: 'M8 96 L36 62 L68 96 L100 62 L132 96 L164 62 L196 96 Z' }));
     g.appendChild(makeSvg('rect', { x: 204, y: 60, width: 58, height: 36 }));
     g.appendChild(makeSvg('rect', { x: 216, y: 74, width: 14, height: 12, class: 'win-lamp' }));
-  } else if (areaKey === 'ikebukuro') {
-    // 池袋：南池袋公园树影与中层楼宇、喫茶灯窗
+  } else if (areaKey === 'kagamiike') {
+    // 镜池：南镜池公园树影与中层楼宇、喫茶灯窗
     g.appendChild(makeSvg('rect', { x: 22, y: 44, width: 44, height: 52 }));
     g.appendChild(makeSvg('circle', { cx: 96, cy: 76, r: 16 }));
     g.appendChild(makeSvg('circle', { cx: 122, cy: 74, r: 18 }));
@@ -944,7 +872,7 @@ function renderWindowSilhouette(areaKey) {
     g.appendChild(makeSvg('rect', { x: 140, y: 58, width: 38, height: 38 }));
     g.appendChild(makeSvg('rect', { x: 150, y: 72, width: 10, height: 10, class: 'win-lamp' }));
   } else {
-    // 新宿：西口高楼天际线与南口跨线露台
+    // 千灯：西口钟塔天际线与南口跨线露台
     g.appendChild(makeSvg('rect', { x: 20, y: 36, width: 34, height: 60 }));
     g.appendChild(makeSvg('rect', { x: 60, y: 28, width: 38, height: 68 }));
     g.appendChild(makeSvg('rect', { x: 106, y: 46, width: 34, height: 50 }));
@@ -1024,7 +952,7 @@ function renderCommuterDeck() {
   const stMeta = stationMetaFor(p.area || p.id);
   lcdBoard.setAttribute('data-line', stMeta.lineKey);
   codeEl.textContent = stMeta.code;
-  kickerEl.textContent = p.type === 'station' ? `ただいま停車中 · ${stMeta.ward}车站大厅` : `${stMeta.name}圈 · ${stMeta.ward}`;
+  kickerEl.textContent = p.type === 'station' ? `ただいま停車中 · ${stMeta.name}大厅` : `${stMeta.name}圈 · 街区漫步`;
   titleEl.textContent = String(p.name || p.id || '未知地点');
   const sb = v.stamp_book;
   etaEl.textContent = sb ? `站章 ${sb.collected}/${sb.total}` : '';
@@ -1053,7 +981,7 @@ function renderCommuterDeck() {
 }
 
 /**
- * 绘制二维五站铁道拓扑 SVG（仅高亮当前居民本人所在站或在途电车段，附本人已集站章朱印点）。
+ * 绘制二维三站铁道拓扑 SVG（仅高亮当前居民本人所在站或在途电车段，附本人已集站章朱印点）。
  * @param {SVGSVGElement} svgEl
  */
 function renderRailTopologyInto(svgEl) {
@@ -1101,7 +1029,7 @@ function renderRailTopologyInto(svgEl) {
       g.appendChild(makeSvg('circle', { cx: 12, cy: -11, r: 4.5, class: 'station-stamp-dot' }));
     }
     g.appendChild(
-      makeSvg('text', { y: st.labelDy, 'text-anchor': 'middle', class: 'station-title' }, `${st.name}（${st.ward}）`),
+      makeSvg('text', { y: st.labelDy, 'text-anchor': 'middle', class: 'station-title' }, st.name),
     );
     svgEl.appendChild(g);
   }
@@ -1119,7 +1047,7 @@ function renderTravelTopology() {
     statusEl.textContent = `运行区间高亮：前往 ${friendlyPlaceLabel(v.location.trip.to)}（仅显示本人状态）`;
   } else if (v?.here?.place) {
     const st = stationMetaFor(v.here.place.area);
-    statusEl.textContent = `当前呼吸高亮：${st.name}（${st.ward}）· 已集站章 ${v.stamp_book?.collected ?? 0}/${v.stamp_book?.total ?? 5}`;
+    statusEl.textContent = `当前呼吸高亮：${st.name} · 已集站章 ${v.stamp_book?.collected ?? 0}/${v.stamp_book?.total ?? RAIL_STATIONS.length}`;
   }
 
   const quickBar = mustEl('station-quick-bar');
@@ -1170,24 +1098,24 @@ function buildStampEmblemSvg(emblem, areaId, collected) {
     /* legacy alias */
   }
   if (emblem === 'books' || emblem === 'book-nib') {
-    // 神保町：摊开的书页与钢笔尖
+    // 摊开的书页与钢笔尖
     svg.appendChild(makeSvg('path', { d: 'M13 30 L24 27 L35 30 L35 18 L24 15 L13 18 Z', fill: 'none', stroke: 'currentColor', 'stroke-width': 2 }));
     svg.appendChild(makeSvg('line', { x1: 24, y1: 15, x2: 24, y2: 33, stroke: 'currentColor', 'stroke-width': 2 }));
   } else if (emblem === 'stage' || emblem === 'theatre-mask') {
-    // 下北泽：小剧场拱门与星芒
+    // 小剧场拱门与星芒
     svg.appendChild(makeSvg('path', { d: 'M15 32 L15 20 A9 9 0 0 1 33 20 L33 32 Z', fill: 'none', stroke: 'currentColor', 'stroke-width': 2 }));
     svg.appendChild(makeSvg('circle', { cx: 24, cy: 23, r: 3, fill: 'currentColor' }));
   } else if (emblem === 'bridge' || emblem === 'torii-gate') {
-    // 赤羽：铁桥桁架
+    // 绯渡：澪川铁桥桁架
     svg.appendChild(makeSvg('path', { d: 'M12 30 L18 18 L24 30 L30 18 L36 30', fill: 'none', stroke: 'currentColor', 'stroke-width': 2 }));
     svg.appendChild(makeSvg('line', { x1: 11, y1: 31, x2: 37, y2: 31, stroke: 'currentColor', 'stroke-width': 2 }));
   } else if (emblem === 'owl' || emblem === 'owl-lamp') {
-    // 池袋：猫头鹰双眸
+    // 镜池：猫头鹰双眸
     svg.appendChild(makeSvg('circle', { cx: 19, cy: 23, r: 4, fill: 'none', stroke: 'currentColor', 'stroke-width': 2 }));
     svg.appendChild(makeSvg('circle', { cx: 29, cy: 23, r: 4, fill: 'none', stroke: 'currentColor', 'stroke-width': 2 }));
     svg.appendChild(makeSvg('polygon', { points: '24,26 21,31 27,31', fill: 'currentColor' }));
   } else {
-    // 新宿：双塔与跨线桥
+    // 千灯：双塔与跨线桥
     svg.appendChild(makeSvg('rect', { x: 15, y: 15, width: 7, height: 17, fill: 'none', stroke: 'currentColor', 'stroke-width': 2 }));
     svg.appendChild(makeSvg('rect', { x: 26, y: 13, width: 7, height: 19, fill: 'none', stroke: 'currentColor', 'stroke-width': 2 }));
   }
@@ -1209,8 +1137,8 @@ function renderStampBook() {
         station_name: st.name,
         area: st.area,
         title: st.stampTitle,
-        motif: `${st.ward}纪念站章`,
-        emblem: st.area === 'jinbocho' ? 'books' : st.area === 'shimokitazawa' ? 'stage' : st.area === 'akabane' ? 'bridge' : st.area === 'ikebukuro' ? 'owl' : 'terrace',
+        motif: `${st.name}纪念站章`,
+        emblem: st.area === 'hiwatari' ? 'bridge' : st.area === 'kagamiike' ? 'owl' : 'terrace',
         collected: false,
         stamped_at_ms: null,
       }));
@@ -1218,7 +1146,7 @@ function renderStampBook() {
   for (const s of entries) {
     const collected = Boolean(s.collected);
     const li = make('li', { className: collected ? 'stamp-slot stamp-slot-collected' : 'stamp-slot' });
-    li.appendChild(buildStampEmblemSvg(String(s.emblem || ''), String(s.area || 'shinjuku'), collected));
+    li.appendChild(buildStampEmblemSvg(String(s.emblem || ''), String(s.area || 'sentou'), collected));
     const meta = make('div', { className: 'entity-meta' });
     meta.appendChild(make('strong', { text: String(s.title || s.station_name) }));
     meta.appendChild(
@@ -1244,7 +1172,7 @@ function renderGate() {
     enterNameField.hidden = true;
     enterNameInput.required = false;
     enterStationFieldset.hidden = true;
-    enterSubmitBtn.textContent = '回到东京都';
+    enterSubmitBtn.textContent = '回到灯都';
   } else {
     enterWelcomeText.textContent = `你好，${state.principal?.display_name ?? '旅人'}。请起一个城内显示名并选择首次进城车站。`;
     enterNameField.hidden = false;
@@ -1253,7 +1181,7 @@ function renderGate() {
       enterNameInput.value = state.principal.display_name.slice(0, 16);
     }
     enterStationFieldset.hidden = false;
-    enterSubmitBtn.textContent = '领取启动日元并进入东京都';
+    enterSubmitBtn.textContent = '领取启动日元并进入灯都';
   }
 }
 
@@ -1319,8 +1247,8 @@ function renderScenePanel() {
     stampBar.hidden = false;
     stampTitle.textContent = stMeta.stampTitle;
     stampDesc.textContent = hereStamped
-      ? `已收录进个人车站印章帐（进度 ${v.stamp_book?.collected ?? 1}/${v.stamp_book?.total ?? 5}，重复加盖幂等且不占背包）`
-      : `站在${stMeta.name}大厅可免费加盖本站纪念章（进度 ${v.stamp_book?.collected ?? 0}/${v.stamp_book?.total ?? 5}）`;
+      ? `已收录进个人车站印章帐（进度 ${v.stamp_book?.collected ?? 1}/${v.stamp_book?.total ?? RAIL_STATIONS.length}，重复加盖幂等且不占背包）`
+      : `站在${stMeta.name}大厅可免费加盖本站纪念章（进度 ${v.stamp_book?.collected ?? 0}/${v.stamp_book?.total ?? RAIL_STATIONS.length}）`;
     sceneStampBtn.textContent = hereStamped ? '再次加盖留念' : '盖下本站纪念章';
     sceneStampBtn.disabled = !writable;
   } else {
@@ -1824,7 +1752,7 @@ function renderOverview() {
   areasBox.replaceChildren();
   for (const a of areaList) {
     const card = make('article', { className: 'card' });
-    card.appendChild(make('h3', { text: `${a.name}（${a.ward}）` }));
+    card.appendChild(make('h3', { text: a.ward ? `${a.name}（${a.ward}）` : String(a.name || a.id) }));
     card.appendChild(make('p', { className: 'muted small-note', text: String(a.blurb || '') }));
     if (a.weather) {
       card.appendChild(
@@ -1950,7 +1878,7 @@ async function redeemTicket(rawTicket) {
     if (state.sessionResident?.in_city) {
       await refreshMe();
       startRealtime();
-      showNotice(`欢迎回到东京都，${state.sessionResident.name}。`);
+      showNotice(`欢迎回到灯都，${state.sessionResident.name}。`);
     } else {
       renderApp();
       showNotice('票据验证成功，请确认入城信息。');
@@ -2008,7 +1936,7 @@ enterForm.addEventListener('submit', async (ev) => {
   if (!state.sessionResident) {
     const name = enterNameInput.value.trim();
     if (!name) {
-      setFieldError(enterNameError, enterNameInput, '第一次进入东京都请填写 1～16 字的显示名。');
+      setFieldError(enterNameError, enterNameInput, '第一次进入灯都请填写 1～16 字的显示名。');
       enterNameInput.focus();
       return;
     }
@@ -2031,16 +1959,16 @@ enterForm.addEventListener('submit', async (ev) => {
     void loadStampBook();
     startRealtime();
     if (out.granted_yen) {
-      showNotice(`欢迎来到东京都！已发放一次性启动资金 ${fmtYen(out.granted_yen)}。`);
+      showNotice(`欢迎来到灯都！已发放一次性启动资金 ${fmtYen(out.granted_yen)}。`);
     } else {
-      showNotice('已进入东京都。');
+      showNotice('已进入灯都。');
     }
   } catch (e) {
     if (e instanceof ApiError && (e.reason === 'name_required' || e.reason === 'name_taken')) {
       setFieldError(enterNameError, enterNameInput, e.message);
       enterNameInput.focus();
     } else {
-      showError(e instanceof ApiError ? e.message : '进入东京都失败');
+      showError(e instanceof ApiError ? e.message : '进入灯都失败');
     }
   }
 });
@@ -2112,7 +2040,7 @@ leaveCityBtn.addEventListener('click', async () => {
     stopRealtime();
     await syncSession();
     renderApp();
-    showNotice('已暂离东京都休息。随身日元、物品与储物柜均已保留。');
+    showNotice('已暂离灯都休息。随身日元、物品与储物柜均已保留。');
   } catch (e) {
     showError(e instanceof ApiError ? e.message : '暂离失败');
   }
@@ -2182,7 +2110,7 @@ async function boot() {
   const hashTicket = extractTicketFromHash();
   try {
     const cfg = await apiCall('GET', '/config');
-    state.timezone = String(cfg.world?.timezone || 'Asia/Tokyo');
+    state.timezone = String(cfg.world?.timezone || 'JST');
     state.heartbeatMs = Number(cfg.heartbeat_ms || 60_000);
     state.chatMaxChars = Number(cfg.limits?.chat_max_chars || 300);
     chatInput.maxLength = state.chatMaxChars;

@@ -39,11 +39,11 @@ describe('M0 四份工程规格文档与 mappings v2 守门', () => {
       },
       {
         file: 'ITEM-AND-LOCKER-SPEC.md',
-        mustContain: ['instance', 'origin_ref', 'store_locker', 'take_locker', 'carry_home', 'disposed', 'resolvePendingOrder', 'order_refunded', 'mappings_version: 2'],
+        mustContain: ['instance', 'origin_ref', 'store_locker', 'take_locker', 'carry_home', 'disposed', 'resolvePendingOrder', 'order_refunded', 'mappings_version: 3'],
       },
       {
         file: 'CONTENT-PACK-SPEC.md',
-        mustContain: ['mun:13', 'st:', 'dist:', 'cataloged', 'transitable', 'livable', 'PLACE_OF_STATION', 'akabane:ai-house:entrance'],
+        mustContain: ['ward:', 'st:', 'dist:', 'cataloged', 'transitable', 'livable', 'PLACE_OF_STATION', 'hiwatari:ai-house:entrance'],
       },
     ];
     for (const { file, mustContain } of specs) {
@@ -152,12 +152,12 @@ describe('隔离联调测试环境与确定性故障注入脚手架', () => {
     harness = await createIsolatedCityHarness({ enableControlRoutes: true });
     const h = harness;
 
-    // 1. F13/F14 天气控制：先注入池袋下雨，再连续超时超 3h 验证退回 fallback
-    h.setAreaRain({ ikebukuro: true, akabane: false, shinjuku: false });
+    // 1. F13/F14 天气控制：先注入镜池下雨，再连续超时超 3h 验证退回 fallback
+    h.setAreaRain({ kagamiike: true, hiwatari: false, sentou: false });
     const w1 = await bridgeCall(h, 'GET', '/weather');
     expect(w1.status).toBe(200);
-    expect(w1.body.areas.find((a: any) => a.area === 'ikebukuro')).toMatchObject({ rain: true, status: 'ok' });
-    expect(w1.body.areas.find((a: any) => a.area === 'akabane')).toMatchObject({ rain: false, status: 'ok' });
+    expect(w1.body.areas.find((a: any) => a.area === 'kagamiike')).toMatchObject({ rain: true, status: 'ok' });
+    expect(w1.body.areas.find((a: any) => a.area === 'hiwatari')).toMatchObject({ rain: false, status: 'ok' });
 
     h.advance(4 * HOUR);
     h.injectWeather(null);
