@@ -150,6 +150,74 @@
 
       <div id="transit-banner" class="banner banner-transit" hidden></div>
 
+      <!-- 车门液晶到站/车站信息牌 + 微缩天气×昼夜窗景剪影 -->
+      <section class="commuter-deck" aria-label="车门液晶信息牌与微缩窗景">
+        <article id="lcd-board" class="lcd-board" data-line="yamanote" aria-label="车门液晶到站与车站信息牌">
+          <div class="lcd-line-bar" aria-hidden="true"></div>
+          <div class="lcd-top-row">
+            <div class="lcd-station-head">
+              <span id="lcd-station-code" class="lcd-code" aria-hidden="true">SJ</span>
+              <div class="lcd-titles">
+                <span id="lcd-state-kicker" class="lcd-kicker">停車中 · 当前所在</span>
+                <strong id="lcd-main-title" class="lcd-title">—</strong>
+              </div>
+            </div>
+            <div class="lcd-meta-col">
+              <span id="lcd-clock" class="lcd-clock">--:--</span>
+              <span id="lcd-eta" class="lcd-eta"></span>
+            </div>
+          </div>
+          <div class="lcd-sub-row">
+            <span id="lcd-line-label" class="lcd-sub-text">等待同步列车与街区状态…</span>
+            <div class="lcd-actions">
+              <span id="lcd-stamp-pill" class="lcd-pill" hidden></span>
+              <button type="button" class="btn btn-lcd" id="lcd-stamp-btn" hidden>盖本站纪念章</button>
+            </div>
+          </div>
+          <ol id="lcd-stops-track" class="lcd-stops" aria-label="当前行程区间" hidden></ol>
+        </article>
+
+        <article id="window-cutout-card" class="card window-card" aria-labelledby="window-card-title">
+          <div class="card-head window-card-head">
+            <h2 id="window-card-title" class="window-heading">车窗微缩景</h2>
+            <button type="button" class="btn btn-ghost btn-compact" id="toggle-motion-btn">暂停动效</button>
+          </div>
+          <div id="window-frame" class="window-frame" data-tod="day" data-sky="clear" data-area="shinjuku">
+            <svg id="window-cutout-svg" class="window-svg" viewBox="0 0 280 128" role="img" aria-labelledby="window-cutout-caption">
+              <rect x="0" y="0" width="280" height="128" rx="8" class="win-sky" />
+              <circle cx="226" cy="30" r="13" class="win-celestial" />
+              <g class="win-stars" aria-hidden="true">
+                <circle cx="44" cy="22" r="1.3" />
+                <circle cx="96" cy="18" r="1.1" />
+                <circle cx="152" cy="28" r="1.4" />
+                <circle cx="188" cy="16" r="1.0" />
+              </g>
+              <g class="win-cloud" aria-hidden="true">
+                <path d="M42 42h38a9 9 0 0 0 0-18 13 13 0 0 0-24-4 10 10 0 0 0-14 22Z" />
+                <path d="M148 50h34a8 8 0 0 0 0-16 11 11 0 0 0-21-3 9 9 0 0 0-13 19Z" />
+              </g>
+              <g id="window-silhouette" class="win-silhouette" aria-hidden="true"></g>
+              <g class="win-rain-layer" aria-hidden="true">
+                <line x1="36" y1="10" x2="26" y2="38" />
+                <line x1="78" y1="18" x2="68" y2="46" />
+                <line x1="122" y1="8" x2="112" y2="36" />
+                <line x1="166" y1="22" x2="156" y2="50" />
+                <line x1="210" y1="12" x2="200" y2="40" />
+                <line x1="252" y1="20" x2="242" y2="48" />
+                <line x1="56" y1="58" x2="46" y2="86" />
+                <line x1="104" y1="64" x2="94" y2="92" />
+                <line x1="150" y1="56" x2="140" y2="84" />
+                <line x1="196" y1="66" x2="186" y2="94" />
+                <line x1="238" y1="60" x2="228" y2="88" />
+              </g>
+              <rect x="3" y="3" width="274" height="122" rx="6" class="win-mullion" aria-hidden="true" />
+              <line x1="3" y1="96" x2="277" y2="96" class="win-sill" aria-hidden="true" />
+            </svg>
+          </div>
+          <p id="window-cutout-caption" class="muted small-note window-caption">天色与天气加载中…</p>
+        </article>
+      </section>
+
       <div class="tablist" role="tablist" aria-label="城市功能导航">
         <button type="button" role="tab" id="tab-scene" aria-selected="true" aria-controls="panel-scene" tabindex="0">
           当前街区
@@ -179,6 +247,13 @@
               </div>
               <p id="scene-blurb" class="lead-text"></p>
               <p id="scene-weather" class="weather-pill"></p>
+              <div id="scene-stamp-bar" class="stamp-desk-bar" hidden>
+                <div class="entity-meta">
+                  <strong id="scene-stamp-title">车站纪念印章台</strong>
+                  <span id="scene-stamp-desc" class="muted small-note"></span>
+                </div>
+                <button type="button" class="btn btn-secondary" id="scene-stamp-btn">盖下本站纪念章</button>
+              </div>
               <div id="scene-events" class="sub-list" hidden></div>
             </article>
 
@@ -226,6 +301,15 @@
       <!-- 面板 2：行程换乘 -->
       <div role="tabpanel" id="panel-travel" aria-labelledby="tab-travel" hidden="until-found">
         <div class="panel-inner card-stack">
+          <article class="card" aria-labelledby="travel-topology-heading">
+            <div class="card-head">
+              <h2 id="travel-topology-heading">东京都五站铁道呼吸拓扑</h2>
+              <span id="travel-topology-status" class="muted small-note">仅高亮本人所在站与乘车区间</span>
+            </div>
+            <svg id="rail-topology-svg" class="rail-map" viewBox="0 0 680 256" role="img" aria-label="赤羽站、池袋站、新宿站、神保町站与下北泽站之间的铁道连接拓扑图"></svg>
+            <div id="station-quick-bar" class="station-quick-bar" role="group" aria-label="五站路线快速试算"></div>
+          </article>
+
           <article class="card" id="active-trip-card" hidden aria-labelledby="active-trip-heading">
             <h2 id="active-trip-heading">进行中的行程</h2>
             <div id="active-trip-detail"></div>
@@ -273,12 +357,21 @@
           </div>
 
           <div class="card-stack">
+            <article class="card" id="stamp-book-card" aria-labelledby="stamp-book-heading">
+              <div class="card-head">
+                <h3 id="stamp-book-heading">车站印章帐（Eki-Stamp）</h3>
+                <span class="badge" id="stamp-book-badge">0 / 5 枚</span>
+              </div>
+              <p class="muted small-note">每座开放车站大厅均设有一枚专属纪念章；同站重复盖章幂等，不占背包与储物柜槽位。</p>
+              <ul id="stamp-book-list" class="stamp-grid"></ul>
+            </article>
+
             <article class="card" aria-labelledby="locker-heading">
               <div class="card-head">
                 <h3 id="locker-heading">城市车站储物柜</h3>
                 <span class="badge" id="locker-status-badge"></span>
               </div>
-              <p class="muted small-note">随时可查看柜内物品；站在赤羽站、池袋站或新宿站大厅时可存取（现点杯装热饮不可寄存）。</p>
+              <p class="muted small-note">随时可查看柜内物品；站在赤羽、池袋、新宿、神保町或下北泽各车站大厅时可存取（现点热饮与堂食不可寄存）。</p>
               <ul id="locker-list" class="entity-list"></ul>
               <div id="locker-pager" class="pager-bar" role="group" aria-label="储物柜分页" hidden>
                 <span id="locker-page-status" class="muted small-note"></span>
@@ -315,29 +408,10 @@
         <div class="panel-inner card-stack">
           <article class="card" aria-labelledby="transit-map-heading">
             <div class="card-head">
-              <h2 id="transit-map-heading">东京都第一期铁道拓扑简图</h2>
-              <a class="btn btn-ghost" href="/city/" target="_blank" rel="noopener">打开纯文字公开页</a>
+              <h2 id="transit-map-heading">东京都铁道与公开街区目录</h2>
+              <span class="muted small-note">严格信息对等：仅展示公开地理、营业时段与实况天气</span>
             </div>
-            <svg class="rail-map" viewBox="0 0 600 200" role="img" aria-label="赤羽站、池袋站与新宿站之间的埼京线与山手线连接示意图">
-              <line x1="110" y1="60" x2="300" y2="120" class="rail-saikyo" />
-              <line x1="110" y1="60" x2="490" y2="60" class="rail-direct" />
-              <line x1="300" y1="120" x2="490" y2="60" class="rail-yamanote" />
-              <text x="300" y="42" text-anchor="middle" class="rail-label">埼京线直达 · 约 19 分 · ¥260</text>
-              <text x="190" y="108" text-anchor="middle" class="rail-label">埼京线 · 13 分 · ¥200</text>
-              <text x="415" y="108" text-anchor="middle" class="rail-label">山手线 · 10 分 · ¥200</text>
-              <g transform="translate(110,60)">
-                <circle r="14" class="station-node" />
-                <text y="32" text-anchor="middle" class="station-title">赤羽站（北区）</text>
-              </g>
-              <g transform="translate(300,120)">
-                <circle r="14" class="station-node" />
-                <text y="34" text-anchor="middle" class="station-title">池袋站（丰岛区）</text>
-              </g>
-              <g transform="translate(490,60)">
-                <circle r="14" class="station-node" />
-                <text y="32" text-anchor="middle" class="station-title">新宿站（新宿区）</text>
-              </g>
-            </svg>
+            <svg id="overview-rail-svg" class="rail-map" viewBox="0 0 680 256" role="img" aria-label="赤羽、池袋、新宿、神保町与下北泽五站铁道拓扑图"></svg>
             <p class="muted small-note" id="overview-summary"></p>
           </article>
 

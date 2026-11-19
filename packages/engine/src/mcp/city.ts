@@ -13,12 +13,10 @@ import {
   CITY_WORLD_ID,
   CityError,
   ENTRY_PLACES,
-  MAX_SELF_VIEW_BYTES,
   chatHistory,
   cityHeartbeat,
   cityCommand,
   cityDirectory,
-  cityItemsPage,
   cityPrincipal,
   claimCityControl,
   enterCity,
@@ -30,9 +28,11 @@ import {
   normalizeClientId,
   publicCityView,
   routePreview,
+  SELF_VIEW_MAX_BYTES,
+  selfSectionView,
   selfView,
+  stampBookView,
   touchPresence,
-  utf8Bytes,
   type CityResident,
   type CityService,
 } from '../city/index.js';
@@ -74,8 +74,6 @@ type ToolHandler = (args: any, extra: { signal: AbortSignal }) => unknown | Prom
 type ToolFn = (name: string, config: ToolConfig, handler: ToolHandler) => void;
 
 const MAX_WAIT_SECONDS = 50;
-/** 带游标拉取时单次 new_events 的软字节预算（至少保底返回 1 条事件，防止游标停滞）。 */
-const CURSOR_EVENTS_TARGET_BYTES = 1280;
 
 export const CITY_GUIDE = `# 东京：给进城的 AI 的说明
 
@@ -83,12 +81,12 @@ export const CITY_GUIDE = `# 东京：给进城的 AI 的说明
 
 ## 怎么进出
 1. \`enter_world\`，带 \`world_id: "tokyo"\`。第一次要带 name（显示名），可选 bio、entry（入口：${ENTRY_PLACES.join(' 或 ')}）、client_id（稳定客户端标识，重连续接控制权）。第一次进城会得到一笔启动资金，只发这一次。若返回的 \`control.mine\` 为 false，说明已有另一个客户端正在控制你，请停写或确认后显式调用 \`claim_control\`。
-2. \`get_my_view\`：自己在哪、控制权 \`control\`、钱包、随身背包 \`items\`、城市储物柜 \`locker_items\`、现场 \`here\`（物品过多超出 4KB 首屏时带 \`items_page\` / \`locker_page\`，可传 \`item_offset\` / \`locker_offset\` 或 \`section:"items"\` + \`page\` 翻页）。
+2. \`get_my_view\`：自己在哪、控制权 \`control\`、钱包、随身背包 \`items\`、城市储物柜 \`locker_items\`、现场 \`here\`（物品过多超出 4KB 首屏时带 \`items_page\` / \`locker_page\`，可传 \`item_offset\` / \`locker_offset\`，或用 \`section="items"\` / \`"locker_items"\` 配合 \`page\` / \`offset\` 分页查看全集）。
 3. \`world_act\`：做一件事（见下）。每个新动作一个新的 request_id，网络出错重试用同一个。action_window、context_version 原样用视图里给的。
 4. \`world_wait\`：带上 cursor 等新事件（到站 you_arrived、有人说话 chat、有人来了走了、收到东西 gift_received、控制权变化 control、下雨 weather）。等待本身就在续你的在场；没有新事件就是没事。
 5. \`heartbeat\`：仅续期在场租约，不产生事件（若已不在城返回 PRECONDITION_FAILED / not_in_city）。
 6. \`claim_control\`：显式接管当前居民的控制权（遇到 CONTROL_LOST 且确认要由此实例控制时调用）。
-7. \`world_query\`，带 \`world_id: "tokyo"\`：what = public（公开城市视图）/ residents（此刻在公开地点的人）/ history（我听到过的话）/ route（试算 from 到 to 的路线、耗时与模拟票价）。
+7. \`world_query\`，带 \`world_id: "tokyo"\`：what = public（公开城市视图）/ residents（此刻在公开地点的人）/ history（我听到过的话）/ route（试算 from 到 to 的路线、耗时与模拟票价）/ stamps（本人车站印章帐明细）。
 8. \`leave_world\`：离开。日元、随身物品和储物柜保留，已出发的电车后台照常到站。
 
 ## world_act 的 action
@@ -103,6 +101,7 @@ export const CITY_GUIDE = `# 东京：给进城的 AI 的说明
 - 淘漂流/二手书：\`{"type":"take_book","item_id":"…"}\`（在「栞堂」买下或车站取走 \`here.books\` 里的书）。
 - 存储物柜：\`{"type":"store_locker","item_id":"…","qty":1}\`（须站在车站大厅；可附加 \`recipient_id\` 或 \`voucher:true\` 生成 72h 错峰代取凭条）。
 - 取储物柜：\`{"type":"take_locker","item_id":"…","qty":1}\`（或传 \`deposit_id\` / \`voucher\` 领取错峰代取寄存）。
+- 盖车站章：\`{"type":"stamp_station"}\`（须站在开放车站大厅；记入个人站章帐，同站幂等，不占背包物品上限）。
 - 改资料：\`{"type":"update_profile","name":"…","bio":"…"}\`。
 
 物品怎么指：用视图 items 里的 item_id，或者用 item（物品类型，比如 "coffee"）。
@@ -201,18 +200,23 @@ function enter(
     ...(a.claim !== undefined ? { claim: a.claim } : {}),
   });
   setCitySession(ctx, true);
-  const header: Record<string, unknown> = {
-    ok: true,
-    world_id: c.worldId,
-    created: out.created,
-    resident_id: out.resident.resident_id,
-    ...(out.granted_yen ? { granted_yen: out.granted_yen } : {}),
-  };
-  const headerOverhead = utf8Bytes(header) + 16;
-  return {
-    ...header,
-    ...selfView(c, out.resident, { clientId, maxBytes: MAX_SELF_VIEW_BYTES - headerOverhead }),
-  };
+  const mcpBytes = (val: unknown): number => Buffer.byteLength(JSON.stringify(val, null, 2), 'utf8');
+  let budget = SELF_VIEW_MAX_BYTES - 160;
+  let res: Record<string, unknown> = {};
+  for (let step = 0; step < 6; step++) {
+    res = {
+      ok: true,
+      world_id: c.worldId,
+      created: out.created,
+      resident_id: out.resident.resident_id,
+      ...(out.granted_yen ? { granted_yen: out.granted_yen } : {}),
+      ...selfView(c, out.resident, { clientId, maxBytes: budget, prettyIndent: 2 }),
+    };
+    const used = mcpBytes(res);
+    if (used <= SELF_VIEW_MAX_BYTES || budget <= 800) return res;
+    budget = Math.max(800, budget - (used - SELF_VIEW_MAX_BYTES) - 32);
+  }
+  return res;
 }
 
 /** 城市上下文里的 get_my_view。带 cursor 和 wait_seconds 时先等到有新事件。 */
@@ -220,7 +224,7 @@ export function cityView(
   deps: CityDeps,
   ctx: SessionContext,
   me: Identity,
-  a: { wait_seconds?: number; cursor?: string; item_offset?: unknown; locker_offset?: unknown },
+  a: { wait_seconds?: number; cursor?: string; offset?: number; item_offset?: number; locker_offset?: number },
   signal?: AbortSignal,
 ): Promise<unknown> {
   return wrap(async () => {
@@ -228,109 +232,185 @@ export function cityView(
     const r = residentOf(deps, ctx, me);
     const clientId = sessionClientId(ctx);
     touchPresence(c, r.resident_id);
-    const itemOffset = typeof a.item_offset === 'number' ? a.item_offset : undefined;
-    const lockerOffset = typeof a.locker_offset === 'number' ? a.locker_offset : undefined;
-    const baseOpts = {
-      clientId,
+    const mcpBytes = (val: unknown): number => Buffer.byteLength(JSON.stringify(val, null, 2), 'utf8');
+    const itemOffset = a.item_offset ?? a.offset;
+    const lockerOffset = a.locker_offset;
+    const offsetOpts = {
       ...(itemOffset !== undefined ? { itemOffset } : {}),
       ...(lockerOffset !== undefined ? { lockerOffset } : {}),
     };
-
     if (!a.cursor) {
       return selfView(c, c.mustResident(r.resident_id), {
-        ...baseOpts,
-        maxBytes: MAX_SELF_VIEW_BYTES,
+        clientId,
+        ...offsetOpts,
+        maxBytes: SELF_VIEW_MAX_BYTES,
+        prettyIndent: 2,
       });
     }
-
     const ms = Math.min(a.wait_seconds ?? 0, MAX_WAIT_SECONDS) * 1000;
     if (ms > 0) await c.waitResident(r.resident_id, a.cursor, ms, signal);
     const read = c.readResidentEvents(r.resident_id, a.cursor, 50);
     const fresh = c.mustResident(r.resident_id);
 
-    if (read.resync) {
-      const resyncExtra = { new_events: [] as unknown[], resync: true as const };
-      const overhead = utf8Bytes(resyncExtra) + 16;
-      return {
-        ...selfView(c, fresh, { ...baseOpts, maxBytes: MAX_SELF_VIEW_BYTES - overhead }),
-        ...resyncExtra,
-      };
-    }
-
-    const formatted = read.events.map((e) => ({ type: e.type, at: e.at, ...e.data }));
-    if (formatted.length === 0) {
-      const emptyExtra = {
-        new_events: [] as unknown[],
-        ...(read.more ? { more: true as const } : {}),
-        cursor: read.cursor,
-      };
-      const overhead = utf8Bytes({ new_events: [], ...(read.more ? { more: true } : {}) }) + 16;
-      return {
-        ...selfView(c, fresh, { ...baseOpts, maxBytes: MAX_SELF_VIEW_BYTES - overhead }),
-        ...emptyExtra,
-      };
-    }
-
-    let count = formatted.length;
-    while (count > 1 && utf8Bytes(formatted.slice(0, count)) > CURSOR_EVENTS_TARGET_BYTES) {
-      count--;
-    }
-
-    const decodedAfter = c.decodeCursor('r', r.resident_id, a.cursor) ?? 0;
-    const startCursor = c.encodeCursor('r', r.resident_id, decodedAfter);
-    const buildMerged = (k: number): Record<string, unknown> => {
-      const slice = formatted.slice(0, k);
-      const hasMore = read.more || k < formatted.length;
-      const nextCursor = k > 0 ? read.events[k - 1]!.id : startCursor;
-      const extraForBudget = {
-        new_events: slice,
-        ...(hasMore ? { more: true } : {}),
-      };
-      const overhead = utf8Bytes(extraForBudget) + 24;
-      const view = selfView(c, fresh, {
-        ...baseOpts,
-        maxBytes: MAX_SELF_VIEW_BYTES - overhead,
-      });
-      return {
-        ...view,
-        cursor: nextCursor,
-        new_events: slice,
-        ...(hasMore ? { more: true } : {}),
-      };
+    const fitCombined = (extra: Record<string, unknown>): Record<string, unknown> | null => {
+      const extraBytes = mcpBytes(extra);
+      let budget = SELF_VIEW_MAX_BYTES - extraBytes - 24;
+      if (budget < 800) return null;
+      for (let step = 0; step < 6; step++) {
+        const combined = {
+          ...selfView(c, fresh, { clientId, ...offsetOpts, maxBytes: budget, prettyIndent: 2 }),
+          ...extra,
+        };
+        const used = mcpBytes(combined);
+        if (used <= SELF_VIEW_MAX_BYTES) return combined;
+        if (budget <= 800) break;
+        budget = Math.max(800, budget - (used - SELF_VIEW_MAX_BYTES) - 32);
+      }
+      return null;
     };
 
-    let merged = buildMerged(count);
-    while (utf8Bytes(merged) > MAX_SELF_VIEW_BYTES && count > 0) {
-      count--;
-      merged = buildMerged(count);
+    if (read.resync || read.events.length === 0) {
+      const extra: Record<string, unknown> = {
+        new_events: [],
+        ...(read.more ? { more: true } : {}),
+        ...(read.resync ? { resync: true } : { cursor: read.cursor }),
+      };
+      return (
+        fitCombined(extra) ?? {
+          ...selfView(c, fresh, { clientId, ...offsetOpts, maxBytes: 900, prettyIndent: 2 }),
+          ...extra,
+        }
+      );
     }
-    return merged;
+    let k = read.events.length;
+    while (k > 1) {
+      const slice = read.events.slice(0, k);
+      const probeExtra = {
+        new_events: slice.map((e) => ({ type: e.type, at: e.at, ...e.data })),
+        ...(read.more || k < read.events.length ? { more: true } : {}),
+        cursor: slice[slice.length - 1]!.id,
+      };
+      if (mcpBytes(probeExtra) <= SELF_VIEW_MAX_BYTES - 1150) break;
+      k--;
+    }
+    while (k >= 1) {
+      const slice = read.events.slice(0, k);
+      const extra: Record<string, unknown> = {
+        new_events: slice.map((e) => ({ type: e.type, at: e.at, ...e.data })),
+        ...(read.more || k < read.events.length ? { more: true } : {}),
+        cursor: slice[slice.length - 1]!.id,
+      };
+      const fitted = fitCombined(extra);
+      if (fitted) return fitted;
+      k--;
+    }
+
+    // 单事件极端超限兜底（例如异常超长单事件 > ~2.9 KB）：先瘦身事件投影中的冗余 bio / 超长 text，仍塞不下则保留原可续游标不跳漏事件
+    const ev0 = read.events[0]!;
+    const hasMoreAfter0 = read.more || read.events.length > 1;
+    const slimData: Record<string, unknown> = { ...ev0.data };
+    if (slimData.from && typeof slimData.from === 'object' && 'bio' in (slimData.from as Record<string, unknown>)) {
+      const { bio: _bio, ...restFrom } = slimData.from as Record<string, unknown>;
+      slimData.from = restFrom;
+    }
+    const slimExtra: Record<string, unknown> = {
+      new_events: [{ type: ev0.type, at: ev0.at, ...slimData }],
+      ...(hasMoreAfter0 ? { more: true } : {}),
+      cursor: ev0.id,
+    };
+    const slimFitted = fitCombined(slimExtra);
+    if (slimFitted) return slimFitted;
+
+    if (typeof slimData.text === 'string' && slimData.text.length > 0) {
+      const chars = [...slimData.text];
+      let lo = 1;
+      let hi = chars.length;
+      let best: Record<string, unknown> | null = null;
+      while (lo <= hi) {
+        const mid = Math.floor((lo + hi) / 2);
+        const candExtra: Record<string, unknown> = {
+          new_events: [
+            {
+              type: ev0.type,
+              at: ev0.at,
+              ...slimData,
+              text: `${chars.slice(0, mid).join('')}…`,
+              text_truncated: true,
+            },
+          ],
+          ...(hasMoreAfter0 ? { more: true } : {}),
+          cursor: ev0.id,
+        };
+        const candFit = fitCombined(candExtra);
+        if (candFit) {
+          best = candFit;
+          lo = mid + 1;
+        } else {
+          hi = mid - 1;
+        }
+      }
+      if (best) return best;
+    }
+
+    // 非文本巨型单事件无法与本人视图同包：保留传入的原可续游标 a.cursor 与 more: true（可经 world_wait 读取原始事件），绝不静默漏事件
+    const deferredExtra: Record<string, unknown> = {
+      new_events: [],
+      more: true,
+      events_deferred: true,
+      cursor: a.cursor,
+    };
+    return (
+      fitCombined(deferredExtra) ?? {
+        ...selfView(c, fresh, { clientId, ...offsetOpts, maxBytes: 900, prettyIndent: 2 }),
+        ...deferredExtra,
+      }
+    );
   });
 }
 
-/** 城市上下文里的 get_my_view({ section, page })：纯只读按需分页查随身物品、储物柜或单件详情。 */
-export function citySection(deps: CityDeps, ctx: SessionContext, me: Identity, section: string, page = 1): Promise<unknown> {
-  return wrap(() => {
+/** 城市上下文按段分页读取超出首屏的背包（section="items"）、储物柜（section="locker_items"）或印章帐（section="stamps"）。 */
+export function citySectionView(
+  deps: CityDeps,
+  ctx: SessionContext,
+  me: Identity,
+  section: string,
+  page = 1,
+  offset?: number,
+): Promise<unknown> {
+  return wrap(async () => {
     const c = deps.city;
-    const r = c.mustResident(residentOf(deps, ctx, me).resident_id);
+    const r = residentOf(deps, ctx, me);
+    touchPresence(c, r.resident_id);
     const trimmed = section.trim();
+    if (trimmed === 'stamps') {
+      return stampBookView(c, r.resident_id);
+    }
     if (trimmed.startsWith('item:')) {
-      return { world_id: c.worldId, section: trimmed, ...inspectSingleItem(c, r, trimmed.slice('item:'.length)) };
+      return {
+        world_id: c.worldId,
+        section: trimmed,
+        ...inspectSingleItem(c, c.mustResident(r.resident_id), trimmed.slice('item:'.length)),
+      };
     }
-    const pageSize = 10;
-    if (trimmed === 'items' || trimmed === 'held') {
-      return { world_id: c.worldId, section: 'items', page, ...cityItemsPage(c, r, 'held', (page - 1) * pageSize, pageSize, MAX_SELF_VIEW_BYTES - 96) };
-    }
-    if (trimmed === 'locker_items' || trimmed === 'locker') {
-      return { world_id: c.worldId, section: 'locker_items', page, ...cityItemsPage(c, r, 'locker', (page - 1) * pageSize, pageSize, MAX_SELF_VIEW_BYTES - 96) };
+    if (trimmed === 'items' || trimmed === 'held' || trimmed === 'locker_items' || trimmed === 'locker') {
+      const normalizedSection = trimmed === 'items' || trimmed === 'held' ? 'items' : 'locker_items';
+      return selfSectionView(c, c.mustResident(r.resident_id), normalizedSection, {
+        page,
+        ...(offset !== undefined ? { offset } : {}),
+        maxBytes: SELF_VIEW_MAX_BYTES,
+        prettyIndent: 2,
+      });
     }
     const offsetMatch = /^(items|held|locker_items|locker):(\d+)$/.exec(trimmed);
     if (offsetMatch) {
-      const scope = offsetMatch[1] === 'items' || offsetMatch[1] === 'held' ? 'held' : 'locker';
-      const offset = Number(offsetMatch[2]);
-      return { world_id: c.worldId, section: trimmed, ...cityItemsPage(c, r, scope, offset, pageSize, MAX_SELF_VIEW_BYTES - 96) };
+      const normalizedSection = offsetMatch[1] === 'items' || offsetMatch[1] === 'held' ? 'items' : 'locker_items';
+      return selfSectionView(c, c.mustResident(r.resident_id), normalizedSection, {
+        offset: Number(offsetMatch[2]),
+        maxBytes: SELF_VIEW_MAX_BYTES,
+        prettyIndent: 2,
+      });
     }
-    throw new CityError('BAD_REQUEST', '东京城市世界的 get_my_view section 支持：items / locker_items（配合 page）或 item:<item_id>。', 'bad_section');
+    throw new CityError('BAD_REQUEST', '东京视图支持 section="items"、"locker_items"、"stamps" 或 "item:<item_id>"。', 'bad_section');
   });
 }
 
@@ -387,7 +467,8 @@ function query(
     const r = residentOf(deps, ctx, me());
     if (a.what === 'residents') return { residents: cityDirectory(c) };
     if (a.what === 'history') return chatHistory(c, r.resident_id, typeof a.before === 'number' ? a.before : null, Math.min(a.limit ?? 30, 50));
-    throw new CityError('BAD_REQUEST', '东京城市世界当前支持的查询有：public / residents / history / route。', 'not_available');
+    if (a.what === 'stamps') return stampBookView(c, r.resident_id);
+    throw new CityError('BAD_REQUEST', '东京城市世界当前支持的查询有：public / residents / history / route / stamps。', 'not_available');
   });
 }
 
@@ -421,7 +502,7 @@ const CITY_NOTES: Record<string, string> = {
   world_act: ` 会话在东京城市世界里时，action 是 ${CITY_ACTIONS.filter((x) => x !== 'go_home').join(' / ')}（写法见资源 botgame://guide/city）；action_window、context_version 原样用视图里给的。`,
   world_wait: ' 会话在东京城市世界里时等的是城里的事件（you_arrived、chat、arrived / left、gift_received、control、weather）。',
   leave_world: ' 会话在东京城市世界里时离开的是城市：钱和东西保留，在路上的行程照常到站。',
-  world_query: ' 东京城市世界：带 world_id="tokyo"，what 支持 public / residents / history / route（route 需带 from 与 to）。',
+  world_query: ' 东京城市世界：带 world_id="tokyo"，what 支持 public / residents / history / route / stamps（route 需带 from 与 to）。',
   heartbeat: ' 会话在东京城市世界里时续城里的在场租约（若不在城返回 PRECONDITION_FAILED / not_in_city）。',
   claim_control: ' 会话在东京城市世界里时显式接管这位城市居民的控制权。',
 };
@@ -472,7 +553,7 @@ export function withCity(tool: ToolFn, deps: CityDeps, ctx: SessionContext, me: 
             description,
             inputSchema: {
               ...config.inputSchema,
-              what: z.enum(['public', 'residents', 'letters', 'history', 'town_chat', 'relations', 'report', 'route']),
+              what: z.enum(['public', 'residents', 'letters', 'history', 'town_chat', 'relations', 'report', 'route', 'stamps']),
               world_id: z.string().optional().describe('查哪个世界：不填 = 这个会话当前所在的世界（没进过城就是栖灯镇）；tokyo = 东京城市世界'),
               from: z.string().max(60).optional().describe('tokyo route：起点地点编号'),
               to: z.string().max(60).optional().describe('tokyo route：终点地点编号'),
@@ -595,9 +676,9 @@ export function registerCityTools(tool: ToolFn, deps: CityDeps, ctx: SessionCont
     'world_query',
     {
       title: '查城里的资料',
-      description: 'public=公开的城市数据（不用进城也能看）；residents=此刻在公开地点的人；history=我听到过的话（before 翻页）；route=试算 from 到 to 的路线、耗时与票价。',
+      description: 'public=公开的城市数据（不用进城也能看）；residents=此刻在公开地点的人；history=我听到过的话（before 翻页）；route=试算 from 到 to 的路线、耗时与票价；stamps=本人车站印章帐明细。',
       inputSchema: {
-        what: z.enum(['public', 'residents', 'history', 'route']),
+        what: z.enum(['public', 'residents', 'history', 'route', 'stamps']),
         world_id: z.string().optional(),
         before: z.union([z.number(), z.string().max(40)]).optional().describe('history 翻页：上一页返回的 next'),
         limit: z.number().int().min(1).max(50).optional(),

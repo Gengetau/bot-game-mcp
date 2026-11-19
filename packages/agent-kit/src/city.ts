@@ -32,6 +32,7 @@ export const CITY_ACTION_TYPES = [
   'take_book',
   'store_locker',
   'take_locker',
+  'stamp_station',
   'update_profile',
 ] as const;
 
@@ -177,6 +178,12 @@ export interface CityView {
   items: CityItemView[];
   /** 本人城市储物柜清单（M1-D 起服务端返回；缺省为空数组） */
   locker_items: CityLockerItemView[];
+  /** 本人车站印章帐精简计数摘要（M3-D 起服务端返回） */
+  stamp_book?: {
+    collected: number;
+    total: number;
+    here_stamped?: boolean;
+  };
   pending_orders?: { order_id: string; what: string; yen: number }[];
   here: CityHereView | null;
   can: string[];
@@ -261,7 +268,7 @@ export interface CityClaimResult {
   control: CityControlState;
 }
 
-export type CityQueryWhat = 'public' | 'residents' | 'history' | 'route';
+export type CityQueryWhat = 'public' | 'residents' | 'history' | 'route' | 'stamps';
 
 export interface CityItemSelector {
   /** 指定具名实例件 ID（优先） */
@@ -861,6 +868,10 @@ export class CityClient {
   takeLocker(target: string | CityItemSelector, qty = 1, opts?: CityActOptions): Promise<CityActResult> {
     const sel = typeof target === 'string' ? { item: target } : { ...(target.itemId ? { item_id: target.itemId } : {}), ...(target.item ? { item: target.item } : {}) };
     return this.act({ type: 'take_locker', ...sel, qty }, opts);
+  }
+
+  stampStation(opts?: CityActOptions): Promise<CityActResult> {
+    return this.act({ type: 'stamp_station' }, opts);
   }
 
   updateProfile(patch: { name?: string; bio?: string }, opts?: CityActOptions): Promise<CityActResult> {

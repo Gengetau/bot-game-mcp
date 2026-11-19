@@ -446,7 +446,7 @@ const MIGRATIONS: readonly string[] = [
   CREATE INDEX item_events_visit ON item_events(visit_id, event_id) WHERE visit_id IS NOT NULL;
   `,
   // ───── v3 ─────
-  // M3-C：漂流文库本（shelf / drift 态与 shelf_place_id / shelf_price_yen）、招领态（lost_found）及车站投币储物柜凭条寄存（locker_deposits）
+  // M3-C + M3-D：漂流文库本（shelf / drift 态）、招领态（lost_found）、储物柜凭条寄存（locker_deposits）、个人车站印章帐（resident_stamps）与激活目录版本历史表（catalog_versions）
   `
   CREATE TABLE items_v3 (
     item_id TEXT PRIMARY KEY,
@@ -495,6 +495,24 @@ const MIGRATIONS: readonly string[] = [
   CREATE INDEX locker_deposits_recipient ON locker_deposits(recipient_id, status) WHERE recipient_id IS NOT NULL;
   CREATE INDEX locker_deposits_expiry ON locker_deposits(status, expires_at) WHERE status = 'active';
   CREATE UNIQUE INDEX locker_deposits_voucher ON locker_deposits(voucher_hash) WHERE voucher_hash IS NOT NULL;
+
+  CREATE TABLE resident_stamps (
+    resident_id TEXT NOT NULL REFERENCES residents(resident_id),
+    station_id TEXT NOT NULL,
+    stamp_id TEXT NOT NULL,
+    place_id TEXT NOT NULL,
+    stamped_at INTEGER NOT NULL,
+    visit_id TEXT,
+    PRIMARY KEY (resident_id, station_id)
+  ) STRICT, WITHOUT ROWID;
+  CREATE INDEX resident_stamps_time ON resident_stamps(resident_id, stamped_at);
+
+  CREATE TABLE catalog_versions (
+    catalog_version TEXT PRIMARY KEY,
+    fare_rule_version TEXT NOT NULL,
+    summary_json TEXT NOT NULL,
+    activated_at INTEGER NOT NULL
+  ) STRICT, WITHOUT ROWID;
   `,
 ];
 

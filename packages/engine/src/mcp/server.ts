@@ -11,7 +11,7 @@ import type { ActionInput, Identity } from '../core/types.js';
 import type { Authenticator, SessionContext } from './auth.js';
 import { OVERVIEW, PLAYER_GUIDE, REFEREE_GUIDE, gameTips, gameTypeTable } from './guides.js';
 import { renderDelivery, type DeliveryFormat } from './render.js';
-import { CITY_GUIDE, citySection, cityView, citySession, citySpeak, registerCityDedicatedTools, registerCityTools, withCity, type CityDeps } from './city.js';
+import { CITY_GUIDE, citySectionView, cityView, citySession, citySpeak, registerCityDedicatedTools, registerCityTools, withCity, type CityDeps } from './city.js';
 import { TOWN_GUIDE, registerTownTools, townGameAct, townSession, townSpeak, townView, type TownDeps } from './town.js';
 
 export interface ServerDeps {
@@ -384,20 +384,17 @@ export function createMcpServer(deps: ServerDeps, ctx: SessionContext): McpServe
         wake_on: z.enum(['turn', 'any']).optional().describe('等待时：turn=轮到我才返回（默认）；any=有任何你看得见的新事件就返回（别人的私密事件不算）'),
         full_log: z.boolean().optional().describe('返回你可见的全部历史事件（默认只返回上次查看后的新事件）'),
         cursor: z.string().optional().describe('栖灯镇：上次视图返回的 cursor。带上它会附带之后的新事件（一次最多 50 条；返回 more=true 时用返回的 cursor 接着取）；配合 wait_seconds 可以等到有新事件再返回'),
-        section: z.string().max(80).optional().describe('要取的段，名字见 you.sections 目录（例如 "role:3"、"act:2"、"truth"、"find:关键词"）。带它时只返回这一段，忽略 wait_seconds / wake_on / full_log / cursor。'),
+        section: z.string().max(80).optional().describe('要取的段，名字见 you.sections 目录（例如 "role:3"、"act:2"、"truth"、"find:关键词"）；在东京城市世界中支持 "items"（随身背包）、"locker_items"（储物柜）或 "stamps"（印章帐）。带它时只返回这一段，忽略 wait_seconds / wake_on / full_log / cursor。'),
         page: z.number().int().min(1).max(200).optional().describe('分页取段时的页码，从 1 开始，默认 1。'),
-        ...(city
-          ? {
-              item_offset: z.number().int().min(0).optional().describe('东京：随身背包 items 分页偏移量（见 items_page.next_offset）'),
-              locker_offset: z.number().int().min(0).optional().describe('东京：城市储物柜 locker_items 分页偏移量（见 locker_page.next_offset）'),
-            }
-          : {}),
+        offset: z.number().int().min(0).max(10_000).optional().describe('东京城市世界列表起始偏移量（从 0 开始，可直接传入上一页 items_page.next_offset 或 locker_page.next_offset）。'),
+        item_offset: z.number().int().min(0).max(10_000).optional().describe('东京本人视图随身背包起始偏移量（从 0 开始）。'),
+        locker_offset: z.number().int().min(0).max(10_000).optional().describe('东京本人视图储物柜起始偏移量（从 0 开始）。'),
       },
       readOnly: true,
     },
     async (a, extra) => {
       if (a.section !== undefined) {
-        if (city && inCity(a.game_id)) return citySection(city, ctx, me(), a.section, a.page ?? 1);
+        if (city && inCity(a.game_id)) return citySectionView(city, ctx, me(), a.section, a.page ?? 1, a.offset);
         if (town && inTown(a.game_id)) throw invalidAction('你现在在小镇里。取对局里的剧本段要带 game_id（对局编号）。');
         return manager.getSection(me(), a.game_id, a.section, a.page ?? 1);
       }

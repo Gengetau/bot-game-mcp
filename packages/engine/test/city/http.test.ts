@@ -84,7 +84,7 @@ describe('桥接接口', () => {
     expect((await on.api('GET', '/weather', undefined, 'wrong-key')).body).toMatchObject({ error: 'UNAUTHENTICATED' });
     const ok = await on.api('GET', '/weather');
     expect(ok.status).toBe(200);
-    expect(ok.body.areas).toHaveLength(3);
+    expect(ok.body.areas).toHaveLength(5);
     expect(ok.headers.get('cache-control')).toBe('no-store');
     expect((await on.api('GET', '/nope')).status).toBe(404);
     expect((await on.api('POST', '/visits/prepare', '{bad json')).body).toMatchObject({ error: 'BAD_REQUEST' });

@@ -222,7 +222,7 @@ describe('天气', () => {
   it('没有抓取函数：合成天气，标 fallback，不下雨', () => {
     const t = makeCity();
     const all = allWeather(t.c);
-    expect(all.map((w) => w.area)).toEqual(['akabane', 'ikebukuro', 'shinjuku']);
+    expect(all.map((w) => w.area)).toEqual(['akabane', 'ikebukuro', 'shinjuku', 'jinbocho', 'shimokitazawa']);
     for (const w of all) expect(w).toMatchObject({ status: 'fallback', source: 'synthetic', rain: false, precip_mm: 0 });
   });
 

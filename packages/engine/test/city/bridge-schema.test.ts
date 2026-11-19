@@ -270,9 +270,9 @@ describe('协议产物和 schema 对得上', () => {
     c.commit(() => applyWeather(c, readings, t.clock.t));
     const wrap = () => ({ at_ms: c.now(), attribution: 'Weather data by Open-Meteo.com (CC BY 4.0)', areas: allWeather(c) });
     const live = wrap();
-    expect(live.areas).toHaveLength(3);
+    expect(live.areas).toHaveLength(AREAS.length);
     expectValid('WeatherResponse', live, 'weather(ok)');
-    expect(live.areas.map((a) => a.status)).toEqual(['ok', 'ok', 'ok']);
+    expect(live.areas.map((a) => a.status)).toEqual(AREAS.map(() => 'ok'));
     // 合成天气（没抓到）
     t.run(5 * MIN);
     c.commit(() => applyWeather(c, null, t.clock.t));

@@ -107,22 +107,31 @@ describe('东京 M3-C：时令物候商品（晚间八折 / 冬夏售货机 / 24
   });
 
   it('三区 24h 便利店补齐：凌晨 02:30 可购 ¥550 透明伞与夜间歇脚简餐', () => {
-    // 2026-11-18 02:30 JST
-    const lateNight = Date.UTC(2026, 10, 17, 17, 30, 0);
-    const t = makeCity({ at: lateNight });
-    const b = t.bot('深夜旅人', { entry: 'ikebukuro:station' });
+    // 先在末班车前（00:05 JST）让赤羽旅人抵达赤羽站，再推进到凌晨 02:30 JST（铁道停运窗内，三区各自同片区步行前往 24h 便利店）
+    const beforeLastTrain = Date.UTC(2026, 10, 17, 15, 5, 0);
+    const t = makeCity({ at: beforeLastTrain });
+    const bIkebukuro = t.bot('池袋夜客', { entry: 'ikebukuro:station' });
+    const bShinjuku = t.bot('新宿夜客', { entry: 'shinjuku:station' });
+    const bAkabane = t.bot('赤羽夜客', { entry: 'ikebukuro:station' });
+    bAkabane.act({ type: 'travel', to: 'akabane:station' });
+    t.run(145 * MIN); // 02:30 JST
 
-    for (const store of ['ikebukuro:ekimae-conbini', 'shinjuku:south-conbini', 'akabane:ekimae-conbini']) {
-      b.act({ type: 'travel', to: store });
-      t.run(30 * MIN);
-      const goods = (b.view().here as any).goods;
+    const pairs: Array<[typeof bIkebukuro, string]> = [
+      [bIkebukuro, 'ikebukuro:ekimae-conbini'],
+      [bShinjuku, 'shinjuku:south-conbini'],
+      [bAkabane, 'akabane:ekimae-conbini'],
+    ];
+    for (const [walker, store] of pairs) {
+      walker.act({ type: 'travel', to: store });
+      t.run(10 * MIN);
+      const goods = (walker.view().here as any).goods;
       expect(goods.find((g: any) => g.sku === 'umbrella').price_yen).toBe(550);
       expect(goods.find((g: any) => g.sku === 'egg_sandwich').price_yen).toBe(290);
       expect(goods.find((g: any) => g.sku === 'oden_cup').price_yen).toBe(360);
     }
-    expect(b.act({ type: 'buy', sku: 'umbrella', qty: 1 }).paid_yen).toBe(550);
-    expect(b.act({ type: 'buy', sku: 'oden_cup', qty: 1 }).paid_yen).toBe(360);
-    expect(b.act({ type: 'consume', item: 'oden_cup', qty: 1 }).consumed.type).toBe('oden_cup');
+    expect(bAkabane.act({ type: 'buy', sku: 'umbrella', qty: 1 }).paid_yen).toBe(550);
+    expect(bAkabane.act({ type: 'buy', sku: 'oden_cup', qty: 1 }).paid_yen).toBe(360);
+    expect(bAkabane.act({ type: 'consume', item: 'oden_cup', qty: 1 }).consumed.type).toBe('oden_cup');
   });
 });
 
