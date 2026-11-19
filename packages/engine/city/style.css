@@ -785,6 +785,19 @@ textarea:user-invalid {
   flex-wrap: wrap;
   gap: 0.45rem;
 }
+.pager-bar {
+  margin-block-start: 0.625rem;
+  padding-block-start: 0.5rem;
+  border-block-start: 1px solid var(--border);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+.pager-bar[hidden] {
+  display: none;
+}
 
 .chat-log {
   list-style: none;

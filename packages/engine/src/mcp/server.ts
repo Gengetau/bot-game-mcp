@@ -11,7 +11,7 @@ import type { ActionInput, Identity } from '../core/types.js';
 import type { Authenticator, SessionContext } from './auth.js';
 import { OVERVIEW, PLAYER_GUIDE, REFEREE_GUIDE, gameTips, gameTypeTable } from './guides.js';
 import { renderDelivery, type DeliveryFormat } from './render.js';
-import { CITY_GUIDE, cityView, citySession, citySpeak, registerCityDedicatedTools, registerCityTools, withCity, type CityDeps } from './city.js';
+import { CITY_GUIDE, citySectionView, cityView, citySession, citySpeak, registerCityDedicatedTools, registerCityTools, withCity, type CityDeps } from './city.js';
 import { TOWN_GUIDE, registerTownTools, townGameAct, townSession, townSpeak, townView, type TownDeps } from './town.js';
 
 export interface ServerDeps {
@@ -391,6 +391,7 @@ export function createMcpServer(deps: ServerDeps, ctx: SessionContext): McpServe
     },
     async (a, extra) => {
       if (a.section !== undefined) {
+        if (city && inCity(a.game_id)) return citySectionView(city, ctx, me(), a.section, a.page ?? 1);
         if (town && inTown(a.game_id)) throw invalidAction('你现在在小镇里。取对局里的剧本段要带 game_id（对局编号）。');
         return manager.getSection(me(), a.game_id, a.section, a.page ?? 1);
       }

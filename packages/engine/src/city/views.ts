@@ -276,7 +276,13 @@ export function routePreview(c: CityService, fromId: string, toId: string): Reco
 export function selfView(
   c: CityService,
   r: CityResident,
-  opts: { clientId?: string; maxBytes?: number; prettyIndent?: number } = {},
+  opts: {
+    clientId?: string;
+    maxBytes?: number;
+    prettyIndent?: number;
+    itemOffset?: number;
+    lockerOffset?: number;
+  } = {},
 ): Record<string, unknown> {
   const now = c.now();
   const maxBytes = opts.maxBytes ?? SELF_VIEW_MAX_BYTES;
@@ -338,16 +344,27 @@ export function selfView(
       : { epoch: r.control_epoch, mine: Boolean(inCity && (opts.clientId ? r.controller_id === opts.clientId : r.controller_id === null)) };
   const stampBook = stampSummary(c, r.resident_id, inCity && !trip ? r.place_id : null);
 
+  const itemOffset =
+    allItems.length === 0 ? 0 : Math.min(Math.max(0, Math.floor(opts.itemOffset ?? 0)), allItems.length - 1);
+  const lockerOffset =
+    allLocker.length === 0 ? 0 : Math.min(Math.max(0, Math.floor(opts.lockerOffset ?? 0)), allLocker.length - 1);
+  const itemRemain = Math.max(0, allItems.length - itemOffset);
+  const lockerRemain = Math.max(0, allLocker.length - lockerOffset);
+  const minItemCap = itemRemain > 0 ? 1 : 0;
+  const minLockerCap = lockerRemain > 0 ? 1 : 0;
+
   let chatCap = c.params.recentChat;
-  let itemCap = allItems.length;
-  let lockerCap = allLocker.length;
+  let itemCap = itemRemain;
+  let lockerCap = lockerRemain;
   let compactPeople = false;
   let peopleCap: number | undefined;
   let exitCap = 24;
 
   const build = (): Record<string, unknown> => {
-    const items = allItems.slice(0, itemCap);
-    const locker = allLocker.slice(0, lockerCap);
+    const items = allItems.slice(itemOffset, itemOffset + itemCap);
+    const locker = allLocker.slice(lockerOffset, lockerOffset + lockerCap);
+    const itemsPaged = itemOffset > 0 || items.length < allItems.length;
+    const lockerPaged = lockerOffset > 0 || locker.length < allLocker.length;
     return {
       world_id: c.worldId,
       at_ms: now,
@@ -358,8 +375,28 @@ export function selfView(
       wallet: { yen: w.balance, held_yen: w.held, spendable_yen: can.yen, ...(visit ? { return_reserve_yen: can.returnReserveYen } : {}) },
       items,
       ...(items.length < allItems.length ? { items_truncated: allItems.length - items.length } : {}),
+      ...(itemsPaged
+        ? {
+            items_page: {
+              offset: itemOffset,
+              returned: items.length,
+              total: allItems.length,
+              next_offset: itemOffset + items.length < allItems.length ? itemOffset + items.length : null,
+            },
+          }
+        : {}),
       locker_items: locker,
       ...(locker.length < allLocker.length ? { locker_truncated: allLocker.length - locker.length } : {}),
+      ...(lockerPaged
+        ? {
+            locker_page: {
+              offset: lockerOffset,
+              returned: locker.length,
+              total: allLocker.length,
+              next_offset: lockerOffset + locker.length < allLocker.length ? lockerOffset + locker.length : null,
+            },
+          }
+        : {}),
       stamp_book: stampBook,
       ...(pending.length ? { pending_orders: pending } : {}),
       here:
@@ -384,10 +421,12 @@ export function selfView(
   while (byteLen(out) > maxBytes) {
     if (chatCap > 0) {
       chatCap = Math.max(0, chatCap - 2);
-    } else if (lockerCap > 0) {
-      lockerCap = Math.max(0, lockerCap - 1);
-    } else if (itemCap > 0) {
-      itemCap = Math.max(0, itemCap - 1);
+    } else if (lockerCap > minLockerCap && lockerCap >= itemCap) {
+      lockerCap = Math.max(minLockerCap, lockerCap - 1);
+    } else if (itemCap > minItemCap) {
+      itemCap = Math.max(minItemCap, itemCap - 1);
+    } else if (lockerCap > minLockerCap) {
+      lockerCap = Math.max(minLockerCap, lockerCap - 1);
     } else if (!compactPeople) {
       compactPeople = true;
     } else if ((peopleCap ?? 8) > 0) {

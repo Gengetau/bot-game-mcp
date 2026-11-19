@@ -137,6 +137,8 @@ const state = {
   publicView: null,
   /** @type {{ collected: number; total: number; stamps: Array<Record<string, any>> } | null} */
   stampBook: null,
+  bagOffset: 0,
+  lockerOffset: 0,
   motionPaused: false,
   renderedSilhouetteArea: '',
   /** @type {number | null} */
@@ -200,6 +202,10 @@ const lcdBoard = mustEl('lcd-board');
 const lcdStampBtn = /** @type {HTMLButtonElement} */ (mustEl('lcd-stamp-btn'));
 const sceneStampBtn = /** @type {HTMLButtonElement} */ (mustEl('scene-stamp-btn'));
 const toggleMotionBtn = /** @type {HTMLButtonElement} */ (mustEl('toggle-motion-btn'));
+const bagPrevBtn = /** @type {HTMLButtonElement} */ (mustEl('bag-prev-btn'));
+const bagNextBtn = /** @type {HTMLButtonElement} */ (mustEl('bag-next-btn'));
+const lockerPrevBtn = /** @type {HTMLButtonElement} */ (mustEl('locker-prev-btn'));
+const lockerNextBtn = /** @type {HTMLButtonElement} */ (mustEl('locker-next-btn'));
 
 // ───────────────────────── 五站铁道拓扑与印章常量 ─────────────────────────
 
@@ -658,8 +664,11 @@ function startRealtime() {
 
 async function refreshMe() {
   try {
-    const v = await apiCall('GET', `/me?client_id=${encodeURIComponent(state.clientId)}`);
+    const qs = `client_id=${encodeURIComponent(state.clientId)}&item_offset=${state.bagOffset}&locker_offset=${state.lockerOffset}`;
+    const v = await apiCall('GET', `/me?${qs}`);
     state.view = v;
+    state.bagOffset = Number(v.items_page?.offset ?? 0);
+    state.lockerOffset = Number(v.locker_page?.offset ?? 0);
     if (v.me) {
       state.sessionResident = { id: String(v.me.id), name: String(v.me.name), in_city: Boolean(v.me.in_city) };
     }
@@ -686,10 +695,14 @@ async function submitCityAction(action, successNote) {
     const out = await apiCall('POST', '/act', {
       client_id: state.clientId,
       request_id: newRequestId(),
+      item_offset: state.bagOffset,
+      locker_offset: state.lockerOffset,
       action,
     });
     if (out.view) {
       state.view = out.view;
+      state.bagOffset = Number(out.view.items_page?.offset ?? 0);
+      state.lockerOffset = Number(out.view.locker_page?.offset ?? 0);
       if (action.type === 'stamp_station' || !state.stampBook) {
         await loadStampBook();
       }
@@ -1507,6 +1520,16 @@ function renderLifePanel() {
       bagList.appendChild(li);
     }
   }
+  const bagPager = mustEl('bag-pager');
+  const bagPage = v.items_page;
+  if (bagPage && (bagPage.offset > 0 || bagPage.next_offset !== null)) {
+    bagPager.hidden = false;
+    mustEl('bag-pager-info').textContent = `显示第 ${bagPage.offset + 1}–${bagPage.offset + bagPage.returned} 件 / 共 ${bagPage.total} 件`;
+    bagPrevBtn.disabled = bagPage.offset <= 0;
+    bagNextBtn.disabled = bagPage.next_offset === null;
+  } else {
+    bagPager.hidden = true;
+  }
 
   // 储物柜
   const lockerBadge = mustEl('locker-status-badge');
@@ -1532,6 +1555,16 @@ function renderLifePanel() {
       li.appendChild(takeBtn);
       lockerList.appendChild(li);
     }
+  }
+  const lockerPager = mustEl('locker-pager');
+  const lockerPage = v.locker_page;
+  if (lockerPage && (lockerPage.offset > 0 || lockerPage.next_offset !== null)) {
+    lockerPager.hidden = false;
+    mustEl('locker-pager-info').textContent = `显示第 ${lockerPage.offset + 1}–${lockerPage.offset + lockerPage.returned} 件 / 共 ${lockerPage.total} 件`;
+    lockerPrevBtn.disabled = lockerPage.offset <= 0;
+    lockerNextBtn.disabled = lockerPage.next_offset === null;
+  } else {
+    lockerPager.hidden = true;
   }
 
   // 个人名片表单（不打断正在输入的焦点）
@@ -1827,7 +1860,11 @@ profileForm.addEventListener('submit', async (ev) => {
 claimControlBtn.addEventListener('click', async () => {
   showError('');
   try {
-    const out = await apiCall('POST', '/claim', { client_id: state.clientId });
+    const out = await apiCall('POST', '/claim', {
+      client_id: state.clientId,
+      item_offset: state.bagOffset,
+      locker_offset: state.lockerOffset,
+    });
     if (out.view) state.view = out.view;
     renderApp();
     showNotice('已接管本窗口的居民控制权。');
@@ -1883,6 +1920,31 @@ toggleMotionBtn.addEventListener('click', () => {
   } else {
     delete document.documentElement.dataset.motion;
     toggleMotionBtn.textContent = '暂停动效';
+  }
+});
+
+bagPrevBtn.addEventListener('click', () => {
+  const step = Math.max(1, Number(state.view?.items_page?.returned || 4));
+  state.bagOffset = Math.max(0, state.bagOffset - step);
+  void refreshMe();
+});
+bagNextBtn.addEventListener('click', () => {
+  const next = state.view?.items_page?.next_offset;
+  if (typeof next === 'number') {
+    state.bagOffset = next;
+    void refreshMe();
+  }
+});
+lockerPrevBtn.addEventListener('click', () => {
+  const step = Math.max(1, Number(state.view?.locker_page?.returned || 4));
+  state.lockerOffset = Math.max(0, state.lockerOffset - step);
+  void refreshMe();
+});
+lockerNextBtn.addEventListener('click', () => {
+  const next = state.view?.locker_page?.next_offset;
+  if (typeof next === 'number') {
+    state.lockerOffset = next;
+    void refreshMe();
   }
 });
 

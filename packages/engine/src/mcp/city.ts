@@ -262,6 +262,50 @@ export function cityView(deps: CityDeps, ctx: SessionContext, me: Identity, a: {
   });
 }
 
+/** 城市上下文按段分页读取超出首屏的背包（section="items"）、储物柜（section="locker_items"）或印章帐（section="stamps"）。 */
+export function citySectionView(
+  deps: CityDeps,
+  ctx: SessionContext,
+  me: Identity,
+  section: string,
+  page = 1,
+): Promise<unknown> {
+  return wrap(async () => {
+    const c = deps.city;
+    const r = residentOf(deps, ctx, me);
+    touchPresence(c, r.resident_id);
+    if (section === 'stamps') {
+      return stampBookView(c, r.resident_id);
+    }
+    const pageSize = 6;
+    const offset = (Math.max(1, page) - 1) * pageSize;
+    if (section === 'items') {
+      const v = selfView(c, c.mustResident(r.resident_id), {
+        clientId: sessionClientId(ctx),
+        itemOffset: offset,
+        maxBytes: SELF_VIEW_MAX_BYTES,
+        prettyIndent: 2,
+      });
+      return { section: 'items', page, items: v.items, ...(v.items_page ? { items_page: v.items_page } : {}) };
+    }
+    if (section === 'locker_items') {
+      const v = selfView(c, c.mustResident(r.resident_id), {
+        clientId: sessionClientId(ctx),
+        lockerOffset: offset,
+        maxBytes: SELF_VIEW_MAX_BYTES,
+        prettyIndent: 2,
+      });
+      return {
+        section: 'locker_items',
+        page,
+        locker_items: v.locker_items,
+        ...(v.locker_page ? { locker_page: v.locker_page } : {}),
+      };
+    }
+    throw new CityError('BAD_REQUEST', '东京视图仅支持 section="items"、"locker_items" 或 "stamps"。', 'bad_section');
+  });
+}
+
 function act(deps: CityDeps, ctx: SessionContext, me: Identity, requestId: unknown, action: unknown): Promise<unknown> {
   return wrap(() => {
     const r = residentOf(deps, ctx, me);

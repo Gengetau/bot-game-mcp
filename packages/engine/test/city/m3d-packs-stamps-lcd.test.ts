@@ -291,7 +291,12 @@ describe('挂载全部五片街区后的 selfView <= 4 KB 与网页端 /city/pla
       await act({ type: 'stamp_station' });
       await act({ type: 'travel', to: 'jinbocho:koushodou' });
       await advanceOnline(20);
-      ctxVer = (await callJson('get_my_view', {})).data.context.version;
+      const firstShopView = await callJson('get_my_view', {});
+      ctxVer = firstShopView.data.context.version;
+      expect(firstShopView.bytes).toBeLessThanOrEqual(SELF_VIEW_MAX_BYTES);
+      expect(firstShopView.data.here.exits.map((e: any) => e.id)).toEqual(
+        expect.arrayContaining(['jinbocho:station', 'shinjuku:station', 'shimokitazawa:station', 'ikebukuro:station', 'akabane:station']),
+      );
 
       for (let i = 0; i < 12; i++) await act({ type: 'buy', sku: 'used_paperback', qty: 1 });
       await act({ type: 'travel', to: 'jinbocho:station' });
@@ -308,9 +313,6 @@ describe('挂载全部五片街区后的 selfView <= 4 KB 与网页端 /city/pla
       const normalView = await callJson('get_my_view', {});
       ctxVer = normalView.data.context.version;
       expect(normalView.bytes).toBeLessThanOrEqual(SELF_VIEW_MAX_BYTES);
-      expect(normalView.data.here.exits.map((e: any) => e.id)).toEqual(
-        expect.arrayContaining(['jinbocho:station', 'shinjuku:station', 'shimokitazawa:station', 'ikebukuro:station', 'akabane:station']),
-      );
       for (let i = 0; i < 12; i++) await act({ type: 'buy', sku: 'used_paperback', qty: 1 });
 
       // 同场加入 5 位带长简介的外部旅人并刷满 10 条 260 字长对话，制造高压现场视图与未读事件队列
@@ -388,6 +390,8 @@ describe('挂载全部五片街区后的 selfView <= 4 KB 与网页端 /city/pla
     expect(html).toContain('id="toggle-motion-btn"');
     expect(html).toContain('id="rail-topology-svg"');
     expect(html).toContain('id="stamp-book-card"');
+    expect(html).toContain('id="bag-pager"');
+    expect(html).toContain('id="locker-pager"');
     expect(html).not.toMatch(/\son[a-z]+\s*=/i);
     expect(html).not.toMatch(/\sstyle\s*=/i);
     // WCAG 2.2.2：文案切换型暂停按钮不挂 aria-pressed
@@ -480,6 +484,53 @@ describe('挂载全部五片街区后的 selfView <= 4 KB 与网页端 /city/pla
         collected: true,
         emblem: 'books',
       });
+
+      // 塞入 12 件具名服饰礼盒进储物柜 + 8 件随身：验证首屏 <=4096 B 截断后，网页 /me?locker_offset=... 能完整遍历并取出非首屏物品
+      h.city.commit(() => {
+        const meId = String(entered.body.resident_id);
+        for (let idx = 1; idx <= 12; idx++) {
+          h.city.db.run(
+            "INSERT INTO items(item_id, owner_id, type, quantity, state, instance, meta_json, created_at, updated_at) VALUES (?,?,'apparel_bundle',1,'locker',1,?,?,?)",
+            `it_lk_page_${idx}`,
+            meId,
+            JSON.stringify({ title: `典藏成衣礼盒第${idx}号`, summary: '附独立缎带防尘袋与手工编号标签的限量成衣套装', untrusted: true }),
+            h.city.now(),
+            h.city.now() + idx,
+          );
+        }
+        for (let idx = 1; idx <= 8; idx++) {
+          h.city.db.run(
+            "INSERT INTO items(item_id, owner_id, type, quantity, state, instance, meta_json, created_at, updated_at) VALUES (?,?,'apparel_bundle',1,'held',1,?,?,?)",
+            `it_bag_page_${idx}`,
+            meId,
+            JSON.stringify({ title: `随身礼盒第${idx}号`, summary: '神保町与新宿逛街购入的成衣礼盒', untrusted: true }),
+            h.city.now(),
+            h.city.now() + idx,
+          );
+        }
+      });
+
+      const seenLockerIds = new Set<string>();
+      let lkOff: number | null = 0;
+      for (let step = 0; lkOff !== null && step < 25; step++) {
+        const mePage = await authed('GET', `/me?client_id=web_m3d_e2e&locker_offset=${lkOff}`);
+        expect(mePage.status).toBe(200);
+        expect(Buffer.byteLength(JSON.stringify(mePage.body), 'utf8')).toBeLessThanOrEqual(SELF_VIEW_MAX_BYTES);
+        expect(mePage.body.locker_items.length).toBeGreaterThan(0);
+        for (const lk of mePage.body.locker_items) seenLockerIds.add(String(lk.item_id));
+        lkOff = mePage.body.locker_page?.next_offset ?? null;
+      }
+      expect(lkOff).toBeNull();
+      expect(seenLockerIds.size).toBe(12);
+      // 站在神保町站大厅直接取出末页的 it_lk_page_12
+      const takeTail = await authed('POST', '/act', {
+        client_id: 'web_m3d_e2e',
+        request_id: 'web_m3d_take_tail',
+        locker_offset: 11,
+        action: { type: 'take_locker', item_id: 'it_lk_page_12', qty: 1 },
+      });
+      expect(takeTail.status).toBe(200);
+      expect(takeTail.body.view.locker_page?.offset ?? 0).toBeLessThanOrEqual(10);
     } finally {
       await h.close();
     }

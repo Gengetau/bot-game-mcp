@@ -268,6 +268,14 @@ export function mountCity(app: Express, c: CityService, log: (msg: string) => vo
     }
     return req.body as Record<string, unknown>;
   };
+  const parseOffset = (raw: unknown): number => {
+    if (raw === undefined || raw === null || raw === '') return 0;
+    const n = Number(raw);
+    if (!Number.isSafeInteger(n) || n < 0 || n > 10_000) {
+      throw cityBadRequest('分页偏移量必须是非负整数。', 'bad_offset');
+    }
+    return n;
+  };
 
   app.get(['/city', '/city/'], guard, (_req, res) => {
     try {
@@ -449,8 +457,14 @@ export function mountCity(app: Express, c: CityService, log: (msg: string) => vo
       if (!session.resident) throw new CityError('UNAUTHENTICATED', '还没有进入东京，请先起名入城。', 'no_resident');
       const rawClient = req.query.client_id ?? req.headers['x-city-client'];
       const clientId = rawClient !== undefined ? normalizeClientId('web', rawClient) : undefined;
+      const itemOffset = parseOffset(req.query.item_offset);
+      const lockerOffset = parseOffset(req.query.locker_offset);
       touchPresence(c, session.resident.resident_id);
-      return selfView(c, c.mustResident(session.resident.resident_id), { ...(clientId ? { clientId } : {}) });
+      return selfView(c, c.mustResident(session.resident.resident_id), {
+        ...(clientId ? { clientId } : {}),
+        itemOffset,
+        lockerOffset,
+      });
     }),
   );
 
@@ -462,10 +476,12 @@ export function mountCity(app: Express, c: CityService, log: (msg: string) => vo
       if (!session.resident) throw new CityError('UNAUTHENTICATED', '还没有进入东京，请先起名入城。', 'no_resident');
       const b = jsonObj(req);
       const clientId = normalizeClientId('web', b.client_id ?? req.headers['x-city-client']);
+      const itemOffset = parseOffset(b.item_offset);
+      const lockerOffset = parseOffset(b.locker_offset);
       const out = cityCommand(c, session.resident.resident_id, b.request_id, b.action, { clientId });
       return {
         ...out,
-        view: selfView(c, c.mustResident(session.resident.resident_id), { clientId }),
+        view: selfView(c, c.mustResident(session.resident.resident_id), { clientId, itemOffset, lockerOffset }),
       };
     }),
   );
@@ -491,10 +507,12 @@ export function mountCity(app: Express, c: CityService, log: (msg: string) => vo
       if (!session.resident) throw new CityError('UNAUTHENTICATED', '还没有进入东京，请先起名入城。', 'no_resident');
       const b = jsonObj(req);
       const clientId = normalizeClientId('web', b.client_id ?? req.headers['x-city-client']);
+      const itemOffset = parseOffset(b.item_offset);
+      const lockerOffset = parseOffset(b.locker_offset);
       const out = claimCityControl(c, session.resident.resident_id, clientId);
       return {
         ...out,
-        view: selfView(c, c.mustResident(session.resident.resident_id), { clientId }),
+        view: selfView(c, c.mustResident(session.resident.resident_id), { clientId, itemOffset, lockerOffset }),
       };
     }),
   );
@@ -800,11 +818,17 @@ export function mountCity(app: Express, c: CityService, log: (msg: string) => vo
     '/visits/:id/view',
     sync((req) => {
       const visit = requireActingVisit(c, visitId(req), Number(req.query.domain_epoch));
+      const itemOffset = parseOffset(req.query.item_offset);
+      const lockerOffset = parseOffset(req.query.locker_offset);
       const prefixBytes = Buffer.byteLength(JSON.stringify({ visit_id: visit.visit_id, state: visit.state }), 'utf8');
       return {
         visit_id: visit.visit_id,
         state: visit.state,
-        ...selfView(c, c.mustResident(visit.resident_id), { maxBytes: Math.max(1024, SELF_VIEW_MAX_BYTES - prefixBytes) }),
+        ...selfView(c, c.mustResident(visit.resident_id), {
+          maxBytes: Math.max(1024, SELF_VIEW_MAX_BYTES - prefixBytes),
+          itemOffset,
+          lockerOffset,
+        }),
       };
     }),
   );
