@@ -26,11 +26,14 @@
  */
 import assert from 'node:assert/strict';
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { createInterface } from 'node:readline';
+import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { createIsolatedCityHarness } from '../packages/engine/test/city/test-harness.js';
 import { ledgerImbalance, lockerItems, heldItems, runReconcile } from '../packages/engine/src/city/index.js';
 import {
@@ -41,6 +44,54 @@ import {
   type CityDecisionContext,
 } from '../packages/agent-kit/src/index.js';
 
+const RENAME_R0_PATH = fileURLToPath(new URL('../docs/city/rename-r0.json', import.meta.url));
+const RENAME_R0_SPEC = JSON.parse(readFileSync(RENAME_R0_PATH, 'utf8')) as {
+  forbidden_legacy_tokens_in_public_and_views: string[];
+};
+assert.equal(
+  RENAME_R0_SPEC.forbidden_legacy_tokens_in_public_and_views.length,
+  57,
+  'docs/city/rename-r0.json 必须包含完整 57 项禁用旧词',
+);
+const FORBIDDEN_RUNTIME_TOKENS = Array.from(
+  new Set([
+    ...RENAME_R0_SPEC.forbidden_legacy_tokens_in_public_and_views,
+    'ai-house:entrance',
+    'hiwatari_entrance',
+    'akabane_entrance',
+    'house_entrance',
+    '小屋门口',
+  ]),
+);
+
+type ScanCategory = 'webAndSse' | 'publicOutputs' | 'externalBotViews' | 'kernelProjections';
+
+class LegacyRuntimeScanner {
+  readonly stats: Record<ScanCategory, { samples: number; bytes: number }> = {
+    webAndSse: { samples: 0, bytes: 0 },
+    publicOutputs: { samples: 0, bytes: 0 },
+    externalBotViews: { samples: 0, bytes: 0 },
+    kernelProjections: { samples: 0, bytes: 0 },
+  };
+  totalHits = 0;
+
+  scan(category: ScanCategory, label: string, payload: unknown): string {
+    const raw = typeof payload === 'string' ? payload : JSON.stringify(payload);
+    assert.ok(raw.length > 0, `运行时采样为空: [${category}] ${label}`);
+    const lower = raw.toLowerCase();
+    const hits = FORBIDDEN_RUNTIME_TOKENS.filter((tok) => lower.includes(tok.toLowerCase()));
+    this.totalHits += hits.length;
+    assert.deepEqual(
+      hits,
+      [],
+      `运行时旧名/隐藏门口扫描命中禁用项 [${category}] ${label}: ${hits.join(', ')}`,
+    );
+    this.stats[category].samples += 1;
+    this.stats[category].bytes += Buffer.byteLength(raw, 'utf8');
+    return raw;
+  }
+}
+
 /**
  * 内嵌只读加载 world-kernel/life1 的跨进程测试宿主（写入临时目录执行，无需污染内核源码目录）。
  */
@@ -50,7 +101,7 @@ import os
 import sqlite3
 import sys
 
-from worldkernel import outings
+from worldkernel import city_projection, outings
 from worldkernel.city_bridge import CityBridgeAdapter, DeterministicCityModel
 from worldkernel.city_client import CityBridgeHttpClient
 from worldkernel.kernel import Refused
@@ -217,6 +268,33 @@ class Driver:
                 "encounters": encounters,
                 "body_effects": effs,
                 "city_card": c.get("city_outing"),
+            }
+
+        if op == "projection_snapshot":
+            cards_out = self._cards()
+            wr = sqlite3.connect(f"file:{self.world_db}?mode=ro", uri=True)
+            wr.row_factory = sqlite3.Row
+            try:
+                reality_rows = [dict(r) for r in wr.execute("SELECT * FROM reality ORDER BY actor").fetchall()]
+                kernel_cards = {
+                    r["actor"]: json.loads(r["data"])
+                    for r in wr.execute("SELECT actor, data FROM kernel_card ORDER BY actor").fetchall()
+                }
+            finally:
+                wr.close()
+            with self.s.read() as db:
+                encounters = [dict(r) for r in db.execute("SELECT * FROM city_encounters ORDER BY rowid").fetchall()]
+                direct_proj = {
+                    a: city_projection.resolve_projection_conn(db, a, now=self.clock.now())
+                    for a in ROSTER
+                }
+            return {
+                "ok": True,
+                "cards": cards_out,
+                "reality": reality_rows,
+                "kernel_cards": kernel_cards,
+                "direct_projections": direct_proj,
+                "encounters": encounters,
             }
 
         if op == "reconcile":
@@ -435,6 +513,7 @@ async function main(): Promise<void> {
   let botRunner: CityRunner | null = null;
   let sseProbe: { lines: string[]; close: () => Promise<void> } | null = null;
   const closers: (() => Promise<void>)[] = [];
+  const scanner = new LegacyRuntimeScanner();
 
   const advanceBoth = async (ms: number) => {
     harness.advance(ms);
@@ -462,7 +541,10 @@ async function main(): Promise<void> {
 
     const cityPage = await fetch(`${harness.baseUrl}/city/`);
     assert.equal(cityPage.status, 200);
-    assert.match(await cityPage.text(), /灯都/);
+    const cityPageHtml = await cityPage.text();
+    assert.match(cityPageHtml, /灯都/);
+    scanner.scan('webAndSse', 'GET /city/', cityPageHtml);
+    scanner.scan('publicOutputs', 'GET /city/ HTML', cityPageHtml);
 
     const playNoSlash = await fetch(`${harness.baseUrl}/city/play`, { redirect: 'manual' });
     assert.equal(playNoSlash.status, 302);
@@ -471,6 +553,20 @@ async function main(): Promise<void> {
     const playPage = await fetch(`${harness.baseUrl}/city/play/`);
     assert.equal(playPage.status, 200);
     assert.match(String(playPage.headers.get('content-security-policy')), /script-src 'self'/);
+    scanner.scan('webAndSse', 'GET /city/play/', await playPage.text());
+
+    for (const assetPath of ['/city/play/app.js', '/city/play/style.css', '/city/play/icon.svg', '/city/api/config']) {
+      const assetResp = await fetch(`${harness.baseUrl}${assetPath}`);
+      assert.equal(assetResp.status, 200, `GET ${assetPath} 应返回 200`);
+      const assetText = await assetResp.text();
+      scanner.scan('webAndSse', `GET ${assetPath}`, assetText);
+      if (assetPath === '/city/api/config') {
+        scanner.scan('publicOutputs', 'GET /city/api/config raw JSON', assetText);
+      }
+    }
+    const initRouteResp = await fetch(`${harness.baseUrl}/city/api/route?from=hiwatari:station&to=sentou:station`);
+    assert.equal(initRouteResp.status, 200);
+    scanner.scan('publicOutputs', 'GET /city/api/route raw JSON', await initRouteResp.text());
 
     // 验证桌面游戏引擎（number_bomb）在同一进程内照常工作
     const refClient = await BotGameClient.connect({
@@ -498,6 +594,19 @@ async function main(): Promise<void> {
     );
     const pubFromNiaQq = await niaQq.query('public');
     assert.ok(!JSON.stringify(pubFromNiaQq).includes('ai-house:entrance'), '公开视图严禁暴露小屋交接点');
+    scanner.scan('publicOutputs', 'MCP world_query(public) via house QQ key', pubFromNiaQq);
+
+    const rawMcpProbe = new Client({ name: 'city-r0-mcp-surface-probe', version: '0.2.0' });
+    await rawMcpProbe.connect(
+      new StreamableHTTPClientTransport(new URL(harness.mcpUrl), {
+        requestInit: { headers: { Authorization: 'Bearer test_only_ext_bot_key_city_90001' } },
+      }),
+    );
+    closers.push(() => rawMcpProbe.close());
+    scanner.scan('publicOutputs', 'MCP listTools', await rawMcpProbe.listTools());
+    scanner.scan('publicOutputs', 'MCP resource botgame://guide/city', await rawMcpProbe.readResource({ uri: 'botgame://guide/city' }));
+    scanner.scan('publicOutputs', 'MCP resource botgame://guide/overview', await rawMcpProbe.readResource({ uri: 'botgame://guide/overview' }));
+    scanner.scan('publicOutputs', 'MCP prompt city-resident', await rawMcpProbe.getPrompt({ name: 'city-resident' }));
 
     const unlistedBot = await CityClient.connect({
       url: harness.mcpUrl,
@@ -539,6 +648,9 @@ async function main(): Promise<void> {
       visit_id: 'vis_m1_e2e_1',
     });
     assert.equal(dep1.visit.state, 'preparing');
+    const projPreparing = await kernel.call({ op: 'projection_snapshot' });
+    assert.match(String(projPreparing.direct_projections?.nia?.place ?? ''), /镜池/, 'preparing 阶段内核投影应显示新片区中文名「镜池」');
+    scanner.scan('kernelProjections', 'kernel projection_snapshot (nia preparing)', projPreparing);
     await advanceBoth(60_000); // 妮娅从客厅走到玄关 away（60s）
 
     // 注入桥接 503 RECOVERING x2 + 提交后丢回包（F4），验证 prepare/commit 幂等恢复且只入账一次
@@ -549,6 +661,8 @@ async function main(): Promise<void> {
     assert.equal(hand1.visit.domain_epoch, 1);
     assert.equal(harness.faults.bridge503Count, 0);
     assert.equal(harness.faults.dropResponseOnce, false);
+    await kernel.call({ op: 'poll_outbox' });
+    scanner.scan('kernelProjections', 'kernel projection_snapshot (nia handed over / in-transit)', await kernel.call({ op: 'projection_snapshot' }));
 
     const niaResidentRow = harness.city.db.get<{ resident_id: string }>(
       "SELECT resident_id FROM house_members WHERE actor_id = 'nia'",
@@ -571,6 +685,9 @@ async function main(): Promise<void> {
     assert.equal(enterB1.created, true);
     assert.equal(enterB1.granted_yen, 200_000);
     assert.deepEqual(enterB1.control, { epoch: 1, mine: true });
+    scanner.scan('externalBotViews', 'botB1 enter_world', enterB1);
+    scanner.scan('publicOutputs', 'MCP world_query(route) via botB1', await botB1.query('route', { from: 'hiwatari:station', to: 'sentou:station' }));
+    scanner.scan('publicOutputs', 'MCP world_query(stamps) via botB1', await botB1.query('stamps'));
     const botBResidentId = enterB1.resident_id;
 
     // 第二个连接默认 claim=false：必须返回 mine=false，且 CityRunner 立即进入 control_lost 停写态
@@ -583,6 +700,7 @@ async function main(): Promise<void> {
     closers.push(() => botB2.close());
     const enterB2 = await botB2.enterWorld({ claim: false });
     assert.deepEqual(enterB2.control, { epoch: 1, mine: false });
+    scanner.scan('externalBotViews', 'botB2 enter_world(claim=false)', enterB2);
 
     const passiveRunner = new CityRunner({ minIntervalMs: 0, waitSeconds: 1 });
     let passiveDecideCalls = 0;
@@ -609,10 +727,12 @@ async function main(): Promise<void> {
     // 显式切回主连接 botB1 -> epoch=3
     const claimed1 = await botB1.claimControl();
     assert.deepEqual(claimed1.control, { epoch: 3, mine: true });
+    scanner.scan('externalBotViews', 'botB2/botB1 claim_control', { claimed2, claimed1 });
 
     // 启动正式 CityRunner 驱动外部 Bot：先去书店「栞堂」买明信片，再步行去喫茶「灯」，收到曲奇后回赠明信片
     let botGiftedNia = false;
     let botHeadedToCafe = false;
+    let botRunnerSampledGreeting = false;
     let botBCurrent = botB1;
     botRunner = new CityRunner({
       minIntervalMs: 0,
@@ -638,6 +758,14 @@ async function main(): Promise<void> {
         return next;
       },
       decide: (ctx: CityDecisionContext) => {
+        const rawCtx = scanner.scan(
+          'externalBotViews',
+          `CityRunner wake (${ctx.view.here?.place.id ?? 'in_transit'})`,
+          { view: ctx.view, events: ctx.events },
+        );
+        if (rawCtx.includes('刚从千灯坐灯环线过来')) {
+          botRunnerSampledGreeting = true;
+        }
         const placeId = ctx.view.here?.place.id;
         const hasPostcard = ctx.view.items.some((i) => i.type === 'postcard' && i.qty > 0);
         const hasCookieFromNia = ctx.view.items.some((i) => i.type === 'cookie' && i.qty > 0);
@@ -737,7 +865,9 @@ async function main(): Promise<void> {
       }),
     });
     assert.equal(humanEnterResp.status, 200);
-    const humanEnter = (await humanEnterResp.json()) as Record<string, any>;
+    const humanEnterRaw = await humanEnterResp.text();
+    scanner.scan('webAndSse', 'POST /city/api/enter', humanEnterRaw);
+    const humanEnter = JSON.parse(humanEnterRaw) as Record<string, any>;
     assert.equal(humanEnter.created, true);
     assert.equal(humanEnter.granted_yen, 200_000);
     const humanResidentId = String(humanEnter.resident_id);
@@ -759,6 +889,7 @@ async function main(): Promise<void> {
       }),
     });
     assert.equal(humanTravelResp.status, 200);
+    scanner.scan('webAndSse', 'POST /city/api/act (travel)', await humanTravelResp.text());
 
     // ── 6. 三方在途推进 + 真实引擎冷启动崩溃重启（F7 / F10） ──
     // 按 <10m 在场租约分三段推进至 t+24m（旅人一叶与阿澄定时续心跳，妮娅在北环快线/镜池步行途中）
@@ -780,6 +911,7 @@ async function main(): Promise<void> {
       await advanceBoth(8 * 60_000);
       await keepPresenceAlive();
     }
+    scanner.scan('webAndSse', 'SSE /city/api/stream phase-1 (in-transit)', sseProbe.lines.join('\n'));
     await sseProbe.close();
     sseProbe = null;
 
@@ -794,11 +926,13 @@ async function main(): Promise<void> {
 
     // 人类网页会话跨引擎重启保留（无需重新兑换票据），且车费只扣一次（200000 - 200 = 199800）
     sseProbe = await openSseProbe(`${harness.baseUrl}/city/api/stream?client_id=human-web-1`, humanSessionHeader);
-    const humanMeAfterRestart = (await (
+    const humanMeAfterRestartRaw = await (
       await fetch(`${harness.baseUrl}/city/api/me?client_id=human-web-1`, {
         headers: { cookie: humanSessionHeader },
       })
-    ).json()) as Record<string, any>;
+    ).text();
+    scanner.scan('webAndSse', 'GET /city/api/me (after cold restart)', humanMeAfterRestartRaw);
+    const humanMeAfterRestart = JSON.parse(humanMeAfterRestartRaw) as Record<string, any>;
     assert.equal(humanMeAfterRestart.here?.place?.id, 'kagamiike:kissa-tomoshibi');
     assert.equal(humanMeAfterRestart.wallet?.yen, 199_800, '跨引擎重启后灯环线车费严禁二次扣款');
     assert.ok(!JSON.stringify(humanMeAfterRestart).includes('ai-house:entrance'), '人类视图严禁暴露小屋交接点');
@@ -809,15 +943,19 @@ async function main(): Promise<void> {
     const botViewAtCafe = await botBCurrent.view();
     assert.equal(botViewAtCafe.here?.place.id, 'kagamiike:kissa-tomoshibi');
     assert.ok(!JSON.stringify(botViewAtCafe).includes('ai-house:entrance'), '外部 Bot 视图严禁暴露小屋交接点');
+    scanner.scan('externalBotViews', 'botBCurrent.view() at kagamiike:kissa-tomoshibi (pre-chat)', botViewAtCafe);
 
     // ── 7. 三方在镜池·喫茶「灯」真实同场交互 ──
-    const pubAtCafe = (await (await fetch(`${harness.baseUrl}/city/api/public`)).json()) as Record<string, any>;
+    const pubAtCafeRaw = await (await fetch(`${harness.baseUrl}/city/api/public`)).text();
+    scanner.scan('publicOutputs', 'GET /city/api/public (3-party co-present)', pubAtCafeRaw);
+    const pubAtCafe = JSON.parse(pubAtCafeRaw) as Record<string, any>;
     const kagArea = (pubAtCafe.areas as any[]).find((a) => a.id === 'kagamiike');
     const cafePlace = (kagArea.places as any[]).find((p) => p.id === 'kagamiike:kissa-tomoshibi');
     const cafeNames = (cafePlace.here as any[]).map((x) => x.name).sort();
     assert.deepEqual(cafeNames, ['妮娅', '旅人一叶', '阿澄'].sort(), '三类玩家必须在镜池·喫茶「灯」同场共处');
 
     // 人类玩家「阿澄」率先现场搭话（触发妮娅 heard_chat 唤醒）+ 买皇家奶茶（重发同一 request_id 验证幂等不重复扣费）
+    const humanGreetingText = '下午好！我刚从千灯坐灯环线过来，这里的咖啡好香。';
     const humanSayResp = await fetch(`${harness.baseUrl}/city/api/act`, {
       method: 'POST',
       headers: {
@@ -829,10 +967,21 @@ async function main(): Promise<void> {
       body: JSON.stringify({
         request_id: 'human-say-kissa-0001',
         client_id: 'human-web-1',
-        action: { type: 'say', text: '下午好！我刚从新宿坐山手线过来，这里的咖啡好香。' },
+        action: { type: 'say', text: humanGreetingText },
       }),
     });
     assert.equal(humanSayResp.status, 200);
+    const humanSayRaw = await humanSayResp.text();
+    scanner.scan('webAndSse', 'POST /city/api/act (say greeting)', humanSayRaw);
+    await waitFor(
+      () => botRunnerSampledGreeting,
+      '外部 Bot CityRunner world_wait 事件流实时采入阿澄改名后的千灯/灯环线问候',
+    );
+    scanner.scan(
+      'externalBotViews',
+      'botBCurrent.view() right after human greeting',
+      await botBCurrent.view(),
+    );
 
     const buyTeaBody = JSON.stringify({
       request_id: 'human-buy-tea-0001',
@@ -866,6 +1015,7 @@ async function main(): Promise<void> {
     assert.equal(buyTea1.status, 'completed');
     assert.equal(buyTea2.replayed, true, '同一 request_id 重放必须返回原回执且不二次扣款');
     assert.equal(buyTea2.view.wallet.yen, 199_300); // 199800 - 500 = 199300
+    scanner.scan('webAndSse', 'POST /city/api/act (buy milk_tea + idempotent replay)', { buyTea1, buyTea2 });
 
     // 妮娅第一次决策（响应 heard_chat 唤醒）：问候 + 买第一杯咖啡 + 买咖啡豆带回家 + 把家里带的曲奇送给旅人一叶
     await kernel.call({
@@ -892,8 +1042,58 @@ async function main(): Promise<void> {
     assert.equal(botCookies[0]!.origin_ref, 'nia_cookie_1', '室友赠予外部 Bot 的手作物品必须保留原 origin_ref');
     assert.equal(botCookies[0]!.instance, 1);
 
-    // 校验人类 SSE 实时收到店内事件帧
-    await waitFor(() => sseProbe!.lines.some((l) => l.includes('煤油灯') || l.includes('明信片')), '人类 SSE 收到同场聊天推送');
+    // 校验人类 SSE 完整收到妮娅与旅人一叶两条同场聊天推送，且人类网页/聊天历史与外部 Bot 视图均已采入阿澄改名后的问候语
+    await waitFor(
+      () =>
+        sseProbe!.lines.some((l) => l.includes('煤油灯')) &&
+        sseProbe!.lines.some((l) => l.includes('明信片')),
+      '人类 SSE 完整收到妮娅与旅人一叶两条同场聊天推送',
+    );
+    const ssePhase2Raw = sseProbe.lines.join('\n');
+    scanner.scan('webAndSse', 'SSE /city/api/stream phase-2 (co-present chat)', ssePhase2Raw);
+
+    const humanMeAfterChatRaw = await (
+      await fetch(`${harness.baseUrl}/city/api/me?client_id=human-web-1`, {
+        headers: { cookie: humanSessionHeader },
+      })
+    ).text();
+    assert.ok(
+      humanMeAfterChatRaw.includes('刚从千灯坐灯环线过来') &&
+        humanMeAfterChatRaw.includes('煤油灯') &&
+        humanMeAfterChatRaw.includes('明信片'),
+      '人类 /city/api/me 实时视图必须完整包含三方改名后同场对话',
+    );
+    scanner.scan('webAndSse', 'GET /city/api/me (with 3-party chat)', humanMeAfterChatRaw);
+
+    const humanChatHistoryResp = await fetch(`${harness.baseUrl}/city/api/history`, {
+      headers: { cookie: humanSessionHeader },
+    });
+    assert.equal(humanChatHistoryResp.status, 200);
+    const humanChatHistoryRaw = await humanChatHistoryResp.text();
+    assert.ok(humanChatHistoryRaw.includes('刚从千灯坐灯环线过来'), 'GET /city/api/history 必须采入改名后的千灯/灯环线台词');
+    scanner.scan('webAndSse', 'GET /city/api/history (co-present history)', humanChatHistoryRaw);
+
+    const humanStampsResp = await fetch(`${harness.baseUrl}/city/api/stamps`, {
+      headers: { cookie: humanSessionHeader },
+    });
+    assert.equal(humanStampsResp.status, 200);
+    scanner.scan('webAndSse', 'GET /city/api/stamps', await humanStampsResp.text());
+
+    const botViewAfterChat = await botBCurrent.view();
+    scanner.scan(
+      'externalBotViews',
+      'botBCurrent.view() at kagamiike:kissa-tomoshibi (post-chat)',
+      botViewAfterChat,
+    );
+    assert.equal(botRunnerSampledGreeting, true, '外部 Bot 事件流必须已采入阿澄改名后的问候');
+
+    const projAtCafe = await kernel.call({ op: 'projection_snapshot' });
+    assert.match(
+      String(projAtCafe.direct_projections?.nia?.place ?? ''),
+      /镜池/,
+      '同场活动期内核投影必须使用新片区名「镜池」',
+    );
+    scanner.scan('kernelProjections', 'kernel projection_snapshot (nia active at cafe)', projAtCafe);
 
     // ── 8. 注入交易结果未知（F9 purchaseUnknown='cheesecake'）+ 返家途中第二次引擎重启 + T3 + 关单后退款 ──
     harness.faults.purchaseUnknown = 'cheesecake';
@@ -988,6 +1188,7 @@ async function main(): Promise<void> {
       (niaClosed.body_effects as any[]).filter((e) => e.status === 'applied').length >= 2,
       '步行与饮用咖啡的身体效果必须幂等应用',
     );
+    scanner.scan('kernelProjections', 'kernel projection_snapshot (nia closed)', await kernel.call({ op: 'projection_snapshot' }));
 
     // ── 9. 全员放行（enable_all）+ 无挂单储物柜留存直接 closed 验收（claire 第二次访问） ──
     const enabled = await kernel.call({ op: 'enable_all' });
@@ -1030,6 +1231,12 @@ async function main(): Promise<void> {
       "SELECT resident_id FROM house_members WHERE actor_id = 'claire'",
     )!.resident_id;
     assert.equal(lockerItems(harness.city, claireResidentId)[0]?.type, 'paperback');
+    scanner.scan('kernelProjections', 'kernel projection_snapshot (claire closed / final)', await kernel.call({ op: 'projection_snapshot' }));
+
+    for (const [cat, stat] of Object.entries(scanner.stats)) {
+      assert.ok(stat.samples >= 3, `扫描类别 ${cat} 采样数不足: ${stat.samples}`);
+    }
+    assert.equal(scanner.totalHits, 0);
 
     // ── 10. 最终跨库零差额对账（Engine ledger + reconcile & Kernel reconcile） ──
     const engineImbalance = ledgerImbalance(harness.city);
@@ -1075,6 +1282,13 @@ async function main(): Promise<void> {
             engineReconcileOk: engineRec.ok,
             kernelReconcileOk: kernelRec.report.ok,
             checkedVisits: kernelRec.report.checked_visits,
+          },
+          legacyRuntimeScan: {
+            forbiddenTokenCount: FORBIDDEN_RUNTIME_TOKENS.length,
+            totalHits: scanner.totalHits,
+            renamedHumanChatSampledInWebAndBot: true,
+            sseCoPresentMessagesSampled: true,
+            categories: scanner.stats,
           },
         },
         null,
