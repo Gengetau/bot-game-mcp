@@ -1,5 +1,5 @@
 /**
- * 东京城市世界的数据库 schema。
+ * 灯都城市世界的数据库 schema。
  *
  * 用和栖灯镇同一个数据库外壳（world/db.ts 的 TownDb：单写入进程、WAL、写事务、迁移前备份），
  * 但是**独立的文件**、独立的迁移：冻结的栖灯镇库（town.db，schema v6）一个字节都不动，
@@ -444,6 +444,139 @@ const MIGRATIONS: readonly string[] = [
   DROP TABLE item_events;
   ALTER TABLE item_events_v2 RENAME TO item_events;
   CREATE INDEX item_events_visit ON item_events(visit_id, event_id) WHERE visit_id IS NOT NULL;
+  `,
+  // ───── v3 ─────
+  // M3-C + M3-D：漂流文库本（shelf / drift 态）、招领态（lost_found）、储物柜凭条寄存（locker_deposits）、个人车站印章帐（resident_stamps）与激活目录版本历史表（catalog_versions）
+  `
+  CREATE TABLE items_v3 (
+    item_id TEXT PRIMARY KEY,
+    owner_id TEXT NOT NULL REFERENCES residents(resident_id),
+    type TEXT NOT NULL,
+    quantity INTEGER NOT NULL CHECK (quantity >= 0),
+    instance INTEGER NOT NULL DEFAULT 0 CHECK (instance IN (0,1)),
+    origin_ref TEXT,
+    origin_json TEXT,
+    meta_json TEXT,
+    borrowed_from TEXT REFERENCES residents(resident_id),
+    visit_id TEXT,
+    state TEXT NOT NULL DEFAULT 'held' CHECK (state IN ('held','returned','locker','disposed','space','shelf','drift','lost_found')),
+    shelf_place_id TEXT,
+    shelf_price_yen INTEGER,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    CHECK (instance = 0 OR quantity <= 1)
+  ) STRICT;
+  INSERT INTO items_v3(item_id, owner_id, type, quantity, instance, origin_ref, origin_json, meta_json, borrowed_from, visit_id, state, shelf_place_id, shelf_price_yen, created_at, updated_at)
+    SELECT item_id, owner_id, type, quantity, instance, origin_ref, origin_json, meta_json, borrowed_from, visit_id, state, NULL, NULL, created_at, updated_at
+    FROM items;
+  DROP TABLE items;
+  ALTER TABLE items_v3 RENAME TO items;
+  CREATE UNIQUE INDEX items_plain_stack ON items(owner_id, type) WHERE origin_ref IS NULL AND instance = 0 AND state = 'held';
+  CREATE INDEX items_owner ON items(owner_id, state);
+  CREATE INDEX items_visit ON items(visit_id) WHERE visit_id IS NOT NULL;
+  CREATE INDEX items_shelf ON items(state, shelf_place_id) WHERE state IN ('shelf','drift');
+
+  CREATE TABLE locker_deposits (
+    deposit_id TEXT PRIMARY KEY,
+    item_id TEXT NOT NULL REFERENCES items(item_id),
+    sender_id TEXT NOT NULL REFERENCES residents(resident_id),
+    recipient_id TEXT REFERENCES residents(resident_id),
+    voucher_hash TEXT,
+    place_id TEXT NOT NULL,
+    type TEXT NOT NULL,
+    quantity INTEGER NOT NULL CHECK (quantity > 0),
+    status TEXT NOT NULL CHECK (status IN ('active','claimed','expired_returned','expired_lost_found')),
+    created_at INTEGER NOT NULL,
+    expires_at INTEGER NOT NULL,
+    resolved_at INTEGER,
+    claimed_by TEXT REFERENCES residents(resident_id)
+  ) STRICT;
+  CREATE INDEX locker_deposits_sender ON locker_deposits(sender_id, status);
+  CREATE INDEX locker_deposits_recipient ON locker_deposits(recipient_id, status) WHERE recipient_id IS NOT NULL;
+  CREATE INDEX locker_deposits_expiry ON locker_deposits(status, expires_at) WHERE status = 'active';
+  CREATE UNIQUE INDEX locker_deposits_voucher ON locker_deposits(voucher_hash) WHERE voucher_hash IS NOT NULL;
+
+  CREATE TABLE resident_stamps (
+    resident_id TEXT NOT NULL REFERENCES residents(resident_id),
+    station_id TEXT NOT NULL,
+    stamp_id TEXT NOT NULL,
+    place_id TEXT NOT NULL,
+    stamped_at INTEGER NOT NULL,
+    visit_id TEXT,
+    PRIMARY KEY (resident_id, station_id)
+  ) STRICT, WITHOUT ROWID;
+  CREATE INDEX resident_stamps_time ON resident_stamps(resident_id, stamped_at);
+
+  CREATE TABLE catalog_versions (
+    catalog_version TEXT PRIMARY KEY,
+    fare_rule_version TEXT NOT NULL,
+    summary_json TEXT NOT NULL,
+    activated_at INTEGER NOT NULL
+  ) STRICT, WITHOUT ROWID;
+  `,
+  // ───── v4 ─────
+  // M3-B：桌游茶屋牌桌与旧物密封竞拍会
+  `
+  CREATE TABLE venue_tables (
+    table_id TEXT PRIMARY KEY,
+    place_id TEXT NOT NULL,
+    game_type TEXT NOT NULL,
+    options_json TEXT NOT NULL DEFAULT '{}',
+    status TEXT NOT NULL CHECK (status IN ('forming','running','completed','aborted')),
+    host_id TEXT NOT NULL REFERENCES residents(resident_id),
+    game_id TEXT,
+    record_json TEXT,
+    rng_state TEXT,
+    revision INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL,
+    started_at INTEGER,
+    ended_at INTEGER,
+    abort_reason TEXT
+  ) STRICT;
+  CREATE INDEX venue_tables_place ON venue_tables(place_id, status);
+
+  CREATE TABLE venue_table_seats (
+    table_id TEXT NOT NULL REFERENCES venue_tables(table_id),
+    resident_id TEXT NOT NULL REFERENCES residents(resident_id),
+    game_seat INTEGER,
+    joined_at INTEGER NOT NULL,
+    left_at INTEGER,
+    leave_reason TEXT,
+    PRIMARY KEY (table_id, resident_id)
+  ) STRICT, WITHOUT ROWID;
+  CREATE INDEX venue_table_seats_resident ON venue_table_seats(resident_id, left_at);
+
+  CREATE TABLE venue_auctions (
+    auction_id TEXT PRIMARY KEY,
+    place_id TEXT NOT NULL,
+    item_id TEXT NOT NULL REFERENCES items(item_id),
+    item_name TEXT NOT NULL,
+    item_type TEXT NOT NULL,
+    reserve_yen INTEGER NOT NULL DEFAULT 100 CHECK (reserve_yen >= 0),
+    price_mode TEXT NOT NULL DEFAULT 'first' CHECK (price_mode IN ('first','second')),
+    status TEXT NOT NULL CHECK (status IN ('open','settled','unsold','cancelled')),
+    opens_at INTEGER NOT NULL,
+    closes_at INTEGER NOT NULL,
+    settled_at INTEGER,
+    winner_id TEXT,
+    winning_price INTEGER,
+    tie_broken INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL
+  ) STRICT;
+  CREATE INDEX venue_auctions_place ON venue_auctions(place_id, status);
+
+  CREATE TABLE venue_auction_bids (
+    auction_id TEXT NOT NULL REFERENCES venue_auctions(auction_id),
+    resident_id TEXT NOT NULL REFERENCES residents(resident_id),
+    bid_yen INTEGER NOT NULL CHECK (bid_yen > 0),
+    held_yen INTEGER NOT NULL CHECK (held_yen >= 0),
+    visit_id TEXT,
+    status TEXT NOT NULL CHECK (status IN ('active','withdrawn','won','lost','refunded')),
+    placed_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY (auction_id, resident_id)
+  ) STRICT, WITHOUT ROWID;
+  CREATE INDEX venue_auction_bids_resident ON venue_auction_bids(resident_id, status);
   `,
 ];
 

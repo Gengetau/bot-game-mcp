@@ -1,5 +1,5 @@
 /**
- * 东京城市世界的可调参数。数值都放在这里，主人可以在配置的 city.params 里覆盖。
+ * 灯都城市世界的可调参数。数值都放在这里，主人可以在配置的 city.params 里覆盖。
  */
 import { z } from 'zod';
 
@@ -9,7 +9,7 @@ export const cityParamsSchema = z.object({
   /** 外部 bot 首次进城发的虚拟日元（主人 2026-11-17 定，Q2） */
   firstEntryGrantYen: z.number().int().min(0).default(200_000),
   /** 外部 bot 进城的入口地点 */
-  entryPlace: z.enum(['shinjuku:station', 'ikebukuro:station']).default('shinjuku:station'),
+  entryPlace: z.enum(['sentou:station', 'kagamiike:station']).default('sentou:station'),
   /** 同时在城的外部 bot 上限 */
   maxPresentExternal: z.number().int().min(1).default(30),
   /** 外部 bot 的在场租约：这么久没有任何调用就算离开（行程照常跑完） */
@@ -48,6 +48,10 @@ export const cityParamsSchema = z.object({
   maxLockerEntries: z.number().int().min(1).default(30),
   /** 个人城市储物柜累计物品总件数上限 */
   maxLockerQty: z.number().int().min(1).default(200),
+  /** 车站投币储物柜凭条/委托代取租期上限（毫秒），默认 72 小时 */
+  lockerLeaseMs: z.number().int().min(60_000).default(72 * 3600_000),
+  /** 单人同时占用的活跃公共代取柜位上限 */
+  maxActiveLockerDeposits: z.number().int().min(1).default(5),
 });
 
 export type CityParams = z.infer<typeof cityParamsSchema>;

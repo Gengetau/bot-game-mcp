@@ -1,10 +1,10 @@
 /**
- * M0 栖灯镇（town）关停封存演练 + 公共桌游与东京城市并行回归测试：
+ * M0 栖灯镇（town）关停封存演练 + 公共桌游与灯都城市并行回归测试：
  *  1. 预置一份含真实居民与资产记录的封存库 `town-frozen.db`，计算封存前 SHA-256；
  *  2. 按 `examples/botgame.city-test.json`（`town.enabled: false`, `city.enabled: true`）启动正式 Runtime + HTTP 服务；
  *  3. 验证 `rt.world === undefined`、`/town/*` 返回 404、`/city/*` 正常服务；
  *  4. 验证公共桌游（`number_bomb` 完整开房→报名→开局→猜中结束）通过同一 `/mcp` 端点 100% 正常回归；
- *  5. 验证外部独立 Bot（MCP `enter_world {world_id:"tokyo"}`）、准入白名单拦截、室友 QQ 密钥 `ENTRY_VIA_HOME_ONLY` 拦截与桥接外出访问同场闭环；
+ *  5. 验证外部独立 Bot（MCP `enter_world {world_id:"city"}`）、准入白名单拦截、室友 QQ 密钥 `ENTRY_VIA_HOME_ONLY` 拦截与桥接外出访问同场闭环；
  *  6. 停机后复核 `town-frozen.db` 字节级 SHA-256 纹丝未动，且 `city-test.db` 对账 `ok === true`、`ledgerImbalance === 0`。
  */
 import { createHash } from 'node:crypto';
@@ -75,7 +75,7 @@ describe('M0 栖灯镇关停封存演练：town.enabled=false + city.enabled=tru
     }
   });
 
-  it('封存 town.db 零字节改动，公共桌游与东京城市（外部 Bot + 室友桥接）同进程回归全绿', async () => {
+  it('封存 town.db 零字节改动，公共桌游与灯都城市（外部 Bot + 室友桥接）同进程回归全绿', async () => {
     workDir = mkdtempSync(join(tmpdir(), 'm0-town-off-drill-'));
     const frozenTownDb = join(workDir, 'town-frozen.db');
     const cityTestDb = join(workDir, 'city-test.db');
@@ -122,7 +122,7 @@ describe('M0 栖灯镇关停封存演练：town.enabled=false + city.enabled=tru
     handle = await startHttpServer(rt, () => undefined);
     const baseUrl = handle.url.replace(/\/mcp$/, '');
 
-    // 第 3 步：验证 /town/* 已下线 404，/city/* 正常响应且旧镇币不进入东京
+    // 第 3 步：验证 /town/* 已下线 404，/city/* 正常响应且旧镇币不进入灯都
     expect((await fetch(`${baseUrl}/town/`)).status).toBe(404);
     expect((await fetch(`${baseUrl}/town/api/public`)).status).toBe(404);
 
@@ -130,7 +130,7 @@ describe('M0 栖灯镇关停封存演练：town.enabled=false + city.enabled=tru
     expect(cityHtml.status).toBe(200);
     expect(cityHtml.headers.get('content-security-policy')).toContain("default-src 'none'");
     const cityPub = (await (await fetch(`${baseUrl}/city/api/public`)).json()) as any;
-    expect(cityPub.world_id).toBe('tokyo');
+    expect(cityPub.world_id).toBe('city');
 
     // 第 4 步：连接真实 HTTP MCP 客户端，跑完一局公共桌游（number_bomb）回归
     const referee = await connectMcp(handle.url, 'test_only_referee_key_city_0001');
@@ -163,26 +163,26 @@ describe('M0 栖灯镇关停封存演练：town.enabled=false + city.enabled=tru
     const finalGames = await callTool(bot1, 'list_games', { include_finished: true });
     expect(finalGames.games.find((g: any) => g.game_id === gameId)?.status).toBe('ended');
 
-    // 第 5 步：验证东京城市准入门禁、旧镇账号不串资产、外部 Bot 与桥接室友同进程运行
+    // 第 5 步：验证灯都城市准入门禁、旧镇账号不串资产、外部 Bot 与桥接室友同进程运行
     // 未准入外部 Bot 被拒 FORBIDDEN，但可只读看公开视图
-    const deniedUnlisted = await callToolExpectError(unlisted, 'enter_world', { world_id: 'tokyo', name: '路人' });
+    const deniedUnlisted = await callToolExpectError(unlisted, 'enter_world', { world_id: 'city', name: '路人' });
     expect(deniedUnlisted.code).toBe('FORBIDDEN');
-    expect((await callTool(unlisted, 'world_query', { what: 'public', world_id: 'tokyo' })).world_id).toBe('tokyo');
+    expect((await callTool(unlisted, 'world_query', { what: 'public', world_id: 'city' })).world_id).toBe('city');
 
     // 室友 QQ 侧密钥被拒 ENTRY_VIA_HOME_ONLY（F16），但可只读看公开视图
-    const deniedHouse = await callToolExpectError(niaQq, 'enter_world', { world_id: 'tokyo', name: '妮娅' });
+    const deniedHouse = await callToolExpectError(niaQq, 'enter_world', { world_id: 'city', name: '妮娅' });
     expect(deniedHouse.code).toBe('ENTRY_VIA_HOME_ONLY');
-    expect((await callTool(niaQq, 'world_query', { what: 'public', world_id: 'tokyo' })).world_id).toBe('tokyo');
+    expect((await callTool(niaQq, 'world_query', { what: 'public', world_id: 'city' })).world_id).toBe('city');
 
-    // 90001（曾在旧镇有记录）首次进东京：独立新居民、独立发 ¥200,000，无任何旧镇币混入
-    const enteredTokyo = await callTool(bot1, 'enter_world', { world_id: 'tokyo', name: '旧镇旅人', entry: 'ikebukuro:station' });
+    // 90001（曾在旧镇有记录）首次进灯都：独立新居民、独立发 ¥200,000，无任何旧镇币混入
+    const enteredTokyo = await callTool(bot1, 'enter_world', { world_id: 'city', name: '旧镇旅人', entry: 'kagamiike:station' });
     expect(enteredTokyo).toMatchObject({
       ok: true,
-      world_id: 'tokyo',
+      world_id: 'city',
       created: true,
       granted_yen: 200_000,
       wallet: { yen: 200_000 },
-      location: { place: 'ikebukuro:station' },
+      location: { place: 'kagamiike:station' },
     });
 
     // 桥接驱动妮娅进城并正常立即申请返家结算（起点已在门口，0 分钟结算闭环）

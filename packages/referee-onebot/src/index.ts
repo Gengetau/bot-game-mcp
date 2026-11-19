@@ -124,9 +124,9 @@ export interface RefereeOptions {
    */
   town?: TownOptions;
   /**
-   * 东京都（持续城市世界）接入，默认不开。
-   * 开了之后：真人在群里或私聊发「东京」「进城」「东京都」关键词，裁判用 city_issue_ticket 给本人签发一次性登录链接并私聊送达；
-   * 当 --city 开启且 --town 未开启时，收到旧词「小镇」会温和提示栖灯镇已停运封存并引导发送「东京」。
+   * 灯都（持续城市世界）接入，默认不开。
+   * 开了之后：真人在群里或私聊发「灯都」「进城」关键词，裁判用 city_issue_ticket 给本人签发一次性登录链接并私聊送达；
+   * 当 --city 开启且 --town 未开启时，收到旧词「小镇」会温和提示栖灯镇已停运封存并引导发送「灯都」。
    */
   city?: CityRefereeOptions;
   /** 外部停止信号 */
@@ -161,16 +161,16 @@ export interface TownOutboxOptions {
 }
 
 export const DEFAULT_TOWN_KEYWORDS = ['小镇', '进小镇', '栖灯镇'];
-export const DEFAULT_CITY_KEYWORDS = ['东京', '进城', '东京都'];
+export const DEFAULT_CITY_KEYWORDS = ['灯都', '进城'];
 
-/** 东京都接入配置。给了这个对象就算开启（除非 enabled 为 false）。 */
+/** 灯都接入配置。给了这个对象就算开启（除非 enabled 为 false）。 */
 export interface CityRefereeOptions {
   enabled?: boolean;
-  /** 触发登录链接的关键词（整条消息精确匹配，去掉 @、指令前缀和句尾标点）。默认「东京」「进城」「东京都」 */
+  /** 触发登录链接的关键词（整条消息精确匹配，去掉 @、指令前缀和句尾标点）。默认「灯都」「进城」 */
   keywords?: string[];
   /** 同一个人两次领取登录链接的最短间隔（秒），默认 60 */
   ticketCooldownSeconds?: number;
-  /** 引擎没开城市（没有 city_issue_ticket 工具）时：reply = 回一句「东京都还没开」（默认），silent = 不响应 */
+  /** 引擎没开城市（没有 city_issue_ticket 工具）时：reply = 回一句「灯都还没开」（默认），silent = 不响应 */
   whenOff?: 'reply' | 'silent';
   /** 私聊领取时要求对方在本群里（管理员不限），默认 true */
   requireGroupMember?: boolean;
@@ -198,8 +198,8 @@ export function isTownCommand(plain: string, keywords: readonly string[] = DEFAU
 }
 
 /**
- * 这条消息（已去掉 CQ 码的纯文本）是不是「要东京都登录链接」的指令。
- * 整条消息必须就是关键词（可带指令前缀、斜杠和句尾标点），含多余参数（如「东京 12345」）一律不算。
+ * 这条消息（已去掉 CQ 码的纯文本）是不是「要灯都登录链接」的指令。
+ * 整条消息必须就是关键词（可带指令前缀、斜杠和句尾标点），含多余参数（如「灯都 12345」）一律不算。
  */
 export function isCityCommand(plain: string, keywords: readonly string[] = DEFAULT_CITY_KEYWORDS, prefix = '/桌游'): boolean {
   return isTownCommand(plain, keywords, prefix);
@@ -599,7 +599,7 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
   /** 每个人最近一次领取登录链接的时间（限频）和是否已经提示过「刚发过」 */
   const townAsked = new Map<string, { at: number; noticed: boolean; refused?: boolean }>();
   const isTownText = (plain: string) => townOn && isTownCommand(plain, townKeywords, prefix);
-  // 东京都接入（不配置则整块不生效；跟随模式不响应任何指令）
+  // 灯都接入（不配置则整块不生效；跟随模式不响应任何指令）
   const cityOn = !follower && Boolean(opts.city) && opts.city?.enabled !== false;
   const city = opts.city ?? {};
   const cityKeywords = city.keywords?.length ? city.keywords : DEFAULT_CITY_KEYWORDS;
@@ -791,7 +791,7 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
     (lobbyTimeout > 0 ? `\n人数不够时 ${fmtDuration(lobbyTimeout)} 没有新人报名，房间自动取消。` : '') +
     (keyIssuer ? `\n想接入自己的 bot：私聊 ${voiceOf(keyIssuer)?.name ?? keyIssuer} 发「申请密钥 <bot的QQ号> <bot的昵称>」。` : '') +
     (townOn ? `\n想进栖灯镇：发「${townKeywords[0]}」，登录链接会私聊给你（只能用一次，别转给别人）。` : '') +
-    (cityOn ? `\n想进东京都：发「${cityKeywords[0]}」，登录链接会私聊给你（5 分钟内有效，只能用一次，别转给别人）。` : '');
+    (cityOn ? `\n想进灯都：发「${cityKeywords[0]}」，登录链接会私聊给你（5 分钟内有效，只能用一次，别转给别人）。` : '');
 
   function fmtDuration(sec: number): string {
     if (sec % 60 === 0) return `${sec / 60} 分钟`;
@@ -1360,7 +1360,7 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
   }
 
   /**
-   * 真人要东京都登录链接。号码和昵称只来自消息事件本身（uid / nick），绝不解析消息文本中的号码；
+   * 真人要灯都登录链接。号码和昵称只来自消息事件本身（uid / nick），绝不解析消息文本中的号码；
    * 链接只私聊发给本人，群内只回提示，日志脱敏不印票据与完整链接。
    */
   async function handleCity(v: Voice, uid: string, nick: string, channel: 'group' | 'private'): Promise<void> {
@@ -1371,7 +1371,7 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
       if (!last.noticed) {
         last.noticed = true;
         const secs = Math.max(1, Math.ceil((cityCooldownMs - (now - last.at)) / 1000));
-        await reply(last.refused ? `刚才没能给你签发东京都登录链接，${secs} 秒后再来问。` : `刚给你发过东京都登录链接了，${secs} 秒后再来要。`);
+        await reply(last.refused ? `刚才没能给你签发灯都登录链接，${secs} 秒后再来问。` : `刚给你发过灯都登录链接了，${secs} 秒后再来要。`);
       }
       return;
     }
@@ -1379,19 +1379,19 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
     cityAsked.set(uid, { at: now, noticed: false });
     try {
       if (channel === 'private' && cityNeedMember && !admins.has(uid) && !(await inGroup(v, uid))) {
-        return void (await reply(`你不在群 ${opts.groupId} 里，不能领取东京都的登录链接。`));
+        return void (await reply(`你不在群 ${opts.groupId} 里，不能领取灯都的登录链接。`));
       }
       const name = sanitizeNick(nick) || uid;
       const r = await main.engine.call('city_issue_ticket', { user_id: uid, name });
       const link = String(r.url ?? r.ticket ?? '');
       if (!link) throw new ToolError('引擎没有返回登录链接');
       const body = r.url
-        ? `🗼 东京都登录链接（5 分钟内有效，只能用一次，别转发给别人）：\n${link}`
-        : `🗼 东京都登录票据（5 分钟内有效，只能用一次，别转发给别人；服务器没配置公网地址，到东京都页面粘贴这串票据登录）：\n${link}`;
+        ? `🏮 灯都登录链接（5 分钟内有效，只能用一次，别转发给别人）：\n${link}`
+        : `🏮 灯都登录票据（5 分钟内有效，只能用一次，别转发给别人；服务器没配置公网地址，到灯都页面粘贴这串票据登录）：\n${link}`;
       const sent = await sendPrivateStrict(channel === 'private' ? v : main, uid, body);
       if (sent) {
         log(`[city] 已给 ${nick}(${uid}) 私聊登录链接`);
-        if (channel === 'group') await sayTo(uid, '东京都登录链接已私聊发给你（5 分钟内有效，只能用一次）。');
+        if (channel === 'group') await sayTo(uid, '灯都登录链接已私聊发给你（5 分钟内有效，只能用一次）。');
       } else {
         cityAsked.set(uid, { at: now - Math.max(0, cityCooldownMs - 10_000), noticed: false });
         if (channel === 'group') {
@@ -1404,8 +1404,8 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
     } catch (e) {
       if (e instanceof ToolError && e.code === 'TOOL_NOT_FOUND') {
         cityAsked.delete(uid);
-        log('[city] 引擎没有开东京都（没有 city_issue_ticket 工具）');
-        if (cityWhenOff === 'reply') await reply('东京都还没开。');
+        log('[city] 引擎没有开灯都（没有 city_issue_ticket 工具）');
+        if (cityWhenOff === 'reply') await reply('灯都还没开。');
       } else if (e instanceof ToolError) {
         log(`[city] 签发登录链接被引擎拒绝（${e.code ?? '?'}）：${e.message}`);
         const asked = cityAsked.get(uid);
@@ -1425,7 +1425,7 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
     if (now - last < Math.max(10_000, cityCooldownMs)) return;
     if (legacyHintAsked.size > 2000) for (const [k, t] of legacyHintAsked) if (now - t >= 60_000) legacyHintAsked.delete(k);
     legacyHintAsked.set(uid, now);
-    const msg = `栖灯镇已停运封存，发送「${cityKeywords[0]}」可获取东京都登录链接。`;
+    const msg = `栖灯镇已停运封存，发送「${cityKeywords[0]}」可获取灯都登录链接。`;
     if (channel === 'group') await sayTo(uid, msg);
     else await sendPrivateAs(v, uid, msg);
   }

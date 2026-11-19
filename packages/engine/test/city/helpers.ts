@@ -1,9 +1,9 @@
 /**
- * 东京城市世界的测试辅助：内存数据库 + 假时钟 + 固定种子 + 一个「假内核客户端」。
+ * 灯都城市世界的测试辅助：内存数据库 + 假时钟 + 固定种子 + 一个「假内核客户端」。
  *
  *   const t = makeCity();
  *   const k = t.kernel('nia');                 // 假内核：管她家里的钱、动作权代次、outbox 游标
- *   k.depart({ yen: 20000, items: [COOKIE], to: 'ikebukuro:kissa-tomoshibi' });   // prepare + commit
+ *   k.depart({ yen: 20000, items: [COOKIE], to: 'kagamiike:kissa-tomoshibi' });   // prepare + commit
  *   t.run(40 * MIN);                           // 推进时间，到期的行程作业照常结算
  *   k.act({ type: 'buy', sku: 'coffee' });
  *   const b = t.bot('小B');                    // 外部 bot
@@ -45,7 +45,7 @@ export const HOUSE: HouseMemberConfig[] = [
 ];
 
 export const COOKIE = { ref: 'res:cookie:1', kernel: { kind: 'food', item: 'cookie' }, qty: 1 };
-export const KISSA = 'ikebukuro:kissa-tomoshibi';
+export const KISSA = 'kagamiike:kissa-tomoshibi';
 
 export interface CityTestOpts {
   at?: number;
@@ -157,8 +157,8 @@ export class Bot {
   act(action: Record<string, unknown>, requestId?: string): any {
     return cityCommand(this.t.c, this.id, requestId ?? `req-${this.id}-${++this.seq}`, action);
   }
-  view(): any {
-    return selfView(this.t.c, this.t.c.mustResident(this.id));
+  view(opts?: { clientId?: string; itemOffset?: number; lockerOffset?: number; maxBytes?: number }): any {
+    return selfView(this.t.c, this.t.c.mustResident(this.id), opts);
   }
   /** 走到某个地点并等到到达。 */
   go(to: string): void {
@@ -239,8 +239,8 @@ export class FakeKernel {
     return visitAct(this.c, this.visitId, { request_id: requestId ?? this.rid('a'), domain_epoch: this.epoch, action });
   }
 
-  view(): any {
-    return selfView(this.c, this.c.mustResident(this.t.residentOf(this.actorId)));
+  view(opts?: { clientId?: string; itemOffset?: number; lockerOffset?: number; maxBytes?: number }): any {
+    return selfView(this.c, this.c.mustResident(this.t.residentOf(this.actorId)), opts);
   }
 
   describe(): any {

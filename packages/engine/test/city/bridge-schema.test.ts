@@ -83,7 +83,7 @@ describe('协议产物和 schema 对得上', () => {
   const c = t.c;
   const k = t.kernel('nia');
   const nia = t.residentOf('nia');
-  const b = t.bot('小B', { entry: 'ikebukuro:station' });
+  const b = t.bot('小B', { entry: 'kagamiike:station' });
   const servers: Server[] = [];
   afterAll(async () => {
     for (const s of servers) {
@@ -162,11 +162,13 @@ describe('协议产物和 schema 对得上', () => {
     const buyReceipt = visitAct(c, k.visitId, { request_id: k.rid('a'), domain_epoch: k.epoch, action: { type: 'buy', sku: 'coffee', qty: 1 } });
     expect(buyReceipt.state).toBe('active');
     for (const action of [
-      { type: 'travel', to: 'ikebukuro:station' },
+      { type: 'travel', to: 'kagamiike:station' },
       { type: 'say', text: 'hi' },
       { type: 'buy', sku: 'coffee', qty: 2 },
       { type: 'consume', item_id: 'itm_x', qty: 1 },
       { type: 'give', to: 'r1', item: 'cookie' },
+      { type: 'inspect_item', item_id: 'itm_x' },
+      { type: 'inspect_item', scope: 'held', offset: 0, limit: 10 },
       { type: 'go_home' },
     ]) {
       expectValid('Action', action);
@@ -236,7 +238,7 @@ describe('协议产物和 schema 对得上', () => {
 
   it('取消的访问：prepare → abort；没见过的 visit_id 也能 abort', () => {
     const k2 = t.kernel('claire');
-    const prep = k2.prepareBody({ yen: 1000, to: 'akabane:ekimae-plaza' });
+    const prep = k2.prepareBody({ yen: 1000, to: 'hiwatari:ekimae-plaza' });
     req('PrepareRequest', prep);
     receipt('PrepareReceipt', prepareVisit(c, prep));
     const body = { request_id: `${k2.visitId}:abort`, reason: '冻结失败' };
@@ -268,9 +270,9 @@ describe('协议产物和 schema 对得上', () => {
     c.commit(() => applyWeather(c, readings, t.clock.t));
     const wrap = () => ({ at_ms: c.now(), attribution: 'Weather data by Open-Meteo.com (CC BY 4.0)', areas: allWeather(c) });
     const live = wrap();
-    expect(live.areas).toHaveLength(3);
+    expect(live.areas).toHaveLength(AREAS.length);
     expectValid('WeatherResponse', live, 'weather(ok)');
-    expect(live.areas.map((a) => a.status)).toEqual(['ok', 'ok', 'ok']);
+    expect(live.areas.map((a) => a.status)).toEqual(AREAS.map(() => 'ok'));
     // 合成天气（没抓到）
     t.run(5 * MIN);
     c.commit(() => applyWeather(c, null, t.clock.t));
@@ -333,6 +335,7 @@ describe('协议产物和 schema 对得上', () => {
     const cat = await call('GET', '/catalog');
     expect(cat.status).toBe(200);
     expectValid('Catalog', cat.body);
+    expect(cat.body.city_text_version).toBe('toto-text-1.0');
     expect(cat.body.mappings).toEqual(JSON.parse(readFileSync(new URL('../../../../docs/city/mappings.json', import.meta.url), 'utf8')));
     expectValid('WeatherResponse', (await call('GET', '/weather')).body, 'http weather');
     expectValid('ReconcileResponse', (await call('GET', '/reconcile')).body, 'http reconcile');
@@ -344,7 +347,7 @@ describe('协议产物和 schema 对得上', () => {
 
     // 用 HTTP 走一次新的 prepare → abort，回执结构一样
     const k3 = t.kernel('claire');
-    const prep = k3.prepareBody({ yen: 500, to: 'akabane:ekimae-plaza', visitId: 'v-claire-http-1' });
+    const prep = k3.prepareBody({ yen: 500, to: 'hiwatari:ekimae-plaza', visitId: 'v-claire-http-1' });
     const p = await call('POST', '/visits/prepare', prep);
     expect(p.status).toBe(200);
     expectValid('PrepareReceipt', p.body, 'http prepare');
@@ -352,7 +355,7 @@ describe('协议产物和 schema 对得上', () => {
     expectValid('AbortReceipt', a.body, 'http abort');
 
     // 再走一次不带东西的完整访问：commit → return-request（真的开始回家）→ 到家 → release → closed
-    const full = k3.prepareBody({ yen: 500, to: 'akabane:ekimae-plaza', visitId: 'v-claire-http-2' });
+    const full = k3.prepareBody({ yen: 500, to: 'hiwatari:ekimae-plaza', visitId: 'v-claire-http-2' });
     expect((await call('POST', '/visits/prepare', { ...full, payload_hash: bridgePayloadHash(full) })).status).toBe(200);
     const cm = await call('POST', `/visits/${k3.visitId}/commit`, { request_id: `${k3.visitId}:commit`, transfer_id: 'tr-claire-http-2', domain_epoch: 1 });
     expectValid('CommitReceipt', cm.body, 'http commit');
@@ -435,7 +438,7 @@ describe('反例：schema 不是什么都放过', () => {
 
   it('outbox 记录', () => {
     const k2 = t.kernel('claire');
-    k2.depart({ yen: 3000, to: 'akabane:ekimae-plaza' });
+    k2.depart({ yen: 3000, to: 'hiwatari:ekimae-plaza' });
     t.run(30 * MIN);
     const recs = readOutbox(t.c, 0, 200).records as any[];
     const progress = recs.find((r) => r.kind === 'visit_progress' && r.payload.phase === 'boarded' && r.visit_id === k2.visitId) ?? recs.find((r) => r.kind === 'visit_progress');

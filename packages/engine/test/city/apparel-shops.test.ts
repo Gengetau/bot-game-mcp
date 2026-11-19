@@ -6,21 +6,21 @@ import { resolvePendingOrder } from '../../src/city/actions.js';
 import { runReconcile } from '../../src/city/reconcile.js';
 import { HOUR, MIN, makeCity } from './helpers.js';
 
-describe('东京服饰买手店与 mappings v3 返家入柜闭环 (#260)', () => {
+describe('灯都服饰买手店与 mappings v3 返家入柜闭环 (#260)', () => {
   it('全量收录 1,407 套服饰（SFW 1,068 + 私密 339），三家店按日确定性轮换且单次视图不超 4 KB', () => {
     expect(APPAREL_CATALOG).toHaveLength(1407);
     expect(APPAREL_CATALOG.filter((x) => x.tier === 'sfw')).toHaveLength(1068);
     expect(APPAREL_CATALOG.filter((x) => x.tier === 'intimate')).toHaveLength(339);
 
-    const w1 = apparelWindowForPlace('ikebukuro:suzuran-closet', '2026-11-18');
-    const w2 = apparelWindowForPlace('ikebukuro:suzuran-closet', '2026-11-19');
+    const w1 = apparelWindowForPlace('kagamiike:suzuran-closet', '2026-11-18');
+    const w2 = apparelWindowForPlace('kagamiike:suzuran-closet', '2026-11-19');
     expect(w1).toHaveLength(6);
     expect(w2).toHaveLength(6);
     expect(w1.map((x) => x.sku)).not.toEqual(w2.map((x) => x.sku));
 
     const t = makeCity();
-    const b = t.bot('旅人A', { entry: 'ikebukuro:station' });
-    b.act({ type: 'travel', to: 'ikebukuro:suzuran-closet' });
+    const b = t.bot('旅人A', { entry: 'kagamiike:station' });
+    b.act({ type: 'travel', to: 'kagamiike:suzuran-closet' });
     t.run(10 * MIN);
     const viewBytes = Buffer.byteLength(JSON.stringify(b.view()), 'utf8');
     expect(viewBytes).toBeLessThan(4096);
@@ -30,11 +30,11 @@ describe('东京服饰买手店与 mappings v3 返家入柜闭环 (#260)', () =>
     const t = makeCity();
     const nia = t.kernel('nia');
     const niaResId = t.residentOf('nia');
-    const bot = t.bot('送礼友人', { entry: 'shinjuku:station', stay: true });
+    const bot = t.bot('送礼友人', { entry: 'sentou:station', stay: true });
 
-    // 外部 Bot 先去新宿「丝绒私语」买一件私密服饰礼盒，再去池袋「铃兰衣橱」等妮娅
+    // 外部 Bot 先去千灯「丝绒私语」买一件私密服饰礼盒，再去镜池「铃兰衣橱」等妮娅
     t.run(2 * HOUR); // 先推进到 12:00 JST 丝绒私语开门
-    bot.act({ type: 'travel', to: 'shinjuku:velours-intime' });
+    bot.act({ type: 'travel', to: 'sentou:velours-intime' });
     t.run(10 * MIN);
     const veloursSku = (bot.view().here as any).goods[0].sku as string;
     const boughtGift = bot.act({ type: 'buy', sku: veloursSku });
@@ -48,8 +48,8 @@ describe('东京服饰买手店与 mappings v3 返家入柜闭环 (#260)', () =>
       giftItemId,
     );
 
-    bot.act({ type: 'travel', to: 'ikebukuro:suzuran-closet' });
-    nia.depart({ yen: 20_000, items: [], to: 'ikebukuro:suzuran-closet' });
+    bot.act({ type: 'travel', to: 'kagamiike:suzuran-closet' });
+    nia.depart({ yen: 20_000, items: [], to: 'kagamiike:suzuran-closet' });
     t.run(40 * MIN);
 
     const suzuranGood = (nia.view().here as any).goods[0];
@@ -75,8 +75,8 @@ describe('东京服饰买手店与 mappings v3 返家入柜闭环 (#260)', () =>
   it('F9 未决服饰订单在室友返家关单后确认为已成交 -> 自动发入个人车站储物柜，下次进城可取出带回家', () => {
     const t = makeCity();
     const nia = t.kernel('nia');
-    t.run(HOUR); // 先推进到 11:00 JST 光廊成衣开门
-    nia.depart({ yen: 20_000, items: [], to: 'shinjuku:lumiere-atelier' });
+    t.run(HOUR); // 先推进到 11:00 JST 流光工坊开门
+    nia.depart({ yen: 20_000, items: [], to: 'sentou:lumiere-atelier' });
     t.run(50 * MIN);
 
     const sku = (nia.view().here as any).goods[0].sku as string;
@@ -97,7 +97,7 @@ describe('东京服饰买手店与 mappings v3 返家入柜闭环 (#260)', () =>
     expect(resolved.visit_state).toBe('closed');
 
     // 下次进城到车站即可从储物柜取出并带回家结算为 fate=back
-    nia.depart({ yen: 5_000, items: [], to: 'akabane:station' });
+    nia.depart({ yen: 5_000, items: [], to: 'hiwatari:station' });
     t.run(20 * MIN);
     const lockerList = (nia.view() as any).locker_items;
     expect(lockerList).toHaveLength(1);
@@ -113,7 +113,7 @@ describe('东京服饰买手店与 mappings v3 返家入柜闭环 (#260)', () =>
     expect(runReconcile(t.c, 'test2').ok).toBe(true);
   });
 
-  it('R260-04 & P3：跨日后 /city/bridge/v1/catalog 与店内实时橱窗完全一致，且光廊成衣春夏常驻包含派对礼服', async () => {
+  it('R260-04 & P3：跨日后 /city/bridge/v1/catalog 与店内实时橱窗完全一致，且流光工坊春夏常驻包含派对礼服', async () => {
     const t = makeCity();
     const app = express();
     const close = mountCity(app, t.c, () => {}, { bridgeKey: 'test_bridge_key_260' });
@@ -130,11 +130,11 @@ describe('东京服饰买手店与 mappings v3 返家入柜闭环 (#260)', () =>
       });
       const cat = (await resp.json()) as any;
       const catalogSkus = cat.places
-        .find((p: any) => p.id === 'ikebukuro:suzuran-closet')
+        .find((p: any) => p.id === 'kagamiike:suzuran-closet')
         .goods.map((g: any) => g.sku);
 
-      const b = t.bot('跨日旅人', { entry: 'ikebukuro:station' });
-      b.act({ type: 'travel', to: 'ikebukuro:suzuran-closet' });
+      const b = t.bot('跨日旅人', { entry: 'kagamiike:station' });
+      b.act({ type: 'travel', to: 'kagamiike:suzuran-closet' });
       t.run(10 * MIN);
       const liveShopSkus = ((b.view().here as any).goods as any[]).map((g: any) => g.sku);
       expect(catalogSkus).toEqual(liveShopSkus);
@@ -142,7 +142,7 @@ describe('东京服饰买手店与 mappings v3 返家入柜闭环 (#260)', () =>
       let partySeenSpringSummer = 0;
       for (const m of ['03', '04', '05', '06', '07', '08']) {
         for (let d = 1; d <= 28; d++) {
-          const w = apparelWindowForPlace('shinjuku:lumiere-atelier', `2026-${m}-${String(d).padStart(2, '0')}`);
+          const w = apparelWindowForPlace('sentou:lumiere-atelier', `2026-${m}-${String(d).padStart(2, '0')}`);
           partySeenSpringSummer += w.filter((x) => x.cat === 'party').length;
         }
       }

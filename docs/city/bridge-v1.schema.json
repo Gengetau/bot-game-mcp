@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://bot-game-mcp/city/bridge-v1.schema.json",
-  "title": "东京城市世界 · 桥接协议 city-bridge/1",
-  "description": "小屋内核与东京城市引擎之间的桥接接口（服务器到服务器，前缀 /city/bridge/v1，Bearer 密钥）。本文件描述引擎当前实现的请求、回执、outbox 记录、结算清单和失败码。通用约定：1）request_id 必须匹配 ^[\\w.:-]{8,160}$，重试用同一个；2）payload_hash 可选，是「请求体去掉 request_id 和 payload_hash 之后」的规范化 JSON（键按字典序、无空白）的 SHA-256 十六进制，对不上返回 400 BAD_REQUEST / payload_hash_mismatch；3）桥接回执永久保存：同一个 request_id + 同样的内容返回原回执并带 replayed: true，同一个 request_id + 不同内容返回 409 CONFLICT / request_conflict；4）执行失败不留回执，修正后可以用同一个 request_id 再试；5）所有时间是 UTC 毫秒整数；6）outbox 按 seq 递增，内核按 record_id 去重。",
+  "title": "灯都城市世界 · 桥接协议 city-bridge/1",
+  "description": "小屋内核与灯都城市引擎之间的桥接接口（服务器到服务器，前缀 /city/bridge/v1，Bearer 密钥）。本文件描述引擎当前实现的请求、回执、outbox 记录、结算清单和失败码。通用约定：1）request_id 必须匹配 ^[\\w.:-]{8,160}$，重试用同一个；2）payload_hash 可选，是「请求体去掉 request_id 和 payload_hash 之后」的规范化 JSON（键按字典序、无空白）的 SHA-256 十六进制，对不上返回 400 BAD_REQUEST / payload_hash_mismatch；3）桥接回执永久保存：同一个 request_id + 同样的内容返回原回执并带 replayed: true，同一个 request_id + 不同内容返回 409 CONFLICT / request_conflict；4）执行失败不留回执，修正后可以用同一个 request_id 再试；5）所有时间是 UTC 毫秒整数；6）outbox 按 seq 递增，内核按 record_id 去重。",
   "type": "object",
   "x-protocol": "city-bridge/1",
   "x-mappings-version": 3,
@@ -252,20 +252,17 @@
       "type": "integer"
     },
     "PlaceId": {
-      "description": "地点编号，形如 ikebukuro:kissa-tomoshibi；小屋门口是 akabane:ai-house:entrance。",
+      "description": "地点编号，形如 kagamiike:kissa-tomoshibi；小屋门口是 hiwatari:ai-house:entrance。",
       "type": "string",
       "minLength": 1
     },
     "AreaId": {
-      "description": "开放街区编号（首发赤羽/池袋/新宿，v1 覆盖六街区；M4 内容包按标准 ID 扩展）。",
+      "description": "灯都开放街区编号（R0 开放绯渡/镜池/千灯三片区；后续内容包按架空标准 ID 扩展）。",
       "type": "string",
       "enum": [
-        "akabane",
-        "ikebukuro",
-        "shinjuku",
-        "asakusa",
-        "shibuya",
-        "kichijoji"
+        "hiwatari",
+        "kagamiike",
+        "sentou"
       ]
     },
     "KernelEffectName": {
@@ -379,7 +376,7 @@
           "type": "string"
         },
         "mappings_version": {
-          "description": "必须等于引擎的映射表版本（当前锁定为 2），否则 422 VERSION_MISMATCH / mappings_version。",
+          "description": "必须等于引擎的映射表版本（当前锁定为 3），否则 422 VERSION_MISMATCH / mappings_version。",
           "type": "integer",
           "const": 3
         },
@@ -611,6 +608,21 @@
         },
         {
           "$ref": "#/$defs/ActionTakeLocker"
+        },
+        {
+          "$ref": "#/$defs/ActionReadItem"
+        },
+        {
+          "$ref": "#/$defs/ActionInspectItem"
+        },
+        {
+          "$ref": "#/$defs/ActionDriftBook"
+        },
+        {
+          "$ref": "#/$defs/ActionTakeBook"
+        },
+        {
+          "$ref": "#/$defs/ActionStampStation"
         }
       ]
     },
@@ -774,6 +786,13 @@
           "type": "integer",
           "minimum": 1,
           "maximum": 99
+        },
+        "recipient_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "voucher": {
+          "type": "boolean"
         }
       },
       "required": [
@@ -811,6 +830,63 @@
           "type": "integer",
           "minimum": 1,
           "maximum": 99
+        },
+        "deposit_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "voucher": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "type"
+      ],
+      "anyOf": [
+        {
+          "required": [
+            "item_id"
+          ]
+        },
+        {
+          "required": [
+            "item"
+          ]
+        },
+        {
+          "required": [
+            "deposit_id"
+          ]
+        },
+        {
+          "required": [
+            "voucher"
+          ]
+        }
+      ]
+    },
+    "ActionReadItem": {
+      "description": "阅读或批注文库本（instance=0 自动升级为 instance=1，扉页最多保留最近 5 条 <=50 字批注）。",
+      "type": "object",
+      "properties": {
+        "type": {
+          "const": "read_item"
+        },
+        "item_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "item": {
+          "type": "string",
+          "minLength": 1
+        },
+        "title": {
+          "type": "string",
+          "maxLength": 40
+        },
+        "note": {
+          "type": "string"
         }
       },
       "required": [
@@ -827,6 +903,124 @@
             "item"
           ]
         }
+      ]
+    },
+    "ActionInspectItem": {
+      "description": "查看单件物品或当前地点二手架/漂流角书籍的完整扉页详情，或按 offset 分页查看随身/储物柜物品。",
+      "type": "object",
+      "properties": {
+        "type": {
+          "const": "inspect_item"
+        },
+        "item_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "scope": {
+          "type": "string",
+          "enum": [
+            "held",
+            "locker"
+          ]
+        },
+        "offset": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 20
+        }
+      },
+      "required": [
+        "type"
+      ],
+      "anyOf": [
+        {
+          "required": [
+            "item_id"
+          ]
+        },
+        {
+          "required": [
+            "scope"
+          ]
+        },
+        {
+          "required": [
+            "offset"
+          ]
+        },
+        {
+          "required": [
+            "limit"
+          ]
+        }
+      ]
+    },
+    "ActionDriftBook": {
+      "description": "将已读/批注的 instance=1 文库本卖入书店「栞堂」古书二手架或投入车站图书漂流角。",
+      "type": "object",
+      "properties": {
+        "type": {
+          "const": "drift_book"
+        },
+        "item_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "item": {
+          "type": "string",
+          "minLength": 1
+        },
+        "note": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "type"
+      ],
+      "anyOf": [
+        {
+          "required": [
+            "item_id"
+          ]
+        },
+        {
+          "required": [
+            "item"
+          ]
+        }
+      ]
+    },
+    "ActionTakeBook": {
+      "description": "从书店「栞堂」古书二手架买走或从车站图书漂流角淘走指定的 instance=1 文库本。",
+      "type": "object",
+      "properties": {
+        "type": {
+          "const": "take_book"
+        },
+        "item_id": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "type",
+        "item_id"
+      ]
+    },
+    "ActionStampStation": {
+      "description": "在开放车站大厅加盖本站纪念印章，记入个人站章帐（同站幂等，不重复占随身背包或储物柜物品上限）。",
+      "type": "object",
+      "properties": {
+        "type": {
+          "const": "stamp_station"
+        }
+      },
+      "required": [
+        "type"
       ]
     },
     "Receipt": {
@@ -1279,6 +1473,15 @@
           "items": {
             "$ref": "#/$defs/Leg"
           }
+        },
+        "same_car_travellers": {
+          "description": "当前正处于铁道乘车段时，同线路同方向重叠时间窗内的匿名同乘人数（不含本人）。",
+          "type": "integer",
+          "minimum": 0
+        },
+        "car_ambiance": {
+          "description": "当前正处于铁道乘车段时的匿名车厢环境切片文本。",
+          "type": "string"
         },
         "source": {
           "const": "simulated"
@@ -2178,7 +2381,7 @@
       "additionalProperties": true
     },
     "ReturnStartedPayload": {
-      "description": "开始回家。reason：return_by（到点）、self（她自己决定）、kernel:<内核给的原因>。from 是出发的地点，在路上时是这一段的目的地，都没有时为 null。",
+      "description": "开始回家。reason：return_by（到点）、last_train（终电前安全返家护栏触发）、missed_last_train（停机/停运恢复时已错过终电，走无列车零扣费归家兜底）、self（她自己决定）、kernel:<内核给的原因>。from 是出发的地点，在路上时是这一段的目的地，都没有时为 null。",
       "type": "object",
       "properties": {
         "actor_id": {
@@ -2616,7 +2819,7 @@
       ]
     },
     "MappingsTable": {
-      "description": "物品与效果映射表（当前锁定 version = 2），和 docs/city/mappings.json 同内容。",
+      "description": "物品与效果映射表（当前锁定 version = 3），和 docs/city/mappings.json 同内容。",
       "type": "object",
       "properties": {
         "version": {
@@ -2703,6 +2906,10 @@
         "city_catalog_version": {
           "type": "string"
         },
+        "city_text_version": {
+          "description": "城市架空文本与世界观版本（如 toto-text-1.0）。",
+          "type": "string"
+        },
         "fare_rule_version": {
           "type": "string"
         },
@@ -2772,6 +2979,7 @@
                   "plaza",
                   "riverside",
                   "promenade",
+                  "theatre",
                   "entrance"
                 ]
               },
@@ -2876,11 +3084,36 @@
               "line": {
                 "type": "string"
               },
+              "operator": {
+                "type": "string"
+              },
+              "transport_kind": {
+                "type": "string"
+              },
+              "distance_km": {
+                "type": "number"
+              },
               "minutes": {
                 "type": "number"
               },
               "fare_yen": {
                 "$ref": "#/$defs/Yen"
+              },
+              "hours": {
+                "description": "模拟首末班运营时间窗（世界时区 HH:MM，last 小于 first 表示跨午夜；按每段铁道的计划上车时刻 board_at_ms 判定是否在运营窗内）。",
+                "type": "object",
+                "properties": {
+                  "first": {
+                    "type": "string"
+                  },
+                  "last": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "first",
+                  "last"
+                ]
               },
               "source": {
                 "const": "simulated"

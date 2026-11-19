@@ -9,13 +9,30 @@
  * 位置只由这个模块写（residents.place_id / trip_id）；进城、出城那两处在 residents.ts 和 visits.ts 里，也只调这里的函数。
  */
 import { parseJson, type Row } from '../world/db.js';
-import { FARE_RULE_VERSION, HOUSE_ENTRANCE, homeward, openAt, place, planRoute, station, type Place } from './catalog.js';
+import {
+  FARE_RULE_VERSION,
+  HOUSE_ENTRANCE,
+  TRANSIT_DEFAULT_HOURS,
+  homeward,
+  openAt,
+  place,
+  planRoute,
+  station,
+  transitEdgeBetween,
+  transitEdgeOpenAt,
+  type LegPlan,
+  type Place,
+  type RoutePlan,
+  type TransitHours,
+} from './catalog.js';
 import { CityError, cityPrecondition } from './errors.js';
 import { TRANSIT, ledger, purseOf, wallet } from './ledger.js';
 import { card } from './residents.js';
 import type { CityResident, CityService } from './service.js';
-import { addWalk, afterMove, openVisitOf, outboxPurchase, progress, settle, visitById, wake, type VisitRow } from './visits.js';
+import { addWalk, afterMove, lastTrainSafeDepartMs, openVisitOf, outboxPurchase, progress, settle, transitWindowAt, visitById, wake, type VisitRow } from './visits.js';
 import { isRaining } from './weather.js';
+
+const MISSED_LAST_TRAIN_NOTE = '错过终电（铁道夜间停运），已按夜间无列车兜底归家，未搭乘停运列车、未扣回程车费。';
 
 export interface Leg {
   n: number;
@@ -99,12 +116,129 @@ export interface TripView {
   minutes: number;
   leg_index: number;
   legs: Leg[];
+  /** 当前正处于铁道乘车段时：同线路同方向重叠时间窗内的匿名同行乘客数（不含自己） */
+  same_car_travellers?: number;
+  /** 当前正处于铁道乘车段时：克制的匿名车厢环境切片 */
+  car_ambiance?: string;
   source: 'simulated';
   rule_version: string;
 }
 
-export function tripView(t: TripRow): TripView {
+/** 检查一条路线在 departAtMs 出发时，其所有铁道乘车段上车时刻是否均处于模拟运营时间窗内。 */
+export function routeTransitCheck(
+  c: CityService,
+  route: RoutePlan,
+  departAtMs: number,
+): { ok: true } | { ok: false; leg: LegPlan; boardAtMs: number; hours: TransitHours; line: string | null } {
+  let curMs = departAtMs;
+  for (const leg of route.legs) {
+    if (leg.mode === 'train') {
+      const check = transitEdgeOpenAt(leg.from, leg.to, c.minuteOfDay(curMs));
+      if (!check.open) {
+        return {
+          ok: false,
+          leg,
+          boardAtMs: curMs,
+          hours: check.hours,
+          line: leg.line ?? check.edge?.line ?? null,
+        };
+      }
+    }
+    curMs += leg.minutes * 60_000;
+  }
+  return { ok: true };
+}
+
+/**
+ * 校验一段尚未持久化上车的铁道乘车段此刻是否仍可实际登车：
+ *  1. 计划上车时刻本身须在模拟运营窗内（plannedWin.open）；
+ *  2. 实际处理时刻（effectiveNow = max(depart_at_ms, c.now())）须在运营窗内；
+ *  3. 实际处理时刻不得跨过该计划班次所属运营日的终电收班线（effectiveNow < plannedWin.closeMs），
+ *     防止在步行去车站途中停机、跨过终电后恢复时补记未曾发车的终电并误扣模拟票价。
+ */
+function canBoardTrainLegNow(
+  c: CityService,
+  leg: { from: string; to: string; depart_at_ms: number },
+  actualNow: number = c.now(),
+): boolean {
+  const hours = transitEdgeBetween(leg.from, leg.to)?.hours ?? TRANSIT_DEFAULT_HOURS;
+  const plannedWin = transitWindowAt(c.params.timezone, hours, leg.depart_at_ms);
+  if (!plannedWin.open) return false;
+  const effectiveNow = Math.max(leg.depart_at_ms, actualNow);
+  if (!transitEdgeOpenAt(leg.from, leg.to, c.minuteOfDay(effectiveNow)).open) return false;
+  if (effectiveNow >= plannedWin.closeMs) return false;
+  return true;
+}
+
+/**
+ * 判断一条回程路线在有效动身时刻 effectiveAt 是否已错过终电（或当前处于停运期）：
+ * 纯步行回程恒返回 false；含铁道段时，若当前在停运窗、或相较原排程时刻 scheduledAt 已跨过当晚终电收班线，返回 true。
+ */
+export function routeReturnMissedLastTrain(
+  c: CityService,
+  route: RoutePlan,
+  effectiveAt: number,
+  scheduledAt?: number,
+): boolean {
+  if (!route.legs.some((l) => l.mode === 'train')) return false;
+  if (!routeTransitCheck(c, route, effectiveAt).ok) return true;
+  if (scheduledAt !== undefined && scheduledAt < effectiveAt) {
+    let curSched = scheduledAt;
+    for (const leg of route.legs) {
+      if (leg.mode === 'train') {
+        const hours = transitEdgeBetween(leg.from, leg.to)?.hours ?? TRANSIT_DEFAULT_HOURS;
+        const win = transitWindowAt(c.params.timezone, hours, curSched);
+        if (!win.open || effectiveAt >= win.closeMs) return true;
+      }
+      curSched += leg.minutes * 60_000;
+    }
+  }
+  return false;
+}
+
+function carAmbiance(minuteOfDay: number, count: number): string {
+  const lateNight = minuteOfDay >= 23 * 60 + 30 || minuteOfDay < 20;
+  if (lateNight) {
+    if (count === 0) return '终电前的车厢很安静，窗外只有掠过的街灯。';
+    if (count <= 2) return '深夜的车厢里零星坐着几位同路乘客，各自安静看窗外。';
+    return '赶末班车的乘客陆续上车，车厢里只有低低的轨道声。';
+  }
+  if (minuteOfDay >= 300 && minuteOfDay < 7 * 60) {
+    return count === 0 ? '清晨的首班车厢空荡安静，晨光刚漫过窗沿。' : '早班电车上有几位早起的同路乘客，彼此安静擦肩。';
+  }
+  if (count === 0) return '这节车厢此刻很空，只有电车摇晃的节拍。';
+  if (count <= 2) return '同一节车厢里有几位同向乘客，短暂同行、互不打扰。';
+  return '车厢里有不少同向出行的乘客，随着报站声安静流动。';
+}
+
+/** 计算当前乘车段的只读匿名同车厢切片（仅在同一线路、同一有向区段、重叠时间窗且在城 running 时计数）。 */
+function sameCarSlice(c: CityService, t: TripRow, legs: Leg[], at: number): { count: number; ambiance: string } | null {
+  if (t.status !== 'running') return null;
+  const cur = legs[t.leg_index];
+  if (!cur || cur.mode !== 'train' || at < cur.depart_at_ms || at >= cur.arrive_at_ms) return null;
+  const rows = c.db.all<{ resident_id: string; leg_index: number; legs_json: string } & Row>(
+    `SELECT t.resident_id AS resident_id, t.leg_index AS leg_index, t.legs_json AS legs_json
+     FROM trips t
+     JOIN residents r ON r.resident_id = t.resident_id
+     WHERE t.status = 'running' AND r.in_city = 1 AND t.resident_id <> ?`,
+    t.resident_id,
+  );
+  const peers = new Set<string>();
+  for (const row of rows) {
+    const ol = parseJson<Leg[]>(row.legs_json, [])[row.leg_index];
+    if (!ol || ol.mode !== 'train') continue;
+    if ((ol.line ?? '') !== (cur.line ?? '') || ol.from !== cur.from || ol.to !== cur.to) continue;
+    if (at < ol.depart_at_ms || at >= ol.arrive_at_ms) continue;
+    if (ol.depart_at_ms < cur.arrive_at_ms && ol.arrive_at_ms > cur.depart_at_ms) {
+      peers.add(row.resident_id);
+    }
+  }
+  return { count: peers.size, ambiance: carAmbiance(c.minuteOfDay(at), peers.size) };
+}
+
+export function tripView(t: TripRow, c?: CityService, at?: number): TripView {
   const legs = legsOf(t);
+  const slice = c ? sameCarSlice(c, t, legs, at ?? c.now()) : null;
   return {
     trip_id: t.trip_id,
     purpose: t.purpose,
@@ -117,6 +251,7 @@ export function tripView(t: TripRow): TripView {
     minutes: legs.reduce((n, l) => n + l.minutes, 0),
     leg_index: t.leg_index,
     legs,
+    ...(slice ? { same_car_travellers: slice.count, car_ambiance: slice.ambiance } : {}),
     source: 'simulated',
     rule_version: t.rule_version,
   };
@@ -124,7 +259,8 @@ export function tripView(t: TripRow): TripView {
 
 /**
  * 出发。调用方保证居民站在某个地点、没有进行中的行程。
- * purpose=travel 时检查目的地（到达时刻营业、现在没满）和车费（室友还要留得出回程车费）；purpose=return 是回小屋门口，不检查。
+ * 铁道运营时间窗按每段乘车的计划上车时刻（board_at_ms）对 travel 与 return 一致生效，停运时段绝不新发列车；
+ * purpose=travel 时额外检查目的地（到达时刻营业、现在没满）、室友终电安全返家余量及回程车费预留。
  */
 export function startTrip(c: CityService, r: CityResident, toId: string, purpose: 'travel' | 'return', at: number, visit: VisitRow | null): TripRow {
   const fromId = r.place_id;
@@ -133,10 +269,41 @@ export function startTrip(c: CityService, r: CityResident, toId: string, purpose
   const route = planRoute(fromId, toId);
   const dest = place(toId);
   if (!route || !dest) throw new CityError('NOT_FOUND', '没有这个地方，或者现在去不了。');
+  const transitCheck = routeTransitCheck(c, route, at);
+  if (!transitCheck.ok) {
+    throw cityPrecondition(
+      `现在电车已经停运了（首班 ${transitCheck.hours.first}，末班 ${transitCheck.hours.last}）。同片区步行和全天开放的地方照常能去。`,
+      'transit_closed_night',
+      {
+        line: transitCheck.line,
+        from: transitCheck.leg.from,
+        to: transitCheck.leg.to,
+        board_at_ms: transitCheck.boardAtMs,
+        hours: transitCheck.hours,
+        source: 'simulated',
+      },
+    );
+  }
   if (purpose === 'travel') {
     const eta = at + route.minutes * 60_000;
     const enter = canEnter(c, dest, eta);
     if (!enter.ok) throw cityPrecondition(enter.message, enter.reason, { place: toId });
+    if (visit) {
+      const guard = lastTrainSafeDepartMs(c, toId, at, eta);
+      if (guard && eta > guard.departByMs) {
+        throw cityPrecondition(
+          '太晚了，过去之后就赶不上回绯渡的末班电车了。',
+          'last_train_cutoff',
+          {
+            destination: toId,
+            eta_ms: eta,
+            safe_depart_by_ms: guard.departByMs,
+            last_train_close_ms: guard.closeMs,
+            source: 'simulated',
+          },
+        );
+      }
+    }
     const w = wallet(c, r.resident_id);
     const reserve = visit ? homeward(toId).fareYen : 0;
     if (w.available < route.fareYen) throw cityPrecondition(`车费不够：去${dest.name}要 ¥${route.fareYen}，你手上能动的只有 ¥${w.available}。`, 'insufficient_funds', { fare_yen: route.fareYen });
@@ -165,6 +332,7 @@ export function startTrip(c: CityService, r: CityResident, toId: string, purpose
     FARE_RULE_VERSION,
   );
   c.db.run('UPDATE residents SET place_id = NULL, trip_id = ?, revision = revision + 1 WHERE resident_id = ?', tripId, r.resident_id);
+  for (const fn of c.hooks.departPlace) fn(r.resident_id, fromId, purpose === 'return' ? 'trip_return' : 'trip_depart', at);
   // 别人只知道「走了」，不知道去哪儿（目的地可能是不公开的节点）
   if (!place(fromId)?.hidden && r.in_city) {
     const others = c.presentAt(fromId).filter((x) => x.resident_id !== r.resident_id);
@@ -175,7 +343,7 @@ export function startTrip(c: CityService, r: CityResident, toId: string, purpose
     progress(c, visit, fromId === HOUSE_ENTRANCE ? 'departed' : 'left_place', at, { place: fromId, to: toId, eta_ms: t, purpose });
     afterMove(c, visit, toId);
   }
-  c.emitTo([r.resident_id], 'trip_started', { trip: tripView(trip) }, at);
+  c.emitTo([r.resident_id], 'trip_started', { trip: tripView(trip, c, at) }, at);
   beginLeg(c, trip, legs, 0, visit);
   return c.db.get<TripRow & Row>('SELECT * FROM trips WHERE trip_id = ?', tripId)!;
 }
@@ -184,6 +352,23 @@ export function startTrip(c: CityService, r: CityResident, toId: string, purpose
 function beginLeg(c: CityService, trip: TripRow, legs: Leg[], n: number, visit: VisitRow | null): void {
   const leg = legs[n]!;
   const r = c.mustResident(trip.resident_id);
+  if (leg.mode === 'train' && !canBoardTrainLegNow(c, leg, c.now())) {
+    const actualAt = Math.max(leg.depart_at_ms, c.now());
+    if (trip.purpose === 'return' || (visit && visit.state === 'returning')) {
+      const stoppedRes = finishTrip(c, trip, 'stopped', actualAt, leg.from, 'missed_last_train');
+      c.emitTo([trip.resident_id], 'trip_stopped', { trip_id: trip.trip_id, place: leg.from, reason: 'missed_last_train' }, actualAt);
+      if (visit) {
+        progress(c, visit, 'stopped', actualAt, { place: leg.from, reason: 'missed_last_train' });
+        completeMissedLastTrainReturn(c, stoppedRes, visit, leg.from, actualAt, {
+          emitLeftFromPlace: false,
+          recordLeftPlace: false,
+        });
+      }
+      return;
+    }
+    stopTrip(c, trip, leg.from, actualAt, 'transit_closed_night', visit);
+    return;
+  }
   if (leg.mode === 'train' && leg.fare_yen > 0) {
     const w = wallet(c, r.resident_id);
     let pay = leg.fare_yen;
@@ -251,7 +436,8 @@ export function installTrips(c: CityService): void {
     if (visit && visit.state === 'returning' && trip.purpose !== 'return') {
       const r = finishTrip(c, trip, 'cancelled', at, leg.to, 'returning');
       progress(c, visit, last ? 'arrived_place' : 'arrived_station', at, { place: leg.to });
-      startReturnTrip(c, r, visit, Math.max(at, visit.returning_at ?? at));
+      const plannedTurnaround = Math.max(at, visit.returning_at ?? at);
+      startReturnTrip(c, r, visit, Math.max(plannedTurnaround, c.now()), plannedTurnaround);
       return;
     }
 
@@ -278,6 +464,7 @@ export function installTrips(c: CityService): void {
       }
     }
     const r = finishTrip(c, trip, status, at, arriveAt, diverted);
+    for (const fn of c.hooks.arrivePlace) fn(r.resident_id, arriveAt, at);
     announceArrival(c, r, arriveAt, at);
     c.emitTo([r.resident_id], 'you_arrived', { trip_id: trip.trip_id, place: arriveAt, ...(diverted ? { diverted_from: dest.id, reason: diverted } : {}) }, at);
     if (!visit) return;
@@ -297,11 +484,63 @@ function PLACE_OF_STATION(p: Place): string | null {
   return st && place(st.placeId) ? st.placeId : null;
 }
 
-/** 走回小屋门口。已经在门口就直接结算。 */
-export function startReturnTrip(c: CityService, r: CityResident, visit: VisitRow, at: number): void {
-  if (r.place_id === HOUSE_ENTRANCE) {
-    settle(c, visit, at);
+function completeMissedLastTrainReturn(
+  c: CityService,
+  r: CityResident,
+  visit: VisitRow,
+  fromPlaceId: string,
+  at: number,
+  opts: { emitLeftFromPlace: boolean; recordLeftPlace: boolean },
+): void {
+  if (opts.emitLeftFromPlace && !place(fromPlaceId)?.hidden && r.in_city) {
+    const others = c.presentAt(fromPlaceId).filter((x) => x.resident_id !== r.resident_id);
+    c.emitTo(others.map((x) => x.resident_id), 'left', { who: card(r), place: fromPlaceId }, at);
+  }
+  c.db.run(
+    'UPDATE residents SET place_id = ?, trip_id = NULL, revision = revision + 1 WHERE resident_id = ?',
+    HOUSE_ENTRANCE,
+    r.resident_id,
+  );
+  if (visit.return_reason === 'last_train') {
+    c.db.run("UPDATE visits SET return_reason = 'missed_last_train' WHERE visit_id = ?", visit.visit_id);
+  }
+  const freshVisit = visitById(c, visit.visit_id)!;
+  if (opts.recordLeftPlace) {
+    progress(c, freshVisit, 'left_place', at, {
+      place: fromPlaceId,
+      to: HOUSE_ENTRANCE,
+      eta_ms: at,
+      purpose: 'return',
+    });
+  }
+  progress(c, freshVisit, 'arrived_place', at, {
+    place: HOUSE_ENTRANCE,
+    reason: 'missed_last_train',
+  });
+  settle(c, freshVisit, at, {
+    extraNotes: [MISSED_LAST_TRAIN_NOTE],
+  });
+}
+
+/**
+ * 走回小屋门口。已经在门口就直接结算；
+ * 若因引擎停机或夜间召回导致出发时铁道已停运（错过终电），走无列车零扣费归家兜底：
+ * 绝不凭空新发停运列车或误扣回程电车票价，同时将室友安全接回小屋门口结算，避免滞留外区。
+ */
+export function startReturnTrip(c: CityService, r: CityResident, visit: VisitRow, at: number, scheduledAt?: number): void {
+  const effectiveAt = Math.max(at, c.now());
+  const fromId = r.place_id;
+  if (!fromId || fromId === HOUSE_ENTRANCE) {
+    settle(c, visit, effectiveAt);
     return;
   }
-  startTrip(c, r, HOUSE_ENTRANCE, 'return', at, visit);
+  const route = planRoute(fromId, HOUSE_ENTRANCE);
+  if (route && routeReturnMissedLastTrain(c, route, effectiveAt, scheduledAt)) {
+    completeMissedLastTrainReturn(c, r, visit, fromId, effectiveAt, {
+      emitLeftFromPlace: true,
+      recordLeftPlace: true,
+    });
+    return;
+  }
+  startTrip(c, r, HOUSE_ENTRANCE, 'return', effectiveAt, visit);
 }

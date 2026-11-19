@@ -116,14 +116,14 @@ export const configSchema = z.object({
     })
     .default({ enabled: false, dbFile: './data/town.db', publicUrl: null, devLogin: false, clientDir: null, params: {}, adminOnlyTickets: false }),
   /**
-   * 东京城市世界（/city/）：小屋的室友经外出访问进城、外部 bot 经 MCP 进城的持续城市。默认不开。
+   * 灯都城市世界（/city/）：小屋的室友经外出访问进城、外部 bot 经 MCP 进城的持续城市。默认不开。
    * 数据存在独立的 SQLite 文件里，和栖灯镇的库完全分开。说明见 docs/CITY.md。
    */
   city: z
     .object({
       enabled: z.boolean().default(false),
       dbFile: z.string().default('./data/city.db'),
-      /** 东京人类网页端的公网地址（如 https://example.com/city/play/），用来拼登录链接；不填只返回票据 */
+      /** 灯都人类网页端的公网地址（如 https://example.com/city/play/），用来拼登录链接；不填只返回票据 */
       publicUrl: z.string().url().nullable().default(null),
       /** 为 true 时，city_issue_ticket（给真人签登录票据）只有管理员能调，可信账号（refereeIds）也被拒 */
       adminOnlyTickets: z.boolean().default(false),

@@ -51,14 +51,15 @@ describe('公开页面', () => {
     const t = makeCity();
     const odd = t.bot('A&B"<b>');
     const k = t.kernel('nia');
-    k.depart({ yen: 3000, to: 'akabane:ekimae-plaza' });
+    k.depart({ yen: 3000, to: 'hiwatari:ekimae-plaza' });
     const { base } = await serve(t);
     const res = await fetch(`${base}/city/`);
     expect(res.status).toBe(200);
     expect(res.headers.get('content-type')).toContain('text/html');
     expect(res.headers.get('content-security-policy')).toContain("default-src 'none'");
     const html = await res.text();
-    expect(html).toContain('东京');
+    expect(html).toContain('灯都');
+    expect(html).not.toContain('undefined');
     expect(html).toContain('合成（没取到实时数据）');
     expect(html).toContain('模拟值');
     expect(html).toContain('Open-Meteo');
@@ -69,7 +70,7 @@ describe('公开页面', () => {
     expect(html.includes('<b>"') || html.includes('<script')).toBe(false);
     expect(html.includes(HOUSE_ENTRANCE) || html.includes('小屋')).toBe(false);
     const json = await (await fetch(`${base}/city/api/public`)).json();
-    expect(json).toMatchObject({ world_id: 'tokyo', in_transit: 1 });
+    expect(json).toMatchObject({ world_id: 'city', timezone: 'JST', city_text_version: 'toto-text-1.0', in_transit: 1 });
     expect(JSON.stringify(json).includes(HOUSE_ENTRANCE)).toBe(false);
   });
 });
@@ -96,7 +97,13 @@ describe('桥接接口', () => {
     const k = t.kernel('nia');
 
     const catalog = await api('GET', '/catalog');
-    expect(catalog.body).toMatchObject({ protocol: 'city-bridge/1', city_catalog_version: 'tokyo-p1.1', mappings: { version: MAPPINGS.version }, handover_node: HOUSE_ENTRANCE });
+    expect(catalog.body).toMatchObject({
+      protocol: 'city-bridge/1',
+      city_catalog_version: 'toto-p2.0',
+      city_text_version: 'toto-text-1.0',
+      mappings: { version: MAPPINGS.version },
+      handover_node: HOUSE_ENTRANCE,
+    });
     expect(catalog.body.places.find((p: any) => p.id === KISSA).homeward).toEqual({ fare_yen: 200, minutes: 31 });
 
     const prepare = k.prepareBody({ yen: 20_000, items: [COOKIE], to: KISSA });
@@ -161,7 +168,7 @@ describe('桥接接口', () => {
     const waiting = api('GET', '/outbox?after=0&wait_ms=5000');
     await new Promise((r) => setTimeout(r, 30));
     const t0 = Date.now();
-    k.depart({ yen: 1000, to: 'akabane:ekimae-plaza' });
+    k.depart({ yen: 1000, to: 'hiwatari:ekimae-plaza' });
     const got = await waiting;
     expect(Date.now() - t0).toBeLessThan(2000);
     expect(got.body.records.map((r: any) => r.kind)).toEqual(['visit_progress']);
@@ -174,7 +181,7 @@ describe('桥接接口', () => {
     const t = makeCity();
     const { api } = await serve(t);
     const k = t.kernel('nia');
-    k.depart({ yen: 1000, to: 'akabane:ekimae-plaza' });
+    k.depart({ yen: 1000, to: 'hiwatari:ekimae-plaza' });
     const view = await api('GET', `/visits/${k.visitId}/view?domain_epoch=1`);
     const waiting = api('GET', `/visits/${k.visitId}/wait?domain_epoch=1&wait_ms=5000&cursor=${encodeURIComponent(view.body.cursor)}`);
     await new Promise((r) => setTimeout(r, 30));

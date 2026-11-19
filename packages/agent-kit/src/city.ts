@@ -1,5 +1,5 @@
 /**
- * 东京都持续世界（world_id = "tokyo"）的 MCP 客户端：
+ * 灯都持续世界（world_id = "city"）的 MCP 客户端：
  * 封装 enter_world / get_my_view / speak / world_act / world_wait / world_query /
  * heartbeat / claim_control / leave_world。
  *
@@ -17,17 +17,22 @@ import { parseToolErrorText, type ToolCaller } from './town.js';
 
 // ───────────────────────── 类型 ─────────────────────────
 
-export const CITY_WORLD_ID = 'tokyo';
+export const CITY_WORLD_ID = 'city';
 
-/** 外部 Bot / 人类居民在东京可用的结构化动作类型（M1 基线 + M1-D 储物柜/资料）。 */
+/** 外部 Bot / 人类居民在灯都可用的结构化动作类型（M1 基线 + M1-D 储物柜/资料）。 */
 export const CITY_ACTION_TYPES = [
   'travel',
   'say',
   'buy',
   'consume',
   'give',
+  'read_item',
+  'inspect_item',
+  'drift_book',
+  'take_book',
   'store_locker',
   'take_locker',
+  'stamp_station',
   'update_profile',
 ] as const;
 
@@ -173,6 +178,12 @@ export interface CityView {
   items: CityItemView[];
   /** 本人城市储物柜清单（M1-D 起服务端返回；缺省为空数组） */
   locker_items: CityLockerItemView[];
+  /** 本人车站印章帐精简计数摘要（M3-D 起服务端返回） */
+  stamp_book?: {
+    collected: number;
+    total: number;
+    here_stamped?: boolean;
+  };
   pending_orders?: { order_id: string; what: string; yen: number }[];
   here: CityHereView | null;
   can: string[];
@@ -192,7 +203,7 @@ export interface CityEnterOptions {
   name?: string;
   /** 公开一句话简介（<=80 字） */
   bio?: string;
-  /** 首次进城落点（如 shinjuku:station 或 ikebukuro:station） */
+  /** 首次进城落点（如 sentou:station 或 kagamiike:station） */
   entry?: string;
   /** 已有其他活跃客户端持权时是否立即抢占控制权（默认 false：安全旁观，避免双实例互抢） */
   claim?: boolean;
@@ -257,7 +268,7 @@ export interface CityClaimResult {
   control: CityControlState;
 }
 
-export type CityQueryWhat = 'public' | 'residents' | 'history' | 'route';
+export type CityQueryWhat = 'public' | 'residents' | 'history' | 'route' | 'stamps';
 
 export interface CityItemSelector {
   /** 指定具名实例件 ID（优先） */
@@ -365,7 +376,7 @@ export class CityBadRequestError extends CityClientError {}
 /** 500 INTERNAL：服务端内部错误 */
 export class CityInternalError extends CityClientError {}
 
-/** 引擎未开启东京城市模块 */
+/** 引擎未开启灯都城市模块 */
 export class CityDisabledError extends CityClientError {}
 
 /** 传输层超时、断连或回包丢失：未知服务端是否已落盘，必须带原 request_id 重试 */
@@ -429,7 +440,7 @@ export function toCityError(e: unknown, tool: string, requestId?: string): unkno
   }
   if (e instanceof ToolError) {
     if (!e.code && /Tool \S+ not found/i.test(e.raw ?? e.message)) {
-      return new CityDisabledError('city_disabled', '引擎未开启东京城市模块（city.enabled）。', {
+      return new CityDisabledError('city_disabled', '引擎未开启灯都城市模块（city.enabled）。', {
         tool,
         ...(requestId ? { requestId } : {}),
         cause: e,
@@ -438,7 +449,7 @@ export function toCityError(e: unknown, tool: string, requestId?: string): unkno
     const parsed = parseToolErrorText(e.raw ?? e.message);
     const rawUpper = (e.code ?? parsed.code ?? '').toUpperCase();
     if (rawUpper === 'NOT_FOUND' && tool === 'enter_world') {
-      return new CityDisabledError('city_disabled', parsed.message || '引擎未开启东京城市世界（world_id="tokyo"）。', {
+      return new CityDisabledError('city_disabled', parsed.message || '引擎未开启灯都城市世界（world_id="city"）。', {
         tool,
         data: parsed.data,
         ...(parsed.hint ? { hint: parsed.hint } : {}),
@@ -461,7 +472,7 @@ export function toCityError(e: unknown, tool: string, requestId?: string): unkno
   const msg = e instanceof Error ? e.message : String(e);
   const mcpCode = (e as { code?: unknown } | null)?.code;
   if (mcpCode === -32602 && /not found/i.test(msg)) {
-    return new CityDisabledError('city_disabled', '引擎未开启东京城市模块（工具不存在）。', {
+    return new CityDisabledError('city_disabled', '引擎未开启灯都城市模块（工具不存在）。', {
       tool,
       ...(requestId ? { requestId } : {}),
       cause: e,
@@ -495,7 +506,7 @@ export function isFatalCityEnterError(e: unknown): boolean {
 export interface CityClientOptions {
   /** 客户端稳定标识（4~60 位字母数字或 ._-）；重连沿用同一 clientId 可无缝续持控制权 */
   clientId?: string;
-  /** 世界 ID，固定默认 "tokyo" */
+  /** 世界 ID，固定默认 "city" */
   worldId?: string;
   /** 自动生成请求号的前缀（默认 "city"） */
   requestIdPrefix?: string;
@@ -553,7 +564,7 @@ export class CityClient {
   readonly worldId: string;
   readonly state: CityClientState = {
     residentId: null,
-    actionWindow: 'tokyo',
+    actionWindow: 'city',
     contextVersion: 0,
     controlEpoch: 0,
     controlMine: true,
@@ -629,7 +640,7 @@ export class CityClient {
   // ── 进出城、视图与控制权 ──
 
   /**
-   * 进入东京都（world_id = "tokyo"）。
+   * 进入灯都（world_id = "city"）。
    * 首次进城需传 name，发放一次性启动日元；后续重入回到原地点或在途电车。
    * 默认 claim = false：若已有另一活跃客户端持有控制权，返回 control.mine === false（只读旁观，不暗抢）。
    */
@@ -726,7 +737,7 @@ export class CityClient {
     return r;
   }
 
-  /** 主动离开东京休息：立即下线释放控制权，日元、背包、储物柜与在途电车保留。 */
+  /** 主动离开灯都休息：立即下线释放控制权，日元、背包、储物柜与在途电车保留。 */
   async leaveWorld(opts: { signal?: AbortSignal } = {}): Promise<{ ok: true }> {
     const r = await this.raw<{ ok: true }>('leave_world', {}, { ...(opts.signal ? { signal: opts.signal } : {}) });
     this.state.controlMine = false;
@@ -857,6 +868,10 @@ export class CityClient {
   takeLocker(target: string | CityItemSelector, qty = 1, opts?: CityActOptions): Promise<CityActResult> {
     const sel = typeof target === 'string' ? { item: target } : { ...(target.itemId ? { item_id: target.itemId } : {}), ...(target.item ? { item: target.item } : {}) };
     return this.act({ type: 'take_locker', ...sel, qty }, opts);
+  }
+
+  stampStation(opts?: CityActOptions): Promise<CityActResult> {
+    return this.act({ type: 'stamp_station' }, opts);
   }
 
   updateProfile(patch: { name?: string; bio?: string }, opts?: CityActOptions): Promise<CityActResult> {

@@ -1,5 +1,5 @@
 /**
- * CityService：东京城市世界的内核（事务、事件流、定时作业、启动恢复）。
+ * CityService：灯都城市世界的内核（事务、事件流、定时作业、启动恢复）。
  *
  * 和栖灯镇的 WorldService 是同一套纪律，但没有坐标、没有导航租约、没有控制权代数：
  *  - 所有写入都在 commit() 的同一个 SQLite 事务里：状态、账本、物品、事件、回执、outbox、定时作业一起提交或一起回滚。
@@ -14,7 +14,7 @@ import { dirname, join } from 'node:path';
 import { CryptoRng, type Rng } from '../core/rng.js';
 import { parseJson, type Row, type TownDb } from '../world/db.js';
 import { businessDate, localParts } from '../world/time.js';
-import { CITY_WORLD_ID, CITY_WORLD_NAME, validateCatalog } from './catalog.js';
+import { CITY_WORLD_ID, CITY_WORLD_NAME, validateCatalog, type CatalogTimeContext } from './catalog.js';
 import { openCityDb } from './db.js';
 import { CityError } from './errors.js';
 import { resolveCityParams, type CityParams } from './params.js';
@@ -81,6 +81,9 @@ export const CITY_JOB_PRIORITY: Record<string, number> = {
   trip_leg: 1,
   visit_return: 2,
   presence_expire: 3,
+  locker_expire: 4,
+  venue_table_tick: 4,
+  venue_auction_settle: 4,
   reconcile_daily: 9,
   prune: 9,
 };
@@ -124,6 +127,10 @@ export class CityService {
     recover: [] as ((now: number) => void)[],
     /** 每次 tick（已在 running 状态；可以发起事务外的异步工作，比如抓天气） */
     tick: [] as ((now: number) => void)[],
+    /** 居民离开当前地点、掉线或开始返程时触发（用于牌桌退座与未结算竞拍撤回） */
+    departPlace: [] as ((residentId: string, placeId: string | null, reason: string, at: number) => void)[],
+    /** 居民到达某个地点时触发（用于按需激活茶屋固定场次竞拍） */
+    arrivePlace: [] as ((residentId: string, placeId: string, at: number) => void)[],
   };
   /** 测试用故障注入：返回 true 时这笔购买的店家入账「结果未知」（规格 F9） */
   failpoints: { purchaseUnknown?: (ctx: { residentId: string; sku: string }) => boolean } = {};
@@ -190,6 +197,16 @@ export class CityService {
 
   today(at: number = this.now()): string {
     return businessDate(this.params.timezone, at);
+  }
+
+  /** 给目录纯函数用的世界日历与时段切面（无副作用）。 */
+  catalogTime(at: number = this.now()): CatalogTimeContext {
+    const dateStr = this.today(at);
+    return {
+      dateStr,
+      jstMonth: Number(dateStr.slice(5, 7)),
+      minuteOfDay: this.minuteOfDay(at),
+    };
   }
 
   /** 世界时区里这一刻是当天第几分钟。 */

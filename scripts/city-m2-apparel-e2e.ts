@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * 东京都持续世界（M2）服饰店买衣/送礼 × 小屋衣柜入柜 × 谷歌云盘限流回填 × 双通道出图跨进程验收脚本（#260）。
+ * 灯都持续世界（M2）服饰店买衣/送礼 × 小屋衣柜入柜 × 谷歌云盘限流回填 × 双通道出图跨进程验收脚本（#260）。
  *
  * 全程运行于隔离临时目录，零真实外部网络请求、零付费图像 API 调用。
  */
@@ -598,7 +598,7 @@ async function main(): Promise<void> {
     values['house-repo'] ??
       (process.env.WORLD_KERNEL_DIR ? dirname(resolve(process.env.WORLD_KERNEL_DIR)) : '/srv/coding-work/.scratch/nia-tokyo-wardrobe-260'),
   );
-  const rootWorkDir = mkdtempSync(join(tmpdir(), 'tokyo-m2-apparel-e2e-'));
+  const rootWorkDir = mkdtempSync(join(tmpdir(), 'city-m2-apparel-e2e-'));
   const engineDir = join(rootWorkDir, 'engine');
   const kernelWorkDir = join(rootWorkDir, 'kernel');
   mkdirSync(engineDir, { recursive: true });
@@ -606,7 +606,7 @@ async function main(): Promise<void> {
 
   const harness = await createIsolatedCityHarness({
     workDir: engineDir,
-    seed: 'tokyo-m2-apparel-seed-20261118',
+    seed: 'city-m2-apparel-seed-20261118',
     enableControlRoutes: true,
   });
   // Advance from 10:00 JST to 13:00 JST so all 3 apparel shops (including 12:00-22:00 Velours Intime) are open.
@@ -641,10 +641,10 @@ async function main(): Promise<void> {
 
     // ── 1. 目录完整性与协议版本 v3 校验 ──
     assert.equal(APPAREL_CATALOG.length, 1_407, '全量服饰目录必须完整收录 1,407 套');
-    assert.equal(Object.keys(APPAREL_SHOP_PLACES).length, 3, '三家东京虚构服饰店全部启用');
-    const suzuranToday = apparelWindowForPlace('ikebukuro:suzuran-closet', '2026-11-18');
-    const lumiereToday = apparelWindowForPlace('shinjuku:lumiere-atelier', '2026-11-18');
-    const veloursToday = apparelWindowForPlace('shinjuku:velours-intime', '2026-11-18');
+    assert.equal(Object.keys(APPAREL_SHOP_PLACES).length, 3, '三家灯都虚构服饰店全部启用');
+    const suzuranToday = apparelWindowForPlace('kagamiike:suzuran-closet', '2026-11-18');
+    const lumiereToday = apparelWindowForPlace('sentou:lumiere-atelier', '2026-11-18');
+    const veloursToday = apparelWindowForPlace('sentou:velours-intime', '2026-11-18');
     assert.equal(suzuranToday.length, 6);
     assert.equal(lumiereToday.length, 6);
     assert.equal(veloursToday.length, 6);
@@ -665,7 +665,7 @@ async function main(): Promise<void> {
     assert.equal(syncReport.full_sync.uploaded_total, 3);
     assert.equal(syncReport.idempotent.uploaded_this_pass, 0, '二次同步必须幂等跳过已归档文件');
 
-    // ── 2. 外部 Bot「时尚买手葵」前往新宿·丝绒私语购入私密礼盒，再赴池袋·铃兰衣橱 ──
+    // ── 2. 外部 Bot「时尚买手葵」前往千灯·丝绒私语购入私密礼盒，再赴镜池·铃兰衣橱 ──
     const extBot = await CityClient.connect({
       url: harness.mcpUrl,
       key: 'test_only_ext_bot_key_city_90001',
@@ -676,16 +676,16 @@ async function main(): Promise<void> {
 
     const enterAoi = await extBot.enterWorld({
       name: '时尚买手葵',
-      bio: '搜集东京独立买手店礼盒的旅人',
-      entry: 'shinjuku:station',
+      bio: '搜集灯都独立买手店礼盒的旅人',
+      entry: 'sentou:station',
     });
     assert.equal(enterAoi.granted_yen, 200_000);
     activeExtBot = extBot;
 
-    await extBot.travel('shinjuku:velours-intime');
-    await advanceBoth(8 * 60_000); // 7m 步行抵达新宿·丝绒私语
+    await extBot.travel('sentou:velours-intime');
+    await advanceBoth(8 * 60_000); // 7m 步行抵达千灯·丝绒私语
     const viewAtVelours = await extBot.view();
-    assert.equal(viewAtVelours.here?.place.id, 'shinjuku:velours-intime');
+    assert.equal(viewAtVelours.here?.place.id, 'sentou:velours-intime');
     assert.ok(Buffer.byteLength(JSON.stringify(viewAtVelours), 'utf8') < 4_096, '单店轮换窗口必须保持 selfView < 4 KB');
     assert.equal(viewAtVelours.here?.goods?.length, 6);
 
@@ -694,26 +694,26 @@ async function main(): Promise<void> {
     const aoiGiftItem = viewAfterIntimateBuy.items.find((i) => i.type === 'apparel_bundle');
     assert.ok(aoiGiftItem?.item_id, '服饰礼盒必须作为带唯一 item_id 的实例物品入包');
 
-    await extBot.travel('ikebukuro:suzuran-closet');
-    await advanceBoth(30 * 60_000); // 7m 步行 + 山手线 + 5m 步行抵达池袋·铃兰衣橱
-    assert.equal((await extBot.view()).here?.place.id, 'ikebukuro:suzuran-closet');
+    await extBot.travel('kagamiike:suzuran-closet');
+    await advanceBoth(30 * 60_000); // 7m 步行 + 灯环线 + 5m 步行抵达镜池·铃兰衣橱
+    assert.equal((await extBot.view()).here?.place.id, 'kagamiike:suzuran-closet');
 
-    // ── 3. 妮娅从 AI 小屋出门前往池袋·铃兰衣橱（mappings_version = 3） ──
+    // ── 3. 妮娅从 AI 小屋出门前往镜池·铃兰衣橱（mappings_version = 3） ──
     const dep = await driver.call({
       op: 'depart',
       actor: 'nia',
-      destination: 'ikebukuro:suzuran-closet',
+      destination: 'kagamiike:suzuran-closet',
       carry_yen: 35_000,
       visit_id: 'vis_m2_apparel_1',
     });
     assert.equal(dep.visit.mappings_version, 3);
-    assert.equal(dep.visit.city_catalog_version, 'tokyo-p1.1');
+    assert.equal(dep.visit.city_catalog_version, 'toto-p2.0');
 
     await advanceBoth(60_000); // 走到玄关 away
     const hand = await driver.call({ op: 'advance_handover', visit_id: 'vis_m2_apparel_1' });
     assert.equal(hand.visit.state, 'active');
 
-    await advanceBoth(32 * 60_000); // 12m 步行 + 13m 埼京线 + 5m 步行抵达池袋·铃兰衣橱
+    await advanceBoth(32 * 60_000); // 12m 步行 + 13m 北环快线 + 5m 步行抵达镜池·铃兰衣橱
     const niaResidentId = harness.city.db.get<{ resident_id: string }>(
       "SELECT resident_id FROM house_members WHERE actor_id = 'nia'",
     )!.resident_id;
@@ -750,7 +750,7 @@ async function main(): Promise<void> {
       actions: [{ type: 'go_home' }],
     });
     await driver.call({ op: 'poll_outbox' });
-    await advanceBoth(35 * 60_000); // 5m 步行 + 13m 埼京线 + 12m 步行返回小屋门口
+    await advanceBoth(35 * 60_000); // 5m 步行 + 13m 北环快线 + 12m 步行返回小屋门口
     await driver.call({ op: 'poll_outbox' });
     await driver.call({ op: 'step' });
     await advanceBoth(60_000); // 玄关走回客厅 living
@@ -766,7 +766,7 @@ async function main(): Promise<void> {
     assert.equal(
       (wState.shelf_picks as any[]).some((p) => String(p.asset_id).startsWith('pa_')),
       false,
-      '东京店铺专属服饰严禁出现在小屋免费走廊货架',
+      '灯都店铺专属服饰严禁出现在小屋免费走廊货架',
     );
 
     const linkedAssets = (wState.asset_links as any[]).map((x) => x.asset_id);
@@ -817,9 +817,9 @@ async function main(): Promise<void> {
       `${JSON.stringify(
         {
           ok: true,
-          scenario: 'tokyo-city-m2-apparel-wardrobe-drive-e2e',
+          scenario: 'city-m2-apparel-wardrobe-drive-e2e',
           catalog: {
-            version: 'tokyo-p1.1',
+            version: 'toto-p2.0',
             mappingsVersion: 3,
             totalCostumes: APPAREL_CATALOG.length,
             shops: APPAREL_SHOP_PLACES,
