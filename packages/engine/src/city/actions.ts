@@ -16,10 +16,11 @@ import { kernelEffectOf } from './mappings.js';
 import { runReconcile } from './reconcile.js';
 import { card, updateResidentProfile } from './residents.js';
 import type { CityResident, CityService } from './service.js';
+import { stampAtStation } from './stamps.js';
 import { placeOpen, spendable, startTrip, tripView } from './trips.js';
 import { beginReturn, bodyEffect, clearChatWake, noteSpeech, openVisitOf, outboxOrderRefunded, outboxPurchase, visitById, wake, wakeForChat, withReceipt, type BridgeReceipt, type VisitRow } from './visits.js';
 
-export const CITY_ACTIONS = ['travel', 'say', 'buy', 'consume', 'give', 'store_locker', 'take_locker', 'update_profile', 'go_home'] as const;
+export const CITY_ACTIONS = ['travel', 'say', 'buy', 'consume', 'give', 'store_locker', 'take_locker', 'stamp_station', 'update_profile', 'go_home'] as const;
 
 // ───────────────────────── 限速 ─────────────────────────
 
@@ -239,6 +240,11 @@ function doUpdateProfile(c: CityService, r: CityResident, a: Action, visit: Visi
   return { status: 'completed', profile };
 }
 
+function doStampStation(c: CityService, r: CityResident, at: number, visit: VisitRow | null): Record<string, unknown> {
+  const placeId = mustBeAtPlace(r);
+  return stampAtStation(c, r, placeId, at, visit?.visit_id ?? null);
+}
+
 /** 做一件事。调用方已经确认过身份、在场和限速。 */
 function perform(c: CityService, r: CityResident, action: unknown, at: number, visit: VisitRow | null, subject: string): Record<string, unknown> {
   if (!action || typeof action !== 'object' || Array.isArray(action)) throw cityBadRequest('action 要是一个对象，例如 {"type":"travel","to":"ikebukuro:kissa-tomoshibi"}。');
@@ -258,6 +264,8 @@ function perform(c: CityService, r: CityResident, action: unknown, at: number, v
       return doStoreLocker(c, r, a, visit);
     case 'take_locker':
       return doTakeLocker(c, r, a, visit);
+    case 'stamp_station':
+      return doStampStation(c, r, at, visit);
     case 'update_profile':
       return doUpdateProfile(c, r, a, visit);
     case 'go_home':

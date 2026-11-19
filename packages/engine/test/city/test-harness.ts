@@ -40,6 +40,7 @@ import {
   createCity,
   ledgerImbalance,
   runReconcile,
+  type AreaId,
   type CityService,
   type WeatherReading,
 } from '../../src/city/index.js';
@@ -101,7 +102,7 @@ export interface IsolatedCityHarness {
   /** 注入三片天气实况（传 null 则模拟一次天气源抓取失败，用于测 stale / fallback） */
   injectWeather(readings: WeatherReading[] | null): void;
   /** 设置某片区是否下雨的便捷方法 */
-  setAreaRain(areaRain: Partial<Record<'akabane' | 'ikebukuro' | 'shinjuku', boolean>>): void;
+  setAreaRain(areaRain: Partial<Record<AreaId, boolean>>): void;
   /**
    * 模拟引擎停机/崩溃并在同一 `city-test.db` 上重启恢复：
    * 先关闭当前连接与 SQLite → 推进停机时长 `downtimeMs` → 重新打开同一库并完成 `start()` 追赶。
@@ -177,7 +178,7 @@ export async function createIsolatedCityHarness(opts: IsolatedCityHarnessOptions
     currentCity.commit(() => applyWeather(currentCity, readings, clock.t));
   };
 
-  const setAreaRain = (areaRain: Partial<Record<'akabane' | 'ikebukuro' | 'shinjuku', boolean>>): void => {
+  const setAreaRain = (areaRain: Partial<Record<AreaId, boolean>>): void => {
     const readings: WeatherReading[] = AREAS.map((a) => {
       const rain = Boolean(areaRain[a.id]);
       return {

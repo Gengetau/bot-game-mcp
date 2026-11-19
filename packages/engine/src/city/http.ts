@@ -60,7 +60,8 @@ import {
   type CityWebSession,
 } from './residents.js';
 import type { CityService } from './service.js';
-import { chatHistory, publicCityView, routePreview, selfView } from './views.js';
+import { stampBookView } from './stamps.js';
+import { SELF_VIEW_MAX_BYTES, chatHistory, publicCityView, routePreview, selfView } from './views.js';
 import { BRIDGE_PROTOCOL, abortVisit, commitVisit, describeVisit, prepareVisit, readOutbox, releaseVisit, requestReturn } from './visits.js';
 import { allWeather } from './weather.js';
 
@@ -524,6 +525,15 @@ export function mountCity(app: Express, c: CityService, log: (msg: string) => vo
     }),
   );
 
+  api.get(
+    '/stamps',
+    apiSync((req) => {
+      const { session } = requireSession(c, req);
+      if (!session.resident) throw new CityError('UNAUTHENTICATED', '还没有进入东京，请先起名入城。', 'no_resident');
+      return stampBookView(c, session.resident.resident_id);
+    }),
+  );
+
   api.get('/stream', (req, res) => {
     try {
       const { rawToken, session } = requireSession(c, req);
@@ -748,7 +758,17 @@ export function mountCity(app: Express, c: CityService, log: (msg: string) => vo
         storable: isStorable(i.type),
       })),
       places: publicPlaces().map((p) => ({ id: p.id, name: p.name, area: p.area, type: p.type, hours: p.hours, rain: p.rain, homeward: { fare_yen: homeward(p.id).fareYen, minutes: homeward(p.id).minutes }, goods: goodsForPlace(p, c.today(c.now())).map((g) => ({ sku: g.sku, type: g.type, name: g.name, price_yen: g.priceYen })) })),
-      transit: TRANSIT_EDGES.map((e) => ({ from: station(e.a)!.placeId, to: station(e.b)!.placeId, line: e.line, minutes: e.minutes, fare_yen: e.fareYen, source: 'simulated' })),
+      transit: TRANSIT_EDGES.map((e) => ({
+        from: station(e.a)!.placeId,
+        to: station(e.b)!.placeId,
+        line: e.line,
+        ...(e.operator ? { operator: e.operator } : {}),
+        ...(e.transportKind ? { transport_kind: e.transportKind } : {}),
+        ...(e.distanceKm !== undefined ? { distance_km: e.distanceKm } : {}),
+        minutes: e.minutes,
+        fare_yen: e.fareYen,
+        source: 'simulated',
+      })),
     })),
   );
   bridge.post('/visits/prepare', sync((req) => prepareVisit(c, body(req))));
@@ -780,7 +800,12 @@ export function mountCity(app: Express, c: CityService, log: (msg: string) => vo
     '/visits/:id/view',
     sync((req) => {
       const visit = requireActingVisit(c, visitId(req), Number(req.query.domain_epoch));
-      return { visit_id: visit.visit_id, state: visit.state, ...selfView(c, c.mustResident(visit.resident_id)) };
+      const prefixBytes = Buffer.byteLength(JSON.stringify({ visit_id: visit.visit_id, state: visit.state }), 'utf8');
+      return {
+        visit_id: visit.visit_id,
+        state: visit.state,
+        ...selfView(c, c.mustResident(visit.resident_id), { maxBytes: Math.max(1024, SELF_VIEW_MAX_BYTES - prefixBytes) }),
+      };
     }),
   );
   bridge.get('/visits/:id/wait', async (req, res) => {

@@ -125,6 +125,7 @@ body {
   margin: 0;
   font-size: 0.875rem;
   color: var(--fg-muted);
+  font-variant-numeric: tabular-nums;
 }
 
 .header-actions {
@@ -402,6 +403,318 @@ textarea:user-invalid {
   color: var(--fg);
   border-color: var(--border);
 }
+.btn-compact {
+  min-height: 2.75rem;
+  padding: 0.35rem 0.75rem;
+  font-size: 0.875rem;
+}
+
+/* 车门上方克制液晶信息牌（组件级强制深色 color-scheme + 显式重声明继承色，兼容 light-dark() 规则） */
+.commuter-deck {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 0.875rem;
+  margin-block-end: 1rem;
+}
+@media (min-width: 56rem) {
+  .commuter-deck {
+    grid-template-columns: 1.35fr 0.65fr;
+    align-items: stretch;
+  }
+}
+
+.lcd-board {
+  color-scheme: dark;
+  --lcd-bg: #101722;
+  --lcd-panel: #192334;
+  --lcd-border: #334155;
+  --lcd-fg: #f8fafc;
+  --lcd-muted: #cbd5e1;
+  --lcd-accent: #38bdf8;
+  --lcd-line: #65a30d;
+  background: var(--lcd-bg);
+  color: var(--lcd-fg);
+  accent-color: var(--lcd-accent);
+  border: 1.5px solid var(--lcd-border);
+  border-radius: var(--radius);
+  padding: 0.85rem 1rem;
+  min-block-size: 9rem;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 0.625rem;
+}
+@media (prefers-color-scheme: dark) {
+  .lcd-board {
+    --lcd-border: #475569;
+  }
+}
+.lcd-board[data-line="saikyo"] {
+  --lcd-line: #16a34a;
+}
+.lcd-board[data-line="yamanote"] {
+  --lcd-line: #65a30d;
+}
+.lcd-board[data-line="shinjuku"] {
+  --lcd-line: #84cc16;
+}
+.lcd-board[data-line="odakyu"] {
+  --lcd-line: #38bdf8;
+}
+.lcd-board[data-line="walk"] {
+  --lcd-line: #f59e0b;
+}
+
+.lcd-line-bar {
+  block-size: 0.32rem;
+  border-radius: 999px;
+  background: var(--lcd-line);
+}
+.lcd-top-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+.lcd-station-head {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+.lcd-code {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-inline-size: 2.75rem;
+  min-block-size: 2.75rem;
+  padding: 0.2rem 0.45rem;
+  border-radius: 0.45rem;
+  border: 2.5px solid var(--lcd-line);
+  background: var(--lcd-panel);
+  color: var(--lcd-fg);
+  font-size: 0.95rem;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+}
+.lcd-titles {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+}
+.lcd-kicker {
+  font-size: 0.78rem;
+  color: var(--lcd-muted);
+  letter-spacing: 0.03em;
+}
+.lcd-title {
+  font-size: 1.25rem;
+  line-height: 1.25;
+  color: var(--lcd-fg);
+}
+.lcd-meta-col {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 0.1rem;
+  font-variant-numeric: tabular-nums;
+}
+.lcd-clock {
+  font-size: 1.125rem;
+  font-weight: 700;
+  color: var(--lcd-fg);
+}
+.lcd-eta {
+  font-size: 0.8125rem;
+  color: var(--lcd-accent);
+}
+.lcd-sub-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding-block-start: 0.45rem;
+  border-block-start: 1px solid var(--lcd-border);
+}
+.lcd-sub-text {
+  font-size: 0.85rem;
+  color: var(--lcd-muted);
+  font-variant-numeric: tabular-nums;
+}
+.lcd-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+.lcd-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.15rem 0.55rem;
+  border-radius: 999px;
+  font-size: 0.78rem;
+  font-weight: 600;
+  background: var(--lcd-panel);
+  color: var(--lcd-muted);
+  border: 1px solid var(--lcd-border);
+}
+.btn-lcd {
+  min-height: 2.75rem;
+  padding: 0.35rem 0.75rem;
+  font-size: 0.875rem;
+  background: var(--lcd-panel);
+  color: var(--lcd-fg);
+  border-color: var(--lcd-accent);
+}
+
+.lcd-stops {
+  list-style: none;
+  margin: 0;
+  padding: 0.4rem 0.6rem;
+  border-radius: 0.4rem;
+  background: var(--lcd-panel);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.45rem;
+  font-size: 0.8125rem;
+  font-variant-numeric: tabular-nums;
+}
+.lcd-stop-item {
+  color: var(--lcd-muted);
+}
+.lcd-stop-active {
+  color: var(--lcd-fg);
+  font-weight: 700;
+  text-decoration: underline;
+  text-decoration-color: var(--lcd-line);
+  text-underline-offset: 0.2rem;
+}
+
+/* 微缩天气×昼夜窗景剪影 */
+.window-card {
+  padding: 0.85rem 1rem;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+.window-card-head {
+  margin-block-end: 0;
+}
+.window-heading {
+  font-size: 1rem;
+}
+.window-frame {
+  --win-sky-fill: #cde4f7;
+  --win-celestial-fill: #f59e0b;
+  --win-silhouette-fill: #334155;
+  --win-lamp-fill: #fef08a;
+  border-radius: 0.5rem;
+  overflow: hidden;
+  border: 1px solid var(--border);
+}
+.window-frame[data-tod="dawn"] {
+  --win-sky-fill: #fed7aa;
+  --win-celestial-fill: #fb923c;
+  --win-silhouette-fill: #4338ca;
+}
+.window-frame[data-tod="day"] {
+  --win-sky-fill: #bae6fd;
+  --win-celestial-fill: #f59e0b;
+  --win-silhouette-fill: #334155;
+}
+.window-frame[data-tod="dusk"] {
+  --win-sky-fill: #fdba74;
+  --win-celestial-fill: #ea580c;
+  --win-silhouette-fill: #312e81;
+}
+.window-frame[data-tod="night"] {
+  --win-sky-fill: #0f172a;
+  --win-celestial-fill: #e2e8f0;
+  --win-silhouette-fill: #1e293b;
+}
+.window-frame[data-sky="cloudy"],
+.window-frame[data-sky="rain"] {
+  --win-sky-fill: #94a3b8;
+  --win-celestial-fill: #cbd5e1;
+}
+.window-frame[data-tod="night"][data-sky="cloudy"],
+.window-frame[data-tod="night"][data-sky="rain"] {
+  --win-sky-fill: #111827;
+  --win-celestial-fill: #475569;
+}
+
+.window-svg {
+  display: block;
+  inline-size: 100%;
+  block-size: auto;
+}
+.win-sky {
+  fill: var(--win-sky-fill);
+}
+.win-celestial {
+  fill: var(--win-celestial-fill);
+  opacity: 0.92;
+}
+.window-frame[data-sky="cloudy"] .win-celestial,
+.window-frame[data-sky="rain"] .win-celestial {
+  opacity: 0.3;
+}
+.win-stars {
+  fill: #f8fafc;
+  opacity: 0;
+}
+.window-frame[data-tod="night"][data-sky="clear"] .win-stars {
+  opacity: 0.85;
+}
+.win-cloud {
+  fill: #f8fafc;
+  opacity: 0.28;
+}
+.window-frame[data-sky="cloudy"] .win-cloud,
+.window-frame[data-sky="rain"] .win-cloud {
+  fill: #e2e8f0;
+  opacity: 0.86;
+}
+.window-frame[data-tod="night"] .win-cloud {
+  fill: #475569;
+}
+.win-silhouette {
+  fill: var(--win-silhouette-fill);
+}
+.win-lamp {
+  fill: var(--win-lamp-fill);
+  opacity: 0.25;
+}
+.window-frame[data-tod="dusk"] .win-lamp,
+.window-frame[data-tod="night"] .win-lamp {
+  opacity: 0.95;
+}
+.win-rain-layer {
+  stroke: #e0f2fe;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  opacity: 0;
+}
+.window-frame[data-sky="rain"] .win-rain-layer {
+  opacity: 0.82;
+}
+.win-mullion {
+  fill: none;
+  stroke: var(--control-border);
+  stroke-width: 3;
+}
+.win-sill {
+  stroke: var(--control-border);
+  stroke-width: 1.5;
+  opacity: 0.55;
+}
+.window-caption {
+  margin: 0;
+  font-variant-numeric: tabular-nums;
+}
 
 /* 无障碍标签页导航（::after 伪元素底部指示线，兼容 forced-colors，面板样式挂在 .panel-inner 上以兼容 hidden="until-found"） */
 .tablist {
@@ -521,6 +834,7 @@ textarea:user-invalid {
   margin: 0.15rem 0 0;
   font-size: 1.25rem;
   font-weight: 700;
+  font-variant-numeric: tabular-nums;
 }
 
 .rail-map {
@@ -533,37 +847,190 @@ textarea:user-invalid {
 .rail-saikyo {
   stroke: #16a34a;
   stroke-width: 5;
+  fill: none;
 }
 .rail-direct {
   stroke: #0d9488;
   stroke-width: 4;
   stroke-dasharray: 8 5;
+  fill: none;
 }
 .rail-yamanote {
   stroke: #65a30d;
   stroke-width: 5;
+  fill: none;
+}
+.rail-shinjuku {
+  stroke: #4d7c0f;
+  stroke-width: 5;
+  fill: none;
+}
+.rail-odakyu {
+  stroke: #0284c7;
+  stroke-width: 5;
+  fill: none;
+}
+.rail-edge-dim {
+  opacity: 0.42;
+}
+.rail-edge-active {
+  stroke-width: 7;
+  opacity: 1;
 }
 .station-node {
   fill: var(--surface);
   stroke: var(--fg);
   stroke-width: 3;
 }
+.station-node-active {
+  stroke: var(--accent);
+  stroke-width: 4;
+}
+.rail-breathe-ring {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 3;
+  opacity: 0.65;
+  transform-box: fill-box;
+  transform-origin: center;
+}
+.station-stamp-dot {
+  fill: #b91c1c;
+  stroke: var(--surface);
+  stroke-width: 1.5;
+}
 .station-title {
   fill: var(--fg);
-  font-size: 13px;
+  font-size: 0.8125rem;
   font-weight: 700;
 }
 .rail-label {
   fill: var(--fg-muted);
-  font-size: 12px;
+  font-size: 0.75rem;
 }
 
-@media (prefers-reduced-motion: reduce) {
-  *,
-  *::before,
-  *::after {
-    scroll-behavior: auto !important;
-    transition-duration: 0.01ms !important;
-    animation-duration: 0.01ms !important;
+.station-quick-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-block-start: 0.75rem;
+}
+
+/* 车站印章台与个人印章帐（Eki-Stamp） */
+.stamp-desk-bar {
+  margin-block-start: 0.75rem;
+  padding: 0.65rem 0.75rem;
+  border-radius: 0.5rem;
+  border: 1.5px dashed var(--control-border);
+  background: var(--surface-subtle);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.625rem;
+}
+.stamp-grid {
+  list-style: none;
+  padding: 0;
+  margin: 0.625rem 0 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr));
+  gap: 0.625rem;
+}
+.stamp-slot {
+  padding: 0.65rem 0.75rem;
+  border-radius: 0.5rem;
+  border: 1.5px dashed var(--border);
+  background: var(--surface-subtle);
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+}
+.stamp-slot-collected {
+  border-style: solid;
+  border-color: var(--control-border);
+  background: var(--surface);
+}
+.stamp-seal-svg {
+  inline-size: 3rem;
+  block-size: 3rem;
+  flex-shrink: 0;
+}
+.stamp-ink-akabane {
+  color: #b91c1c;
+}
+.stamp-ink-ikebukuro {
+  color: #15803d;
+}
+.stamp-ink-shinjuku {
+  color: #4338ca;
+}
+.stamp-ink-jinbocho {
+  color: #1e3a8a;
+}
+.stamp-ink-shimokitazawa {
+  color: #9a3412;
+}
+.stamp-ink-empty {
+  color: var(--fg-muted);
+  opacity: 0.45;
+}
+
+/* 仅在用户未请求减少动态效果、且未手动点击暂停动效时启用合成器级（opacity / transform）轻柔呼吸与微景动态 */
+@keyframes rail-breathe {
+  0%,
+  100% {
+    opacity: 0.35;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.85;
+    transform: scale(1.24);
+  }
+}
+@keyframes rail-edge-pulse {
+  0%,
+  100% {
+    opacity: 0.68;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+@keyframes window-cloud-drift {
+  0%,
+  100% {
+    transform: translateX(0);
+  }
+  50% {
+    transform: translateX(6px);
+  }
+}
+@keyframes window-rain-fall {
+  0% {
+    transform: translate(2px, -3px);
+    opacity: 0.62;
+  }
+  50% {
+    opacity: 0.88;
+  }
+  100% {
+    transform: translate(-2px, 4px);
+    opacity: 0.62;
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  html:not([data-motion="paused"]) .rail-breathe-ring {
+    animation: rail-breathe 2.8s ease-in-out infinite;
+  }
+  html:not([data-motion="paused"]) .rail-edge-active {
+    animation: rail-edge-pulse 2.4s ease-in-out infinite;
+  }
+  html:not([data-motion="paused"]) .win-cloud {
+    animation: window-cloud-drift 9s ease-in-out infinite;
+  }
+  html:not([data-motion="paused"]) .window-frame[data-sky="rain"] .win-rain-layer {
+    animation: window-rain-fall 1.35s linear infinite;
   }
 }

@@ -27,7 +27,9 @@ import {
   normalizeClientId,
   publicCityView,
   routePreview,
+  SELF_VIEW_MAX_BYTES,
   selfView,
+  stampBookView,
   touchPresence,
   type CityResident,
   type CityService,
@@ -82,7 +84,7 @@ export const CITY_GUIDE = `# 东京：给进城的 AI 的说明
 4. \`world_wait\`：带上 cursor 等新事件（到站 you_arrived、有人说话 chat、有人来了走了、收到东西 gift_received、控制权变化 control、下雨 weather）。等待本身就在续你的在场；没有新事件就是没事。
 5. \`heartbeat\`：仅续期在场租约，不产生事件（若已不在城返回 PRECONDITION_FAILED / not_in_city）。
 6. \`claim_control\`：显式接管当前居民的控制权（遇到 CONTROL_LOST 且确认要由此实例控制时调用）。
-7. \`world_query\`，带 \`world_id: "tokyo"\`：what = public（公开城市视图）/ residents（此刻在公开地点的人）/ history（我听到过的话）/ route（试算 from 到 to 的路线、耗时与模拟票价）。
+7. \`world_query\`，带 \`world_id: "tokyo"\`：what = public（公开城市视图）/ residents（此刻在公开地点的人）/ history（我听到过的话）/ route（试算 from 到 to 的路线、耗时与模拟票价）/ stamps（本人车站印章帐明细）。
 8. \`leave_world\`：离开。日元、随身物品和储物柜保留，已出发的电车后台照常到站。
 
 ## world_act 的 action
@@ -93,6 +95,7 @@ export const CITY_GUIDE = `# 东京：给进城的 AI 的说明
 - 送东西：\`{"type":"give","to":"<对方 id>","item_id":"…","qty":1}\`，对方要和你在同一个地点。
 - 存储物柜：\`{"type":"store_locker","item_id":"…","qty":1}\`（须站在车站大厅；现点热饮 carry_home=false 不能寄存）。
 - 取储物柜：\`{"type":"take_locker","item_id":"…","qty":1}\`（须站在车站大厅）。
+- 盖车站章：\`{"type":"stamp_station"}\`（须站在开放车站大厅；记入个人站章帐，同站幂等，不占背包物品上限）。
 - 改资料：\`{"type":"update_profile","name":"…","bio":"…"}\`。
 
 物品怎么指：用视图 items 里的 item_id，或者用 item（物品类型，比如 "coffee"）。
@@ -197,7 +200,7 @@ function enter(
     created: out.created,
     resident_id: out.resident.resident_id,
     ...(out.granted_yen ? { granted_yen: out.granted_yen } : {}),
-    ...selfView(c, out.resident, { clientId }),
+    ...selfView(c, out.resident, { clientId, maxBytes: SELF_VIEW_MAX_BYTES - 160, prettyIndent: 2 }),
   };
 }
 
@@ -208,14 +211,54 @@ export function cityView(deps: CityDeps, ctx: SessionContext, me: Identity, a: {
     const r = residentOf(deps, ctx, me);
     const clientId = sessionClientId(ctx);
     touchPresence(c, r.resident_id);
-    let extra: Record<string, unknown> = {};
-    if (a.cursor) {
-      const ms = Math.min(a.wait_seconds ?? 0, MAX_WAIT_SECONDS) * 1000;
-      if (ms > 0) await c.waitResident(r.resident_id, a.cursor, ms, signal);
-      const read = c.readResidentEvents(r.resident_id, a.cursor, 50);
-      extra = { new_events: read.events.map((e) => ({ type: e.type, at: e.at, ...e.data })), ...(read.more ? { more: true } : {}), ...(read.resync ? { resync: true } : { cursor: read.cursor }) };
+    const mcpBytes = (val: unknown): number => Buffer.byteLength(JSON.stringify(val, null, 2), 'utf8');
+    if (!a.cursor) {
+      return selfView(c, c.mustResident(r.resident_id), { clientId, maxBytes: SELF_VIEW_MAX_BYTES, prettyIndent: 2 });
     }
-    return { ...selfView(c, c.mustResident(r.resident_id), { clientId }), ...extra };
+    const ms = Math.min(a.wait_seconds ?? 0, MAX_WAIT_SECONDS) * 1000;
+    if (ms > 0) await c.waitResident(r.resident_id, a.cursor, ms, signal);
+    const read = c.readResidentEvents(r.resident_id, a.cursor, 50);
+    const fresh = c.mustResident(r.resident_id);
+    if (read.resync || read.events.length === 0) {
+      const extra: Record<string, unknown> = {
+        new_events: [],
+        ...(read.more ? { more: true } : {}),
+        ...(read.resync ? { resync: true } : { cursor: read.cursor }),
+      };
+      const extraBytes = mcpBytes(extra);
+      return {
+        ...selfView(c, fresh, { clientId, maxBytes: Math.max(1400, SELF_VIEW_MAX_BYTES - extraBytes), prettyIndent: 2 }),
+        ...extra,
+      };
+    }
+    let k = read.events.length;
+    while (k > 1) {
+      const slice = read.events.slice(0, k);
+      const probeExtra = {
+        new_events: slice.map((e) => ({ type: e.type, at: e.at, ...e.data })),
+        ...(read.more || k < read.events.length ? { more: true } : {}),
+        cursor: slice[slice.length - 1]!.id,
+      };
+      if (mcpBytes(probeExtra) <= 1300) break;
+      k--;
+    }
+    for (;;) {
+      const slice = read.events.slice(0, k);
+      const extra: Record<string, unknown> = {
+        new_events: slice.map((e) => ({ type: e.type, at: e.at, ...e.data })),
+        ...(read.more || k < read.events.length ? { more: true } : {}),
+        cursor: slice[slice.length - 1]!.id,
+      };
+      const extraBytes = mcpBytes(extra);
+      const combined = {
+        ...selfView(c, fresh, { clientId, maxBytes: Math.max(1200, SELF_VIEW_MAX_BYTES - extraBytes), prettyIndent: 2 }),
+        ...extra,
+      };
+      if (mcpBytes(combined) <= SELF_VIEW_MAX_BYTES || k <= 1) {
+        return combined;
+      }
+      k--;
+    }
   });
 }
 
@@ -272,7 +315,8 @@ function query(
     const r = residentOf(deps, ctx, me());
     if (a.what === 'residents') return { residents: cityDirectory(c) };
     if (a.what === 'history') return chatHistory(c, r.resident_id, typeof a.before === 'number' ? a.before : null, Math.min(a.limit ?? 30, 50));
-    throw new CityError('BAD_REQUEST', '东京城市世界当前支持的查询有：public / residents / history / route。', 'not_available');
+    if (a.what === 'stamps') return stampBookView(c, r.resident_id);
+    throw new CityError('BAD_REQUEST', '东京城市世界当前支持的查询有：public / residents / history / route / stamps。', 'not_available');
   });
 }
 
@@ -306,7 +350,7 @@ const CITY_NOTES: Record<string, string> = {
   world_act: ` 会话在东京城市世界里时，action 是 ${CITY_ACTIONS.filter((x) => x !== 'go_home').join(' / ')}（写法见资源 botgame://guide/city）；action_window、context_version 原样用视图里给的。`,
   world_wait: ' 会话在东京城市世界里时等的是城里的事件（you_arrived、chat、arrived / left、gift_received、control、weather）。',
   leave_world: ' 会话在东京城市世界里时离开的是城市：钱和东西保留，在路上的行程照常到站。',
-  world_query: ' 东京城市世界：带 world_id="tokyo"，what 支持 public / residents / history / route（route 需带 from 与 to）。',
+  world_query: ' 东京城市世界：带 world_id="tokyo"，what 支持 public / residents / history / route / stamps（route 需带 from 与 to）。',
   heartbeat: ' 会话在东京城市世界里时续城里的在场租约（若不在城返回 PRECONDITION_FAILED / not_in_city）。',
   claim_control: ' 会话在东京城市世界里时显式接管这位城市居民的控制权。',
 };
@@ -357,7 +401,7 @@ export function withCity(tool: ToolFn, deps: CityDeps, ctx: SessionContext, me: 
             description,
             inputSchema: {
               ...config.inputSchema,
-              what: z.enum(['public', 'residents', 'letters', 'history', 'town_chat', 'relations', 'report', 'route']),
+              what: z.enum(['public', 'residents', 'letters', 'history', 'town_chat', 'relations', 'report', 'route', 'stamps']),
               world_id: z.string().optional().describe('查哪个世界：不填 = 这个会话当前所在的世界（没进过城就是栖灯镇）；tokyo = 东京城市世界'),
               from: z.string().max(60).optional().describe('tokyo route：起点地点编号'),
               to: z.string().max(60).optional().describe('tokyo route：终点地点编号'),
@@ -480,9 +524,9 @@ export function registerCityTools(tool: ToolFn, deps: CityDeps, ctx: SessionCont
     'world_query',
     {
       title: '查城里的资料',
-      description: 'public=公开的城市数据（不用进城也能看）；residents=此刻在公开地点的人；history=我听到过的话（before 翻页）；route=试算 from 到 to 的路线、耗时与票价。',
+      description: 'public=公开的城市数据（不用进城也能看）；residents=此刻在公开地点的人；history=我听到过的话（before 翻页）；route=试算 from 到 to 的路线、耗时与票价；stamps=本人车站印章帐明细。',
       inputSchema: {
-        what: z.enum(['public', 'residents', 'history', 'route']),
+        what: z.enum(['public', 'residents', 'history', 'route', 'stamps']),
         world_id: z.string().optional(),
         before: z.union([z.number(), z.string().max(40)]).optional().describe('history 翻页：上一页返回的 next'),
         limit: z.number().int().min(1).max(50).optional(),

@@ -445,6 +445,27 @@ const MIGRATIONS: readonly string[] = [
   ALTER TABLE item_events_v2 RENAME TO item_events;
   CREATE INDEX item_events_visit ON item_events(visit_id, event_id) WHERE visit_id IS NOT NULL;
   `,
+  // ───── v3 ─────
+  // M3-D：个人车站印章帐（resident_stamps，同站幂等、不占背包物品上限）与激活目录版本历史表（catalog_versions）。
+  `
+  CREATE TABLE resident_stamps (
+    resident_id TEXT NOT NULL REFERENCES residents(resident_id),
+    station_id TEXT NOT NULL,
+    stamp_id TEXT NOT NULL,
+    place_id TEXT NOT NULL,
+    stamped_at INTEGER NOT NULL,
+    visit_id TEXT,
+    PRIMARY KEY (resident_id, station_id)
+  ) STRICT, WITHOUT ROWID;
+  CREATE INDEX resident_stamps_time ON resident_stamps(resident_id, stamped_at);
+
+  CREATE TABLE catalog_versions (
+    catalog_version TEXT PRIMARY KEY,
+    fare_rule_version TEXT NOT NULL,
+    summary_json TEXT NOT NULL,
+    activated_at INTEGER NOT NULL
+  ) STRICT, WITHOUT ROWID;
+  `,
 ];
 
 export const CITY_SCHEMA: SchemaSpec = { label: '城市世界数据库', migrations: MIGRATIONS, backupPrefix: 'city-' };

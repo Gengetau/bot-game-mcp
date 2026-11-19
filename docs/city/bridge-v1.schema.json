@@ -265,7 +265,9 @@
         "shinjuku",
         "asakusa",
         "shibuya",
-        "kichijoji"
+        "kichijoji",
+        "jinbocho",
+        "shimokitazawa"
       ]
     },
     "KernelEffectName": {
@@ -611,6 +613,9 @@
         },
         {
           "$ref": "#/$defs/ActionTakeLocker"
+        },
+        {
+          "$ref": "#/$defs/ActionStampStation"
         }
       ]
     },
@@ -827,6 +832,18 @@
             "item"
           ]
         }
+      ]
+    },
+    "ActionStampStation": {
+      "description": "在开放车站大厅加盖本站纪念印章，记入个人站章帐（同站幂等，不重复占随身背包或储物柜物品上限）。",
+      "type": "object",
+      "properties": {
+        "type": {
+          "const": "stamp_station"
+        }
+      },
+      "required": [
+        "type"
       ]
     },
     "Receipt": {
@@ -2772,6 +2789,7 @@
                   "plaza",
                   "riverside",
                   "promenade",
+                  "theatre",
                   "entrance"
                 ]
               },
@@ -2875,6 +2893,15 @@
               },
               "line": {
                 "type": "string"
+              },
+              "operator": {
+                "type": "string"
+              },
+              "transport_kind": {
+                "type": "string"
+              },
+              "distance_km": {
+                "type": "number"
               },
               "minutes": {
                 "type": "number"
