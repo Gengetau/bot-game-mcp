@@ -10,6 +10,7 @@ import type { AddressInfo } from 'node:net';
 import { fileURLToPath } from 'node:url';
 import express from 'express';
 import { afterEach, describe, expect, it } from 'vitest';
+import { BOOK_SHELF_BUYBACK_YEN } from '../../src/city/catalog.js';
 import { mountCity } from '../../src/city/http.js';
 import { HOUSE_ENTRANCE } from '../../src/city/index.js';
 import { resolveCityParams } from '../../src/city/params.js';
@@ -21,7 +22,11 @@ const ADMIN_SENTINEL = 'admin-sentinel-do-not-print-0123456789';
 const RENAME_R0 = JSON.parse(readFileSync(fileURLToPath(new URL('../../../../docs/city/rename-r0.json', import.meta.url)), 'utf8')) as {
   forbidden_legacy_tokens_in_public_and_views: string[];
 };
-const FORBIDDEN_TOKENS = RENAME_R0.forbidden_legacy_tokens_in_public_and_views;
+// R1（2026-11-20 主人改名：灯都→晴空都，绯渡→日和坂，镜池→棱光街，千灯→云港，澪川→浮光川）。
+// 对照表 docs/city/rename-r1.json 在分支 jian/qingkong-rename 上、还没进 main，所以这里直接写死 R1 的旧名清单；
+// 等 R1 合进 main 后可以改成读那份表。内部编号（world_id city、sentou:station 等）不动，不在禁用范围内。
+const R1_LEGACY_NAMES = ['灯都', '绯渡', '镜池', '千灯', '澪川', '灯环线'];
+const FORBIDDEN_TOKENS = [...RENAME_R0.forbidden_legacy_tokens_in_public_and_views, ...R1_LEGACY_NAMES];
 const DOC_PATH = fileURLToPath(new URL('../../../../docs/CITY-BOTS.md', import.meta.url));
 const TOWN_BOTS_PATH = fileURLToPath(new URL('../../../../docs/TOWN-BOTS.md', import.meta.url));
 
@@ -82,7 +87,7 @@ describe('接入页 /city/connect', () => {
     const t = makeCity();
     const base = await serve(t);
     const html = await (await fetch(`${base}/city/connect`)).text();
-    expect(html).toContain('灯都');
+    expect(html).toContain('晴空都');
     expect(html).not.toContain('undefined');
     expect(legacyHits(html)).toEqual([]);
     expect(html.includes(HOUSE_ENTRANCE) || html.includes('小屋')).toBe(false);
@@ -117,6 +122,9 @@ describe('接入页 /city/connect', () => {
     expect(html).toContain('city_full'); // 人满了：过一阵再来
     expect(html).toContain('RATE_LIMITED');
     expect(html).toContain('world_query');
+    expect(html).toContain('heartbeat'); // 保持在场的专用工具
+    expect(html).toContain('同一把'); // 已有的栖灯镇/公共对局密钥通用，不用另要
+    expect(html).toContain('云港片区'); // 入口编号对应新片区名
   });
 });
 
@@ -127,6 +135,7 @@ describe('接入说明 docs/CITY-BOTS.md', () => {
   it('零旧词、零内部口径、不带密钥样子的串', () => {
     const doc = readDoc();
     expect(legacyHits(doc)).toEqual([]);
+    expect(doc).toContain('晴空都');
     expect(doc.includes(HOUSE_ENTRANCE) || doc.includes('小屋')).toBe(false);
     expect(/bridgeKey|bridge_key|\/city\/bridge/i.test(doc)).toBe(false);
     // 没有看起来像真实密钥的长串，也没有 QQ 号样子的长数字
@@ -145,10 +154,22 @@ describe('接入说明 docs/CITY-BOTS.md', () => {
     expect(doc).toContain('city.allowedAgents');
     expect(doc).toContain('not_admitted');
     expect(doc).toContain('city_full');
+    // 其余写死在文档里的数字也跟默认参数对上，改了默认值这里会红
+    expect(doc).toContain(`每分钟 ${d.chatPerMinute} 句`);
+    expect(doc).toContain(`每句最多 ${d.chatMaxChars} 字`);
+    expect(doc).toContain(`突发 ${d.wakeBurst} 次`);
+    expect(doc).toContain(`每小时恢复 ${d.wakePerHour} 次`);
+    expect(doc).toContain('每个 IP 每分钟 240 次');
+    expect(doc).toContain(`连续 ${Math.round(d.presenceLeaseMs / 60_000)} 分钟没有续期`);
+    expect(doc).toContain(`每本 ¥${BOOK_SHELF_BUYBACK_YEN}`);
+    expect(doc).toContain('同一把');
+    expect(doc).toContain('heartbeat');
   });
 
   it('TOWN-BOTS.md 顶部指向新文件', () => {
     const head = readFileSync(TOWN_BOTS_PATH, 'utf8').split('\n').slice(0, 6).join('\n');
     expect(head).toContain('CITY-BOTS.md');
+    // 两个世界共用同一套鉴权：同一把密钥通用，只有准入名单和限额各自独立
+    expect(head).toContain('同一把 MCP 密钥两边通用');
   });
 });
