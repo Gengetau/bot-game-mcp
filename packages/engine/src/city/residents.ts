@@ -489,6 +489,7 @@ function depart(c: CityService, r: CityResident, at: number, bumpEpoch = false):
     r.resident_id,
   );
   c.cancelJob(`pres:${r.resident_id}`);
+  for (const fn of c.hooks.departPlace) fn(r.resident_id, r.place_id, bumpEpoch ? 'left_city' : 'presence_expire', at);
   if (r.place_id && publicPlace(r.place_id)) {
     c.emitTo(c.presentAt(r.place_id).filter((x) => x.resident_id !== r.resident_id).map((x) => x.resident_id), 'left', { who: card(r), place: r.place_id }, at);
   }

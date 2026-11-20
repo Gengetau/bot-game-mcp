@@ -514,6 +514,70 @@ const MIGRATIONS: readonly string[] = [
     activated_at INTEGER NOT NULL
   ) STRICT, WITHOUT ROWID;
   `,
+  // ───── v4 ─────
+  // M3-B：桌游茶屋牌桌与旧物密封竞拍会
+  `
+  CREATE TABLE venue_tables (
+    table_id TEXT PRIMARY KEY,
+    place_id TEXT NOT NULL,
+    game_type TEXT NOT NULL,
+    options_json TEXT NOT NULL DEFAULT '{}',
+    status TEXT NOT NULL CHECK (status IN ('forming','running','completed','aborted')),
+    host_id TEXT NOT NULL REFERENCES residents(resident_id),
+    game_id TEXT,
+    record_json TEXT,
+    rng_state TEXT,
+    revision INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL,
+    started_at INTEGER,
+    ended_at INTEGER,
+    abort_reason TEXT
+  ) STRICT;
+  CREATE INDEX venue_tables_place ON venue_tables(place_id, status);
+
+  CREATE TABLE venue_table_seats (
+    table_id TEXT NOT NULL REFERENCES venue_tables(table_id),
+    resident_id TEXT NOT NULL REFERENCES residents(resident_id),
+    game_seat INTEGER,
+    joined_at INTEGER NOT NULL,
+    left_at INTEGER,
+    leave_reason TEXT,
+    PRIMARY KEY (table_id, resident_id)
+  ) STRICT, WITHOUT ROWID;
+  CREATE INDEX venue_table_seats_resident ON venue_table_seats(resident_id, left_at);
+
+  CREATE TABLE venue_auctions (
+    auction_id TEXT PRIMARY KEY,
+    place_id TEXT NOT NULL,
+    item_id TEXT NOT NULL REFERENCES items(item_id),
+    item_name TEXT NOT NULL,
+    item_type TEXT NOT NULL,
+    reserve_yen INTEGER NOT NULL DEFAULT 100 CHECK (reserve_yen >= 0),
+    price_mode TEXT NOT NULL DEFAULT 'first' CHECK (price_mode IN ('first','second')),
+    status TEXT NOT NULL CHECK (status IN ('open','settled','unsold','cancelled')),
+    opens_at INTEGER NOT NULL,
+    closes_at INTEGER NOT NULL,
+    settled_at INTEGER,
+    winner_id TEXT,
+    winning_price INTEGER,
+    tie_broken INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL
+  ) STRICT;
+  CREATE INDEX venue_auctions_place ON venue_auctions(place_id, status);
+
+  CREATE TABLE venue_auction_bids (
+    auction_id TEXT NOT NULL REFERENCES venue_auctions(auction_id),
+    resident_id TEXT NOT NULL REFERENCES residents(resident_id),
+    bid_yen INTEGER NOT NULL CHECK (bid_yen > 0),
+    held_yen INTEGER NOT NULL CHECK (held_yen >= 0),
+    visit_id TEXT,
+    status TEXT NOT NULL CHECK (status IN ('active','withdrawn','won','lost','refunded')),
+    placed_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY (auction_id, resident_id)
+  ) STRICT, WITHOUT ROWID;
+  CREATE INDEX venue_auction_bids_resident ON venue_auction_bids(resident_id, status);
+  `,
 ];
 
 export const CITY_SCHEMA: SchemaSpec = { label: '城市世界数据库', migrations: MIGRATIONS, backupPrefix: 'city-' };

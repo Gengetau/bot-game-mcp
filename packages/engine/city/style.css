@@ -916,6 +916,40 @@ textarea:user-invalid {
   stroke: var(--surface);
   stroke-width: 1.5;
 }
+
+.venue-private-box {
+  padding: 0.75rem 0.875rem;
+  background: var(--accent-soft);
+  border: 1px solid var(--accent);
+  border-radius: 0.5rem;
+}
+
+.venue-todo-box {
+  padding: 0.75rem 0.875rem;
+  background: var(--surface-subtle);
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+}
+
+.inline-controls {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
+  gap: 0.75rem;
+}
+
+.checkbox-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-height: 3rem;
+  cursor: pointer;
+}
+
+.checkbox-row input[type="checkbox"] {
+  inline-size: 1.25rem;
+  block-size: 1.25rem;
+  accent-color: var(--accent);
+}
 .station-title {
   fill: var(--fg);
   font-size: 0.8125rem;

@@ -8,6 +8,7 @@ import { ensureHouseMembers, installResidents } from './residents.js';
 import { CityService, type CityOptions } from './service.js';
 import { recordCatalogActivation } from './stamps.js';
 import { installTrips } from './trips.js';
+import { installVenueGames } from './venue-games.js';
 import { installVisits } from './visits.js';
 import { installWeather, openMeteoFetcher } from './weather.js';
 
@@ -27,6 +28,7 @@ export function createCity(opts: CityOptions): CityService {
     installActions(c);
     installWeather(c);
     installReconcile(c);
+    installVenueGames(c);
   } catch (e) {
     c.close();
     throw e;
@@ -47,6 +49,7 @@ export * from './residents.js';
 export * from './service.js';
 export * from './stamps.js';
 export * from './trips.js';
+export * from './venue-games.js';
 export * from './views.js';
 export * from './visits.js';
 export * from './weather.js';

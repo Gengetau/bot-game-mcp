@@ -18,10 +18,12 @@ export const MINT = 'sys:mint';
 export const TRANSIT = 'sys:transit';
 /** 店铺的收入（第一期所有店铺共用一个账户；没有店主） */
 export const SHOPS = 'sys:shops';
+/** 密封竞拍的托管账户（出价预占暂存此处，成交转给卖家、流拍或撤回原路退回） */
+export const AUCTION_ESCROW = 'sys:auction';
 /** 桥接系统账户：随身钱包的钱从这里来、回这里去（规格 3.5、3.8） */
 export const BRIDGE = 'bridge:ai-house';
 
-export const SYSTEM_ACCOUNTS = [MINT, TRANSIT, SHOPS, BRIDGE] as const;
+export const SYSTEM_ACCOUNTS = [MINT, TRANSIT, SHOPS, AUCTION_ESCROW, BRIDGE] as const;
 
 export const purseOf = (residentId: string): string => `acct:${residentId}`;
 
