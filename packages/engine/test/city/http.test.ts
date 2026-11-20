@@ -75,6 +75,61 @@ describe('公开页面', () => {
   });
 });
 
+describe('就绪探针 /city/api/ready（第 1 闸 P8）', () => {
+  const ready = async (base: string) => {
+    const res = await fetch(`${base}/city/api/ready`);
+    return { status: res.status, body: await res.json(), headers: res.headers };
+  };
+
+  it('running：200，只回状态字，不缓存，不要凭据', async () => {
+    const t = makeCity();
+    expect(t.c.status).toBe('running');
+    const { base } = await serve(t, null);
+    const r = await ready(base);
+    expect(r.status).toBe(200);
+    expect(r.body).toEqual({ status: 'running' });
+    expect(r.headers.get('cache-control')).toBe('no-store');
+    expect(r.headers.get('content-type')).toContain('application/json');
+  });
+
+  it('启动恢复没完成（recovering）：公开快照仍是 200，ready 是 503', async () => {
+    const t = makeCity({ start: false });
+    expect(t.c.status).toBe('recovering');
+    const { base } = await serve(t);
+    const pub = await fetch(`${base}/city/api/public`);
+    expect(pub.status).toBe(200);
+    const r = await ready(base);
+    expect(r.status).toBe(503);
+    expect(r.body).toEqual({ status: 'recovering' });
+    expect(r.headers.get('cache-control')).toBe('no-store');
+  });
+
+  it('degraded 503；回到 running 后马上 200（不缓存旧结果）', async () => {
+    const t = makeCity();
+    const { base } = await serve(t);
+    t.c.status = 'degraded';
+    const pub = await fetch(`${base}/city/api/public`);
+    expect(pub.status).toBe(200);
+    expect(await ready(base)).toMatchObject({ status: 503, body: { status: 'degraded' } });
+    t.c.status = 'running';
+    expect(await ready(base)).toMatchObject({ status: 200, body: { status: 'running' } });
+  });
+
+  it('closed：503', async () => {
+    const t = makeCity();
+    const { base } = await serve(t);
+    t.c.close();
+    expect(await ready(base)).toMatchObject({ status: 503, body: { status: 'closed' } });
+  });
+
+  it('只读：POST 不存在', async () => {
+    const t = makeCity();
+    const { base } = await serve(t);
+    const res = await fetch(`${base}/city/api/ready`, { method: 'POST' });
+    expect(res.status).toBe(404);
+  });
+});
+
 describe('桥接接口', () => {
   it('没配密钥就不存在；配了要带对', async () => {
     const t = makeCity();
