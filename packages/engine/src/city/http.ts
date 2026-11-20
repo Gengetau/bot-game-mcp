@@ -3,6 +3,7 @@
  *
  *  公开（不用登录，只有公开投影）：
  *   GET  /city/                          文字版的城市页面（服务器直接渲染，没有脚本）
+ *   GET  /city/connect                   外来 bot 接入说明（服务器直接渲染；只有说明，不显示也不生成任何密钥）
  *   GET  /city/api/public                公开视图（JSON）
  *   GET  /city/api/ready                 就绪探针：只回 {status}；status 为 running 时 200，
  *                                        recovering / degraded / closed 时 503；不带数据、不要凭据、不缓存
@@ -46,6 +47,7 @@ import {
   station,
 } from './catalog.js';
 import { CITY_HTTP_STATUS, CityError, cityBadRequest } from './errors.js';
+import { renderConnectPage } from './connect.js';
 import { MAPPINGS } from './mappings.js';
 import { latestReconcile } from './reconcile.js';
 import {
@@ -292,6 +294,18 @@ export function mountCity(app: Express, c: CityService, log: (msg: string) => vo
       res.setHeader('Content-Security-Policy', "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'");
       res.setHeader('X-Content-Type-Options', 'nosniff');
       res.send(renderCityPage(c));
+    } catch (e) {
+      sendError(res, e, log);
+    }
+  });
+
+  app.get(['/city/connect', '/city/connect/'], guard, (_req, res) => {
+    try {
+      res.setHeader('Content-Type', 'text/html; charset=utf-8');
+      res.setHeader('Cache-Control', 'no-store');
+      res.setHeader('Content-Security-Policy', "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'");
+      res.setHeader('X-Content-Type-Options', 'nosniff');
+      res.send(renderConnectPage(c.params, { requestsPerMinute: opts.requestsPerMinute ?? 240 }));
     } catch (e) {
       sendError(res, e, log);
     }
