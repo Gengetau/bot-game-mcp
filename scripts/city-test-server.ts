@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * 启动隔离的灯都城市联调测试服务器（含确定性时钟与 `/__test/city/*` 故障开关控制面）。
+ * 启动隔离的晴空都城市联调测试服务器（含确定性时钟与 `/__test/city/*` 故障开关控制面）。
  *
  * 用法（仅用于本机隔离测试，绝不连接线上数据库）：
  *   npx tsx scripts/city-test-server.ts [--port 17700] [--dir /tmp/city-test-run]

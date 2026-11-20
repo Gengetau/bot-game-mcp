@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * 灯都持续世界（M2）服饰店买衣/送礼 × 小屋衣柜入柜 × 谷歌云盘限流回填 × 双通道出图跨进程验收脚本（#260）。
+ * 晴空都持续世界（M2）服饰店买衣/送礼 × 小屋衣柜入柜 × 谷歌云盘限流回填 × 双通道出图跨进程验收脚本（#260）。
  *
  * 全程运行于隔离临时目录，零真实外部网络请求、零付费图像 API 调用。
  */
@@ -641,10 +641,10 @@ async function main(): Promise<void> {
 
     // ── 1. 目录完整性与协议版本 v3 校验 ──
     assert.equal(APPAREL_CATALOG.length, 1_407, '全量服饰目录必须完整收录 1,407 套');
-    assert.equal(Object.keys(APPAREL_SHOP_PLACES).length, 3, '三家灯都虚构服饰店全部启用');
-    const suzuranToday = apparelWindowForPlace('kagamiike:suzuran-closet', '2026-11-18');
-    const lumiereToday = apparelWindowForPlace('sentou:lumiere-atelier', '2026-11-18');
-    const veloursToday = apparelWindowForPlace('sentou:velours-intime', '2026-11-18');
+    assert.equal(Object.keys(APPAREL_SHOP_PLACES).length, 3, '三家晴空都虚构服饰店全部启用');
+    const suzuranToday = apparelWindowForPlace('ryokogai:suzuran-closet', '2026-11-18');
+    const lumiereToday = apparelWindowForPlace('kumominato:lumiere-atelier', '2026-11-18');
+    const veloursToday = apparelWindowForPlace('kumominato:velours-intime', '2026-11-18');
     assert.equal(suzuranToday.length, 6);
     assert.equal(lumiereToday.length, 6);
     assert.equal(veloursToday.length, 6);
@@ -665,7 +665,7 @@ async function main(): Promise<void> {
     assert.equal(syncReport.full_sync.uploaded_total, 3);
     assert.equal(syncReport.idempotent.uploaded_this_pass, 0, '二次同步必须幂等跳过已归档文件');
 
-    // ── 2. 外部 Bot「时尚买手葵」前往千灯·丝绒私语购入私密礼盒，再赴镜池·铃兰衣橱 ──
+    // ── 2. 外部 Bot「时尚买手葵」前往云港·丝绒私语购入私密礼盒，再赴棱光街·铃兰衣橱 ──
     const extBot = await CityClient.connect({
       url: harness.mcpUrl,
       key: 'test_only_ext_bot_key_city_90001',
@@ -676,16 +676,16 @@ async function main(): Promise<void> {
 
     const enterAoi = await extBot.enterWorld({
       name: '时尚买手葵',
-      bio: '搜集灯都独立买手店礼盒的旅人',
-      entry: 'sentou:station',
+      bio: '搜集晴空都独立买手店礼盒的旅人',
+      entry: 'kumominato:station',
     });
     assert.equal(enterAoi.granted_yen, 200_000);
     activeExtBot = extBot;
 
-    await extBot.travel('sentou:velours-intime');
-    await advanceBoth(8 * 60_000); // 7m 步行抵达千灯·丝绒私语
+    await extBot.travel('kumominato:velours-intime');
+    await advanceBoth(8 * 60_000); // 7m 步行抵达云港·丝绒私语
     const viewAtVelours = await extBot.view();
-    assert.equal(viewAtVelours.here?.place.id, 'sentou:velours-intime');
+    assert.equal(viewAtVelours.here?.place.id, 'kumominato:velours-intime');
     assert.ok(Buffer.byteLength(JSON.stringify(viewAtVelours), 'utf8') < 4_096, '单店轮换窗口必须保持 selfView < 4 KB');
     assert.equal(viewAtVelours.here?.goods?.length, 6);
 
@@ -694,26 +694,26 @@ async function main(): Promise<void> {
     const aoiGiftItem = viewAfterIntimateBuy.items.find((i) => i.type === 'apparel_bundle');
     assert.ok(aoiGiftItem?.item_id, '服饰礼盒必须作为带唯一 item_id 的实例物品入包');
 
-    await extBot.travel('kagamiike:suzuran-closet');
-    await advanceBoth(30 * 60_000); // 7m 步行 + 灯环线 + 5m 步行抵达镜池·铃兰衣橱
-    assert.equal((await extBot.view()).here?.place.id, 'kagamiike:suzuran-closet');
+    await extBot.travel('ryokogai:suzuran-closet');
+    await advanceBoth(30 * 60_000); // 7m 步行 + 晴环线 + 5m 步行抵达棱光街·铃兰衣橱
+    assert.equal((await extBot.view()).here?.place.id, 'ryokogai:suzuran-closet');
 
-    // ── 3. 妮娅从 AI 小屋出门前往镜池·铃兰衣橱（mappings_version = 3） ──
+    // ── 3. 妮娅从 AI 小屋出门前往棱光街·铃兰衣橱（mappings_version = 3） ──
     const dep = await driver.call({
       op: 'depart',
       actor: 'nia',
-      destination: 'kagamiike:suzuran-closet',
+      destination: 'ryokogai:suzuran-closet',
       carry_yen: 35_000,
       visit_id: 'vis_m2_apparel_1',
     });
     assert.equal(dep.visit.mappings_version, 3);
-    assert.equal(dep.visit.city_catalog_version, 'toto-p2.0');
+    assert.equal(dep.visit.city_catalog_version, 'toto-p3.0');
 
     await advanceBoth(60_000); // 走到玄关 away
     const hand = await driver.call({ op: 'advance_handover', visit_id: 'vis_m2_apparel_1' });
     assert.equal(hand.visit.state, 'active');
 
-    await advanceBoth(32 * 60_000); // 12m 步行 + 13m 北环快线 + 5m 步行抵达镜池·铃兰衣橱
+    await advanceBoth(32 * 60_000); // 12m 步行 + 13m 北环快线 + 5m 步行抵达棱光街·铃兰衣橱
     const niaResidentId = harness.city.db.get<{ resident_id: string }>(
       "SELECT resident_id FROM house_members WHERE actor_id = 'nia'",
     )!.resident_id;
@@ -766,7 +766,7 @@ async function main(): Promise<void> {
     assert.equal(
       (wState.shelf_picks as any[]).some((p) => String(p.asset_id).startsWith('pa_')),
       false,
-      '灯都店铺专属服饰严禁出现在小屋免费走廊货架',
+      '晴空都店铺专属服饰严禁出现在小屋免费走廊货架',
     );
 
     const linkedAssets = (wState.asset_links as any[]).map((x) => x.asset_id);
@@ -819,7 +819,7 @@ async function main(): Promise<void> {
           ok: true,
           scenario: 'city-m2-apparel-wardrobe-drive-e2e',
           catalog: {
-            version: 'toto-p2.0',
+            version: 'toto-p3.0',
             mappingsVersion: 3,
             totalCostumes: APPAREL_CATALOG.length,
             shops: APPAREL_SHOP_PLACES,

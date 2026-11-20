@@ -1,6 +1,6 @@
 // @ts-check
 /**
- * 灯都（/city/play/）人类文字优先单页客户端。
+ * 晴空都（/city/play/）人类文字优先单页客户端。
  *
  * 遵循原则：
  *  - 零外部依赖，离线/内网环境直接可用；
@@ -235,40 +235,40 @@ const toggleMotionBtn = /** @type {HTMLButtonElement} */ (mustEl('toggle-motion-
 /** @type {readonly StationMeta[]} */
 const RAIL_STATIONS = [
   {
-    id: 'st:hiwatari',
-    placeId: 'hiwatari:station',
-    area: 'hiwatari',
+    id: 'st:hiyorizaka',
+    placeId: 'hiyorizaka:station',
+    area: 'hiyorizaka',
     code: 'HW',
-    name: '绯渡站',
+    name: '日和坂站',
     lineKey: 'hokkan',
-    lineSummary: '灯都铁道 北环快线',
-    stampTitle: '绯渡站 · 澪川铁桥与晚霞',
+    lineSummary: '晴空都铁道 北环快线',
+    stampTitle: '日和坂站 · 浮光川铁桥与晚霞',
     x: 148,
     y: 64,
     labelDy: 32,
   },
   {
-    id: 'st:kagamiike',
-    placeId: 'kagamiike:station',
-    area: 'kagamiike',
+    id: 'st:ryokogai',
+    placeId: 'ryokogai:station',
+    area: 'ryokogai',
     code: 'KG',
-    name: '镜池站',
-    lineKey: 'toukan',
-    lineSummary: '灯都铁道 灯环线 · 北环快线',
-    stampTitle: '镜池站 · 木雕猫头鹰与书灯',
+    name: '棱光街站',
+    lineKey: 'seikan',
+    lineSummary: '晴空都铁道 晴环线 · 北环快线',
+    stampTitle: '棱光街站 · 木雕猫头鹰与书灯',
     x: 336,
     y: 138,
     labelDy: 32,
   },
   {
-    id: 'st:sentou',
-    placeId: 'sentou:station',
-    area: 'sentou',
+    id: 'st:kumominato',
+    placeId: 'kumominato:station',
+    area: 'kumominato',
     code: 'ST',
-    name: '千灯站',
-    lineKey: 'toukan',
-    lineSummary: '灯都铁道 灯环线 · 北环快线',
-    stampTitle: '千灯站 · 南口跨线露台与钟塔',
+    name: '云港站',
+    lineKey: 'seikan',
+    lineSummary: '晴空都铁道 晴环线 · 北环快线',
+    stampTitle: '云港站 · 南口跨线露台与钟塔',
     x: 524,
     y: 178,
     labelDy: 32,
@@ -277,9 +277,9 @@ const RAIL_STATIONS = [
 
 const RAIL_EDGES = [
   {
-    id: 'te:hiwatari-kagamiike',
-    fromPlace: 'hiwatari:station',
-    toPlace: 'kagamiike:station',
+    id: 'te:hiyorizaka-ryokogai',
+    fromPlace: 'hiyorizaka:station',
+    toPlace: 'ryokogai:station',
     d: 'M 148 64 L 336 138',
     className: 'rail-hokkan',
     label: '北环快线 · 13分 · ¥200',
@@ -287,9 +287,9 @@ const RAIL_EDGES = [
     ly: 118,
   },
   {
-    id: 'te:hiwatari-sentou',
-    fromPlace: 'hiwatari:station',
-    toPlace: 'sentou:station',
+    id: 'te:hiyorizaka-kumominato',
+    fromPlace: 'hiyorizaka:station',
+    toPlace: 'kumominato:station',
     d: 'M 148 64 Q 368 18 524 178',
     className: 'rail-direct',
     label: '北环快线直达 · 19分 · ¥260',
@@ -297,12 +297,12 @@ const RAIL_EDGES = [
     ly: 52,
   },
   {
-    id: 'te:kagamiike-sentou',
-    fromPlace: 'kagamiike:station',
-    toPlace: 'sentou:station',
+    id: 'te:ryokogai-kumominato',
+    fromPlace: 'ryokogai:station',
+    toPlace: 'kumominato:station',
     d: 'M 336 138 L 524 178',
-    className: 'rail-toukan',
-    label: '灯环线 · 10分 · ¥200',
+    className: 'rail-seikan',
+    label: '晴环线 · 10分 · ¥200',
     lx: 424,
     ly: 176,
   },
@@ -327,7 +327,7 @@ function lineKeyOf(lineName, mode) {
   if (mode === 'walk') return 'walk';
   const s = String(lineName || '');
   if (s.includes('北环')) return 'hokkan';
-  return 'toukan';
+  return 'seikan';
 }
 
 /**
@@ -810,11 +810,11 @@ function canControl() {
 function renderHeaderAndControl() {
   const v = state.view;
   if (v?.local_time) {
-    headerClock.textContent = `灯都时间 ${v.local_time}（${state.timezone}）`;
+    headerClock.textContent = `晴空都时间 ${v.local_time}（${state.timezone}）`;
   } else if (state.publicView?.local_time) {
-    headerClock.textContent = `灯都时间 ${state.publicView.local_time}（${state.timezone}）`;
+    headerClock.textContent = `晴空都时间 ${state.publicView.local_time}（${state.timezone}）`;
   } else {
-    headerClock.textContent = `灯都持续世界（${state.timezone}）`;
+    headerClock.textContent = `晴空都持续世界（${state.timezone}）`;
   }
 
   headerUserBar.hidden = !state.loggedIn;
@@ -849,13 +849,13 @@ function renderWindowSilhouette(areaKey) {
   // 地面基底
   g.appendChild(makeSvg('rect', { x: 0, y: 96, width: 280, height: 32 }));
 
-  if (areaKey === 'hiwatari') {
-    // 绯渡：澪川铁桥桁架与商店街屋檐
+  if (areaKey === 'hiyorizaka') {
+    // 日和坂：浮光川铁桥桁架与商店街屋檐
     g.appendChild(makeSvg('path', { d: 'M8 96 L36 62 L68 96 L100 62 L132 96 L164 62 L196 96 Z' }));
     g.appendChild(makeSvg('rect', { x: 204, y: 60, width: 58, height: 36 }));
     g.appendChild(makeSvg('rect', { x: 216, y: 74, width: 14, height: 12, class: 'win-lamp' }));
-  } else if (areaKey === 'kagamiike') {
-    // 镜池：南镜池公园树影与中层楼宇、喫茶灯窗
+  } else if (areaKey === 'ryokogai') {
+    // 棱光街：南棱光公园树影与中层楼宇、喫茶灯窗
     g.appendChild(makeSvg('rect', { x: 22, y: 44, width: 44, height: 52 }));
     g.appendChild(makeSvg('circle', { cx: 96, cy: 76, r: 16 }));
     g.appendChild(makeSvg('circle', { cx: 122, cy: 74, r: 18 }));
@@ -872,7 +872,7 @@ function renderWindowSilhouette(areaKey) {
     g.appendChild(makeSvg('rect', { x: 140, y: 58, width: 38, height: 38 }));
     g.appendChild(makeSvg('rect', { x: 150, y: 72, width: 10, height: 10, class: 'win-lamp' }));
   } else {
-    // 千灯：西口钟塔天际线与南口跨线露台
+    // 云港：西口钟塔天际线与南口跨线露台
     g.appendChild(makeSvg('rect', { x: 20, y: 36, width: 34, height: 60 }));
     g.appendChild(makeSvg('rect', { x: 60, y: 28, width: 38, height: 68 }));
     g.appendChild(makeSvg('rect', { x: 106, y: 46, width: 34, height: 50 }));
@@ -1106,16 +1106,16 @@ function buildStampEmblemSvg(emblem, areaId, collected) {
     svg.appendChild(makeSvg('path', { d: 'M15 32 L15 20 A9 9 0 0 1 33 20 L33 32 Z', fill: 'none', stroke: 'currentColor', 'stroke-width': 2 }));
     svg.appendChild(makeSvg('circle', { cx: 24, cy: 23, r: 3, fill: 'currentColor' }));
   } else if (emblem === 'bridge' || emblem === 'torii-gate') {
-    // 绯渡：澪川铁桥桁架
+    // 日和坂：浮光川铁桥桁架
     svg.appendChild(makeSvg('path', { d: 'M12 30 L18 18 L24 30 L30 18 L36 30', fill: 'none', stroke: 'currentColor', 'stroke-width': 2 }));
     svg.appendChild(makeSvg('line', { x1: 11, y1: 31, x2: 37, y2: 31, stroke: 'currentColor', 'stroke-width': 2 }));
   } else if (emblem === 'owl' || emblem === 'owl-lamp') {
-    // 镜池：猫头鹰双眸
+    // 棱光街：猫头鹰双眸
     svg.appendChild(makeSvg('circle', { cx: 19, cy: 23, r: 4, fill: 'none', stroke: 'currentColor', 'stroke-width': 2 }));
     svg.appendChild(makeSvg('circle', { cx: 29, cy: 23, r: 4, fill: 'none', stroke: 'currentColor', 'stroke-width': 2 }));
     svg.appendChild(makeSvg('polygon', { points: '24,26 21,31 27,31', fill: 'currentColor' }));
   } else {
-    // 千灯：双塔与跨线桥
+    // 云港：双塔与跨线桥
     svg.appendChild(makeSvg('rect', { x: 15, y: 15, width: 7, height: 17, fill: 'none', stroke: 'currentColor', 'stroke-width': 2 }));
     svg.appendChild(makeSvg('rect', { x: 26, y: 13, width: 7, height: 19, fill: 'none', stroke: 'currentColor', 'stroke-width': 2 }));
   }
@@ -1138,7 +1138,7 @@ function renderStampBook() {
         area: st.area,
         title: st.stampTitle,
         motif: `${st.name}纪念站章`,
-        emblem: st.area === 'hiwatari' ? 'bridge' : st.area === 'kagamiike' ? 'owl' : 'terrace',
+        emblem: st.area === 'hiyorizaka' ? 'bridge' : st.area === 'ryokogai' ? 'owl' : 'terrace',
         collected: false,
         stamped_at_ms: null,
       }));
@@ -1146,7 +1146,7 @@ function renderStampBook() {
   for (const s of entries) {
     const collected = Boolean(s.collected);
     const li = make('li', { className: collected ? 'stamp-slot stamp-slot-collected' : 'stamp-slot' });
-    li.appendChild(buildStampEmblemSvg(String(s.emblem || ''), String(s.area || 'sentou'), collected));
+    li.appendChild(buildStampEmblemSvg(String(s.emblem || ''), String(s.area || 'kumominato'), collected));
     const meta = make('div', { className: 'entity-meta' });
     meta.appendChild(make('strong', { text: String(s.title || s.station_name) }));
     meta.appendChild(
@@ -1172,7 +1172,7 @@ function renderGate() {
     enterNameField.hidden = true;
     enterNameInput.required = false;
     enterStationFieldset.hidden = true;
-    enterSubmitBtn.textContent = '回到灯都';
+    enterSubmitBtn.textContent = '回到晴空都';
   } else {
     enterWelcomeText.textContent = `你好，${state.principal?.display_name ?? '旅人'}。请起一个城内显示名并选择首次进城车站。`;
     enterNameField.hidden = false;
@@ -1181,7 +1181,7 @@ function renderGate() {
       enterNameInput.value = state.principal.display_name.slice(0, 16);
     }
     enterStationFieldset.hidden = false;
-    enterSubmitBtn.textContent = '领取启动日元并进入灯都';
+    enterSubmitBtn.textContent = '领取启动日元并进入晴空都';
   }
 }
 
@@ -1878,7 +1878,7 @@ async function redeemTicket(rawTicket) {
     if (state.sessionResident?.in_city) {
       await refreshMe();
       startRealtime();
-      showNotice(`欢迎回到灯都，${state.sessionResident.name}。`);
+      showNotice(`欢迎回到晴空都，${state.sessionResident.name}。`);
     } else {
       renderApp();
       showNotice('票据验证成功，请确认入城信息。');
@@ -1936,7 +1936,7 @@ enterForm.addEventListener('submit', async (ev) => {
   if (!state.sessionResident) {
     const name = enterNameInput.value.trim();
     if (!name) {
-      setFieldError(enterNameError, enterNameInput, '第一次进入灯都请填写 1～16 字的显示名。');
+      setFieldError(enterNameError, enterNameInput, '第一次进入晴空都请填写 1～16 字的显示名。');
       enterNameInput.focus();
       return;
     }
@@ -1959,16 +1959,16 @@ enterForm.addEventListener('submit', async (ev) => {
     void loadStampBook();
     startRealtime();
     if (out.granted_yen) {
-      showNotice(`欢迎来到灯都！已发放一次性启动资金 ${fmtYen(out.granted_yen)}。`);
+      showNotice(`欢迎来到晴空都！已发放一次性启动资金 ${fmtYen(out.granted_yen)}。`);
     } else {
-      showNotice('已进入灯都。');
+      showNotice('已进入晴空都。');
     }
   } catch (e) {
     if (e instanceof ApiError && (e.reason === 'name_required' || e.reason === 'name_taken')) {
       setFieldError(enterNameError, enterNameInput, e.message);
       enterNameInput.focus();
     } else {
-      showError(e instanceof ApiError ? e.message : '进入灯都失败');
+      showError(e instanceof ApiError ? e.message : '进入晴空都失败');
     }
   }
 });
@@ -2040,7 +2040,7 @@ leaveCityBtn.addEventListener('click', async () => {
     stopRealtime();
     await syncSession();
     renderApp();
-    showNotice('已暂离灯都休息。随身日元、物品与储物柜均已保留。');
+    showNotice('已暂离晴空都休息。随身日元、物品与储物柜均已保留。');
   } catch (e) {
     showError(e instanceof ApiError ? e.message : '暂离失败');
   }

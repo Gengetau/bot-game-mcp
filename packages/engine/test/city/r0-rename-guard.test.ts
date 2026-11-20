@@ -1,9 +1,9 @@
 /**
- * 灯都 R0 全量改名与暂卸内容包专项回归守卫（#277）。
+ * 晴空都 R0 全量改名与暂卸内容包专项回归守卫（#277）。
  *
  * 覆盖门禁：
  *  1. 目录、公开 HTML/网页资产、原始公开 JSON、MCP 指南/提示词/工具说明、外部 bot 视图及桥接 L3 JSON
- *     对 docs/city/rename-r0.json 中全部 57 项旧名/旧编号大小写不敏感零命中（桥接 /catalog 仅 handover_node 合法为 hiwatari:ai-house:entrance）；
+ *     对 docs/city/rename-r0.json 中全部 57 项旧名/旧编号大小写不敏感零命中（桥接 /catalog 仅 handover_node 合法为 hiyorizaka:ai-house:entrance）；
  *  2. world_id: "tokyo" 在仅开城市与城市+栖灯镇同开两种配置下均返回 NOT_FOUND；
  *  3. 隐藏交接点（新/旧）与暂卸包地点对外部 bot travel 的报错码、原因与文案同不存在的乱写地点逐字一致；
  *  4. 非 JST 宿主机时区（TZ=UTC 子进程）下 city/app.js fmtClock 的 Intl 正常路径与异常算术回退路径均输出东京时间；
@@ -58,7 +58,14 @@ const ENGINE_ROOT = fileURLToPath(new URL('../..', import.meta.url));
 const RENAME_R0 = JSON.parse(readFileSync(RENAME_R0_PATH, 'utf8')) as {
   forbidden_legacy_tokens_in_public_and_views: string[];
 };
-const FORBIDDEN_TOKENS = RENAME_R0.forbidden_legacy_tokens_in_public_and_views;
+// 晴空都 R1（主人 2026-11-20 定名）：R0 时的显示名（灯都、绯渡……）也不许再出现在公开页面和 bot 视图里。
+const RENAME_R1_PATH = fileURLToPath(new URL('../../../../docs/city/rename-r1.json', import.meta.url));
+const RENAME_R1 = JSON.parse(readFileSync(RENAME_R1_PATH, 'utf8')) as {
+  forbidden_legacy_tokens_in_public_and_views: string[];
+};
+const R0_TOKENS = RENAME_R0.forbidden_legacy_tokens_in_public_and_views;
+const R1_TOKENS = RENAME_R1.forbidden_legacy_tokens_in_public_and_views;
+const FORBIDDEN_TOKENS = [...R0_TOKENS, ...R1_TOKENS];
 
 const BRIDGE_KEY = 'bridge-key-r0-guard-0123456789';
 const PROBE_AGENT: Identity = { id: '7101', name: '探针旅人' };
@@ -145,9 +152,13 @@ async function callFail(
   };
 }
 
-describe('灯都 R0 全量改名与暂卸内容包专项守卫', () => {
+describe('晴空都 R0 全量改名与暂卸内容包专项守卫', () => {
   it('门禁 1a：目录导出与公开网页静态资源对 57 项旧词/旧编号零命中', async () => {
-    expect(FORBIDDEN_TOKENS).toHaveLength(57);
+    expect(R0_TOKENS).toHaveLength(57);
+    expect(R1_TOKENS).toEqual([
+      '灯都', '绯渡', '镜池', '千灯', '澪川', '灯环线',
+      'hiwatari', 'kagamiike', 'sentou', 'toukan', 'hiyorizaka:mio',
+    ]);
 
     expectZeroLegacyTokens('catalog 导出面', {
       CITY_WORLD_ID,
@@ -176,9 +187,9 @@ describe('灯都 R0 全量改名与暂卸内容包专项守卫', () => {
     }
 
     const t = makeCity({ seed: 'r0-guard-http-seed' });
-    t.bot('探针住客', { entry: 'sentou:station' });
+    t.bot('探针住客', { entry: 'kumominato:station' });
     const k = t.kernel('nia');
-    k.depart({ yen: 5_000, to: 'hiwatari:ekimae-plaza' });
+    k.depart({ yen: 5_000, to: 'hiyorizaka:ekimae-plaza' });
     const { base } = await serveHttp(t);
 
     for (const path of ['/city/', '/city/play/', '/city/play/app.js', '/city/play/style.css', '/city/play/icon.svg']) {
@@ -194,10 +205,10 @@ describe('灯都 R0 全量改名与暂卸内容包专项守卫', () => {
     expectZeroLegacyTokens('GET /city/api/public 原始 JSON', pubRaw);
     expect(JSON.parse(pubRaw)).toMatchObject({
       world_id: 'city',
-      name: '灯都',
+      name: '晴空都',
       timezone: 'JST',
-      city_catalog_version: 'toto-p2.0',
-      city_text_version: 'toto-text-1.0',
+      city_catalog_version: 'toto-p3.0',
+      city_text_version: 'toto-text-1.1',
     });
 
     const cfgRes = await fetch(`${base}/city/api/config`);
@@ -205,10 +216,10 @@ describe('灯都 R0 全量改名与暂卸内容包专项守卫', () => {
     const cfgRaw = await cfgRes.text();
     expectZeroLegacyTokens('GET /city/api/config 原始 JSON', cfgRaw);
     expect(JSON.parse(cfgRaw)).toMatchObject({
-      world: { id: 'city', name: '灯都', timezone: 'JST' },
+      world: { id: 'city', name: '晴空都', timezone: 'JST' },
     });
 
-    const routeRes = await fetch(`${base}/city/api/route?from=hiwatari:station&to=sentou:station`);
+    const routeRes = await fetch(`${base}/city/api/route?from=hiyorizaka:station&to=kumominato:station`);
     expect(routeRes.status).toBe(200);
     const routeRaw = await routeRes.text();
     expectZeroLegacyTokens('GET /city/api/route 原始 JSON', routeRaw);
@@ -220,9 +231,9 @@ describe('灯都 R0 全量改名与暂卸内容包专项守卫', () => {
     const catBody = (await catRes.json()) as Record<string, unknown>;
     expect(catBody).toMatchObject({
       protocol: 'city-bridge/1',
-      city_catalog_version: 'toto-p2.0',
-      city_text_version: 'toto-text-1.0',
-      handover_node: 'hiwatari:ai-house:entrance',
+      city_catalog_version: 'toto-p3.0',
+      city_text_version: 'toto-text-1.1',
+      handover_node: 'hiyorizaka:ai-house:entrance',
     });
     expectZeroLegacyTokens('GET /city/bridge/v1/catalog（除合法 handover_node 外）', {
       ...catBody,
@@ -262,15 +273,15 @@ describe('灯都 R0 全量改名与暂卸内容包专项守卫', () => {
       const qRoute = await callRaw(client, 'world_query', {
         world_id: 'city',
         what: 'route',
-        from: 'hiwatari:station',
-        to: 'sentou:station',
+        from: 'hiyorizaka:station',
+        to: 'kumominato:station',
       });
       expectZeroLegacyTokens(`MCP world_query route (town=${withTown})`, qRoute.text);
 
       const entered = await callRaw(client, 'enter_world', {
         world_id: 'city',
         name: '探针旅人',
-        entry: 'sentou:station',
+        entry: 'kumominato:station',
       });
       expectZeroLegacyTokens(`MCP enter_world (town=${withTown})`, entered.text);
 
@@ -335,7 +346,7 @@ describe('灯都 R0 全量改名与暂卸内容包专项守卫', () => {
     const entered = await callRaw(client, 'enter_world', {
       world_id: 'city',
       name: '探针旅人',
-      entry: 'sentou:station',
+      entry: 'kumominato:station',
     });
     const residentId = entered.json.resident_id as string;
     const clientId = t.c.mustResident(residentId).controller_id ?? undefined;
@@ -344,14 +355,14 @@ describe('灯都 R0 全量改名与暂卸内容包专项守卫', () => {
       request_id: 'r0-missing-baseline-001',
       action_window: 'city',
       context_version: 0,
-      action: { type: 'travel', to: 'sentou:no-such-place' },
+      action: { type: 'travel', to: 'kumominato:no-such-place' },
     });
     expect(baselineMcp.code).toBe('NOT_FOUND');
     expect(baselineMcp.reason).toBe('no_such_place');
 
     let baselineDirect: { code: string; reason?: string; message: string } | null = null;
     try {
-      cityCommand(t.c, residentId, 'r0-direct-baseline-001', { type: 'travel', to: 'sentou:no-such-place' }, { clientId });
+      cityCommand(t.c, residentId, 'r0-direct-baseline-001', { type: 'travel', to: 'kumominato:no-such-place' }, { clientId });
     } catch (e) {
       expect(e).toBeInstanceOf(CityError);
       const ce = e as CityError;
@@ -365,7 +376,7 @@ describe('灯都 R0 全量改名与暂卸内容包专项守卫', () => {
 
     const hiddenOrLegacyTargets = [
       HOUSE_ENTRANCE,
-      'hiwatari:ai-house:entrance',
+      'hiyorizaka:ai-house:entrance',
       'akabane:ai-house:entrance',
       'jinbocho:station',
       'shimokitazawa:station',
@@ -466,15 +477,15 @@ describe('灯都 R0 全量改名与暂卸内容包专项守卫', () => {
 
   it('门禁 5：暂卸内容包（jinbocho / shimokitazawa）回归：留仓不删、脱离挂载与编译产物', () => {
     expect(MOUNTED_CONTENT_PACKS).toEqual([]);
-    expect(AREAS.map((a) => a.id)).toEqual(['hiwatari', 'kagamiike', 'sentou']);
+    expect(AREAS.map((a) => a.id)).toEqual(['hiyorizaka', 'ryokogai', 'kumominato']);
     expect(WARDS).toEqual([]);
     expect(publicPlaces()).toHaveLength(17);
-    expect(STATION_STAMPS.map((s) => s.stampId)).toEqual(['stamp:hiwatari', 'stamp:kagamiike', 'stamp:sentou']);
+    expect(STATION_STAMPS.map((s) => s.stampId)).toEqual(['stamp:hiyorizaka', 'stamp:ryokogai', 'stamp:kumominato']);
 
     expect(place('jinbocho:station')).toBeUndefined();
     expect(place('shimokitazawa:station')).toBeUndefined();
-    expect(planRoute('sentou:station', 'jinbocho:station')).toBeNull();
-    expect(planRoute('sentou:station', 'shimokitazawa:station')).toBeNull();
+    expect(planRoute('kumominato:station', 'jinbocho:station')).toBeNull();
+    expect(planRoute('kumominato:station', 'shimokitazawa:station')).toBeNull();
 
     // 原始源码按规范保留在仓内待 M4 迁移
     expect(existsSync(`${ENGINE_ROOT}/src/city/packs/jinbocho.ts`)).toBe(true);

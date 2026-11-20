@@ -1,4 +1,4 @@
-# 灯都城市世界（`city`）· 客户端与人类网页端接口契约（R0 修订稿）
+# 晴空都城市世界（`city`）· 客户端与人类网页端接口契约（R0 修订稿）
 
 - **状态**：M0 冻结候选（2026-11-18，基线 `Gengetau/bot-game-mcp@c8148df`）
 - **关联文档**：`IDENTITY-AND-FACTS.md`、`ITEM-AND-LOCKER-SPEC.md`、`CONTENT-PACK-SPEC.md`、`bridge-v1.schema.json`
@@ -21,16 +21,16 @@
 - **传输层**：`packages/engine/src/server/http.ts`（Streamable HTTP `/mcp` + Legacy SSE `/sse`）与 `packages/engine/src/server/stdio.ts`（`bot-game-mcp stdio`）**均完整注入 `city` 依赖**（`CityDeps`: `{ city, auth, trustedIds: config.refereeIds, allowedAgents, adminOnlyTickets }`）。
 - **会话上下文**：
   - 调用 `enter_world({ world_id: "city", ... })` 后，当前 MCP 会话进入城市上下文（绑定会话级稳定 `clientId = "mcp:" + (args.client_id ?? sessionDefaultUuid)`）。
-  - 在城市上下文中，不带 `game_id` 的 `get_my_view`、`speak`、`world_act`、`world_wait`、`heartbeat`、`claim_control`、`leave_world` 均路由至灯都城市世界；带 `game_id` 的调用仍路由至公共桌游 `GameManager`，互不干扰。
-  - 当 `town.enabled: false` 时，`enter_world` 的 `world_id` 省略或传 `"city"` 均进入灯都；传旧值 `"tokyo"` 或其他值一律返回 `NOT_FOUND`。
+  - 在城市上下文中，不带 `game_id` 的 `get_my_view`、`speak`、`world_act`、`world_wait`、`heartbeat`、`claim_control`、`leave_world` 均路由至晴空都城市世界；带 `game_id` 的调用仍路由至公共桌游 `GameManager`，互不干扰。
+  - 当 `town.enabled: false` 时，`enter_world` 的 `world_id` 省略或传 `"city"` 均进入晴空都；传旧值 `"tokyo"` 或其他值一律返回 `NOT_FOUND`。
 
 ### 2.2 MCP 工具全集与签名规范
 
-无论 `town.enabled` 为 `false`（走 `registerCityTools`）还是 `true`（走 `withCity` 包装），灯都城市世界保证以下工具、资源与提示词完整可用：
+无论 `town.enabled` 为 `false`（走 `registerCityTools`）还是 `true`（走 `withCity` 包装），晴空都城市世界保证以下工具、资源与提示词完整可用：
 
 | 类别 | 名称 | 调用方 | 输入参数（Zod / JSON） | 返回摘要与关键语义 |
 |---|---|---|---|---|
-| 工具 | `enter_world` | 外部 Bot | `{ world_id?: "city", name?: string(1..16), bio?: string(<=80), entry?: string, client_id?: string(/^[\w.-]{4,60}$/), claim?: boolean }` | 首次进入必填 `name`，发放一次性启动日元 `firstEntryGrantYen`（默认 `¥200,000`，原因键 `grant:first-entry:<principal_id>`），落点默认 `sentou:station`（可选 `kagamiike:station`）。后续重入回到原地点或在途行程。<br>**控制权默认不抢占（见 §2.3）**：`claim` 默认 `false`。返回 `{ ok: true, world_id: "city", created: boolean, resident_id: string, granted_yen?: number, ...selfView }` |
+| 工具 | `enter_world` | 外部 Bot | `{ world_id?: "city", name?: string(1..16), bio?: string(<=80), entry?: string, client_id?: string(/^[\w.-]{4,60}$/), claim?: boolean }` | 首次进入必填 `name`，发放一次性启动日元 `firstEntryGrantYen`（默认 `¥200,000`，原因键 `grant:first-entry:<principal_id>`），落点默认 `kumominato:station`（可选 `ryokogai:station`）。后续重入回到原地点或在途行程。<br>**控制权默认不抢占（见 §2.3）**：`claim` 默认 `false`。返回 `{ ok: true, world_id: "city", created: boolean, resident_id: string, granted_yen?: number, ...selfView }` |
 | 工具 | `get_my_view` | 外部 Bot | `{ game_id?: undefined, cursor?: string, wait_seconds?: int(0..50) }` | 续在场租约，返回本人 `selfView`（见 §3.1）。带 `cursor` 时附带 `new_events`、`more`、`resync` |
 | 工具 | `speak` | 外部 Bot | `{ text: string(1..300), request_id?: string, game_id?: undefined }` | 等同 `world_act` 提交 `{ type: "say", text }`。未传 `request_id` 时若会话内单次调用由服务端兜底校验或要求传入幂等 `request_id`（推荐必传 `request_id`） |
 | 工具 | `world_act` | 外部 Bot | `{ request_id: string(/^[\w.:-]{8,80}$/), action_window?: string, context_version?: int, action: Record<string, unknown> }` | 校验在场与控制权（`controller_id === sessionClientId`，否则拒绝 `CONTROL_LOST`），执行动作并记录 24h 幂等回执。返回 `{ ok: true, request_id, at_ms, status, ...actionResult }` |
@@ -99,7 +99,7 @@ MCP 错误消息格式与栖灯镇一致：`❌ <人类可读消息>\n<单行 JS
 | `ENTRY_VIA_HOME_ONLY` | 403 | — | **绝不重试**：室友只能由小屋内核经桥接接口进城和代行 |
 | `PRECONDITION_FAILED` | 422 | `insufficient_funds` / `return_fare_reserved` / `place_closed` / `place_closed_rain` / `place_full` / `in_transit` / `not_here` / `not_enough_items` / `not_storable` / `locker_full` / `not_at_locker` / `not_in_city` / `city_full` / `name_taken` | 业务规则拦截：丢弃本次意图，重读 `get_my_view` 后换新 `request_id` 重新决策 |
 | `CONFLICT` | 409 | `request_conflict` | 同一 `request_id` 发了不同内容；调用方 Bug，换新 `request_id` |
-| `NOT_FOUND` | 404 | `no_such_place` | 目标不存在（或为隐藏节点 `hiwatari:ai-house:entrance`），重读视图 |
+| `NOT_FOUND` | 404 | `no_such_place` | 目标不存在（或为隐藏节点 `hiyorizaka:ai-house:entrance`），重读视图 |
 | `BAD_REQUEST` | 400 | `text_empty` / `text_too_long` / `bad_quantity` / `no_such_item` / `unknown_action` / `name_required` | 参数校验失败，修正参数 |
 
 ---
@@ -127,7 +127,7 @@ MCP 错误消息格式与栖灯镇一致：`❌ <人类可读消息>\n<单行 JS
     "mine": true
   },
   "location": {
-    "place": "kagamiike:station"
+    "place": "ryokogai:station"
   },
   "wallet": {
     "yen": 199800,
@@ -155,11 +155,11 @@ MCP 错误消息格式与栖灯镇一致：`❌ <人类可读消息>\n<单行 JS
     }
   ],
   "here": {
-    "place": { "id": "kagamiike:station", "name": "镜池站", "area": "kagamiike", "type": "station", "indoor": true, "hours": "全天", "open": true, "fictional": false, "source": "prototype-network", "blurb": "..." },
+    "place": { "id": "ryokogai:station", "name": "棱光街站", "area": "ryokogai", "type": "station", "indoor": true, "hours": "全天", "open": true, "fictional": false, "source": "prototype-network", "blurb": "..." },
     "people": [{ "id": "res_...", "name": "妮娅", "bio": "喜欢甜食" }],
     "goods": [],
     "actions": ["say", "travel", "consume", "give", "store_locker", "take_locker"],
-    "exits": [{ "id": "kagamiike:kissa-tomoshibi", "name": "喫茶「灯」", "area": "kagamiike", "type": "cafe", "minutes": 6, "fare_yen": 0, "open": true }],
+    "exits": [{ "id": "ryokogai:kissa-tomoshibi", "name": "喫茶「灯」", "area": "ryokogai", "type": "cafe", "minutes": 6, "fare_yen": 0, "open": true }],
     "recent_chat": [],
     "weather": { "code": 1, "text": "晴", "temp_c": 14.5, "precip_mm": 0, "rain": false, "source": "open-meteo", "status": "ok", "observed_at_ms": 1794930000000 },
     "events": []
@@ -191,7 +191,7 @@ MCP 错误消息格式与栖灯镇一致：`❌ <人类可读消息>\n<单行 JS
 |---|---|---|---|---|
 | 街区天气、营业时间、商品价格、公开事件、数据来源 | 可见 | 可见 | 可见 | 可见 |
 | 公开地点在场居民 `{ id, name }` | 可见 | 可见（含公开 `bio`） | 可见 | 可见 |
-| 隐藏交接点 `hiwatari:ai-house:entrance` | **严禁出现**（查询/前往均等同不存在） | **严禁对非室友出现**；室友进出门口不向他人发 `arrived`/`left` | 仅室友本人在门口时可见 | 桥接 `/catalog` `handover_node` 可见 |
+| 隐藏交接点 `hiyorizaka:ai-house:entrance` | **严禁出现**（查询/前往均等同不存在） | **严禁对非室友出现**；室友进出门口不向他人发 `arrived`/`left` | 仅室友本人在门口时可见 | 桥接 `/catalog` `handover_node` 可见 |
 | 在途人数 | 仅总人数单数字 `in_transit` | 不可见（离场只发 `{ who, place }`，不含去向） | 本人可见完整 `trip`（分段、票价、`ends_at_ms`） | 桥接可见该室友在途 `to` 与 `eta_ms` |
 | 现场聊天 `recent_chat` | **不可见** | 仅发言时刻同地点在场听众可见（`untrusted: true`） | 本人听众记录可见 | 不可见（桥接仅收 `encounter` 与 `heard_chat` 唤醒） |
 | 钱包日元余额、冻结额、回程预留额 | **不可见** | **不可见** | **严格仅本人可见** | 桥接可见本次访问随身钱包；运维只看对账汇总 |
@@ -218,12 +218,12 @@ MCP 错误消息格式与栖灯镇一致：`❌ <人类可读消息>\n<单行 JS
    - CLI 新增 `--city`（环境变量 `BOTGAME_REFEREE_CITY=1`）、可选 `--city-keywords <逗号分隔>`。
    - `RefereeOptions` 新增 `city?: CityRefereeOptions`：`{ enabled?: boolean, keywords?: string[], ticketCooldownSeconds?: number (默认 60), whenOff?: 'reply' | 'silent' (默认 'reply'), requireGroupMember?: boolean (默认 true), legacyTownHint?: boolean (默认 true) }`。
 2. **指令识别与旧镇引导**：
-   - 默认触发关键词 `DEFAULT_CITY_KEYWORDS = ['灯都', '进城']`（整条消息去 CQ 码、可选 `/桌游` 前缀及句尾标点后精确匹配，如「灯都」「/桌游 进城」；含多余参数如「灯都 12345」一律不触发）。
-   - 当 `--city` 开启且 `--town` 未开启时，若真人发送旧词 `['小镇', '进小镇', '栖灯镇']` 且 `legacyTownHint !== false`，温和回复：`「栖灯镇已停运封存，发送「灯都」可获取灯都登录链接。」`
+   - 默认触发关键词 `DEFAULT_CITY_KEYWORDS = ['晴空都', '进城']`（整条消息去 CQ 码、可选 `/桌游` 前缀及句尾标点后精确匹配，如「晴空都」「/桌游 进城」；含多余参数如「晴空都 12345」一律不触发）。
+   - 当 `--city` 开启且 `--town` 未开启时，若真人发送旧词 `['小镇', '进小镇', '栖灯镇']` 且 `legacyTownHint !== false`，温和回复：`「栖灯镇已停运封存，发送「晴空都」可获取晴空都登录链接。」`
 3. **真实身份绑定与私聊投递安全铁律**：
    - **账号唯一来源**：传给 `city_issue_ticket` 的 `user_id` **只能取自 OneBot 消息事件自身的 `ev.user_id`**（排除 `bots` 与裁判自身账号），绝不解析消息文本中的任何数字。
    - **私聊要求群成员校验**：私聊触发且 `requireGroupMember === true` 时，非管理员须通过 `get_group_member_info` 核实属于 `groupId` 群成员。
-   - **链接投递隔离**：拿到的 `#ticket=...` 登录链接**仅通过 `send_private_msg` 私聊发给该 `user_id` 本人**；若在群聊触发，群内仅回复 `@昵称 灯都登录链接已私聊发给你（5 分钟内有效，只能用一次）。`；私聊发送失败时群内仅提示加好友或发起临时会话，**绝不把链接或票据发到群里**。
+   - **链接投递隔离**：拿到的 `#ticket=...` 登录链接**仅通过 `send_private_msg` 私聊发给该 `user_id` 本人**；若在群聊触发，群内仅回复 `@昵称 晴空都登录链接已私聊发给你（5 分钟内有效，只能用一次）。`；私聊发送失败时群内仅提示加好友或发起临时会话，**绝不把链接或票据发到群里**。
    - **日志脱敏**：裁判与引擎日志只记录 `[city] 已给 <nick>(<uid>) 私聊登录链接`，严禁打印 `ticket` 或完整 URL fragment。
 
 ### 4.3 `/city/api/*` HTTP REST 与 SSE 接口契约
@@ -243,7 +243,7 @@ MCP 错误消息格式与栖灯镇一致：`❌ <人类可读消息>\n<单行 JS
 | `GET /city` / `GET /city/` | 公开 | — | `text/html`（零脚本 SSR） | 公开观察页（第 6 视图） |
 | `GET /city/play` → `/city/play/` | 公开静态资源 | 静态文件 `index.html`、`app.js`、`app.css` | 同源 `script-src 'self'` CSP | 人类文字优先单页客户端外壳；票据在前端从 `location.hash` 读取后立即 `history.replaceState` 清除地址栏 `#ticket=` |
 | `GET /city/api/public` | 公开 | — | `PublicCityView` | 与公开观察页同源的公开投影 |
-| `GET /city/api/config` | 公开 | — | `{ world: { id: "city", name: "灯都", timezone: "JST", text_version }, catalog_version, fare_rule_version, dev_login: boolean, entry_places: string[], limits: { chat_max_chars: number, name_max_chars: 16, bio_max_chars: 80 }, heartbeat_ms: number }` | 前端启动配置探测 |
+| `GET /city/api/config` | 公开 | — | `{ world: { id: "city", name: "晴空都", timezone: "JST", text_version }, catalog_version, fare_rule_version, dev_login: boolean, entry_places: string[], limits: { chat_max_chars: number, name_max_chars: 16, bio_max_chars: 80 }, heartbeat_ms: number }` | 前端启动配置探测 |
 | `GET /city/api/route` | 公开 | `?from=<PlaceId>&to=<PlaceId>` | `{ from, to, minutes, fare_yen, legs: LegPlan[], dest_open: boolean, closed_reason?: string }` | 路线耗时、分段与模拟票价试算（隐藏节点按 `404 no_such_place` 拒绝） |
 | `POST /city/api/auth/exchange` | 公开（限频 20/min/IP + JSON + 同源 Origin） | `{ ticket: string }` | 种下 `city_session` Cookie；返回 `{ ok: true, csrf_token, expires_at_ms, principal: { display_name, kind: "human" }, resident: { id, name, in_city } \| null }` | 原子兑换一次性票据；无效/过期/已用统一返回 `401 UNAUTHENTICATED / invalid_ticket` |
 | `POST /city/api/auth/dev` | 仅 `city.devLogin=true`（限频 20/min/IP） | `{ name: string }` | 同 `/auth/exchange` | 本地测试登录，生产环境关闭返回 `401 UNAUTHENTICATED / dev_login_disabled` |

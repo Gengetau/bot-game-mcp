@@ -1,5 +1,5 @@
 /**
- * 灯都持续世界（world_id = "city"）的 MCP 客户端：
+ * 晴空都持续世界（world_id = "city"）的 MCP 客户端：
  * 封装 enter_world / get_my_view / speak / world_act / world_wait / world_query /
  * heartbeat / claim_control / leave_world。
  *
@@ -19,7 +19,7 @@ import { parseToolErrorText, type ToolCaller } from './town.js';
 
 export const CITY_WORLD_ID = 'city';
 
-/** 外部 Bot / 人类居民在灯都可用的结构化动作类型（M1 基线 + M1-D 储物柜/资料）。 */
+/** 外部 Bot / 人类居民在晴空都可用的结构化动作类型（M1 基线 + M1-D 储物柜/资料）。 */
 export const CITY_ACTION_TYPES = [
   'travel',
   'say',
@@ -203,7 +203,7 @@ export interface CityEnterOptions {
   name?: string;
   /** 公开一句话简介（<=80 字） */
   bio?: string;
-  /** 首次进城落点（如 sentou:station 或 kagamiike:station） */
+  /** 首次进城落点（如 kumominato:station 或 ryokogai:station） */
   entry?: string;
   /** 已有其他活跃客户端持权时是否立即抢占控制权（默认 false：安全旁观，避免双实例互抢） */
   claim?: boolean;
@@ -376,7 +376,7 @@ export class CityBadRequestError extends CityClientError {}
 /** 500 INTERNAL：服务端内部错误 */
 export class CityInternalError extends CityClientError {}
 
-/** 引擎未开启灯都城市模块 */
+/** 引擎未开启晴空都城市模块 */
 export class CityDisabledError extends CityClientError {}
 
 /** 传输层超时、断连或回包丢失：未知服务端是否已落盘，必须带原 request_id 重试 */
@@ -440,7 +440,7 @@ export function toCityError(e: unknown, tool: string, requestId?: string): unkno
   }
   if (e instanceof ToolError) {
     if (!e.code && /Tool \S+ not found/i.test(e.raw ?? e.message)) {
-      return new CityDisabledError('city_disabled', '引擎未开启灯都城市模块（city.enabled）。', {
+      return new CityDisabledError('city_disabled', '引擎未开启晴空都城市模块（city.enabled）。', {
         tool,
         ...(requestId ? { requestId } : {}),
         cause: e,
@@ -449,7 +449,7 @@ export function toCityError(e: unknown, tool: string, requestId?: string): unkno
     const parsed = parseToolErrorText(e.raw ?? e.message);
     const rawUpper = (e.code ?? parsed.code ?? '').toUpperCase();
     if (rawUpper === 'NOT_FOUND' && tool === 'enter_world') {
-      return new CityDisabledError('city_disabled', parsed.message || '引擎未开启灯都城市世界（world_id="city"）。', {
+      return new CityDisabledError('city_disabled', parsed.message || '引擎未开启晴空都城市世界（world_id="city"）。', {
         tool,
         data: parsed.data,
         ...(parsed.hint ? { hint: parsed.hint } : {}),
@@ -472,7 +472,7 @@ export function toCityError(e: unknown, tool: string, requestId?: string): unkno
   const msg = e instanceof Error ? e.message : String(e);
   const mcpCode = (e as { code?: unknown } | null)?.code;
   if (mcpCode === -32602 && /not found/i.test(msg)) {
-    return new CityDisabledError('city_disabled', '引擎未开启灯都城市模块（工具不存在）。', {
+    return new CityDisabledError('city_disabled', '引擎未开启晴空都城市模块（工具不存在）。', {
       tool,
       ...(requestId ? { requestId } : {}),
       cause: e,
@@ -640,7 +640,7 @@ export class CityClient {
   // ── 进出城、视图与控制权 ──
 
   /**
-   * 进入灯都（world_id = "city"）。
+   * 进入晴空都（world_id = "city"）。
    * 首次进城需传 name，发放一次性启动日元；后续重入回到原地点或在途电车。
    * 默认 claim = false：若已有另一活跃客户端持有控制权，返回 control.mine === false（只读旁观，不暗抢）。
    */
@@ -737,7 +737,7 @@ export class CityClient {
     return r;
   }
 
-  /** 主动离开灯都休息：立即下线释放控制权，日元、背包、储物柜与在途电车保留。 */
+  /** 主动离开晴空都休息：立即下线释放控制权，日元、背包、储物柜与在途电车保留。 */
   async leaveWorld(opts: { signal?: AbortSignal } = {}): Promise<{ ok: true }> {
     const r = await this.raw<{ ok: true }>('leave_world', {}, { ...(opts.signal ? { signal: opts.signal } : {}) });
     this.state.controlMine = false;

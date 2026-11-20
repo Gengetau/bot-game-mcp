@@ -34,12 +34,12 @@ describe('目录', () => {
   it('自检通过；每个地点都回得了小屋门口；票价和耗时标注为模拟', () => {
     expect(validateCatalog()).toEqual([]);
     expect(planRoute(HOUSE_ENTRANCE, KISSA)).toMatchObject({ minutes: 31, fareYen: 200 });
-    expect(planRoute(HOUSE_ENTRANCE, 'sentou:muginohi')).toMatchObject({ minutes: 36, fareYen: 260 });
-    expect(planRoute(KISSA, 'sentou:station')).toMatchObject({ minutes: 16, fareYen: 200 });
+    expect(planRoute(HOUSE_ENTRANCE, 'kumominato:muginohi')).toMatchObject({ minutes: 36, fareYen: 260 });
+    expect(planRoute(KISSA, 'kumominato:station')).toMatchObject({ minutes: 16, fareYen: 200 });
     // 小屋和河岸之间有近路，不用绕回站前
-    expect(planRoute(HOUSE_ENTRANCE, 'hiwatari:mio-riverbank')).toMatchObject({ minutes: 9, fareYen: 0 });
-    // 绯渡开放站前和澪川河岸
-    expect(PLACES.filter((p) => p.area === 'hiwatari' && !p.hidden).map((p) => p.id)).toEqual(['hiwatari:station', 'hiwatari:ekimae-plaza', 'hiwatari:ekimae-conbini', 'hiwatari:mio-riverbank']);
+    expect(planRoute(HOUSE_ENTRANCE, 'hiyorizaka:fukogawa-riverbank')).toMatchObject({ minutes: 9, fareYen: 0 });
+    // 日和坂开放站前和浮光川河岸
+    expect(PLACES.filter((p) => p.area === 'hiyorizaka' && !p.hidden).map((p) => p.id)).toEqual(['hiyorizaka:station', 'hiyorizaka:ekimae-plaza', 'hiyorizaka:ekimae-conbini', 'hiyorizaka:fukogawa-riverbank']);
     const v: any = publicCityView(makeCity().c);
     expect(v.transit).toMatchObject({ source: 'simulated' });
   });
@@ -49,23 +49,23 @@ describe('外部 bot', () => {
   it('第一次进城落在入口车站、得到启动资金；再进只是回来', () => {
     const t = makeCity();
     const b = t.bot('小B');
-    expect(b.view()).toMatchObject({ me: { name: '小B', origin: 'external', in_city: true }, location: { place: 'sentou:station' }, wallet: { yen: 200_000, spendable_yen: 200_000 } });
+    expect(b.view()).toMatchObject({ me: { name: '小B', origin: 'external', in_city: true }, location: { place: 'kumominato:station' }, wallet: { yen: 200_000, spendable_yen: 200_000 } });
     expect(b.view().wallet.return_reserve_yen).toBeUndefined();
-    const c = t.bot('小C', { entry: 'kagamiike:station' });
-    expect(c.view().location).toEqual({ place: 'kagamiike:station' });
-    rejects(() => t.bot('小D', { entry: 'hiwatari:station' }), 'BAD_REQUEST', 'bad_entry');
+    const c = t.bot('小C', { entry: 'ryokogai:station' });
+    expect(c.view().location).toEqual({ place: 'ryokogai:station' });
+    rejects(() => t.bot('小D', { entry: 'hiyorizaka:station' }), 'BAD_REQUEST', 'bad_entry');
     rejects(() => t.bot('小B', { id: '9099' }), 'PRECONDITION_FAILED', 'name_taken');
     // 和室友重名也不行
     rejects(() => t.bot('妮娅', { id: '9098' }), 'PRECONDITION_FAILED', 'name_taken');
     // 钱只进不出地发一次
-    b.go('sentou:muginohi');
+    b.go('kumominato:muginohi');
     b.act({ type: 'buy', sku: 'melon_pan', qty: 2 });
     leaveCity(t.c, b.id);
     expect(b.view().me.in_city).toBe(false);
     const again = enterCity(t.c, t.c.db.get<any>('SELECT * FROM principals WHERE principal_id = ?', b.principalId));
     expect(again).toMatchObject({ created: false, granted_yen: 0 });
     // 回来还在原来的地方，东西和钱都在
-    expect(b.view()).toMatchObject({ location: { place: 'sentou:muginohi' }, wallet: { yen: 200_000 - 460 } });
+    expect(b.view()).toMatchObject({ location: { place: 'kumominato:muginohi' }, wallet: { yen: 200_000 - 460 } });
     expect(b.view().items).toEqual([expect.objectContaining({ type: 'melon_pan', qty: 2, edible: true })]);
   });
 
@@ -85,13 +85,13 @@ describe('外部 bot', () => {
     const t = makeCity();
     const a = t.bot('甲');
     const b = t.bot('乙');
-    const c = t.bot('丙', { entry: 'kagamiike:station' });
+    const c = t.bot('丙', { entry: 'ryokogai:station' });
     expect(a.act({ type: 'say', text: '<b>你好</b>' }).heard_by).toBe(1);
     expect(b.view().here.recent_chat).toEqual([expect.objectContaining({ from: expect.objectContaining({ name: '甲' }), untrusted: true, mine: false })]);
     expect(c.view().here.recent_chat).toEqual([]);
     expect(b.events().filter((e) => e.type === 'chat')).toHaveLength(1);
     // 后来才到的人听不到之前的话
-    c.go('sentou:station');
+    c.go('kumominato:station');
     expect(c.view().here.recent_chat).toEqual([]);
     rejects(() => a.act({ type: 'say', text: '   ' }), 'BAD_REQUEST', 'text_empty');
     rejects(() => a.act({ type: 'say', text: '字'.repeat(301) }), 'BAD_REQUEST', 'text_too_long');
@@ -108,19 +108,19 @@ describe('外部 bot', () => {
 
   it('不营业、满了的地方去不了；路上不能做别的', () => {
     const t = makeCity({ at: T0 + 10 * HOUR + 40 * MIN }); // 20:40 JST
-    const b = t.bot('小B', { entry: 'kagamiike:station' });
+    const b = t.bot('小B', { entry: 'ryokogai:station' });
     // 喫茶 21:00 关门，走过去 6 分钟还来得及；书店也是
     const trip = b.act({ type: 'travel', to: KISSA });
     expect(trip.trip).toMatchObject({ minutes: 6, fare_yen: 0, source: 'simulated' });
     rejects(() => b.act({ type: 'say', text: '路上' }), 'PRECONDITION_FAILED', 'in_transit');
-    rejects(() => b.act({ type: 'travel', to: 'kagamiike:station' }), 'PRECONDITION_FAILED', 'in_transit');
+    rejects(() => b.act({ type: 'travel', to: 'ryokogai:station' }), 'PRECONDITION_FAILED', 'in_transit');
     t.run(6 * MIN);
     expect(b.events().filter((e) => e.type === 'you_arrived')).toHaveLength(1);
     t.run(20 * MIN); // 21:06
     rejects(() => b.act({ type: 'buy', sku: 'coffee' }), 'PRECONDITION_FAILED', 'place_closed');
-    b.go('kagamiike:station');
+    b.go('ryokogai:station');
     rejects(() => b.act({ type: 'travel', to: KISSA }), 'PRECONDITION_FAILED', 'place_closed');
-    rejects(() => b.act({ type: 'travel', to: 'kagamiike:station' }), 'PRECONDITION_FAILED', 'already_here');
+    rejects(() => b.act({ type: 'travel', to: 'ryokogai:station' }), 'PRECONDITION_FAILED', 'already_here');
     rejects(() => b.act({ type: 'travel', to: 'nowhere:at-all' }), 'NOT_FOUND', 'no_such_place');
     rejects(() => b.act({ type: 'fly' }), 'BAD_REQUEST', 'unknown_action');
     rejects(() => b.act({ type: 'go_home' }), 'BAD_REQUEST', 'unknown_action');
@@ -128,13 +128,13 @@ describe('外部 bot', () => {
 
   it('到了才发现满了：留在最近的车站', () => {
     const t = makeCity({ params: { maxPresentExternal: 40 } });
-    const late = t.bot('迟到', { entry: 'sentou:station' });
+    const late = t.bot('迟到', { entry: 'kumominato:station' });
     late.act({ type: 'travel', to: KISSA }); // 16 分钟
     // 它在路上的时候，喫茶坐满了（16 个位子）
-    for (let i = 0; i < 16; i++) t.bot(`客${i}`, { entry: 'kagamiike:station' }).act({ type: 'travel', to: KISSA });
+    for (let i = 0; i < 16; i++) t.bot(`客${i}`, { entry: 'ryokogai:station' }).act({ type: 'travel', to: KISSA });
     t.run(16 * MIN);
-    expect(late.view().location).toEqual({ place: 'kagamiike:station' });
-    expect(late.events().find((e) => e.type === 'you_arrived')!.data).toMatchObject({ place: 'kagamiike:station', diverted_from: KISSA, reason: 'place_full' });
+    expect(late.view().location).toEqual({ place: 'ryokogai:station' });
+    expect(late.events().find((e) => e.type === 'you_arrived')!.data).toMatchObject({ place: 'ryokogai:station', diverted_from: KISSA, reason: 'place_full' });
     rejects(() => late.act({ type: 'travel', to: KISSA }), 'PRECONDITION_FAILED', 'place_full');
   });
 
@@ -142,12 +142,12 @@ describe('外部 bot', () => {
     const t = makeCity();
     const a = t.bot('甲');
     const b = t.bot('乙');
-    a.go('sentou:kamitsuki');
+    a.go('kumominato:kamitsuki');
     a.act({ type: 'buy', sku: 'notebook' });
     rejects(() => a.act({ type: 'consume', item: 'notebook' }), 'PRECONDITION_FAILED', 'not_edible');
     rejects(() => a.act({ type: 'give', to: b.id, item: 'notebook' }), 'PRECONDITION_FAILED', 'not_here');
     rejects(() => a.act({ type: 'buy', sku: 'notebook', qty: 400 }), 'BAD_REQUEST', 'bad_quantity');
-    a.go('sentou:station');
+    a.go('kumominato:station');
     expect(a.act({ type: 'give', to: b.id, item_id: a.view().items[0].item_id }).status).toBe('completed');
     expect(a.view().items).toEqual([]);
     expect(b.view().items).toEqual([expect.objectContaining({ type: 'notebook', qty: 1 })]);
@@ -159,9 +159,9 @@ describe('小屋门口不公开', () => {
   it('公开视图、外部 bot 的视图和事件、名录里都没有它；外部 bot 走不到', () => {
     const t = makeCity();
     const k = t.kernel('nia');
-    const b = t.bot('小B', { entry: 'kagamiike:station' });
-    b.go('hiwatari:station');
-    k.depart({ yen: 5000, to: 'hiwatari:station' });
+    const b = t.bot('小B', { entry: 'ryokogai:station' });
+    b.go('hiyorizaka:station');
+    k.depart({ yen: 5000, to: 'hiyorizaka:station' });
     const atDoor = JSON.stringify([publicCityView(t.c), cityDirectory(t.c), b.view()]);
     t.run(12 * MIN);
     k.act({ type: 'say', text: '你好' });
@@ -174,7 +174,7 @@ describe('小屋门口不公开', () => {
     expect(b.events().filter((e) => e.type === 'left').map((e) => Object.keys(e.data).sort())).toEqual([['place', 'who']]);
     // 对外部 bot 来说那个节点不存在：和乱写一个地名是同一个回答
     const e1 = rejects(() => b.act({ type: 'travel', to: HOUSE_ENTRANCE }), 'NOT_FOUND', 'no_such_place');
-    const e2 = rejects(() => b.act({ type: 'travel', to: 'hiwatari:nothing' }), 'NOT_FOUND', 'no_such_place');
+    const e2 = rejects(() => b.act({ type: 'travel', to: 'hiyorizaka:nothing' }), 'NOT_FOUND', 'no_such_place');
     expect(e1.message).toBe(e2.message);
     // 别人的钱和东西不在任何别人拿得到的地方
     expect(JSON.stringify(b.view().here)).not.toMatch(/wallet|yen":\s*5000|purse/);
@@ -189,7 +189,7 @@ describe('小屋门口不公开', () => {
     expect(JSON.stringify(v1.areas)).not.toContain('妮娅');
     t.run(31 * MIN);
     const v2: any = publicCityView(t.c);
-    expect(v2.areas.find((a: any) => a.id === 'kagamiike').places.find((p: any) => p.id === KISSA).here).toEqual([{ id: t.residentOf('nia'), name: '妮娅' }]);
+    expect(v2.areas.find((a: any) => a.id === 'ryokogai').places.find((p: any) => p.id === KISSA).here).toEqual([{ id: t.residentOf('nia'), name: '妮娅' }]);
   });
 });
 
@@ -207,7 +207,7 @@ describe('小屋的室友', () => {
     expect(t.c.db.scalar("SELECT COUNT(*) FROM residents WHERE origin = 'house'")).toBe(2);
     // 她照样能出门
     const k = t.kernel('claire');
-    expect(k.depart({ yen: 3000, to: 'hiwatari:ekimae-plaza' }).state).toBe('active');
+    expect(k.depart({ yen: 3000, to: 'hiyorizaka:ekimae-plaza' }).state).toBe('active');
   });
 
   it('留在门口时（计划去不了）：视图里说得清她能做什么', () => {
@@ -222,7 +222,7 @@ describe('天气', () => {
   it('没有抓取函数：合成天气，标 fallback，不下雨', () => {
     const t = makeCity();
     const all = allWeather(t.c);
-    expect(all.map((w) => w.area)).toEqual(['hiwatari', 'kagamiike', 'sentou']);
+    expect(all.map((w) => w.area)).toEqual(['hiyorizaka', 'ryokogai', 'kumominato']);
     for (const w of all) expect(w).toMatchObject({ status: 'fallback', source: 'synthetic', rain: false, precip_mm: 0 });
   });
 
@@ -235,14 +235,14 @@ describe('天气', () => {
       },
     });
     await refreshWeather(t.c);
-    expect(weatherOf(t.c, 'hiwatari')).toMatchObject({ status: 'ok', source: 'open-meteo', rain: true, code: 61, text: '下雨' });
+    expect(weatherOf(t.c, 'hiyorizaka')).toMatchObject({ status: 'ok', source: 'open-meteo', rain: true, code: 61, text: '下雨' });
     ok = false;
     t.clock.advance(2 * HOUR);
     await refreshWeather(t.c);
-    expect(weatherOf(t.c, 'hiwatari')).toMatchObject({ status: 'stale', source: 'open-meteo', rain: true, observed_at_ms: T0 });
+    expect(weatherOf(t.c, 'hiyorizaka')).toMatchObject({ status: 'stale', source: 'open-meteo', rain: true, observed_at_ms: T0 });
     t.clock.advance(61 * MIN);
     await refreshWeather(t.c);
-    const fallback = weatherOf(t.c, 'hiwatari')!;
+    const fallback = weatherOf(t.c, 'hiyorizaka')!;
     expect(fallback).toMatchObject({ status: 'fallback', source: 'synthetic', rain: false });
     // 同一份快照：桥接的 /weather、公开页面、现场视图
     const pub: any = publicCityView(t.c);
@@ -252,76 +252,76 @@ describe('天气', () => {
     // 恢复之后回到 ok
     ok = true;
     await refreshWeather(t.c);
-    expect(weatherOf(t.c, 'hiwatari')).toMatchObject({ status: 'ok', rain: true });
+    expect(weatherOf(t.c, 'hiyorizaka')).toMatchObject({ status: 'ok', rain: true });
   });
 
   it('转雨：每片每天一次事件；雨天不开放的河岸不能再进，已经在里面的人不赶', () => {
     const t = makeCity();
     const k = t.kernel('nia');
-    const inside = t.bot('河边', { entry: 'kagamiike:station' });
-    const outside = t.bot('路人', { entry: 'kagamiike:station' });
+    const inside = t.bot('河边', { entry: 'ryokogai:station' });
+    const outside = t.bot('路人', { entry: 'ryokogai:station' });
     setWeather(t, {});
-    inside.go('hiwatari:mio-riverbank');
-    outside.go('hiwatari:ekimae-plaza');
-    k.depart({ yen: 3000, to: 'hiwatari:mio-riverbank' });
+    inside.go('hiyorizaka:fukogawa-riverbank');
+    outside.go('hiyorizaka:ekimae-plaza');
+    k.depart({ yen: 3000, to: 'hiyorizaka:fukogawa-riverbank' });
     t.run(9 * MIN);
-    setWeather(t, { hiwatari: 63 });
-    expect(isRaining(t.c, 'hiwatari')).toBe(true);
-    expect(isRaining(t.c, 'kagamiike')).toBe(false);
-    expect(eventsToday(t.c).map((e) => [e.kind, e.area])).toEqual([['rain_started', 'hiwatari']]);
+    setWeather(t, { hiyorizaka: 63 });
+    expect(isRaining(t.c, 'hiyorizaka')).toBe(true);
+    expect(isRaining(t.c, 'ryokogai')).toBe(false);
+    expect(eventsToday(t.c).map((e) => [e.kind, e.area])).toEqual([['rain_started', 'hiyorizaka']]);
     // 露天地点里的人收到提示；室友收到一条值得她决定的唤醒
     expect(inside.events().filter((e) => e.type === 'weather')).toHaveLength(1);
     expect(outside.events().filter((e) => e.type === 'weather')).toHaveLength(1);
     expect(k.records('decision_wake').map((w) => w.reason)).toEqual(['arrived', 'rain']);
     // 河岸：已经在的人还在，新来的进不去
-    expect(inside.view().location).toEqual({ place: 'hiwatari:mio-riverbank' });
+    expect(inside.view().location).toEqual({ place: 'hiyorizaka:fukogawa-riverbank' });
     expect(inside.view().here.place).toMatchObject({ open: false, closed_reason: 'rain' });
-    rejects(() => outside.act({ type: 'travel', to: 'hiwatari:mio-riverbank' }), 'PRECONDITION_FAILED', 'place_closed_rain');
+    rejects(() => outside.act({ type: 'travel', to: 'hiyorizaka:fukogawa-riverbank' }), 'PRECONDITION_FAILED', 'place_closed_rain');
     // 站前广场只是提示，照常能去
-    expect(inside.view().here.exits.find((x: any) => x.id === 'hiwatari:ekimae-plaza')).toMatchObject({ open: true });
+    expect(inside.view().here.exits.find((x: any) => x.id === 'hiyorizaka:ekimae-plaza')).toMatchObject({ open: true });
     // 雨停了又下：同一天不再发第二次
     setWeather(t, {});
-    setWeather(t, { hiwatari: 61 });
+    setWeather(t, { hiyorizaka: 61 });
     expect(eventsToday(t.c).filter((e) => e.kind === 'rain_started')).toHaveLength(1);
     expect(k.records('decision_wake').filter((w) => w.reason === 'rain')).toHaveLength(1);
     // 第二天可以再有
     t.clock.advance(24 * HOUR);
     setWeather(t, {});
-    setWeather(t, { hiwatari: 61 });
+    setWeather(t, { hiyorizaka: 61 });
     expect(eventsToday(t.c).map((e) => e.kind)).toEqual(['rain_started']);
   });
 
   it('第一次拿到实况时已经在下雨：不算「开始下雨」（上一份是合成天气，没法比较）；之后停了再下才算', () => {
     const t = makeCity();
-    expect(weatherOf(t.c, 'hiwatari')?.status).toBe('fallback');
-    setWeather(t, { hiwatari: 63 });
-    expect(isRaining(t.c, 'hiwatari')).toBe(true);
+    expect(weatherOf(t.c, 'hiyorizaka')?.status).toBe('fallback');
+    setWeather(t, { hiyorizaka: 63 });
+    expect(isRaining(t.c, 'hiyorizaka')).toBe(true);
     expect(eventsToday(t.c)).toEqual([]);
     // 雨天不开放的地方照样按实况关着
-    const b = t.bot('路人', { entry: 'kagamiike:station' });
-    b.go('hiwatari:station');
-    rejects(() => b.act({ type: 'travel', to: 'hiwatari:mio-riverbank' }), 'PRECONDITION_FAILED', 'place_closed_rain');
+    const b = t.bot('路人', { entry: 'ryokogai:station' });
+    b.go('hiyorizaka:station');
+    rejects(() => b.act({ type: 'travel', to: 'hiyorizaka:fukogawa-riverbank' }), 'PRECONDITION_FAILED', 'place_closed_rain');
     setWeather(t, {});
-    setWeather(t, { hiwatari: 63 });
+    setWeather(t, { hiyorizaka: 63 });
     expect(eventsToday(t.c).map((e) => e.kind)).toEqual(['rain_started']);
   });
 
-  it('绯渡傍晚放晴：澪川河岸的公开小事件，每天一次；合成天气不触发', () => {
+  it('日和坂傍晚放晴：浮光川河岸的公开小事件，每天一次；合成天气不触发', () => {
     const t = makeCity({ at: T0 + 6 * HOUR + 30 * MIN }); // 16:30 JST
     expect(eventsToday(t.c)).toEqual([]); // 启动时只有合成天气
-    setWeather(t, { hiwatari: 0 });
-    setWeather(t, { hiwatari: 1 });
+    setWeather(t, { hiyorizaka: 0 });
+    setWeather(t, { hiyorizaka: 1 });
     const ev = eventsToday(t.c);
-    expect(ev).toEqual([expect.objectContaining({ kind: 'riverbank_evening', area: 'hiwatari', place: 'hiwatari:mio-riverbank', title: '澪川河岸的傍晚' })]);
+    expect(ev).toEqual([expect.objectContaining({ kind: 'riverbank_evening', area: 'hiyorizaka', place: 'hiyorizaka:fukogawa-riverbank', title: '浮光川河岸的傍晚' })]);
     expect(t.c.clock(ev[0]!.ends_at_ms)).toBe('18:30');
     const pub: any = publicCityView(t.c);
     expect(pub.events_today).toHaveLength(1);
     // 阴天、下雨、别的片区、别的钟点都不触发
     const t2 = makeCity({ at: T0 + 6 * HOUR + 30 * MIN });
-    setWeather(t2, { hiwatari: 3, kagamiike: 0 });
+    setWeather(t2, { hiyorizaka: 3, ryokogai: 0 });
     expect(eventsToday(t2.c)).toEqual([]);
     const t3 = makeCity({ at: T0 });
-    setWeather(t3, { hiwatari: 0 });
+    setWeather(t3, { hiyorizaka: 0 });
     expect(eventsToday(t3.c)).toEqual([]);
   });
 
@@ -332,7 +332,7 @@ describe('天气', () => {
       { current: { time: 1_790_000_000, temperature_2m: 13, precipitation: 0, rain: 0, weather_code: 2 } },
     ];
     const out = parseOpenMeteo(AREAS, body);
-    expect(out.map((r) => r.area)).toEqual(['hiwatari', 'sentou']);
+    expect(out.map((r) => r.area)).toEqual(['hiyorizaka', 'kumominato']);
     expect(out[0]).toMatchObject({ observed_at_ms: 1_790_000_000_000, code: 61, temp_c: 12.3, precip_mm: 0.4 });
     expect(out[0]!.hourly).toEqual([
       { at_ms: 1_790_000_000_000, code: 61, temp_c: 12.3, precip_mm: 0.4 },
@@ -352,7 +352,7 @@ describe('天气', () => {
     t.c.tick();
     await new Promise((r) => setTimeout(r, 20));
     expect(calls).toBe(1);
-    expect(weatherOf(t.c, 'sentou')).toMatchObject({ status: 'ok', text: '多云间晴' });
+    expect(weatherOf(t.c, 'kumominato')).toMatchObject({ status: 'ok', text: '多云间晴' });
     t.clock.advance(10 * MIN);
     t.c.tick();
     await new Promise((r) => setTimeout(r, 20));

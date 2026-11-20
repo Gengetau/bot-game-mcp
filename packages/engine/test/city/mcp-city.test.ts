@@ -73,8 +73,8 @@ for (const withTown of [false, true]) {
       expect((await call(b, 'world_query', { what: 'public', world_id: 'city' })).world_id).toBe('city');
       expect((await fails(b, 'enter_world', { world_id: 'tokyo', name: '小B' })).code).toBe('NOT_FOUND');
       expect((await fails(b, 'world_query', { what: 'public', world_id: 'tokyo' })).code).toBe('NOT_FOUND');
-      const entered = await call(b, 'enter_world', { world_id: 'city', name: '小B', entry: 'kagamiike:station' });
-      expect(entered).toMatchObject({ ok: true, world_id: 'city', created: true, granted_yen: 200_000, location: { place: 'kagamiike:station' }, wallet: { yen: 200_000 } });
+      const entered = await call(b, 'enter_world', { world_id: 'city', name: '小B', entry: 'ryokogai:station' });
+      expect(entered).toMatchObject({ ok: true, world_id: 'city', created: true, granted_yen: 200_000, location: { place: 'ryokogai:station' }, wallet: { yen: 200_000 } });
       // 再进一次只是回来
       expect(await call(b, 'enter_world', { world_id: 'city' })).toMatchObject({ created: false, resident_id: entered.resident_id });
       expect((await call(b, 'enter_world', { world_id: 'city' })).granted_yen).toBeUndefined();
@@ -128,7 +128,7 @@ for (const withTown of [false, true]) {
       expect((await fails(nia, 'world_query', { what: 'residents', world_id: 'city' })).code).toBe('ENTRY_VIA_HOME_ONLY');
       // 她经外出访问在城里时，这把密钥也不能替她做动作
       const k = t.kernel('nia');
-      k.depart({ yen: 3000, to: 'hiwatari:ekimae-plaza' });
+      k.depart({ yen: 3000, to: 'hiyorizaka:ekimae-plaza' });
       if (!withTown) {
         expect((await fails(nia, 'world_act', { request_id: rid(), action: { type: 'say', text: '我自己来' } })).code).toBe('ENTRY_VIA_HOME_ONLY');
       }
@@ -176,7 +176,7 @@ describe('和栖灯镇共用工具名', () => {
     expect((await fails(b, 'enter_world', { world_id: 'osaka' })).code).toBe('NOT_AVAILABLE');
   });
 
-  it('工具说明里写了灯都；有城市指南资源', async () => {
+  it('工具说明里写了晴空都；有城市指南资源', async () => {
     const { connect } = makeEnv({ town: true });
     const b = await connect(B);
     const tools = (await b.listTools()).tools;

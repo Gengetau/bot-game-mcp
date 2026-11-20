@@ -1,8 +1,8 @@
 /**
- * 灯都（--city）接入测试：
- *  1. DEFAULT_CITY_KEYWORDS 默认仅收口为 ['灯都', '进城']，旧词「东京」「东京都」不触发签票；
- *  2. 群内发送「灯都」通过 city_issue_ticket 私聊送达一次性登录链接，群内不泄露票据；
- *  3. 当 --city 开启且 --town 未开启时，收到「小镇」温和引导发送「灯都」。
+ * 晴空都（--city）接入测试：
+ *  1. DEFAULT_CITY_KEYWORDS 默认仅收口为 ['晴空都', '进城']，旧词「东京」「东京都」不触发签票；
+ *  2. 群内发送「晴空都」通过 city_issue_ticket 私聊送达一次性登录链接，群内不泄露票据；
+ *  3. 当 --city 开启且 --town 未开启时，收到「小镇」温和引导发送「晴空都」。
  */
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -22,19 +22,19 @@ let msgSeq = 200000;
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-describe('isCityCommand（灯都 R0 默认关键词）', () => {
-  it('默认仅匹配「灯都」「进城」，旧词「东京」「东京都」不再误触发', () => {
-    expect(DEFAULT_CITY_KEYWORDS).toEqual(['灯都', '进城']);
-    for (const ok of ['灯都', '进城', ' 灯都 ', '/灯都', '/桌游 灯都', '灯都！', '进城。']) {
+describe('isCityCommand（晴空都 R0 默认关键词）', () => {
+  it('默认仅匹配「晴空都」「进城」，旧词「东京」「东京都」不再误触发', () => {
+    expect(DEFAULT_CITY_KEYWORDS).toEqual(['晴空都', '进城']);
+    for (const ok of ['晴空都', '进城', ' 晴空都 ', '/晴空都', '/桌游 晴空都', '晴空都！', '进城。']) {
       expect(isCityCommand(ok), ok).toBe(true);
     }
-    for (const no of ['', '东京', '东京都', '/东京', '灯都好玩吗', '灯都 12345']) {
+    for (const no of ['', '东京', '东京都', '/东京', '晴空都好玩吗', '晴空都 12345']) {
       expect(isCityCommand(no), no).toBe(false);
     }
   });
 });
 
-describe('灯都：登录链接签发与旧词引导', () => {
+describe('晴空都：登录链接签发与旧词引导', () => {
   const dir = mkdtempSync(join(tmpdir(), 'referee-city-'));
   let eng: { rt: Runtime; http: HttpHandle };
 
@@ -65,7 +65,7 @@ describe('灯都：登录链接签发与旧词引导', () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
-  it('群内发「灯都」私聊收到一次性链接，发「东京」不签票，发「小镇」引导发「灯都」', async () => {
+  it('群内发「晴空都」私聊收到一次性链接，发「东京」不签票，发「小镇」引导发「晴空都」', async () => {
     const qq = new FakeOneBot();
     await qq.start();
     const ac = new AbortController();
@@ -103,15 +103,15 @@ describe('灯都：登录链接签发与旧词引导', () => {
       await sleep(300);
       expect(qq.calls.filter((c) => c.action === 'send_private_msg')).toHaveLength(0);
 
-      // 2. 新词「灯都」私聊送达链接且群内不泄露票据
-      emitGroup(ALICE, '爱丽丝', '灯都');
+      // 2. 新词「晴空都」私聊送达链接且群内不泄露票据
+      emitGroup(ALICE, '爱丽丝', '晴空都');
       const dm = await qq.waitForCall((c: ApiCall) => c.action === 'send_private_msg');
       expect(String(dm.params.user_id)).toBe(ALICE);
-      expect(callText(dm)).toContain('灯都登录链接');
+      expect(callText(dm)).toContain('晴空都登录链接');
       expect(callText(dm)).toContain(CITY_URL);
       const ticket = /#ticket=([\w-]+)/.exec(callText(dm))?.[1] ?? '';
       expect(ticket.length).toBeGreaterThan(20);
-      const tip = await qq.waitForCall((c: ApiCall) => c.action === 'send_group_msg' && callText(c).includes('灯都登录链接已私聊'));
+      const tip = await qq.waitForCall((c: ApiCall) => c.action === 'send_group_msg' && callText(c).includes('晴空都登录链接已私聊'));
       expect(callText(tip)).not.toContain(ticket);
 
       const exchanged = exchangeCityTicket(eng.rt.city!, ticket);
@@ -121,10 +121,10 @@ describe('灯都：登录链接签发与旧词引导', () => {
       });
       expect(eng.rt.city!.db.get<{ subject: string }>('SELECT subject FROM principals WHERE principal_id = ?', exchanged.principal.principal_id)?.subject).toBe(ALICE);
 
-      // 3. 当 --city 开而 --town 关时，发「小镇」引导发送「灯都」
+      // 3. 当 --city 开而 --town 关时，发「小镇」引导发送「晴空都」
       emitGroup(BOB, '鲍勃', '小镇');
       const hint = await qq.waitForCall((c: ApiCall) => c.action === 'send_group_msg' && callText(c).includes('栖灯镇已停运封存'));
-      expect(callText(hint)).toContain('发送「灯都」可获取灯都登录链接');
+      expect(callText(hint)).toContain('发送「晴空都」可获取晴空都登录链接');
       expect(callText(hint)).not.toContain('东京');
     } finally {
       ac.abort();

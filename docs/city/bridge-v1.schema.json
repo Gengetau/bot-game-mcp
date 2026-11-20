@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://bot-game-mcp/city/bridge-v1.schema.json",
-  "title": "灯都城市世界 · 桥接协议 city-bridge/1",
-  "description": "小屋内核与灯都城市引擎之间的桥接接口（服务器到服务器，前缀 /city/bridge/v1，Bearer 密钥）。本文件描述引擎当前实现的请求、回执、outbox 记录、结算清单和失败码。通用约定：1）request_id 必须匹配 ^[\\w.:-]{8,160}$，重试用同一个；2）payload_hash 可选，是「请求体去掉 request_id 和 payload_hash 之后」的规范化 JSON（键按字典序、无空白）的 SHA-256 十六进制，对不上返回 400 BAD_REQUEST / payload_hash_mismatch；3）桥接回执永久保存：同一个 request_id + 同样的内容返回原回执并带 replayed: true，同一个 request_id + 不同内容返回 409 CONFLICT / request_conflict；4）执行失败不留回执，修正后可以用同一个 request_id 再试；5）所有时间是 UTC 毫秒整数；6）outbox 按 seq 递增，内核按 record_id 去重。",
+  "title": "晴空都城市世界 · 桥接协议 city-bridge/1",
+  "description": "小屋内核与晴空都城市引擎之间的桥接接口（服务器到服务器，前缀 /city/bridge/v1，Bearer 密钥）。本文件描述引擎当前实现的请求、回执、outbox 记录、结算清单和失败码。通用约定：1）request_id 必须匹配 ^[\\w.:-]{8,160}$，重试用同一个；2）payload_hash 可选，是「请求体去掉 request_id 和 payload_hash 之后」的规范化 JSON（键按字典序、无空白）的 SHA-256 十六进制，对不上返回 400 BAD_REQUEST / payload_hash_mismatch；3）桥接回执永久保存：同一个 request_id + 同样的内容返回原回执并带 replayed: true，同一个 request_id + 不同内容返回 409 CONFLICT / request_conflict；4）执行失败不留回执，修正后可以用同一个 request_id 再试；5）所有时间是 UTC 毫秒整数；6）outbox 按 seq 递增，内核按 record_id 去重。",
   "type": "object",
   "x-protocol": "city-bridge/1",
   "x-mappings-version": 3,
@@ -252,17 +252,17 @@
       "type": "integer"
     },
     "PlaceId": {
-      "description": "地点编号，形如 kagamiike:kissa-tomoshibi；小屋门口是 hiwatari:ai-house:entrance。",
+      "description": "地点编号，形如 ryokogai:kissa-tomoshibi；小屋门口是 hiyorizaka:ai-house:entrance。",
       "type": "string",
       "minLength": 1
     },
     "AreaId": {
-      "description": "灯都开放街区编号（R0 开放绯渡/镜池/千灯三片区；后续内容包按架空标准 ID 扩展）。",
+      "description": "晴空都开放街区编号（R0 开放日和坂/棱光街/云港三片区；后续内容包按架空标准 ID 扩展）。",
       "type": "string",
       "enum": [
-        "hiwatari",
-        "kagamiike",
-        "sentou"
+        "hiyorizaka",
+        "ryokogai",
+        "kumominato"
       ]
     },
     "KernelEffectName": {
@@ -2907,7 +2907,7 @@
           "type": "string"
         },
         "city_text_version": {
-          "description": "城市架空文本与世界观版本（如 toto-text-1.0）。",
+          "description": "城市架空文本与世界观版本（如 toto-text-1.1）。",
           "type": "string"
         },
         "fare_rule_version": {

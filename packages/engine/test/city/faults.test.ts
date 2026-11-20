@@ -96,7 +96,7 @@ describe('F1：每个写请求都重复发送两次', () => {
   it('外部 bot 的动作重发也只做一次', () => {
     const t = makeCity();
     const b = t.bot('小B');
-    b.go('sentou:muginohi');
+    b.go('kumominato:muginohi');
     const first = b.act({ type: 'buy', sku: 'melon_pan' }, 'req-same-0001');
     const again = b.act({ type: 'buy', sku: 'melon_pan' }, 'req-same-0001');
     expect(again).toEqual({ ...first, replayed: true });
@@ -152,7 +152,7 @@ describe('F3：prepare 前后内核崩溃', () => {
     // abort 可以重发
     expect(k.abort().replayed).toBe(true);
     // 取消之后可以重新出门（新的 visit_id）
-    expect(k.depart({ yen: 1000, to: 'hiwatari:ekimae-plaza' }).state).toBe('active');
+    expect(k.depart({ yen: 1000, to: 'hiyorizaka:ekimae-plaza' }).state).toBe('active');
   });
 
   it('prepare 根本没到引擎就 abort：迟到的 prepare 被拒', () => {
@@ -167,7 +167,7 @@ describe('F3：prepare 前后内核崩溃', () => {
   it('已经交接的访问不能 abort', () => {
     const t = makeCity();
     const k = t.kernel('nia');
-    k.depart({ yen: 1000, to: 'hiwatari:ekimae-plaza' });
+    k.depart({ yen: 1000, to: 'hiyorizaka:ekimae-plaza' });
     rejects(() => k.abort(), 'CONFLICT', 'already_committed');
   });
 });
@@ -247,7 +247,7 @@ describe('F6：带出的零食', () => {
   it('在城里吃掉：fate=consumed，身体效果只有一条', () => {
     const t = makeCity();
     const k = t.kernel('nia');
-    k.depart({ yen: 5000, items: [COOKIE], to: 'hiwatari:ekimae-plaza' });
+    k.depart({ yen: 5000, items: [COOKIE], to: 'hiyorizaka:ekimae-plaza' });
     t.run(14 * MIN);
     const eat = k.act({ type: 'consume', item: 'cookie' });
     rejects(() => k.act({ type: 'consume', item: 'cookie' }), 'PRECONDITION_FAILED', 'not_enough_items');
@@ -268,7 +268,7 @@ describe('F6：带出的零食', () => {
   it('送给 B：fate=given，东西到了 B 手上', () => {
     const t = makeCity();
     const k = t.kernel('nia');
-    const b = t.bot('小B', { entry: 'kagamiike:station' });
+    const b = t.bot('小B', { entry: 'ryokogai:station' });
     b.go(KISSA);
     k.depart({ yen: 5000, items: [COOKIE], to: KISSA });
     t.run(31 * MIN);
@@ -290,10 +290,10 @@ describe('F6：带出的零食', () => {
     const t = makeCity();
     const k = t.kernel('nia');
     const b = t.bot('小B');
-    b.go('sentou:muginohi');
+    b.go('kumominato:muginohi');
     b.act({ type: 'buy', sku: 'cookie' });
     b.act({ type: 'buy', sku: 'melon_pan' });
-    k.depart({ yen: 5000, to: 'sentou:muginohi' });
+    k.depart({ yen: 5000, to: 'kumominato:muginohi' });
     t.run(40 * MIN);
     b.act({ type: 'give', to: t.residentOf('nia'), item: 'cookie' });
     b.act({ type: 'give', to: t.residentOf('nia'), item: 'melon_pan' });
@@ -313,7 +313,7 @@ describe('F8：旧的动作权代次', () => {
     const t = makeCity();
     const k = t.kernel('nia');
     // 第一次出门回家（代次 1 → 2）
-    k.depart({ yen: 1000, to: 'hiwatari:ekimae-plaza' });
+    k.depart({ yen: 1000, to: 'hiyorizaka:ekimae-plaza' });
     const firstVisit = k.visitId;
     t.run(14 * MIN);
     rejects(() => visitAct(t.c, k.visitId, { request_id: 'old-adapter-0001', domain_epoch: 0, action: { type: 'say', text: '我是旧的' } }), 'STALE_DOMAIN_EPOCH');
@@ -325,7 +325,7 @@ describe('F8：旧的动作权代次', () => {
     k.release();
     rejects(() => visitAct(t.c, firstVisit, { request_id: 'old-adapter-0002', domain_epoch: 1, action: { type: 'say', text: '我还在城里吗' } }), 'STALE_DOMAIN_EPOCH');
     // 第二次出门：代次必须比见过的都大
-    prepareVisit(t.c, k.prepareBody({ yen: 1000, to: 'hiwatari:ekimae-plaza' }));
+    prepareVisit(t.c, k.prepareBody({ yen: 1000, to: 'hiyorizaka:ekimae-plaza' }));
     rejects(() => commitVisit(t.c, k.visitId, { request_id: `${k.visitId}:commit-old`, transfer_id: `tr-${k.visitId}`, domain_epoch: 2 }), 'STALE_DOMAIN_EPOCH');
     expect(k.commit().payload.domain_epoch).toBe(3);
     // 上一次访问的代次在新访问里也不行
@@ -361,7 +361,7 @@ describe('F9：一笔购买结果未知时到了回家时间', () => {
     // 她的钱没有多出来：家里少了带出的减带回的，差额里包含锁在城里的那一笔
     expect(k.homeYen + t.balance(purse)).toBe(38_900 - 400);
     // reconcile 状态不挡下一次出门
-    expect(k.depart({ yen: 1000, to: 'hiwatari:ekimae-plaza' }).state).toBe('active');
+    expect(k.depart({ yen: 1000, to: 'hiyorizaka:ekimae-plaza' }).state).toBe('active');
   });
 });
 
@@ -427,7 +427,7 @@ describe('F11：settled 之后内核重启', () => {
   it('从游标拉到 visit_settled，只应用一次，然后 release', () => {
     const t = makeCity();
     const k = t.kernel('nia');
-    k.depart({ yen: 3000, to: 'hiwatari:ekimae-plaza' });
+    k.depart({ yen: 3000, to: 'hiyorizaka:ekimae-plaza' });
     t.run(14 * MIN);
     k.act({ type: 'go_home' });
     t.run(14 * MIN);
@@ -451,7 +451,7 @@ describe('F11：settled 之后内核重启', () => {
   it('settlement_id 不对、还没到家，release 都被拒', () => {
     const t = makeCity();
     const k = t.kernel('nia');
-    k.depart({ yen: 3000, to: 'hiwatari:ekimae-plaza' });
+    k.depart({ yen: 3000, to: 'hiyorizaka:ekimae-plaza' });
     rejects(() => releaseVisit(t.c, k.visitId, { request_id: 'rel-early-0001', settlement_id: 'x', domain_epoch: 2 }), 'VISIT_NOT_ACTIVE', 'not_settled');
     t.run(14 * MIN);
     k.act({ type: 'go_home' });
@@ -471,8 +471,8 @@ describe('F12：随身钱包只剩回程车费', () => {
     // 账面上够买一杯咖啡，但买了就没有回程车费
     const e = rejects(() => k.act({ type: 'buy', sku: 'coffee' }), 'PRECONDITION_FAILED', 'return_fare_reserved');
     expect(e.data).toMatchObject({ price_yen: 450, return_reserve_yen: 200, spendable_yen: 250 });
-    // 去千灯要 ¥200，到了那里回家要 ¥260：也不行
-    rejects(() => k.act({ type: 'travel', to: 'sentou:station' }), 'PRECONDITION_FAILED', 'return_fare_reserved');
+    // 去云港要 ¥200，到了那里回家要 ¥260：也不行
+    rejects(() => k.act({ type: 'travel', to: 'kumominato:station' }), 'PRECONDITION_FAILED', 'return_fare_reserved');
     // 真的不够就是 insufficient_funds
     rejects(() => k.act({ type: 'buy', sku: 'coffee_beans' }), 'PRECONDITION_FAILED', 'insufficient_funds');
     expect(k.view().wallet.yen).toBe(450);
@@ -492,7 +492,7 @@ describe('F12：随身钱包只剩回程车费', () => {
     expect(k.records('decision_wake')).toEqual([expect.objectContaining({ reason: 'plan_blocked', why: 'return_fare_reserved', destination: KISSA })]);
     expect(k.view().location).toEqual({ place: HOUSE_ENTRANCE });
     // 不花钱的地方还是能去（河岸走得到）
-    expect(k.view().here.exits.find((x: any) => x.id === 'hiwatari:mio-riverbank')).toMatchObject({ minutes: 9, fare_yen: 0 });
+    expect(k.view().here.exits.find((x: any) => x.id === 'hiyorizaka:fukogawa-riverbank')).toMatchObject({ minutes: 9, fare_yen: 0 });
     expect(k.act({ type: 'go_home' }).state).toBe('settled');
     k.pull();
     expect(k.settlement).toMatchObject({ purse_final_yen: 300, items: [] });
@@ -504,8 +504,8 @@ describe('F15：外部 bot 的动作上限', () => {
   it('每小时第 61 次被限速，带 retryAfterMs；室友不受影响', () => {
     const t = makeCity();
     const k = t.kernel('nia');
-    const b = t.bot('小B', { entry: 'kagamiike:station' });
-    k.depart({ yen: 5000, to: 'kagamiike:station' });
+    const b = t.bot('小B', { entry: 'ryokogai:station' });
+    k.depart({ yen: 5000, to: 'ryokogai:station' });
     t.run(25 * MIN);
     for (let i = 0; i < 60; i++) {
       t.clock.advance(11_000); // 聊天另有每分钟 6 句的上限
@@ -524,7 +524,7 @@ describe('F15：外部 bot 的动作上限', () => {
 
   it('失败的动作也算一次：不断发做不成的动作同样会被限速', () => {
     const t = makeCity();
-    const b = t.bot('小B', { entry: 'kagamiike:station' });
+    const b = t.bot('小B', { entry: 'ryokogai:station' });
     for (let i = 0; i < 60; i++) rejects(() => b.act({ type: 'buy', sku: 'nothing' }), 'PRECONDITION_FAILED', 'no_such_good');
     rejects(() => b.act({ type: 'buy', sku: 'nothing' }), 'RATE_LIMITED', 'act');
     // 被限速的那一次本身不再累计；重放不算
@@ -541,7 +541,7 @@ describe('F15：外部 bot 的动作上限', () => {
     }
     // 室友那边照常列出 go_home
     const k = t.kernel('nia');
-    k.depart({ yen: 3000, to: 'hiwatari:ekimae-plaza' });
+    k.depart({ yen: 3000, to: 'hiyorizaka:ekimae-plaza' });
     expect(rejects(() => k.act({ type: 'fly' }), 'BAD_REQUEST', 'unknown_action').message).toContain('go_home');
   });
 
@@ -559,7 +559,7 @@ describe('F15：外部 bot 的动作上限', () => {
     rejects(() => t.bot('丙'), 'PRECONDITION_FAILED', 'city_full');
     expect(a.view().wallet.yen).toBe(200_000);
     // 离开再回来：不会再发一次
-    a.act({ type: 'travel', to: 'sentou:southern-terrace' });
+    a.act({ type: 'travel', to: 'kumominato:southern-terrace' });
     t.run(10 * MIN);
     expect(t.c.db.scalar("SELECT COUNT(*) FROM ledger_transactions WHERE kind = 'grant'")).toBe(2);
     expect(publicCityView(t.c)).toBeTruthy();
@@ -596,7 +596,7 @@ describe('出门前的检查', () => {
     const other = t.kernel('nia');
     rejects(() => prepareVisit(t.c, other.prepareBody({ yen: 1, to: KISSA, visitId: 'v-nia-other' })), 'CONFLICT', 'visit_open');
     // 另一位室友不受影响
-    expect(t.kernel('claire').depart({ yen: 1000, to: 'hiwatari:ekimae-plaza' }).state).toBe('active');
+    expect(t.kernel('claire').depart({ yen: 1000, to: 'hiyorizaka:ekimae-plaza' }).state).toBe('active');
   });
 });
 
@@ -605,7 +605,7 @@ describe('备份', () => {
     const dbPath = tmpDb();
     const t = makeCity({ dbPath });
     const k = t.kernel('nia');
-    k.depart({ yen: 3000, to: 'hiwatari:ekimae-plaza' });
+    k.depart({ yen: 3000, to: 'hiyorizaka:ekimae-plaza' });
     const dir = join(dirname(dbPath), 'backups');
     t.c.tick();
     expect(readdirSync(dir)).toEqual(['city-2026-11-17.db']);
@@ -638,14 +638,14 @@ describe('兜底', () => {
     // 钱和物品没动过
     expect(t.balance(BRIDGE)).toBe(0);
     // 下一次出门照常
-    expect(k.depart({ yen: 5000, to: 'hiwatari:ekimae-plaza' }).state).toBe('active');
+    expect(k.depart({ yen: 5000, to: 'hiyorizaka:ekimae-plaza' }).state).toBe('active');
     expect(runReconcile(t.c, 'test').findings).toEqual([]);
   });
 
   it('已经交接的访问不受这个过期作业影响', () => {
     const t = makeCity();
     const k = t.kernel('nia');
-    k.depart({ yen: 5000, to: 'hiwatari:ekimae-plaza', returnIn: 2 * HOUR });
+    k.depart({ yen: 5000, to: 'hiyorizaka:ekimae-plaza', returnIn: 2 * HOUR });
     t.run(3 * HOUR);
     expect(k.describe().state).toBe('settled');
   });
@@ -653,7 +653,7 @@ describe('兜底', () => {
   it('到站、到点回家这两类作业不会被搁置：连续失败之后退避着重试，修好了就接上；对账会报', () => {
     const t = makeCity();
     const k = t.kernel('nia');
-    k.depart({ yen: 5000, to: 'hiwatari:ekimae-plaza' });
+    k.depart({ yen: 5000, to: 'hiyorizaka:ekimae-plaza' });
     const real = t.c.jobHandlers.get('trip_leg')!;
     t.c.jobHandlers.set('trip_leg', () => {
       throw new Error('模拟的故障');
@@ -672,7 +672,7 @@ describe('兜底', () => {
     // 修好之后接上，她到了
     t.c.jobHandlers.set('trip_leg', real);
     t.run(2 * MIN);
-    expect(k.view().location).toEqual({ place: 'hiwatari:ekimae-plaza' });
+    expect(k.view().location).toEqual({ place: 'hiyorizaka:ekimae-plaza' });
     expect(runReconcile(t.c, 'test').findings).toEqual([]);
   });
 

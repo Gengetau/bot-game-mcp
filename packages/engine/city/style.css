@@ -1,4 +1,4 @@
-/* 灯都人类文字优先客户端样式（零外部依赖，支持明暗自适应与强制高对比度） */
+/* 晴空都人类文字优先客户端样式（零外部依赖，支持明暗自适应与强制高对比度） */
 :root {
   color-scheme: light dark;
   --bg: #faf8f5;
@@ -453,7 +453,7 @@ textarea:user-invalid {
 .lcd-board[data-line="hokkan"] {
   --lcd-line: #16a34a;
 }
-.lcd-board[data-line="toukan"] {
+.lcd-board[data-line="seikan"] {
   --lcd-line: #65a30d;
 }
 .lcd-board[data-line="walk"] {
@@ -882,7 +882,7 @@ textarea:user-invalid {
   stroke-dasharray: 8 5;
   fill: none;
 }
-.rail-toukan {
+.rail-seikan {
   stroke: #65a30d;
   stroke-width: 5;
   fill: none;
@@ -973,13 +973,13 @@ textarea:user-invalid {
   block-size: 3rem;
   flex-shrink: 0;
 }
-.stamp-ink-hiwatari {
+.stamp-ink-hiyorizaka {
   color: #b91c1c;
 }
-.stamp-ink-kagamiike {
+.stamp-ink-ryokogai {
   color: #15803d;
 }
-.stamp-ink-sentou {
+.stamp-ink-kumominato {
   color: #4338ca;
 }
 .stamp-ink-empty {

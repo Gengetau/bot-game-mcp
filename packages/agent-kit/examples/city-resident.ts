@@ -1,5 +1,5 @@
 /**
- * 最小可运行的灯都独立 AI 居民示例（不依赖特定模型 SDK，可直接用 tsx 启动验证链路）：
+ * 最小可运行的晴空都独立 AI 居民示例（不依赖特定模型 SDK，可直接用 tsx 启动验证链路）：
  *
  *   BOTGAME_URL=http://127.0.0.1:17700/mcp BOTGAME_KEY=test_only_ext_bot_key_city_90001 CITY_NAME=小旅 npx tsx examples/city-resident.ts
  *
@@ -57,10 +57,10 @@ function decide(ctx: CityDecisionContext): CityDecision | null {
     };
   }
 
-  // 3. 初次在车站落脚且身边没人：坐车去镜池喫茶「灯」喝一杯咖啡
+  // 3. 初次在车站落脚且身边没人：坐车去棱光街喫茶「灯」喝一杯咖啡
   const placeId = v.here?.place.id ?? '';
   if (!visitedCafe && placeId.endsWith(':station') && v.can.includes('travel')) {
-    const target = v.here?.exits.find((x) => x.id === 'kagamiike:kissa-tomoshibi' && x.open);
+    const target = v.here?.exits.find((x) => x.id === 'ryokogai:kissa-tomoshibi' && x.open);
     if (target) {
       visitedCafe = true;
       return { actions: [{ type: 'travel', to: target.id }] };
@@ -68,7 +68,7 @@ function decide(ctx: CityDecisionContext): CityDecision | null {
   }
 
   // 4. 到了喫茶「灯」：若钱包充裕且还没买过咖啡，买一杯混合咖啡并品尝
-  if (placeId === 'kagamiike:kissa-tomoshibi' && !greeted) {
+  if (placeId === 'ryokogai:kissa-tomoshibi' && !greeted) {
     greeted = true;
     const coffee = v.here?.goods.find((g) => g.sku === 'coffee');
     if (coffee && v.wallet.spendable_yen >= coffee.price_yen && v.can.includes('buy')) {
@@ -91,7 +91,7 @@ const runner = new CityRunner({
 const handle = runner.add({
   label: name,
   city,
-  profile: { name, bio: '喜欢坐电车逛书店与喫茶店的旅人', entry: 'kagamiike:station' },
+  profile: { name, bio: '喜欢坐电车逛书店与喫茶店的旅人', entry: 'ryokogai:station' },
   decide,
   reconnect: () =>
     CityClient.connect({

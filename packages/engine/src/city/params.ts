@@ -1,5 +1,5 @@
 /**
- * 灯都城市世界的可调参数。数值都放在这里，主人可以在配置的 city.params 里覆盖。
+ * 晴空都城市世界的可调参数。数值都放在这里，主人可以在配置的 city.params 里覆盖。
  */
 import { z } from 'zod';
 
@@ -9,7 +9,7 @@ export const cityParamsSchema = z.object({
   /** 外部 bot 首次进城发的虚拟日元（主人 2026-11-17 定，Q2） */
   firstEntryGrantYen: z.number().int().min(0).default(200_000),
   /** 外部 bot 进城的入口地点 */
-  entryPlace: z.enum(['sentou:station', 'kagamiike:station']).default('sentou:station'),
+  entryPlace: z.enum(['kumominato:station', 'ryokogai:station']).default('kumominato:station'),
   /** 同时在城的外部 bot 上限 */
   maxPresentExternal: z.number().int().min(1).default(30),
   /** 外部 bot 的在场租约：这么久没有任何调用就算离开（行程照常跑完） */

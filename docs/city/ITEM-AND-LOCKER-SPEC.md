@@ -1,4 +1,4 @@
-# 灯都城市世界（`city`）两类物品身份、储物柜流转与跨库结算规范
+# 晴空都城市世界（`city`）两类物品身份、储物柜流转与跨库结算规范
 
 - **文档编号**：`docs/city/ITEM-AND-LOCKER-SPEC.md`（M0 四份冻结契约之一）
 - **状态**：M0 候选定稿（内核侧与跨库结算主笔：`gemini4-ext`；引擎侧 Schema v2 / 动作实现共编：`gemini3-ext`）
@@ -137,7 +137,7 @@
 2. **禁止存入储物柜**：
    - 三类玩家对 `carry_home === false` 的物品调用 `store_locker` 时，一律返回 `422 PRECONDITION_FAILED`（`reason: "not_storable"`）。
 3. **返家结算（`settle()`）处理铁律**：
-   - 当室友到达 `hiwatari:ai-house:entrance` 生成 `Settlement` 时，若身上仍有未喝完的 `carry_home === false` 饮品：
+   - 当室友到达 `hiyorizaka:ai-house:entrance` 生成 `Settlement` 时，若身上仍有未喝完的 `carry_home === false` 饮品：
      - `Settlement.items[]` 记录该条目 `fate: "disposed"`（并在可选 `Settlement.notes[]` 附一句说明，如 `"未饮完的混合咖啡已在返家前处理，未带回或寄存"`）；
      - **绝不生成 `body_effect`、绝不计入 `Settlement.consumed[]`**（严格遵守产品铁律 1.2：未主动 `consume` 绝不代喝）；
      - 物品库存清零（扣减 `quantity` 或在 `releaseVisit` 时置 `state = 'disposed'`），**不写入 `state = 'locker'`**，访问在无 `pending` 订单时正常关闭为 `closed`。
@@ -150,7 +150,7 @@
 
 三类玩家（室友、外部 Bot、人类网页玩家）共用同一套储物柜规则：
 
-- **可用地点**：各车站大厅（`place.type === 'station'`，如 `hiwatari:station`、`kagamiike:station`、`sentou:station`，以及后续内容包新增车站）与 M3 个人空间（`personal_spaces`）。在非车站/非个人空间地点调用返回 `422 PRECONDITION_FAILED`（`reason: "not_at_locker"`）；乘车途中返回 `422 PRECONDITION_FAILED / in_transit`；室友在 `returning` 阶段不可存取（`409 VISIT_NOT_ACTIVE / returning`）。
+- **可用地点**：各车站大厅（`place.type === 'station'`，如 `hiyorizaka:station`、`ryokogai:station`、`kumominato:station`，以及后续内容包新增车站）与 M3 个人空间（`personal_spaces`）。在非车站/非个人空间地点调用返回 `422 PRECONDITION_FAILED`（`reason: "not_at_locker"`）；乘车途中返回 `422 PRECONDITION_FAILED / in_transit`；室友在 `returning` 阶段不可存取（`409 VISIT_NOT_ACTIVE / returning`）。
 - **本人视图新增字段 `selfView.locker_items`**：
   - 始终返回当前居民名下 `state = 'locker' AND quantity > 0` 的物品列表（无论本人此刻是否站在车站，均可查看自己柜中有什么；但只有站在车站/个人空间时 `selfView.can` 才包含 `'store_locker'` / `'take_locker'`）：
     ```json

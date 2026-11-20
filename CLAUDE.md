@@ -56,7 +56,7 @@ npm run client:assets:check                                       # 三维客户
 - 新的动作类型：在对应模块的 `install*` 里注册 handler，补 `docs/TOWN.md` 的动作表、`mcp/town.ts` 的指南、`agent-kit/prompts/resident-zh.md`，并加测试（`test/world/`，辅助在 `test/world/helpers.ts`）。
 - 部署、密钥和服务器配置不在开发范围内。
 
-## 灯都城市（持续世界第二个）的不变量
+## 晴空都城市（持续世界第二个）的不变量
 
 城市在 `packages/engine/src/city/`，说明和接口契约见 `docs/CITY.md`，桥接协议的机器可读版本在 `docs/city/bridge-v1.schema.json`。改它之前先读那份文档。
 
@@ -82,7 +82,7 @@ npm run client:assets:check                                       # 三维客户
   - `src/mcp/server.ts`：工具、资源、提示词。`src/mcp/guides.ts` 是给 agent 的指南文本。`src/mcp/town.ts` 是小镇的工具和世界上下文路由。
   - `src/core/runner.ts`：GameRunner，从 GameManager 抽出来的「推进一局」，公共对局和小镇的嵌入小游戏共用。
   - `src/world/`：持续世界「栖灯镇」（`service.ts` 命令管线与调度，`db.ts` SQLite，`space.ts` 空间权威，`spatial/` 地图、寻路、运动的纯函数，其余按模块：identity、life、property、mail、interact、social、games、reports、views、http、ws）。旧页面在 `town/`（静态文件，无构建；会被 Godot 网页客户端取代）。配置了 `town.clientDir` 时，引擎在 `/town/3d/` 托管三维客户端的导出产物。
-  - `src/city/`：持续世界「灯都」（`service.ts` 提交与调度，`db.ts` 表结构，`catalog.ts` 地点与票价，`ledger.ts` 账本，`trips.ts` 行程，`visits.ts` 和小屋内核的桥接协议，`residents.ts` 身份与在场，`actions.ts` 动作与限流，`views.ts` 投影，`weather.ts`、`reconcile.ts`、`http.ts`）。`src/mcp/city.ts` 让城市和小镇共用工具名。测试在 `test/city/`，`helpers.ts` 里有假内核客户端。
+  - `src/city/`：持续世界「晴空都」（`service.ts` 提交与调度，`db.ts` 表结构，`catalog.ts` 地点与票价，`ledger.ts` 账本，`trips.ts` 行程，`visits.ts` 和小屋内核的桥接协议，`residents.ts` 身份与在场，`actions.ts` 动作与限流，`views.ts` 投影，`weather.ts`、`reconcile.ts`、`http.ts`）。`src/mcp/city.ts` 让城市和小镇共用工具名。测试在 `test/city/`，`helpers.ts` 里有假内核客户端。
   - `src/server/`：HTTP、SSE、stdio、bridge 传输。
   - 测试：`test/helpers.ts` 提供 FakeClock、`startGame`、`playToEnd`。
 - `packages/referee-onebot`（`bot-game-mcp-referee-onebot`，命令 `bot-game-referee`）：代码裁判，OneBot v11 正向 WebSocket。只能通过 MCP 协议和引擎说话。

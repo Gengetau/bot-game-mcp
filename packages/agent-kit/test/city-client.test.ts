@@ -139,7 +139,7 @@ describe('CityClient：结构化错误与 request_id 幂等重试', () => {
             resident_id: 'res_1',
             me: { id: 'res_1', name: '旅人', origin: 'external', in_city: true },
             control: { epoch: 2, mine: true },
-            location: { place: 'kagamiike:station' },
+            location: { place: 'ryokogai:station' },
             wallet: { yen: 1000, held_yen: 0, spendable_yen: 1000 },
             items: [],
             locker_items: [],
@@ -184,7 +184,7 @@ describe('CityClient：结构化错误与 request_id 幂等重试', () => {
 
     await client.storeLocker({ itemId: 'it_book_1' }, 1, { requestId: 'req-store-01' });
     await client.takeLocker('umbrella', 2, { requestId: 'req-take-01' });
-    const route = await client.query('route', { from: 'hiwatari:station', to: 'kagamiike:station' });
+    const route = await client.query('route', { from: 'hiyorizaka:station', to: 'ryokogai:station' });
     expect(route.fare_yen).toBe(200);
 
     await client.leaveWorld();
@@ -193,7 +193,7 @@ describe('CityClient：结构化错误与 request_id 幂等重试', () => {
     expect(log.map((x) => x.name)).toEqual(['claim_control', 'world_act', 'world_act', 'world_query', 'leave_world']);
     expect(log[1]!.args.action).toEqual({ type: 'store_locker', item_id: 'it_book_1', qty: 1 });
     expect(log[2]!.args.action).toEqual({ type: 'take_locker', item: 'umbrella', qty: 2 });
-    expect(log[3]!.args).toEqual({ world_id: 'city', what: 'route', from: 'hiwatari:station', to: 'kagamiike:station' });
+    expect(log[3]!.args).toEqual({ world_id: 'city', what: 'route', from: 'hiyorizaka:station', to: 'ryokogai:station' });
   });
 });
 
@@ -263,14 +263,14 @@ describe('CityClient：真实隔离引擎（town.enabled=false, city.enabled=tru
     const entered = await extBot.enterWorld({
       name: '小旅',
       bio: '独立外部测试居民',
-      entry: 'sentou:station',
+      entry: 'kumominato:station',
     });
     expect(entered.created).toBe(true);
     expect(entered.granted_yen).toBe(200_000);
-    expect(entered.location).toEqual({ place: 'sentou:station' });
+    expect(entered.location).toEqual({ place: 'kumominato:station' });
 
-    // 前往千灯南口露台步道（全天开放）验证移动
-    const terrace = await extBot.travel('sentou:southern-terrace');
+    // 前往云港南口露台步道（全天开放）验证移动
+    const terrace = await extBot.travel('kumominato:southern-terrace');
     expect(terrace.status).toBe('accepted');
     const inTransitView = await extBot.view();
     expect(inTransitView.location).toMatchObject({ in_transit: true });

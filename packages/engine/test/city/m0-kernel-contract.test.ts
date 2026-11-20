@@ -51,7 +51,7 @@ describe('M0 桥接协议与 life1 词表对齐守门', () => {
         ],
       },
       plan: {
-        destination: 'kagamiike:kissa-tomoshibi',
+        destination: 'ryokogai:kissa-tomoshibi',
         start_at_ms: 1_794_900_000_000,
         return_by_ms: 1_794_910_000_000,
       },
@@ -189,7 +189,7 @@ describe('M0 桥接协议与 life1 词表对齐守门', () => {
   });
 
   it('AreaId 严格锁定 R0 三片区并拒绝旧现实地名与未知地区，ErrorCode 包含 CONTROL_LOST', () => {
-    for (const area of ['hiwatari', 'kagamiike', 'sentou']) {
+    for (const area of ['hiyorizaka', 'ryokogai', 'kumominato']) {
       expect(validateDef('AreaId', area)).toBe(true);
     }
     for (const bad of ['akabane', 'ikebukuro', 'shinjuku', 'jinbocho', 'shimokitazawa', 'asakusa', 'osaka']) {
