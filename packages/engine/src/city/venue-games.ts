@@ -181,6 +181,18 @@ function notifyTableParticipants(c: CityService, tableId: string, type: string, 
   if (targets.length > 0) c.emitTo(targets, type, data, at);
 }
 
+function notifyTableAndVenue(
+  c: CityService,
+  placeId: string,
+  participantIds: readonly string[],
+  type: string,
+  data: Record<string, unknown>,
+  at: number,
+): void {
+  const targets = [...new Set([...participantIds, ...c.presentAt(placeId).map((x) => x.resident_id)])];
+  if (targets.length > 0) c.emitTo(targets, type, data, at);
+}
+
 function finalizeTableIfDone(c: CityService, table: TableRow, rec: GameRecord, at: number): boolean {
   if (rec.status === 'running') return false;
   const status = rec.status === 'aborted' ? 'aborted' : 'completed';
@@ -199,22 +211,22 @@ function finalizeTableIfDone(c: CityService, table: TableRow, rec: GameRecord, a
     status === 'aborted' ? 'table_aborted' : 'game_completed',
     table.table_id,
   );
-  if (remaining.length > 0) {
-    c.emitTo(
-      remaining.map((s) => s.resident_id),
-      'venue_table_ended',
-      {
-        table_id: table.table_id,
-        place_id: table.place_id,
-        game: table.game_type,
-        status,
-        winner_seats: rec.result?.winnerSeats ?? [],
-        winner_team: rec.result?.winnerTeam ?? '',
-        reason: rec.result?.reason ?? '',
-      },
-      at,
-    );
-  }
+  notifyTableAndVenue(
+    c,
+    table.place_id,
+    remaining.map((s) => s.resident_id),
+    'venue_table_ended',
+    {
+      table_id: table.table_id,
+      place_id: table.place_id,
+      game: table.game_type,
+      status,
+      winner_seats: rec.result?.winnerSeats ?? [],
+      winner_team: rec.result?.winnerTeam ?? '',
+      reason: rec.result?.reason ?? '',
+    },
+    at,
+  );
   return true;
 }
 
@@ -228,6 +240,7 @@ function runTableTick(c: CityService, tableId: string, at: number): void {
   if (finalizeTableIfDone(c, table, rec, at)) return;
   if (changed) {
     c.db.run('UPDATE venue_tables SET record_json = ?, revision = revision + 1 WHERE table_id = ?', JSON.stringify(rec), tableId);
+    notifyTableParticipants(c, tableId, 'venue_table_updated', { table_id: tableId, round: rec.round, phase: rec.phase?.key ?? null }, at);
   }
   scheduleTableTick(c, tableId, rec);
 }
@@ -256,7 +269,14 @@ function leaveTableCore(c: CityService, residentId: string, reason: string, at: 
     } else if (table.host_id === residentId) {
       c.db.run('UPDATE venue_tables SET host_id = ?, revision = revision + 1 WHERE table_id = ?', remaining[0]!.resident_id, table.table_id);
     }
-    notifyTableParticipants(c, table.table_id, 'venue_table_left', { table_id: table.table_id, resident_id: residentId, reason }, at);
+    notifyTableAndVenue(
+      c,
+      table.place_id,
+      remaining.map((s) => s.resident_id),
+      'venue_table_left',
+      { table_id: table.table_id, resident_id: residentId, reason },
+      at,
+    );
     return;
   }
   if (table.status === 'running' && table.record_json) {
@@ -272,7 +292,14 @@ function leaveTableCore(c: CityService, residentId: string, reason: string, at: 
     if (finalizeTableIfDone(c, table, rec, at)) return;
     c.db.run('UPDATE venue_tables SET record_json = ?, revision = revision + 1 WHERE table_id = ?', JSON.stringify(rec), table.table_id);
     scheduleTableTick(c, table.table_id, rec);
-    notifyTableParticipants(c, table.table_id, 'venue_table_left', { table_id: table.table_id, resident_id: residentId, reason }, at);
+    notifyTableAndVenue(
+      c,
+      table.place_id,
+      remaining.map((s) => s.resident_id),
+      'venue_table_left',
+      { table_id: table.table_id, resident_id: residentId, reason },
+      at,
+    );
   }
 }
 
@@ -339,7 +366,14 @@ function doJoinTable(c: CityService, r: CityResident, a: Record<string, unknown>
     r.resident_id,
     at,
   );
-  notifyTableParticipants(c, table.table_id, 'venue_table_joined', { table_id: table.table_id, who: card(r) }, at);
+  notifyTableAndVenue(
+    c,
+    table.place_id,
+    activeSeatsOfTable(c, table.table_id).map((s) => s.resident_id),
+    'venue_table_joined',
+    { table_id: table.table_id, who: card(r) },
+    at,
+  );
   return { status: 'completed', table_id: table.table_id, players: seats.length + 1 };
 }
 
@@ -393,9 +427,10 @@ function doStartTable(c: CityService, r: CityResident, a: Record<string, unknown
     table.table_id,
   );
   scheduleTableTick(c, table.table_id, rec);
-  notifyTableParticipants(
+  notifyTableAndVenue(
     c,
-    table.table_id,
+    table.place_id,
+    seats.map((s) => s.resident_id),
     'venue_table_started',
     { table_id: table.table_id, game: table.game_type, game_id: gameId },
     at,
@@ -467,71 +502,95 @@ export interface CreateAuctionInput {
   meta?: Record<string, unknown>;
 }
 
-export function createVenueAuction(c: CityService, input: CreateAuctionInput): AuctionRow {
-  ensureAuctionHouse(c);
-  const now = c.now();
-  const placeId = input.placeId ?? BOARDGAME_CHAYA_ID;
-  const auctionId = input.auctionId ?? c.id('auc');
-  const itemId = input.itemId ?? c.id('curio');
-  const meta = { domain: 'city_auction', title: input.itemName, auction_id: auctionId, ...(input.meta ?? {}) };
-  c.db.run(
-    "INSERT OR IGNORE INTO items(item_id, owner_id, type, quantity, instance, origin_ref, origin_json, meta_json, borrowed_from, visit_id, state, created_at, updated_at) VALUES (?, ?, ?, 1, 1, NULL, NULL, ?, NULL, NULL, 'space', ?, ?)",
-    itemId,
-    AUCTION_HOUSE_RESIDENT,
-    input.itemType,
-    JSON.stringify(meta),
-    now,
-    now,
-  );
-  c.db.run(
-    "INSERT INTO venue_auctions(auction_id, place_id, item_id, item_name, item_type, reserve_yen, price_mode, status, opens_at, closes_at, created_at) VALUES (?,?,?,?,?,?,?,'open',?,?,?)",
-    auctionId,
-    placeId,
-    itemId,
-    input.itemName,
-    input.itemType,
-    input.reserveYen,
-    input.priceMode ?? 'first',
-    input.opensAt ?? now,
-    input.closesAt,
-    now,
-  );
-  c.reschedule('venue_auction_settle', `venue:auction:${auctionId}:settle`, input.closesAt, { auctionId });
-  return c.db.get<AuctionRow & Row>('SELECT * FROM venue_auctions WHERE auction_id = ?', auctionId)!;
+export function createVenueAuction(c: CityService, input: CreateAuctionInput, at?: number): AuctionRow {
+  return c.commit(() => {
+    ensureAuctionHouse(c);
+    const now = at ?? c.now();
+    const placeId = input.placeId ?? BOARDGAME_CHAYA_ID;
+    const auctionId = input.auctionId ?? c.id('auc');
+    const itemId = input.itemId ?? c.id('curio');
+    const meta = { domain: 'city_auction', title: input.itemName, auction_id: auctionId, ...(input.meta ?? {}) };
+    c.db.run(
+      "INSERT OR IGNORE INTO items(item_id, owner_id, type, quantity, instance, origin_ref, origin_json, meta_json, borrowed_from, visit_id, state, created_at, updated_at) VALUES (?, ?, ?, 1, 1, NULL, NULL, ?, NULL, NULL, 'space', ?, ?)",
+      itemId,
+      AUCTION_HOUSE_RESIDENT,
+      input.itemType,
+      JSON.stringify(meta),
+      now,
+      now,
+    );
+    c.db.run(
+      "INSERT INTO venue_auctions(auction_id, place_id, item_id, item_name, item_type, reserve_yen, price_mode, status, opens_at, closes_at, created_at) VALUES (?,?,?,?,?,?,?,'open',?,?,?)",
+      auctionId,
+      placeId,
+      itemId,
+      input.itemName,
+      input.itemType,
+      input.reserveYen,
+      input.priceMode ?? 'first',
+      input.opensAt ?? now,
+      input.closesAt,
+      now,
+    );
+    c.reschedule('venue_auction_settle', `venue:auction:${auctionId}:settle`, input.closesAt, { auctionId });
+    const present = c.presentAt(placeId).map((x) => x.resident_id);
+    if (present.length > 0) {
+      c.emitTo(
+        present,
+        'auction_opened',
+        {
+          auction_id: auctionId,
+          place_id: placeId,
+          item_id: itemId,
+          item_name: input.itemName,
+          reserve_yen: input.reserveYen,
+          closes_at_ms: input.closesAt,
+        },
+        now,
+      );
+    }
+    return c.db.get<AuctionRow & Row>('SELECT * FROM venue_auctions WHERE auction_id = ?', auctionId)!;
+  });
 }
 
 export function ensureDailyAuctions(c: CityService, at: number): void {
-  ensureAuctionHouse(c);
-  const openCount = c.db.scalar("SELECT COUNT(*) FROM venue_auctions WHERE place_id = ? AND status = 'open' AND closes_at > ?", BOARDGAME_CHAYA_ID, at);
-  if (openCount > 0) return;
-  const lp = localParts(c.params.timezone, at);
-  const day = lp.date;
-  const slotIdx = Math.floor((lp.hour * 60 + lp.minute) / AUCTION_SLOT_MINUTES);
-  const startMin = slotIdx * AUCTION_SLOT_MINUTES;
-  const endMin = (slotIdx + 1) * AUCTION_SLOT_MINUTES;
-  const opensAt = localToUtc(c.params.timezone, day, Math.floor(startMin / 60), startMin % 60);
-  const closesAt =
-    endMin < 1440
-      ? localToUtc(c.params.timezone, day, Math.floor(endMin / 60), endMin % 60)
-      : localToUtc(c.params.timezone, nextDate(day), 0, 0);
-  if (closesAt <= at) return;
-  const dayHash = [...day].reduce((acc, ch) => acc + ch.charCodeAt(0), 0);
-  const tpl = DAILY_AUCTION_POOL[(dayHash + slotIdx) % DAILY_AUCTION_POOL.length]!;
-  const slotTag = String(slotIdx).padStart(2, '0');
-  const auctionId = `auc:${day}:s${slotTag}:${tpl.key}`;
-  const existing = c.db.get('SELECT 1 AS x FROM venue_auctions WHERE auction_id = ?', auctionId);
-  if (existing) return;
-  createVenueAuction(c, {
-    auctionId,
-    placeId: BOARDGAME_CHAYA_ID,
-    itemId: `curio:${day}:s${slotTag}:${tpl.key}`,
-    itemType: tpl.itemType,
-    itemName: tpl.itemName,
-    reserveYen: tpl.reserveYen,
-    priceMode: tpl.priceMode,
-    opensAt,
-    closesAt,
-    meta: { edition: tpl.edition, provenance: tpl.provenance },
+  c.commit(() => {
+    ensureAuctionHouse(c);
+    const openCount = c.db.scalar("SELECT COUNT(*) FROM venue_auctions WHERE place_id = ? AND status = 'open' AND closes_at > ?", BOARDGAME_CHAYA_ID, at);
+    if (openCount > 0) return;
+    const lp = localParts(c.params.timezone, at);
+    const day = lp.date;
+    const slotIdx = Math.floor((lp.hour * 60 + lp.minute) / AUCTION_SLOT_MINUTES);
+    const startMin = slotIdx * AUCTION_SLOT_MINUTES;
+    const endMin = (slotIdx + 1) * AUCTION_SLOT_MINUTES;
+    const opensAt = localToUtc(c.params.timezone, day, Math.floor(startMin / 60), startMin % 60);
+    const closesAt =
+      endMin < 1440
+        ? localToUtc(c.params.timezone, day, Math.floor(endMin / 60), endMin % 60)
+        : localToUtc(c.params.timezone, nextDate(day), 0, 0);
+    if (closesAt <= at) return;
+    const dayHash = [...day].reduce((acc, ch) => acc + ch.charCodeAt(0), 0);
+    const tpl = DAILY_AUCTION_POOL[(dayHash + slotIdx) % DAILY_AUCTION_POOL.length]!;
+    const slotTag = String(slotIdx).padStart(2, '0');
+    const auctionId = `auc:${day}:s${slotTag}:${tpl.key}`;
+    const existing = c.db.get('SELECT 1 AS x FROM venue_auctions WHERE auction_id = ?', auctionId);
+    if (existing) return;
+    createVenueAuction(
+      c,
+      {
+        auctionId,
+        placeId: BOARDGAME_CHAYA_ID,
+        itemId: `curio:${day}:s${slotTag}:${tpl.key}`,
+        itemType: tpl.itemType,
+        itemName: tpl.itemName,
+        reserveYen: tpl.reserveYen,
+        priceMode: tpl.priceMode,
+        opensAt,
+        closesAt,
+        meta: { edition: tpl.edition, provenance: tpl.provenance },
+      },
+      at,
+    );
   });
 }
 
@@ -565,126 +624,155 @@ function withdrawAuctionBids(c: CityService, residentId: string, reason: string,
 }
 
 export function settleVenueAuction(c: CityService, auctionId: string, at: number): AuctionRow {
-  const auction = c.db.get<AuctionRow & Row>('SELECT * FROM venue_auctions WHERE auction_id = ?', auctionId);
-  if (!auction) throw new CityError('NOT_FOUND', '没有这场竞拍会。', 'no_such_auction');
-  if (auction.status !== 'open') return auction;
-  c.cancelJob(`venue:auction:${auctionId}:settle`);
+  return c.commit(() => {
+    const auction = c.db.get<AuctionRow & Row>('SELECT * FROM venue_auctions WHERE auction_id = ?', auctionId);
+    if (!auction) throw new CityError('NOT_FOUND', '没有这场竞拍会。', 'no_such_auction');
+    if (auction.status !== 'open') return auction;
+    c.cancelJob(`venue:auction:${auctionId}:settle`);
 
-  const activeBids = c.db.all<BidRow & Row>(
-    "SELECT * FROM venue_auction_bids WHERE auction_id = ? AND status = 'active' ORDER BY bid_yen DESC, placed_at ASC, resident_id ASC",
-    auctionId,
-  );
-  const validBids = activeBids.filter((b) => b.bid_yen >= auction.reserve_yen);
-  if (validBids.length === 0) {
-    for (const b of activeBids) {
+    const activeBids = c.db.all<BidRow & Row>(
+      "SELECT * FROM venue_auction_bids WHERE auction_id = ? AND status = 'active' ORDER BY bid_yen DESC, placed_at ASC, resident_id ASC",
+      auctionId,
+    );
+    const validBids = activeBids.filter((b) => b.bid_yen >= auction.reserve_yen);
+    if (validBids.length === 0) {
+      for (const b of activeBids) {
+        if (b.held_yen > 0) {
+          ledger(
+            c,
+            `auction:unsold:${auctionId}:${b.resident_id}`,
+            'auction_refund',
+            `竞拍流拍解冻：${auction.item_name}`,
+            [[AUCTION_ESCROW, -b.held_yen], [purseOf(b.resident_id), b.held_yen]],
+            b.visit_id,
+          );
+        }
+        c.db.run("UPDATE venue_auction_bids SET status = 'refunded', held_yen = 0, updated_at = ? WHERE auction_id = ? AND resident_id = ?", at, auctionId, b.resident_id);
+      }
+      c.db.run("UPDATE venue_auctions SET status = 'unsold', settled_at = ? WHERE auction_id = ?", at, auctionId);
+      const unsoldTargets = [...new Set([...activeBids.map((b) => b.resident_id), ...c.presentAt(auction.place_id).map((x) => x.resident_id)])];
+      if (unsoldTargets.length > 0) {
+        c.emitTo(
+          unsoldTargets,
+          'auction_unsold',
+          { auction_id: auctionId, place_id: auction.place_id, item_id: auction.item_id, item_name: auction.item_name },
+          at,
+        );
+      }
+      if (auction.place_id === BOARDGAME_CHAYA_ID && c.headcount(BOARDGAME_CHAYA_ID) > 0) ensureDailyAuctions(c, at);
+      return c.db.get<AuctionRow & Row>('SELECT * FROM venue_auctions WHERE auction_id = ?', auctionId)!;
+    }
+
+    const topBid = validBids[0]!.bid_yen;
+    const tied = validBids.filter((b) => b.bid_yen === topBid);
+    const tieBroken = tied.length > 1 ? 1 : 0;
+    const winner = tied[tied.length > 1 ? c.rng.int(tied.length) : 0]!;
+    const others = activeBids.filter((b) => b.resident_id !== winner.resident_id);
+    const secondHighest = others.length > 0 ? Math.max(auction.reserve_yen, ...others.map((b) => b.bid_yen)) : auction.reserve_yen;
+    const price = auction.price_mode === 'second' && others.length > 0 ? Math.min(winner.bid_yen, secondHighest) : winner.bid_yen;
+
+    const refundWinner = winner.held_yen - price;
+    if (refundWinner > 0) {
+      ledger(
+        c,
+        `auction:diff:${auctionId}:${winner.resident_id}`,
+        'auction_refund',
+        `竞拍二价退差：${auction.item_name}`,
+        [[AUCTION_ESCROW, -refundWinner], [purseOf(winner.resident_id), refundWinner]],
+        winner.visit_id,
+      );
+    }
+    if (price > 0) {
+      ledger(
+        c,
+        `auction:settle:${auctionId}`,
+        'auction_settle',
+        `竞拍成交：${auction.item_name}`,
+        [[AUCTION_ESCROW, -price], [SHOPS, price]],
+        winner.visit_id,
+      );
+    }
+    c.db.run("UPDATE venue_auction_bids SET status = 'won', held_yen = 0, updated_at = ? WHERE auction_id = ? AND resident_id = ?", at, auctionId, winner.resident_id);
+
+    const winnerResident = c.mustResident(winner.resident_id);
+    const winnerVisitId = winnerResident.origin === 'house' ? (openVisitOf(c, winner.resident_id)?.visit_id ?? winner.visit_id) : null;
+    c.db.run(
+      "UPDATE items SET owner_id = ?, state = 'held', visit_id = ?, updated_at = ? WHERE item_id = ?",
+      winner.resident_id,
+      winnerVisitId,
+      at,
+      auction.item_id,
+    );
+    c.db.run(
+      "INSERT INTO item_events(visit_id, resident_id, item_id, type, origin_ref, quantity, fate, counterparty, at) VALUES (?,?,?,?,?,1,'acquired',?,?)",
+      winnerVisitId,
+      winner.resident_id,
+      auction.item_id,
+      auction.item_type,
+      null,
+      `auction:${auctionId}`,
+      at,
+    );
+
+    for (const b of others) {
       if (b.held_yen > 0) {
         ledger(
           c,
-          `auction:unsold:${auctionId}:${b.resident_id}`,
+          `auction:lost:${auctionId}:${b.resident_id}`,
           'auction_refund',
-          `竞拍流拍解冻：${auction.item_name}`,
+          `竞拍未中标解冻：${auction.item_name}`,
           [[AUCTION_ESCROW, -b.held_yen], [purseOf(b.resident_id), b.held_yen]],
           b.visit_id,
         );
       }
-      c.db.run("UPDATE venue_auction_bids SET status = 'refunded', held_yen = 0, updated_at = ? WHERE auction_id = ? AND resident_id = ?", at, auctionId, b.resident_id);
+      c.db.run("UPDATE venue_auction_bids SET status = 'lost', held_yen = 0, updated_at = ? WHERE auction_id = ? AND resident_id = ?", at, auctionId, b.resident_id);
     }
-    c.db.run("UPDATE venue_auctions SET status = 'unsold', settled_at = ? WHERE auction_id = ?", at, auctionId);
-    if (activeBids.length > 0) {
-      c.emitTo(activeBids.map((b) => b.resident_id), 'auction_unsold', { auction_id: auctionId, item_id: auction.item_id, item_name: auction.item_name }, at);
+
+    c.db.run(
+      "UPDATE venue_auctions SET status = 'settled', settled_at = ?, winner_id = ?, winning_price = ?, tie_broken = ? WHERE auction_id = ?",
+      at,
+      winner.resident_id,
+      price,
+      tieBroken,
+      auctionId,
+    );
+    const bidderIds = activeBids.map((b) => b.resident_id);
+    const bidderSet = new Set(bidderIds);
+    c.emitTo(
+      bidderIds,
+      'auction_settled',
+      {
+        auction_id: auctionId,
+        place_id: auction.place_id,
+        item_id: auction.item_id,
+        item_name: auction.item_name,
+        winner: card(winnerResident),
+        winning_price: price,
+        tie_broken: tieBroken === 1,
+      },
+      at,
+    );
+    const bystanders = c
+      .presentAt(auction.place_id)
+      .map((x) => x.resident_id)
+      .filter((id) => !bidderSet.has(id));
+    if (bystanders.length > 0) {
+      c.emitTo(
+        bystanders,
+        'auction_closed',
+        {
+          auction_id: auctionId,
+          place_id: auction.place_id,
+          item_id: auction.item_id,
+          item_name: auction.item_name,
+          status: 'settled',
+        },
+        at,
+      );
     }
     if (auction.place_id === BOARDGAME_CHAYA_ID && c.headcount(BOARDGAME_CHAYA_ID) > 0) ensureDailyAuctions(c, at);
     return c.db.get<AuctionRow & Row>('SELECT * FROM venue_auctions WHERE auction_id = ?', auctionId)!;
-  }
-
-  const topBid = validBids[0]!.bid_yen;
-  const tied = validBids.filter((b) => b.bid_yen === topBid);
-  const tieBroken = tied.length > 1 ? 1 : 0;
-  const winner = tied[tied.length > 1 ? c.rng.int(tied.length) : 0]!;
-  const others = activeBids.filter((b) => b.resident_id !== winner.resident_id);
-  const secondHighest = others.length > 0 ? Math.max(auction.reserve_yen, ...others.map((b) => b.bid_yen)) : auction.reserve_yen;
-  const price = auction.price_mode === 'second' && others.length > 0 ? Math.min(winner.bid_yen, secondHighest) : winner.bid_yen;
-
-  const refundWinner = winner.held_yen - price;
-  if (refundWinner > 0) {
-    ledger(
-      c,
-      `auction:diff:${auctionId}:${winner.resident_id}`,
-      'auction_refund',
-      `竞拍二价退差：${auction.item_name}`,
-      [[AUCTION_ESCROW, -refundWinner], [purseOf(winner.resident_id), refundWinner]],
-      winner.visit_id,
-    );
-  }
-  if (price > 0) {
-    ledger(
-      c,
-      `auction:settle:${auctionId}`,
-      'auction_settle',
-      `竞拍成交：${auction.item_name}`,
-      [[AUCTION_ESCROW, -price], [SHOPS, price]],
-      winner.visit_id,
-    );
-  }
-  c.db.run("UPDATE venue_auction_bids SET status = 'won', held_yen = 0, updated_at = ? WHERE auction_id = ? AND resident_id = ?", at, auctionId, winner.resident_id);
-
-  const winnerResident = c.mustResident(winner.resident_id);
-  const winnerVisitId = winnerResident.origin === 'house' ? (openVisitOf(c, winner.resident_id)?.visit_id ?? winner.visit_id) : null;
-  c.db.run(
-    "UPDATE items SET owner_id = ?, state = 'held', visit_id = ?, updated_at = ? WHERE item_id = ?",
-    winner.resident_id,
-    winnerVisitId,
-    at,
-    auction.item_id,
-  );
-  c.db.run(
-    "INSERT INTO item_events(visit_id, resident_id, item_id, type, origin_ref, quantity, fate, counterparty, at) VALUES (?,?,?,?,?,1,'acquired',?,?)",
-    winnerVisitId,
-    winner.resident_id,
-    auction.item_id,
-    auction.item_type,
-    null,
-    `auction:${auctionId}`,
-    at,
-  );
-
-  for (const b of others) {
-    if (b.held_yen > 0) {
-      ledger(
-        c,
-        `auction:lost:${auctionId}:${b.resident_id}`,
-        'auction_refund',
-        `竞拍未中标解冻：${auction.item_name}`,
-        [[AUCTION_ESCROW, -b.held_yen], [purseOf(b.resident_id), b.held_yen]],
-        b.visit_id,
-      );
-    }
-    c.db.run("UPDATE venue_auction_bids SET status = 'lost', held_yen = 0, updated_at = ? WHERE auction_id = ? AND resident_id = ?", at, auctionId, b.resident_id);
-  }
-
-  c.db.run(
-    "UPDATE venue_auctions SET status = 'settled', settled_at = ?, winner_id = ?, winning_price = ?, tie_broken = ? WHERE auction_id = ?",
-    at,
-    winner.resident_id,
-    price,
-    tieBroken,
-    auctionId,
-  );
-  c.emitTo(
-    activeBids.map((b) => b.resident_id),
-    'auction_settled',
-    {
-      auction_id: auctionId,
-      item_id: auction.item_id,
-      item_name: auction.item_name,
-      winner: card(winnerResident),
-      winning_price: price,
-      tie_broken: tieBroken === 1,
-    },
-    at,
-  );
-  if (auction.place_id === BOARDGAME_CHAYA_ID && c.headcount(BOARDGAME_CHAYA_ID) > 0) ensureDailyAuctions(c, at);
-  return c.db.get<AuctionRow & Row>('SELECT * FROM venue_auctions WHERE auction_id = ?', auctionId)!;
+  });
 }
 
 function doAuctionBid(c: CityService, r: CityResident, a: Record<string, unknown>, at: number, visit: VisitRow | null): Record<string, unknown> {
@@ -774,7 +862,13 @@ function doAuctionView(c: CityService, r: CityResident, a: Record<string, unknow
   return {
     status: 'completed',
     auctions: rows.map((row) => {
-      const bidCount = c.db.scalar("SELECT COUNT(*) FROM venue_auction_bids WHERE auction_id = ? AND status = 'active'", row.auction_id);
+      const bidCount =
+        row.status === 'open'
+          ? c.db.scalar("SELECT COUNT(*) FROM venue_auction_bids WHERE auction_id = ? AND status = 'active'", row.auction_id)
+          : c.db.scalar(
+              "SELECT COUNT(*) FROM venue_auction_bids WHERE auction_id = ? AND status IN ('active','won','lost','refunded')",
+              row.auction_id,
+            );
       const mine = c.db.get<BidRow & Row>('SELECT * FROM venue_auction_bids WHERE auction_id = ? AND resident_id = ?', row.auction_id, r.resident_id);
       return {
         auction_id: row.auction_id,

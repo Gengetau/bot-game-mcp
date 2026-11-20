@@ -459,4 +459,240 @@ describe('灯都 M3-B：桌游茶屋同店成局 + 旧物密封竞拍会 (#263)'
     expect(rel.state).toBe('closed');
     expect(runReconcile(t.c, 'default-auction-short-visit').ok).toBe(true);
   });
+
+  it('P2 换场刷新回归：在店旁观者跨过 15 分钟换场时收到不含密封金额的私有刷新事件，SSE 无需手动刷新即可对新场出价', async () => {
+    // 2026-11-17 10:00 JST = 2026-11-17 01:00 UTC（s40: 10:00-10:15, s41: 10:15-10:30, s42: 10:30-10:45）
+    const startAt = Date.UTC(2026, 10, 17, 1, 0, 0);
+    const clock = new FakeClock();
+    clock.t = startAt;
+    const c = createCity({ dbPath: ':memory:', now: clock.now, rng: new SeededRng('city-rollover'), house: HOUSE, fetchWeather: null });
+    c.startSync();
+    const t = new CityTest(c, clock);
+    const app = express();
+    const closeCity = mountCity(app, t.c, () => undefined);
+    const srv = await new Promise<ReturnType<typeof app.listen>>((resolve) => {
+      const s = app.listen(0, '127.0.0.1', () => resolve(s));
+    });
+    const port = (srv.address() as any).port;
+    const baseUrl = `http://127.0.0.1:${port}`;
+    const ac = new AbortController();
+    try {
+      const issued = issueCityTicket(t.c, { userId: 'human-rollover', name: '茶客旁观者' });
+      const loginRes = await fetch(`${baseUrl}/city/api/auth/exchange`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Origin: baseUrl },
+        body: JSON.stringify({ ticket: issued.ticket }),
+      });
+      expect(loginRes.status).toBe(200);
+      const cookie = loginRes.headers.get('set-cookie')!.split(';')[0]!;
+      const csrf = ((await loginRes.json()) as any).csrf_token;
+
+      const enterRes = await fetch(`${baseUrl}/city/api/enter`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Origin: baseUrl, Cookie: cookie, 'x-city-csrf': csrf },
+        body: JSON.stringify({ name: '茶客旁观者', entry: 'kagamiike:station', client_id: 'tab-roll' }),
+      });
+      expect(enterRes.status).toBe(200);
+      const enterJson = (await enterRes.json()) as any;
+      const humanId = String(enterJson.resident_id);
+
+      const humanAct = async (requestId: string, action: Record<string, unknown>) => {
+        const res = await fetch(`${baseUrl}/city/api/act`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Origin: baseUrl, Cookie: cookie, 'x-city-csrf': csrf },
+          body: JSON.stringify({ request_id: requestId, action, client_id: 'tab-roll' }),
+        });
+        return { status: res.status, body: (await res.json()) as any };
+      };
+      const heartbeat = async () => {
+        const res = await fetch(`${baseUrl}/city/api/heartbeat`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Origin: baseUrl, Cookie: cookie, 'x-city-csrf': csrf },
+          body: JSON.stringify({ client_id: 'tab-roll' }),
+        });
+        expect(res.status).toBe(200);
+      };
+      const advanceKeepingOnline = async (totalMs: number) => {
+        let left = totalMs;
+        while (left > 0) {
+          const step = Math.min(left, 5 * MIN);
+          t.run(step);
+          left -= step;
+          await heartbeat();
+        }
+      };
+
+      // 网页茶客与另一位 MCP 藏家同到镜池茶屋（10:06 JST，处于 s40）
+      await humanAct('req-roll-travel', { type: 'travel', to: BOARDGAME_CHAYA_ID });
+      const bidderBot = t.bot('神秘藏家', { entry: 'kagamiike:station', stay: true });
+      bidderBot.act({ type: 'travel', to: BOARDGAME_CHAYA_ID });
+      t.run(6 * MIN);
+
+      const v0 = (await (await fetch(`${baseUrl}/city/api/me?client_id=tab-roll`, { headers: { Cookie: cookie } })).json()) as any;
+      expect(v0.here.place.id).toBe(BOARDGAME_CHAYA_ID);
+      expect(v0.here.auctions).toHaveLength(1);
+      const s40Id = String(v0.here.auctions[0].id);
+      expect(s40Id).toContain(':s40:');
+
+      // 打开真实 SSE 流（从当前游标监听，模拟网页停留在茶屋不手动刷新）
+      const sseRes = await fetch(`${baseUrl}/city/api/stream?client_id=tab-roll&cursor=${encodeURIComponent(String(v0.cursor))}`, {
+        headers: { Cookie: cookie },
+        signal: ac.signal,
+      });
+      expect(sseRes.status).toBe(200);
+      const reader = sseRes.body!.getReader();
+      const dec = new TextDecoder();
+      let sseBuf = '';
+      const readNextPrivate = async (timeoutMs = 1500): Promise<Record<string, any>> => {
+        const deadline = Date.now() + timeoutMs;
+        for (;;) {
+          const sep = sseBuf.indexOf('\n\n');
+          if (sep >= 0) {
+            const chunk = sseBuf.slice(0, sep);
+            sseBuf = sseBuf.slice(sep + 2);
+            let evName = '';
+            let dataLine = '';
+            for (const line of chunk.split('\n')) {
+              if (line.startsWith('event:')) evName = line.slice(6).trim();
+              else if (line.startsWith('data:')) dataLine += line.slice(5).trim();
+            }
+            if (evName === 'private' && dataLine) return JSON.parse(dataLine);
+            continue;
+          }
+          const waitLeft = Math.max(10, deadline - Date.now());
+          const readResult = await Promise.race([
+            reader.read(),
+            new Promise<never>((_, rej) => setTimeout(() => rej(new Error('SSE private event timeout')), waitLeft)),
+          ]);
+          if (readResult.done) throw new Error('SSE stream closed early');
+          sseBuf += dec.decode(readResult.value, { stream: true });
+        }
+      };
+
+      // 1) s40 无人出价，茶客在线保活跨过 10:15 JST 自动滚到 s41
+      const cursorBeforeS41 = t.c.cursorOf(humanId);
+      await advanceKeepingOnline(10 * MIN); // 10:16 JST
+
+      const evs1 = t.c.readResidentEvents(humanId, cursorBeforeS41, 20).events;
+      expect(evs1.some((e) => e.type === 'auction_unsold' && e.data.auction_id === s40Id)).toBe(true);
+      expect(evs1.some((e) => e.type === 'auction_opened' && String(e.data.auction_id).includes(':s41:'))).toBe(true);
+      for (const e of evs1) {
+        expect(e.data).not.toHaveProperty('bid_yen');
+        expect(e.data).not.toHaveProperty('winning_price');
+      }
+
+      const sseEv1 = await readNextPrivate();
+      expect(['auction_unsold', 'auction_opened']).toContain(sseEv1.type);
+      expect(sseEv1).not.toHaveProperty('bid_yen');
+      expect(sseEv1).not.toHaveProperty('winning_price');
+      // 把同一批次的第二条 private 事件也消费掉，保持后续 s42 断言边界清晰
+      const sseEv1b = await readNextPrivate();
+      expect(['auction_unsold', 'auction_opened']).toContain(sseEv1b.type);
+
+      const v1 = (await (await fetch(`${baseUrl}/city/api/me?client_id=tab-roll`, { headers: { Cookie: cookie } })).json()) as any;
+      expect(v1.here.auctions).toHaveLength(1);
+      const s41Id = String(v1.here.auctions[0].id);
+      expect(s41Id).toContain(':s41:');
+      expect(s41Id).not.toBe(s40Id);
+
+      const oldBid = await humanAct('req-old-s40', { type: 'auction_bid', auction_id: s40Id, yen: 600 });
+      expect(oldBid.status).toBe(422);
+      expect(oldBid.body.reason).toBe('auction_closed');
+
+      // 2) 他人在 s41 密封出价 ¥777，网页旁观者未出价且在线保活，跨过 10:30 JST 成交滚到 s42
+      bidderBot.act({ type: 'auction_bid', auction_id: s41Id, yen: 777 });
+      const cursorBeforeS42 = t.c.cursorOf(humanId);
+      await advanceKeepingOnline(15 * MIN); // 10:31 JST
+
+      const evs2 = t.c.readResidentEvents(humanId, cursorBeforeS42, 20).events;
+      expect(evs2.some((e) => e.type === 'auction_closed' && e.data.auction_id === s41Id)).toBe(true);
+      expect(evs2.some((e) => e.type === 'auction_opened' && String(e.data.auction_id).includes(':s42:'))).toBe(true);
+      // 旁观者事件流中严禁出现他人密封金额 777 或任何成交价字段
+      expect(JSON.stringify(evs2)).not.toContain('777');
+      for (const e of evs2) {
+        expect(e.data).not.toHaveProperty('bid_yen');
+        expect(e.data).not.toHaveProperty('winning_price');
+        expect(e.data).not.toHaveProperty('winner');
+      }
+
+      const sseEv2a = await readNextPrivate();
+      const sseEv2b = await readNextPrivate();
+      expect([sseEv2a.type, sseEv2b.type]).toEqual(['auction_closed', 'auction_opened']);
+      expect(JSON.stringify([sseEv2a, sseEv2b])).not.toContain('777');
+
+      // 网页收到 SSE 自动拉取 /me 后按新场次 s42 直接出价成功
+      const v2 = (await (await fetch(`${baseUrl}/city/api/me?client_id=tab-roll`, { headers: { Cookie: cookie } })).json()) as any;
+      const s42 = v2.here.auctions[0];
+      expect(String(s42.id)).toContain(':s42:');
+      const newBid = await humanAct('req-new-s42', { type: 'auction_bid', auction_id: s42.id, yen: s42.reserve_yen + 80 });
+      expect(newBid.status).toBe(200);
+      expect(newBid.body.ok).toBe(true);
+      expect(newBid.body.auction_id).toBe(s42.id);
+      expect(ledgerImbalance(t.c)).toBe(0);
+      expect(runReconcile(t.c, 'rollover-bystander-bid').ok).toBe(true);
+    } finally {
+      ac.abort();
+      closeCity();
+      srv.close();
+    }
+  });
+
+  it('牌桌实时事件回归：在店旁观者同步收到入座/开局/散局公开事件，且对局超时托管推进时同桌玩家收到 venue_table_updated', () => {
+    const t = makeCity();
+    const a = t.bot('牌客甲', { entry: 'kagamiike:station', stay: true });
+    const b = t.bot('牌客乙', { entry: 'kagamiike:station', stay: true });
+    const cWatcher = t.bot('茶客旁观丙', { entry: 'kagamiike:station', stay: true });
+    a.act({ type: 'travel', to: BOARDGAME_CHAYA_ID });
+    b.act({ type: 'travel', to: BOARDGAME_CHAYA_ID });
+    cWatcher.act({ type: 'travel', to: BOARDGAME_CHAYA_ID });
+    t.run(10 * MIN);
+
+    const cur0 = t.c.cursorOf(cWatcher.id);
+    const opened = a.act({
+      type: 'open_table',
+      game: 'liars_dice',
+      options: { lives: 1, dice_per_player: 2, turn_timeout_s: 15, random_seats: false },
+    });
+    b.act({ type: 'join_table', table_id: opened.table_id });
+    a.act({ type: 'start_table', table_id: opened.table_id });
+
+    const watcherEvs = t.c.readResidentEvents(cWatcher.id, cur0, 20).events;
+    expect(watcherEvs.map((e) => e.type)).toEqual(
+      expect.arrayContaining(['venue_table_opened', 'venue_table_joined', 'venue_table_started']),
+    );
+    // 旁观者事件严禁泄露手牌或骰子
+    for (const ev of watcherEvs) {
+      expect(ev.data).not.toHaveProperty('hand');
+      expect(ev.data).not.toHaveProperty('dice');
+      expect(ev.data).not.toHaveProperty('you');
+    }
+
+    // 当前行动方不操作，等 20s 触发 venue_table_tick 超时托管推进，对手必须收到 venue_table_updated 唤醒
+    const bCurBeforeTimeout = t.c.cursorOf(b.id);
+    const aCurBeforeTimeout = t.c.cursorOf(a.id);
+    t.run(20_000);
+    const aTickEvs = t.c.readResidentEvents(a.id, aCurBeforeTimeout, 20).events;
+    const bTickEvs = t.c.readResidentEvents(b.id, bCurBeforeTimeout, 20).events;
+    expect(
+      aTickEvs.some((e) => e.type === 'venue_table_updated' || e.type === 'venue_table_ended') &&
+        bTickEvs.some((e) => e.type === 'venue_table_updated' || e.type === 'venue_table_ended'),
+    ).toBe(true);
+
+    // 推进到整局结束，在店旁观者收到散局通知以刷新大厅列表
+    const cCurBeforeEnd = t.c.cursorOf(cWatcher.id);
+    const bViewAfterTick = b.view() as any;
+    if (bViewAfterTick.venue_table?.todo?.actions?.includes('challenge')) {
+      b.act({ type: 'game_act', input: { action: 'challenge' } });
+    } else {
+      for (let i = 0; i < 20; i++) {
+        const tbl = t.c.db.get<{ status: string }>('SELECT status FROM venue_tables WHERE table_id = ?', opened.table_id)!;
+        if (tbl.status !== 'running') break;
+        t.run(20_000);
+      }
+    }
+    const finalTbl = t.c.db.get<{ status: string }>('SELECT status FROM venue_tables WHERE table_id = ?', opened.table_id)!;
+    expect(finalTbl.status).toBe('completed');
+    const watcherEndEvs = t.c.readResidentEvents(cWatcher.id, cCurBeforeEnd, 20).events;
+    expect(watcherEndEvs.some((e) => e.type === 'venue_table_ended')).toBe(true);
+  });
 });

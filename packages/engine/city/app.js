@@ -158,6 +158,7 @@ const state = {
   recentAuctions: null,
   venueTodoSignature: '',
   auctionSignature: '',
+  knownAuctionIds: '',
   /** @type {EventSource | null} */
   stream: null,
   /** @type {number | null} */
@@ -767,6 +768,14 @@ async function submitCityAction(action, successNote) {
   } catch (e) {
     if (e instanceof ApiError) {
       showError(e.message);
+      if (
+        e.reason === 'auction_closed' ||
+        e.reason === 'no_such_auction' ||
+        e.reason === 'table_not_forming' ||
+        e.reason === 'no_such_table'
+      ) {
+        void refreshMe();
+      }
     } else {
       showError('网络请求失败，请稍后重试。');
     }
@@ -1252,9 +1261,19 @@ function renderAuctionCard(v, writable) {
   sceneAuctionCard.hidden = !showAuction;
   if (!showAuction) {
     state.auctionSignature = '';
+    state.knownAuctionIds = '';
+    state.recentAuctions = null;
     return;
   }
   auctionRefreshBtn.disabled = !writable || !canList.includes('auction_view');
+
+  const idsKey = auctions.map((/** @type {any} */ x) => String(x.id)).join(',');
+  const rolledOver = Boolean(state.knownAuctionIds && idsKey && state.knownAuctionIds !== idsKey);
+  state.knownAuctionIds = idsKey;
+  if (rolledOver) {
+    state.recentAuctions = null;
+    showNotice('旧物密封竞拍会已切换至新场次，可对新拍品密封出价。');
+  }
 
   for (const auc of auctions) {
     const countNode = sceneAuctionsList.querySelector(`[data-auc-count="${CSS.escape(String(auc.id))}"]`);
@@ -1265,7 +1284,8 @@ function renderAuctionCard(v, writable) {
     w: writable,
     a: auctions.map((/** @type {any} */ x) => [x.id, x.my_bid_yen ?? null, x.reserve_yen, x.closes_at_ms]),
   });
-  if (sig !== state.auctionSignature || !sceneAuctionsList.contains(document.activeElement)) {
+  const focusWasInside = sceneAuctionsList.contains(document.activeElement);
+  if (sig !== state.auctionSignature || !focusWasInside) {
     state.auctionSignature = sig;
     sceneAuctionsList.replaceChildren();
     if (auctions.length === 0) {
@@ -1364,6 +1384,10 @@ function renderAuctionCard(v, writable) {
           li.appendChild(bidForm);
         }
         sceneAuctionsList.appendChild(li);
+      }
+      if (rolledOver && focusWasInside) {
+        const nextInput = /** @type {HTMLElement | null} */ (sceneAuctionsList.querySelector('input, button'));
+        if (nextInput) nextInput.focus();
       }
     }
   }
@@ -1805,6 +1829,8 @@ function renderScenePanel() {
     sceneAuctionCard.hidden = true;
     state.venueTodoSignature = '';
     state.auctionSignature = '';
+    state.knownAuctionIds = '';
+    state.recentAuctions = null;
     chatList.replaceChildren(make('li', { className: 'muted small-note', text: '移动途中无法现场交谈。' }));
     chatInput.disabled = true;
     chatSubmitBtn.disabled = true;
