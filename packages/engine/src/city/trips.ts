@@ -292,7 +292,7 @@ export function startTrip(c: CityService, r: CityResident, toId: string, purpose
       const guard = lastTrainSafeDepartMs(c, toId, at, eta);
       if (guard && eta > guard.departByMs) {
         throw cityPrecondition(
-          '太晚了，过去之后就赶不上回绯渡的末班电车了。',
+          '太晚了，过去之后就赶不上回日和坂的末班电车了。',
           'last_train_cutoff',
           {
             destination: toId,

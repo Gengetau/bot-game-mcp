@@ -1,5 +1,5 @@
 /**
- * 灯都城市世界 · 标准街区内容包接口（对齐 docs/city/CONTENT-PACK-SPEC.md §4.1）。
+ * 晴空都城市世界 · 标准街区内容包接口（对齐 docs/city/CONTENT-PACK-SPEC.md §4.1）。
  *
  * 纯只读数据契约：新增街区只需在 packs/ 下挂载一份符合本接口的标准包，
  * 零修改 ledger.ts / visits.ts / residents.ts 核心状态机。

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * 灯都持续世界（M1）三方真实跨进程集成与故障重启验收脚本。
+ * 晴空都持续世界（M1）三方真实跨进程集成与故障重启验收脚本。
  *
  * 覆盖范围（严格隔离于临时目录，绝不触碰线上 city.db / town.db / life1.db / world.db）：
  *  1. 隔离护栏：town.enabled === false、/town/ 返回 404、桌面游戏（number_bomb）照常可用；
@@ -10,12 +10,12 @@
  *  4. 真实跨进程 T1 -> prepare -> commit -> T2 交接：注入 bridge503Count=2 + dropResponseOnce=true（F4），
  *     验证 Python world-kernel CityBridgeAdapter 原 request_id 退避重试 + GET /visits/:id 对账恢复，随身钱包只入账一次；
  *  5. 外部 Bot（M1-B CityClient + CityRunner）：首次入城 ¥200,000 启动金、多端 claim=false 只读旁观与 CityRunner 立即停写、
- *     显式 claim_control 递增 epoch 并使旧连接收到 CONTROL_LOST、书店购入明信片并前往镜池·喫茶「灯」；
+ *     显式 claim_control 递增 epoch 并使旧连接收到 CONTROL_LOST、书店购入明信片并前往棱光街·喫茶「灯」；
  *  6. 人类玩家（M1-C/D 一次性票据 + /city/api/* 会话 + CSRF + SSE）：裁判 MCP city_issue_ticket 签发 #ticket= 链接、
- *     单次兑换防重放、缺省 CSRF 返回 403、SSE 实时流连通、从千灯站乘灯环线前往镜池·喫茶「灯」；
+ *     单次兑换防重放、缺省 CSRF 返回 403、SSE 实时流连通、从云港站乘晴环线前往棱光街·喫茶「灯」；
  *  7. 在途真实引擎冷启动重启（harness.restart）+ 内核进程重启（restart_kernel）：
  *     验证三方在途行程按持久化 scheduled_jobs 恢复到站、零重复扣车费、网页会话跨重启保留、CityRunner 自动重连；
- *  8. 同场三方交互（镜池·喫茶「灯」）：妮娅、外部 Bot「旅人一叶」、人类「阿澄」同场共处与对话，
+ *  8. 同场三方交互（棱光街·喫茶「灯」）：妮娅、外部 Bot「旅人一叶」、人类「阿澄」同场共处与对话，
  *     妮娅赠送家里烤的曲奇（实例件 origin_ref='nia_cookie_1' 原样保留）、饮用咖啡触发 drink_coffee 身体增量、
  *     购买咖啡豆（direction='home'）与第二杯未饮咖啡（carry_home=false -> disposed）、收到旅人赠送的明信片（locker），
  *     人类动作重发同一 request_id 返回 replayed=true 不二次扣费；
@@ -462,7 +462,7 @@ async function main(): Promise<void> {
 
     const cityPage = await fetch(`${harness.baseUrl}/city/`);
     assert.equal(cityPage.status, 200);
-    assert.match(await cityPage.text(), /灯都/);
+    assert.match(await cityPage.text(), /晴空都/);
 
     const playNoSlash = await fetch(`${harness.baseUrl}/city/play`, { redirect: 'manual' });
     assert.equal(playNoSlash.status, 302);
@@ -720,7 +720,7 @@ async function main(): Promise<void> {
     });
     assert.equal(noCsrfResp.status, 403, '缺少 x-city-csrf 必须返回 403');
 
-    // 正常入城（落点千灯站，发放 ¥200,000）
+    // 正常入城（落点云港站，发放 ¥200,000）
     const humanEnterResp = await fetch(`${harness.baseUrl}/city/api/enter`, {
       method: 'POST',
       headers: {
@@ -742,7 +742,7 @@ async function main(): Promise<void> {
     assert.equal(humanEnter.granted_yen, 200_000);
     const humanResidentId = String(humanEnter.resident_id);
 
-    // 连接人类 SSE 流并发起从千灯前往镜池·喫茶「灯」的电车行程（10m 灯环线 ¥200 + 6m 步行）
+    // 连接人类 SSE 流并发起从云港前往棱光街·喫茶「灯」的电车行程（10m 晴环线 ¥200 + 6m 步行）
     sseProbe = await openSseProbe(`${harness.baseUrl}/city/api/stream?client_id=human-web-1`, humanSessionHeader);
     const humanTravelResp = await fetch(`${harness.baseUrl}/city/api/act`, {
       method: 'POST',
@@ -761,7 +761,7 @@ async function main(): Promise<void> {
     assert.equal(humanTravelResp.status, 200);
 
     // ── 6. 三方在途推进 + 真实引擎冷启动崩溃重启（F7 / F10） ──
-    // 按 <10m 在场租约分三段推进至 t+24m（旅人一叶与阿澄定时续心跳，妮娅在北环快线/镜池步行途中）
+    // 按 <10m 在场租约分三段推进至 t+24m（旅人一叶与阿澄定时续心跳，妮娅在北环快线/棱光街步行途中）
     const keepPresenceAlive = async () => {
       await botBCurrent.heartbeat();
       const hb = await fetch(`${harness.baseUrl}/city/api/heartbeat`, {
@@ -800,7 +800,7 @@ async function main(): Promise<void> {
       })
     ).json()) as Record<string, any>;
     assert.equal(humanMeAfterRestart.here?.place?.id, 'kagamiike:kissa-tomoshibi');
-    assert.equal(humanMeAfterRestart.wallet?.yen, 199_800, '跨引擎重启后灯环线车费严禁二次扣款');
+    assert.equal(humanMeAfterRestart.wallet?.yen, 199_800, '跨引擎重启后晴环线车费严禁二次扣款');
     assert.ok(!JSON.stringify(humanMeAfterRestart).includes('ai-house:entrance'), '人类视图严禁暴露小屋交接点');
 
     // CityRunner 在引擎断连后自动调用 reconnect() 重建 MCP 连接并恢复事件循环
@@ -810,12 +810,12 @@ async function main(): Promise<void> {
     assert.equal(botViewAtCafe.here?.place.id, 'kagamiike:kissa-tomoshibi');
     assert.ok(!JSON.stringify(botViewAtCafe).includes('ai-house:entrance'), '外部 Bot 视图严禁暴露小屋交接点');
 
-    // ── 7. 三方在镜池·喫茶「灯」真实同场交互 ──
+    // ── 7. 三方在棱光街·喫茶「灯」真实同场交互 ──
     const pubAtCafe = (await (await fetch(`${harness.baseUrl}/city/api/public`)).json()) as Record<string, any>;
     const kagArea = (pubAtCafe.areas as any[]).find((a) => a.id === 'kagamiike');
     const cafePlace = (kagArea.places as any[]).find((p) => p.id === 'kagamiike:kissa-tomoshibi');
     const cafeNames = (cafePlace.here as any[]).map((x) => x.name).sort();
-    assert.deepEqual(cafeNames, ['妮娅', '旅人一叶', '阿澄'].sort(), '三类玩家必须在镜池·喫茶「灯」同场共处');
+    assert.deepEqual(cafeNames, ['妮娅', '旅人一叶', '阿澄'].sort(), '三类玩家必须在棱光街·喫茶「灯」同场共处');
 
     // 人类玩家「阿澄」率先现场搭话（触发妮娅 heard_chat 唤醒）+ 买皇家奶茶（重发同一 request_id 验证幂等不重复扣费）
     const humanSayResp = await fetch(`${harness.baseUrl}/city/api/act`, {
@@ -1004,7 +1004,7 @@ async function main(): Promise<void> {
     await advanceBoth(60_000);
     const hand2 = await kernel.call({ op: 'advance_handover', visit_id: 'vis_m1_e2e_2' });
     assert.equal(hand2.visit.state, 'active');
-    await advanceBoth(35 * 60_000); // 抵达镜池·书店「栞堂」
+    await advanceBoth(35 * 60_000); // 抵达棱光街·书店「栞堂」
     await kernel.call({
       op: 'queue_decision',
       actions: [

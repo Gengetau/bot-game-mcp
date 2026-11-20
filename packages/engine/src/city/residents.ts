@@ -2,7 +2,7 @@
  * 城市里的居民：主体、身份映射、进城、在场。
  *
  * 两种居民：
- *  - 外部 bot（origin = external）：用自己的 MCP 身份进城，入口在千灯站或镜池站；第一次进城发一笔启动资金（每个主体只发一次）。
+ *  - 外部 bot（origin = external）：用自己的 MCP 身份进城，入口在云港站或棱光街站；第一次进城发一笔启动资金（每个主体只发一次）。
  *    在场靠租约维持（world_wait / 读视图 / 做动作都会续），断线超过租约就算离开；人不在场时不占地点、听不到话。
  *  - 小屋的室友（origin = house）：身份映射在启动时按配置建好（actor_id ↔ resident_id，建立后不改）。
  *    她们只能经「外出访问」从小屋门口进城（visits.ts），QQ 侧那把密钥进不来（ENTRY_VIA_HOME_ONLY）。
@@ -206,7 +206,7 @@ export function exchangeCityTicket(c: CityService, rawTicket: unknown) {
   if (token.startsWith('#ticket=')) token = token.slice('#ticket='.length);
   else if (token.startsWith('ticket=')) token = token.slice('ticket='.length);
   if (!token || token.length > 200) {
-    throw new CityError('UNAUTHENTICATED', '登录票据无效、已过期或已经用过，请在群里重新发送「灯都」获取新链接。', 'invalid_ticket');
+    throw new CityError('UNAUTHENTICATED', '登录票据无效、已过期或已经用过，请在群里重新发送「晴空都」获取新链接。', 'invalid_ticket');
   }
   const ticketHash = sha256(token);
   return c.commit(() => {
@@ -217,7 +217,7 @@ export function exchangeCityTicket(c: CityService, rawTicket: unknown) {
       ticketHash,
     );
     if (!row || row.redeemed_at !== null || Number(row.expires_at) <= now) {
-      throw new CityError('UNAUTHENTICATED', '登录票据无效、已过期或已经用过，请在群里重新发送「灯都」获取新链接。', 'invalid_ticket');
+      throw new CityError('UNAUTHENTICATED', '登录票据无效、已过期或已经用过，请在群里重新发送「晴空都」获取新链接。', 'invalid_ticket');
     }
     const updated = c.db.run(
       'UPDATE login_tickets SET redeemed_at = ? WHERE ticket_hash = ? AND redeemed_at IS NULL AND expires_at > ?',
@@ -226,7 +226,7 @@ export function exchangeCityTicket(c: CityService, rawTicket: unknown) {
       now,
     );
     if (updated.changes === 0) {
-      throw new CityError('UNAUTHENTICATED', '登录票据无效、已过期或已经用过，请在群里重新发送「灯都」获取新链接。', 'invalid_ticket');
+      throw new CityError('UNAUTHENTICATED', '登录票据无效、已过期或已经用过，请在群里重新发送「晴空都」获取新链接。', 'invalid_ticket');
     }
     const principal = c.db.get<CityPrincipal & Row>(
       'SELECT principal_id, provider, subject, kind, display_name FROM principals WHERE principal_id = ?',

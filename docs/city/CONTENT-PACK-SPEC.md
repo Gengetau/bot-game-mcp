@@ -1,19 +1,19 @@
-# 灯都城市世界（`city`）· 四层地理架构与标准街区内容包规范（R0 修订稿）
+# 晴空都城市世界（`city`）· 四层地理架构与标准街区内容包规范（R0 修订稿）
 
 - **状态**：R0 生效稿（2026-11-19，对齐 `docs/city/rename-r0.json` 与《架空 AI 都市 v0.3》）
 - **关联文档**：`IDENTITY-AND-FACTS.md`、`CLIENT-AND-WEB-CONTRACT.md`、`ITEM-AND-LOCKER-SPEC.md`、`rename-r0.json`
-- **目标**：统一锁死架空都市「灯都」四层地理实体命名、三级开放状态与标准内容包格式，确保所有功能绝不写死固定站点，支撑后续阶段零状态机改动挂载新架空生活街区（R0 已开放绯渡、镜池、千灯三片区，暂卸内容包待主人定名后按本规范迁移挂载）。
+- **目标**：统一锁死架空都市「晴空都」四层地理实体命名、三级开放状态与标准内容包格式，确保所有功能绝不写死固定站点，支撑后续阶段零状态机改动挂载新架空生活街区（R0 已开放日和坂、棱光街、云港三片区，暂卸内容包待主人定名后按本规范迁移挂载）。
 
 ---
 
 ## 1. 四层地理实体分离与稳定 ID 规范
 
-为彻底消除“大区 / 生活街区 / 枢纽车站 / 具体店铺”同名混用，灯都目录严格划分为四层正交实体：
+为彻底消除“大区 / 生活街区 / 枢纽车站 / 具体店铺”同名混用，晴空都目录严格划分为四层正交实体：
 
 | 层级 | 实体类型 | ID 命名规范（正则） | 示例 | 职责与可见性 |
 |---|---|---|---|---|
 | **L1 城市大区（可选）** | `Ward` | `^ward:[a-z0-9-]+$`（架空大区标识，严禁暴露 `mun:13xxx` 等现实行政代码） | `ward:hokubu`<br>`ward:toshin`（R0 可为空数组 `WARDS = []`） | 可选的架空方位/大区分组；公开视图与前端不得暴露现实行政区名 |
-| **L2 交通骨架** | `TransitLine` & `StationComplex` | 线路：`^line:[a-z0-9-]+:[a-z0-9-]+$`<br>车站：`^st:[a-z0-9-]+$`<br>交通边：`^te:[a-z0-9-]+$` | `line:toto-rail:hokkan`<br>`line:toto-rail:toukan`<br>`st:hiwatari`、`st:kagamiike`、`st:sentou`<br>`te:hiwatari-kagamiike` | 承载灯都铁道、地铁、巴士与航路拓扑；车站综合体通过 `placeId` 显式指向站内大厅 `Place`，**严禁通过字符串拼接 `${area}:station` 反推！** |
+| **L2 交通骨架** | `TransitLine` & `StationComplex` | 线路：`^line:[a-z0-9-]+:[a-z0-9-]+$`<br>车站：`^st:[a-z0-9-]+$`<br>交通边：`^te:[a-z0-9-]+$` | `line:toto-rail:hokkan`<br>`line:toto-rail:toukan`<br>`st:hiwatari`、`st:kagamiike`、`st:sentou`<br>`te:hiwatari-kagamiike` | 承载晴空都铁道、地铁、巴士与航路拓扑；车站综合体通过 `placeId` 显式指向站内大厅 `Place`，**严禁通过字符串拼接 `${area}:station` 反推！** |
 | **L3 生活街区** | `District` | `^dist:[a-z0-9-]+$`（对应 `AreaId`：`hiwatari` / `kagamiike` / `sentou`） | `dist:hiwatari`、`dist:kagamiike`、`dist:sentou` | 玩家感知的街区单元；绑定可选 `wardId`、主枢纽车站 `hubStationId`、天气代表点 `weatherPoint` 与**三级开放状态 `openness`** |
 | **L4 具体场所** | `Place` | `^[a-z0-9-]+:[a-z0-9:-]+$` | `hiwatari:station`<br>`kagamiike:kissa-tomoshibi`<br>`sentou:muginohi`<br>`hiwatari:ai-house:entrance`（隐藏） | 居民实际驻留、交谈、消费、工作、制作、探索与存取储物柜的最小位置粒度（无帧级坐标） |
 
@@ -30,11 +30,11 @@
 
 每个 `District` 与 `StationComplex` 显式标记以下三种开放级别之一，界面与路由严格按级别执行：
 
-| 开放状态 | 界面展示标签 | 灯都总览 / 目录可见 | 电车换乘经过 | `travel` 驻留与街区生活 | 典型代表 |
+| 开放状态 | 界面展示标签 | 晴空都总览 / 目录可见 | 电车换乘经过 | `travel` 驻留与街区生活 | 典型代表 |
 |---|---|---|---|---|---|
 | `cataloged` | **已收录** | 可见（大区归属、站名、线路归属、数据来源） | 不可作为换乘段 | **拒绝**（`422 PRECONDITION_FAILED / area_not_open`） | 远郊及岛屿未开放骨架站 |
 | `transitable` | **可经过** | 可见 | **允许**作为多段行程的途经站或换乘站，可停靠站内大厅 | 仅车站大厅可达，无街区内部店铺/活动 | 跨线联络换乘枢纽节点 |
-| `livable` | **可生活** | 可见（含天气、营业、在场人数、街区事件） | **允许** | **完整开放**（商店、餐饮、工坊、公园、委托、活动与共建） | R0 开放三片区：**绯渡、镜池、千灯**（后续内容包经主人定名后挂载） |
+| `livable` | **可生活** | 可见（含天气、营业、在场人数、街区事件） | **允许** | **完整开放**（商店、餐饮、工坊、公园、委托、活动与共建） | R0 开放三片区：**日和坂、棱光街、云港**（后续内容包经主人定名后挂载） |
 
 ---
 
@@ -56,7 +56,7 @@
 为防止后续多街区数百站点载入后撑爆 AI 上下文 Token：
 1. `selfView.here.exits` **只包含两类去处**（总数硬上限 `<= 24`）：
    - 当前所在街区（`p.area` / `p.districtId`）内步行可达的全部公开地点；
-   - 其他 `openness === 'livable'` 街区的代表车站直达摘要（如绯渡站、镜池站、千灯站）。
+   - 其他 `openness === 'livable'` 街区的代表车站直达摘要（如日和坂站、棱光街站、云港站）。
 2. 前往其他街区内部具体店铺，既可直接提交 `travel { to: "<目标 PlaceId>" }`（服务端 `planRoute` 全图寻路支持任意公开可达 `PlaceId`，不受 `exits` 摘要截断影响），也可先调 `world_query({ what: "route", from, to })` 或 `GET /city/api/route` 预览分段耗时与车费。
 3. 验收门禁：全部生活街区挂载后，单次 `get_my_view` JSON 响应体积保持在 **4 KB 量级以内**。
 
@@ -117,12 +117,12 @@ export interface CityContentPack {
 ### 4.2 数据溯源、合规许可与虚构隔离铁律
 
 1. **真实地理骨架溯源必填**：
-   - 铁道拓扑与天气坐标原型以长期合规开放数据（如国土数值信息 N02 CC BY 4.0、Open-Meteo CC BY 4.0）为内部底座，对外一律呈现架空「灯都」名称；每条 `SourceReference` 必须记录 `id`、`kind`、`title`、`license`、`retrieved`（`YYYY-MM-DD`）。
+   - 铁道拓扑与天气坐标原型以长期合规开放数据（如国土数值信息 N02 CC BY 4.0、Open-Meteo CC BY 4.0）为内部底座，对外一律呈现架空「晴空都」名称；每条 `SourceReference` 必须记录 `id`、`kind`、`title`、`license`、`retrieved`（`YYYY-MM-DD`）。
    - **严禁将竞赛限定或短期受限许可（如 ODPT 部分限时时刻表）作为长期运行依赖**。
 2. **虚构商业与模拟数值显式标注**：
    - 城内所有具体店铺、商品价格、营业时间、兼职委托与制作配方一律为虚构设定，必须显式标记 `fictional: true`、`source: 'fictional'`；
    - 所有耗时与车费一律标记 `source: 'simulated'` 与 `FARE_RULE_VERSION`；
-   - 绯渡 AI 小屋保持为虚构旧洋房，交接节点 `hiwatari:ai-house:entrance` 标记 `hidden: true`，不对应真实门牌地址。
+   - 日和坂 AI 小屋保持为虚构旧洋房，交接节点 `hiwatari:ai-house:entrance` 标记 `hidden: true`，不对应真实门牌地址。
 3. **目录不可变与历史账单可解释（Schema v5 `catalog_versions`）**：
    - 内容包改动任何票价、耗时或商品价格时，必须升级 `CITY_CATALOG_VERSION`（及 `FARE_RULE_VERSION`）；
    - 引擎启动时将当前生效的目录版本摘要写入 `catalog_versions(catalog_version, fare_rule_version, summary_json, activated_at)`，使历史 `visits`、`trips` 与 `orders` 引用的旧版本号始终可查、可一键回退上一版目录包。

@@ -1,5 +1,5 @@
 /**
- * RuiC-PoseAtlas 全量 1,407 套服饰目录与灯都三家虚构买手店确定性轮换橱窗 (#260)。
+ * RuiC-PoseAtlas 全量 1,407 套服饰目录与晴空都三家虚构买手店确定性轮换橱窗 (#260)。
  *
  * 由 world-catalog/tools/compile_poseatlas.py 自动生成，请勿手改单条记录。
  * 原图托管于主人谷歌云盘 AI小屋/图鉴/衣装图鉴/，公开目录仅含虚构商品名、编号、分级与日元定价。
@@ -63,7 +63,7 @@ function dateSeed(dateStr: string, salt: string): number {
 }
 
 /**
- * 按灯都世界日（YYYY-MM-DD）确定性选出当期橱窗（默认 6 款），严守 get_my_view <= 4 KB 上下文预算，
+ * 按晴空都世界日（YYYY-MM-DD）确定性选出当期橱窗（默认 6 款），严守 get_my_view <= 4 KB 上下文预算，
  * 同时随日期推进覆盖全量 1,407 套服饰资产。
  */
 export function apparelWindowForPlace(placeId: string, dateStr = '2026-11-18', count = 6): ApparelCatalogEntry[] {

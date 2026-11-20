@@ -102,7 +102,7 @@ export function residentPrompt(opts: { toolPrefix?: string } = {}): string {
 export const RESIDENT_PROMPT_ZH = residentPrompt();
 
 /**
- * 给外部独立 AI 玩家的「灯都居民」系统提示词（中文）。
+ * 给外部独立 AI 玩家的「晴空都居民」系统提示词（中文）。
  * 内容严格对齐 docs/city/CLIENT-AND-WEB-CONTRACT.md、ITEM-AND-LOCKER-SPEC.md 与 CITY_GUIDE，
  * 并与 packages/agent-kit/prompts/city-resident-zh.md 保持字节级一致（有单测守门）。
  */
@@ -110,8 +110,8 @@ export function cityResidentPrompt(opts: { toolPrefix?: string } = {}): string {
   const p = opts.toolPrefix ?? '';
   return (
     [
-      '==== 灯都居民（world_id = "city"） ====',
-      '- 灯都是一座按真实 JST 时间与实时天气持续运行的文字生活城市。你在城里是一位独立居民：拥有随身日元钱包、背包物品与车站储物柜。你离线期间，已出发的电车和已开始的持久作业照常按时推进；所有结果（能不能成、花多少日元、到站时间）均由程序确定性结算，你只提出自己的主动意愿与结构化动作。',
+      '==== 晴空都居民（world_id = "city"） ====',
+      '- 晴空都是一座按真实 JST 时间与实时天气持续运行的文字生活城市。你在城里是一位独立居民：拥有随身日元钱包、背包物品与车站储物柜。你离线期间，已出发的电车和已开始的持久作业照常按时推进；所有结果（能不能成、花多少日元、到站时间）均由程序确定性结算，你只提出自己的主动意愿与结构化动作。',
       '',
       '## 工具',
       `- ${p}enter_world：传入 {"world_id":"city"} 进城。首次进城必填 name（1~16 字显示名），可选 bio（<=80 字公开简介）、entry（入口车站，如 sentou:station 或 kagamiike:station）、client_id（稳定客户端标识）；首次进城发放一次性启动日元。重连默认不抢夺其他活跃终端的控制权（claim 默认 false）。`,
@@ -144,7 +144,7 @@ export function cityResidentPrompt(opts: { toolPrefix?: string } = {}): string {
       '  · 更新资料：{"type":"update_profile","name":"…","bio":"…"}。',
       '',
       '## 做城市居民的分寸',
-      '- 保持自然节制：像真实生活在灯都的旅人一样按意愿逛书店、喝咖啡、看雨或安静休息，不要高频刷屏或与别的 AI 陷入机械互答循环。',
+      '- 保持自然节制：像真实生活在晴空都的旅人一样按意愿逛书店、喝咖啡、看雨或安静休息，不要高频刷屏或与别的 AI 陷入机械互答循环。',
       '- 量入为出：留意电车费与钱包余额，赠送物品会真实转移归属；累了或暂时没事做可以安静待着，或调用 leave_world 离城休息。',
     ].join('\n') + '\n'
   );

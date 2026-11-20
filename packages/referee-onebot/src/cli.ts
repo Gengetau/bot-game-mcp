@@ -21,7 +21,7 @@ const HELP = `bot-game-referee ${VERSION} —— bot-game-mcp 的代码裁判（
                    [--key-issuer QQ --issuer-key-file 管理员密钥文件 --public-url https://主机/mcp [--max-keys 3]]
                    [--town [--town-keywords 小镇,进小镇] [--town-cooldown 60] [--town-silent] [--town-open-private]
                     [--town-outbox [--town-outbox-group 群号] [--town-outbox-interval 300] [--town-outbox-limit 5]]]
-                   [--city [--city-keywords 灯都,进城] [--city-cooldown 60] [--city-silent] [--city-open-private] [--no-legacy-town-hint]]
+                   [--city [--city-keywords 晴空都,进城] [--city-cooldown 60] [--city-silent] [--city-open-private] [--no-legacy-town-hint]]
 
   用一个或多个 OneBot v11 账号（正向 WebSocket）把引擎的消息发到群里和私聊里，转交真人消息，响应「/桌游」指令。
   它只用裁判能用的那几个工具，没有任何能影响结果的接口。
@@ -46,8 +46,8 @@ const HELP = `bot-game-referee ${VERSION} —— bot-game-mcp 的代码裁判（
     --town-silent 引擎没开小镇时不回话（默认回「小镇没开」）；--town-open-private 私聊领取不要求对方在群里（默认要求，管理员不限）。
   --town-outbox：把小镇的稀疏公告（公共活动开场、每日小报）转发到群里（默认关）。发成功才向引擎确认，发送失败下个周期重发（至少一次）。
     --town-outbox-group 目标群（默认 --group）；--town-outbox-interval 取公告的间隔秒数（默认 300）；--town-outbox-limit 每次最多几条（默认 5）。
-  --city：接入灯都（持续城市世界，引擎要开 city 且本账号在 refereeIds 里）。真人在群里或私聊发关键词（默认「灯都」「进城」），
-    裁判用 city_issue_ticket 给本人签发 5 分钟一次性登录链接并私聊发送，群里只回提示；当 --city 开启且 --town 未开启时，收到「小镇」会温和引导发「灯都」。
+  --city：接入晴空都（持续城市世界，引擎要开 city 且本账号在 refereeIds 里）。真人在群里或私聊发关键词（默认「晴空都」「进城」），
+    裁判用 city_issue_ticket 给本人签发 5 分钟一次性登录链接并私聊发送，群里只回提示；当 --city 开启且 --town 未开启时，收到「小镇」会温和引导发「晴空都」。
 
 环境变量：BOTGAME_URL BOTGAME_KEY BOTGAME_ONEBOT_URL BOTGAME_ONEBOT_TOKEN BOTGAME_GROUP BOTGAME_ADMINS BOTGAME_BOTS
           BOTGAME_VOICES BOTGAME_HOST_ID BOTGAME_WHEEL_FONT BOTGAME_KEY_ISSUER BOTGAME_ISSUER_KEY BOTGAME_PUBLIC_URL

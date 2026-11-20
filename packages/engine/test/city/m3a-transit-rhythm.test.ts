@@ -62,9 +62,9 @@ describe('M3-A 1：模拟首末班运营时间窗（05:00–00:20 JST，source=s
     rider.act({ type: 'travel', to: 'hiwatari:station' });
     nightBot.act({ type: 'travel', to: 'hiwatari:station' });
     lateWalker.act({ type: 'travel', to: 'sentou:southern-terrace' });
-    t.run(19 * MIN); // 00:19 JST：rider 与 nightBot 在绯渡站，lateWalker 在千灯南口露台
+    t.run(19 * MIN); // 00:19 JST：rider 与 nightBot 在日和坂站，lateWalker 在云港南口露台
 
-    // 00:19 仍在运营窗内：站内直接上车出发，预计 00:38 到达千灯站
+    // 00:19 仍在运营窗内：站内直接上车出发，预计 00:38 到达云港站
     expect((publicCityView(t.c).transit as any).edges.every((e: any) => e.open === true)).toBe(true);
     const accepted = rider.act({ type: 'travel', to: 'sentou:station' });
     expect(accepted.trip).toMatchObject({
@@ -75,7 +75,7 @@ describe('M3-A 1：模拟首末班运营时间窗（05:00–00:20 JST，source=s
       same_car_travellers: 0,
     });
 
-    // 00:19 从千灯南口露台去镜池站：需先步行 4 分钟（00:23 才到站上车），前置校验按上车时刻拦截
+    // 00:19 从云港南口露台去棱光街站：需先步行 4 分钟（00:23 才到站上车），前置校验按上车时刻拦截
     const blockedWalkTrain = rejects(
       () => lateWalker.act({ type: 'travel', to: 'kagamiike:station' }),
       'PRECONDITION_FAILED',
@@ -107,14 +107,14 @@ describe('M3-A 1：模拟首末班运营时间窗（05:00–00:20 JST，source=s
     expect(nightBot.view().location).toEqual({ place: 'hiwatari:ekimae-conbini' });
     expect(nightBot.act({ type: 'buy', sku: 'onigiri' })).toMatchObject({ status: 'completed', paid_yen: 160 });
 
-    // 00:19 已发车的夜归客在 00:38 正常抵达千灯站，不半空卡死
+    // 00:19 已发车的夜归客在 00:38 正常抵达云港站，不半空卡死
     t.run(18 * MIN);
     expect(rider.view().location).toEqual({ place: 'sentou:station' });
 
     // 推进至 04:59 仍停运；05:00 首班车准点恢复通行
     t.run(jst('2026-11-18', 4, 59) - t.clock.t);
     rejects(() => rider.act({ type: 'travel', to: 'kagamiike:station' }), 'PRECONDITION_FAILED', 'transit_closed_night');
-    // 04:56 从千灯南口露台出发（先步行 4m，05:00 整点才到千灯站上车）：按上车时刻 board_at_ms 判定，准予通行
+    // 04:56 从云港南口露台出发（先步行 4m，05:00 整点才到云港站上车）：按上车时刻 board_at_ms 判定，准予通行
     const earlyWalker = makeCity({ at: jst('2026-11-18', 4, 56) });
     const ew = earlyWalker.bot('早起行人', { entry: 'sentou:station' });
     ew.act({ type: 'travel', to: 'sentou:southern-terrace' });
@@ -137,9 +137,9 @@ describe('M3-A 2：小屋室友终电归家护栏（23:30 后进城、跨午夜�
   it('晚间进城且原 return_by 跨过终电时，自动返程截止点收紧至终电前安全时刻并按 last_train 归家', () => {
     const t = makeCity({ at: jst('2026-11-18', 22, 30) });
     const nia = t.kernel('nia');
-    // 南镜池公园：回程步行 7m 到镜池站 + 13m 北环快线 + 12m 步行；原 return_by 为次日 02:30
+    // 南棱光公园：回程步行 7m 到棱光街站 + 13m 北环快线 + 12m 步行；原 return_by 为次日 02:30
     nia.depart({ yen: 5000, to: 'kagamiike:minami-park', returnIn: 4 * HOUR });
-    t.run(32 * MIN); // 23:02 到达南镜池公园
+    t.run(32 * MIN); // 23:02 到达南棱光公园
 
     const expectedLeaveBy = jst('2026-11-19', 0, 8); // 00:20 - 7m 步行到站 - 5m 安全余量 = 00:08
     expect(nia.view().visit).toMatchObject({
@@ -147,7 +147,7 @@ describe('M3-A 2：小屋室友终电归家护栏（23:30 后进城、跨午夜�
       last_train_guard: true,
     });
 
-    // 推进至 00:08 触发终电护栏返程，00:15 在镜池站踏上终电前班次，00:40 回到绯渡小屋门口结算
+    // 推进至 00:08 触发终电护栏返程，00:15 在棱光街站踏上终电前班次，00:40 回到日和坂小屋门口结算
     t.run(jst('2026-11-19', 0, 45) - t.clock.t);
     expect(nia.describe()).toMatchObject({ state: 'settled', return_reason: 'last_train' });
     const retStarted = t.outbox(nia.visitId).find((r) => r.kind === 'return_started')!;
@@ -170,8 +170,8 @@ describe('M3-A 2：小屋室友终电归家护栏（23:30 后进城、跨午夜�
       'sentou:station', // 31m -> 00:06 跨午夜抵达，00:15 触发返程上车
       'kagamiike:minami-park', // 32m -> 00:07 跨午夜抵达，00:08 触发返程，00:15 上车
       'kagamiike:station', // 25m -> 00:00 午夜整点抵达，00:15 触发返程上车
-      'hiwatari:ekimae-conbini', // 绯渡本区纯步行 15m，不受铁道停运限制
-      'hiwatari:ekimae-plaza', // 绯渡本区纯步行 14m
+      'hiwatari:ekimae-conbini', // 日和坂本区纯步行 15m，不受铁道停运限制
+      'hiwatari:ekimae-plaza', // 日和坂本区纯步行 14m
     ];
     const kernels = SIX_HOUSEMATES.map((m, idx) => {
       const k = t.kernel(m.actorId);
@@ -180,7 +180,7 @@ describe('M3-A 2：小屋室友终电归家护栏（23:30 后进城、跨午夜�
       return k;
     });
 
-    // 推进到 00:07（跨过午夜 00:00！）：验证在南镜池公园的艾莉西亚主动步行回镜池站时，跨午夜重排仍锚定当晚 00:20 而非次日
+    // 推进到 00:07（跨过午夜 00:00！）：验证在南棱光公园的艾莉西亚主动步行回棱光街站时，跨午夜重排仍锚定当晚 00:20 而非次日
     t.run(32 * MIN); // 00:07 JST
     const alicia = kernels[2]!;
     expect(alicia.view().location).toEqual({ place: 'kagamiike:minami-park' });
@@ -189,7 +189,7 @@ describe('M3-A 2：小屋室友终电归家护栏（23:30 后进城、跨午夜�
     expect(alicia.view().location).toEqual({ place: 'kagamiike:station' });
     expect(alicia.view().visit.leave_by_ms).toBe(jst('2026-11-19', 0, 15));
 
-    // 推进至 00:50：外区四位室友已全部在 00:20 前上车并回到绯渡小屋 settled，无一人滞留外区
+    // 推进至 00:50：外区四位室友已全部在 00:20 前上车并回到日和坂小屋 settled，无一人滞留外区
     t.run(36 * MIN); // 00:50 JST
     for (let i = 0; i < 4; i++) {
       const k = kernels[i]!;
@@ -202,7 +202,7 @@ describe('M3-A 2：小屋室友终电归家护栏（23:30 后进城、跨午夜�
       expect(k.release().state).toBe('closed');
     }
 
-    // 绯渡本区的两位室友在 00:50 停运期尝试跨区去千灯会被 transit_closed_night 拦下，随后按原 return_by 步行归家
+    // 日和坂本区的两位室友在 00:50 停运期尝试跨区去云港会被 transit_closed_night 拦下，随后按原 return_by 步行归家
     rejects(
       () => kernels[4]!.act({ type: 'travel', to: 'sentou:station' }),
       'PRECONDITION_FAILED',
@@ -212,13 +212,13 @@ describe('M3-A 2：小屋室友终电归家护栏（23:30 后进城、跨午夜�
     expect(kernels[4]!.release().state).toBe('closed');
     expect(kernels[5]!.release().state).toBe('closed');
 
-    // 23:52 过晚进城去千灯南口露台（去程 00:04 虽有车，但 00:27 才到，赶不上 00:20 回程终电）：commit 阶段 plan_blocked 留在门口
+    // 23:52 过晚进城去云港南口露台（去程 00:04 虽有车，但 00:27 才到，赶不上 00:20 回程终电）：commit 阶段 plan_blocked 留在门口
     const tLate = makeCity({ at: jst('2026-11-19', 23, 52) });
     const niaLate = tLate.kernel('nia');
     const blockedCommit = niaLate.depart({ yen: 5000, to: 'sentou:southern-terrace', returnIn: 2 * HOUR });
     expect(blockedCommit.payload).toMatchObject({ trip: null, plan_blocked: 'last_train_cutoff' });
     expect(niaLate.view().location).toEqual({ place: HOUSE_ENTRANCE });
-    // 留在绯渡门口的室友仍可改去绯渡 24h 便利店再步行回家
+    // 留在日和坂门口的室友仍可改去日和坂 24h 便利店再步行回家
     niaLate.act({ type: 'travel', to: 'hiwatari:ekimae-conbini' });
     tLate.run(15 * MIN);
     expect(niaLate.view().location).toEqual({ place: 'hiwatari:ekimae-conbini' });
@@ -241,14 +241,14 @@ describe('M3-A 2：小屋室友终电归家护栏（23:30 后进城、跨午夜�
 
     const nia = t.kernel('nia');
     const claire = t.kernel('claire');
-    nia.depart({ yen: 5000, to: 'sentou:southern-terrace', returnIn: 3 * HOUR }); // 35m -> 23:55 到达千灯露台
-    claire.depart({ yen: 5000, to: 'kagamiike:station', returnIn: 3 * HOUR }); // 25m -> 23:45 到达镜池站
+    nia.depart({ yen: 5000, to: 'sentou:southern-terrace', returnIn: 3 * HOUR }); // 35m -> 23:55 到达云港露台
+    claire.depart({ yen: 5000, to: 'kagamiike:station', returnIn: 3 * HOUR }); // 25m -> 23:45 到达棱光街站
     t.run(35 * MIN); // 23:55 JST
 
-    // 23:55 克蕾雅从镜池站前往绯渡澪川河岸（13m 电车 23:55->00:08 到绯渡站 + 18m 步行 00:08->00:26）
+    // 23:55 克蕾雅从棱光街站前往日和坂浮光川河岸（13m 电车 23:55->00:08 到日和坂站 + 18m 步行 00:08->00:26）
     claire.act({ type: 'travel', to: 'hiwatari:mio-riverbank' });
 
-    // 23:58 千灯与绯渡同时转雨：妮娅在露天步道收到 rain 唤醒；克蕾雅在途，澪川河岸雨天关闭
+    // 23:58 云港与日和坂同时转雨：妮娅在露天步道收到 rain 唤醒；克蕾雅在途，浮光川河岸雨天关闭
     t.run(3 * MIN); // 23:58 JST
     t.c.commit(() =>
       applyWeather(
@@ -263,7 +263,7 @@ describe('M3-A 2：小屋室友终电归家护栏（23:30 后进城、跨午夜�
     );
     expect(nia.records('decision_wake').some((w) => w.reason === 'rain' && w.area === 'sentou')).toBe(true);
 
-    // 23:58 妮娅若想跨区改道去南镜池公园（4+10+7=21m -> 00:19 > 00:08）被终电护栏拦截；改去室内千灯站（4m -> 00:02 <= 00:15）放行
+    // 23:58 妮娅若想跨区改道去南棱光公园（4+10+7=21m -> 00:19 > 00:08）被终电护栏拦截；改去室内云港站（4m -> 00:02 <= 00:15）放行
     rejects(
       () => nia.act({ type: 'travel', to: 'kagamiike:minami-park' }),
       'PRECONDITION_FAILED',
@@ -274,7 +274,7 @@ describe('M3-A 2：小屋室友终电归家护栏（23:30 后进城、跨午夜�
     expect(nia.view().location).toEqual({ place: 'sentou:station' });
     expect(nia.view().visit.leave_by_ms).toBe(jst('2026-11-19', 0, 15));
 
-    // 推进至 00:26：克蕾雅因雨天被改道留在绯渡站（diverted / place_closed_rain）；妮娅已在 00:15 乘上终电回程
+    // 推进至 00:26：克蕾雅因雨天被改道留在日和坂站（diverted / place_closed_rain）；妮娅已在 00:15 乘上终电回程
     t.run(24 * MIN); // 00:26 JST
     expect(claire.view().location).toEqual({ place: 'hiwatari:station' });
     expect(claire.records('decision_wake')).toContainEqual(
@@ -299,22 +299,22 @@ describe('M3-A 3：同车厢短暂同行只读切片（匿名计数、隐私隔�
     const offlineBot = t.bot('中途下线客', { entry: 'kagamiike:station' });
     sameDirBot.act({ type: 'travel', to: 'hiwatari:station' });
     offlineBot.act({ type: 'travel', to: 'hiwatari:station' });
-    t.run(20 * MIN); // 18:00 JST：两人已在绯渡站就位
+    t.run(20 * MIN); // 18:00 JST：两人已在日和坂站就位
 
     const nia = t.kernel('nia');
     const claire = t.kernel('claire');
     const oppDirBot = t.bot('反向乘客凛', { entry: 'sentou:station' });
-    const otherLineBot = t.bot('灯环线乘客莲', { entry: 'kagamiike:station' });
+    const otherLineBot = t.bot('晴环线乘客莲', { entry: 'kagamiike:station' });
 
-    // 妮娅与克蕾雅先从绯渡小屋出发去千灯不同店铺（前 12 分钟在步行段，尚未上车）
+    // 妮娅与克蕾雅先从日和坂小屋出发去云港不同店铺（前 12 分钟在步行段，尚未上车）
     nia.depart({ yen: 8000, to: 'sentou:muginohi' });
     claire.depart({ yen: 8000, to: 'sentou:kamitsuki' });
     expect(nia.view().location.trip.same_car_travellers).toBeUndefined();
     expect(nia.view().location.trip.car_ambiance).toBeUndefined();
 
-    // 18:12 妮娅与克蕾雅抵达绯渡站登上北环快线（18:12 -> 18:31，hiwatari:station -> sentou:station）
+    // 18:12 妮娅与克蕾雅抵达日和坂站登上北环快线（18:12 -> 18:31，hiwatari:station -> sentou:station）
     t.run(12 * MIN);
-    // 18:15 同向乘客葵与中途下线客也从绯渡站登上同向北环快线；反向乘客与灯环线乘客同时在跑
+    // 18:15 同向乘客葵与中途下线客也从日和坂站登上同向北环快线；反向乘客与晴环线乘客同时在跑
     t.run(3 * MIN); // 18:15 JST
     const startView = sameDirBot.act({ type: 'travel', to: 'sentou:southern-terrace' });
     expect(startView.trip.same_car_travellers).toBe(2); // 车上已有妮娅、克蕾雅 2 人
@@ -322,7 +322,7 @@ describe('M3-A 3：同车厢短暂同行只读切片（匿名计数、隐私隔�
     t.online.delete(offlineBot.id);
     leaveCity(t.c, offlineBot.id); // 已离城（in_city = 0）不计入在场同乘
     oppDirBot.act({ type: 'travel', to: 'hiwatari:station' }); // 同线但反向
-    otherLineBot.act({ type: 'travel', to: 'sentou:station' }); // 同终点但属灯环线
+    otherLineBot.act({ type: 'travel', to: 'sentou:station' }); // 同终点但属晴环线
 
     const niaView = nia.view();
     const oppView = oppDirBot.view();
@@ -349,7 +349,7 @@ describe('M3-A 3：同车厢短暂同行只读切片（匿名计数、隐私隔�
       oppDirBot.id,
       '反向乘客凛',
       otherLineBot.id,
-      '灯环线乘客莲',
+      '晴环线乘客莲',
       'sentou:kamitsuki',
       'sentou:southern-terrace',
     ]) {
@@ -364,11 +364,11 @@ describe('M3-A 4：终电跨停运边界双重启对账探针（F10 持久恢复
     const t1 = makeCity({ dbPath, at: jst('2026-11-18', 23, 35) });
     const k1 = t1.kernel('nia');
 
-    // 23:35 妮娅前往千灯南口露台（00:10 抵达，00:11 触发 last_train 返程，00:15 登上回绯渡终电）
+    // 23:35 妮娅前往云港南口露台（00:10 抵达，00:11 触发 last_train 返程，00:15 登上回日和坂终电）
     k1.depart({ yen: 10_000, to: 'sentou:southern-terrace', returnIn: 3 * HOUR });
-    t1.run(41 * MIN); // 00:16 JST：妮娅已在 00:15 登上回绯渡电车（预计 00:34 到绯渡站，00:46 到小屋门口）
+    t1.run(41 * MIN); // 00:16 JST：妮娅已在 00:15 登上回日和坂电车（预计 00:34 到日和坂站，00:46 到小屋门口）
     const b1 = t1.bot('终电旅人', { entry: 'sentou:station', stay: false });
-    b1.act({ type: 'travel', to: 'kagamiike:station' }); // 00:16 从千灯站登上灯环线末班车（预计 00:26 到镜池站）
+    b1.act({ type: 'travel', to: 'kagamiike:station' }); // 00:16 从云港站登上晴环线末班车（预计 00:26 到棱光街站）
     expect(k1.describe()).toMatchObject({ state: 'returning', return_reason: 'last_train' });
 
     // ── 第 1 次停机重启：跨过 00:20 停运线，在 00:25 恢复 ──
@@ -389,7 +389,7 @@ describe('M3-A 4：终电跨停运边界双重启对账探针（F10 持久恢复
     k3.visitId = k1.visitId;
     k3.epoch = k1.epoch;
 
-    // 验证终电旅人已在 00:26 正常到镜池站；妮娅已在 00:46 正常到家 settled，往返车费仅各扣 1 笔（¥260 * 2）
+    // 验证终电旅人已在 00:26 正常到棱光街站；妮娅已在 00:46 正常到家 settled，往返车费仅各扣 1 笔（¥260 * 2）
     expect(t3.c.mustResident(b1.id).place_id).toBe('kagamiike:station');
     expect(k3.describe()).toMatchObject({ state: 'settled', return_reason: 'last_train' });
     k3.pull();
@@ -415,7 +415,7 @@ describe('M3-A 4：终电跨停运边界双重启对账探针（F10 持久恢复
     const k1 = t1.kernel('nia');
     const localBot = t1.bot('同站夜客', { entry: 'sentou:station', stay: false });
 
-    // 23:35 去千灯南口露台，11-19 00:10 到达且仍为 active（原定 00:11 自动返程）
+    // 23:35 去云港南口露台，11-19 00:10 到达且仍为 active（原定 00:11 自动返程）
     k1.depart({ yen: 10_000, to: 'sentou:southern-terrace', returnIn: 3 * HOUR });
     t1.run(35 * MIN); // 2026-11-19 00:10 JST
     expect(k1.describe()).toMatchObject({ state: 'active', location: { place: 'sentou:southern-terrace' } });
@@ -483,9 +483,9 @@ describe('M3-A 4：终电跨停运边界双重启对账探针（F10 持久恢复
     const dbPath2 = tmpDb();
     const p1 = makeCity({ dbPath: dbPath2, at: jst('2026-11-18', 23, 40) });
     const kp1 = p1.kernel('claire');
-    kp1.depart({ yen: 8_000, to: 'sentou:station', returnIn: 3 * HOUR }); // 12m 步行 + 19m 北环快线 -> 00:11 到千灯站
+    kp1.depart({ yen: 8_000, to: 'sentou:station', returnIn: 3 * HOUR }); // 12m 步行 + 19m 北环快线 -> 00:11 到云港站
     p1.run(15 * MIN); // 23:55 在北环快线列车上
-    kp1.returnRequest('bedtime'); // 标为 returning，待 00:11 到千灯站后转回程
+    kp1.returnRequest('bedtime'); // 标为 returning，待 00:11 到云港站后转回程
     p1.c.close();
     p1.clock.t = jst('2026-11-19', 0, 25); // 停机跨过 00:11 到站与 00:20 停运线
     const p2 = makeCity({ dbPath: dbPath2, clock: p1.clock });
@@ -509,7 +509,7 @@ describe('M3-A 4：终电跨停运边界双重启对账探针（F10 持久恢复
     const t1 = makeCity({ dbPath: dbPath1, at: jst('2026-11-18', 23, 35) });
     const k1 = t1.kernel('nia');
     k1.depart({ yen: 10_000, to: 'sentou:southern-terrace', returnIn: 3 * HOUR });
-    t1.run(37 * MIN); // 2026-11-19 00:12 JST：00:11 已触发返程步行，正在走往千灯站途中（leg_index=0）
+    t1.run(37 * MIN); // 2026-11-19 00:12 JST：00:11 已触发返程步行，正在走往云港站途中（leg_index=0）
     expect(k1.describe()).toMatchObject({ state: 'returning', return_reason: 'last_train' });
     expect(
       t1.c.db.get<{ leg_index: number; status: string }>(
@@ -578,14 +578,14 @@ describe('M3-A 4：终电跨停运边界双重启对账探针（F10 持久恢复
     expect(runReconcile(m2.c, 'm3a_return_walk_outage_0530').ok).toBe(true);
     m2.c.close();
 
-    // ── 子场景 3（active 市内步行去车站途中停机跨过终电）：23:50 从露台去镜池站，23:51 停机，00:25 恢复 ──
+    // ── 子场景 3（active 市内步行去车站途中停机跨过终电）：23:50 从露台去棱光街站，23:51 停机，00:25 恢复 ──
     const dbPath3 = tmpDb();
     const a1 = makeCity({ dbPath: dbPath3, at: jst('2026-11-18', 23, 15), house: SIX_HOUSEMATES });
     const ka1 = a1.kernel('grok');
     ka1.depart({ yen: 10_000, to: 'sentou:southern-terrace', returnIn: 3 * HOUR });
     a1.run(35 * MIN); // 23:50 JST 到达露台
-    ka1.act({ type: 'travel', to: 'kagamiike:station' }); // 23:50->23:54 步行到千灯站，原定 23:54 乘灯环线
-    a1.run(1 * MIN); // 23:51 JST 仍在步行去千灯站途中（尚未上灯环线）
+    ka1.act({ type: 'travel', to: 'kagamiike:station' }); // 23:50->23:54 步行到云港站，原定 23:54 乘晴环线
+    a1.run(1 * MIN); // 23:51 JST 仍在步行去云港站途中（尚未上晴环线）
     a1.c.close();
     a1.clock.t = jst('2026-11-19', 0, 25);
     const a2 = makeCity({ dbPath: dbPath3, clock: a1.clock, house: SIX_HOUSEMATES });
@@ -608,9 +608,9 @@ describe('M3-A 4：终电跨停运边界双重启对账探针（F10 持久恢复
     const e1 = makeCity({ dbPath: dbPath4, at: jst('2026-11-19', 0, 8) });
     const ext = e1.bot('夜行外客', { entry: 'sentou:station', stay: false });
     ext.act({ type: 'travel', to: 'sentou:southern-terrace' });
-    e1.run(4 * MIN); // 00:12 JST 在千灯南口露台
+    e1.run(4 * MIN); // 00:12 JST 在云港南口露台
     const walletBefore = ext.view().wallet.yen;
-    ext.act({ type: 'travel', to: 'kagamiike:station' }); // 00:12->00:16 步行到千灯站，原定 00:16 乘灯环线（¥200）
+    ext.act({ type: 'travel', to: 'kagamiike:station' }); // 00:12->00:16 步行到云港站，原定 00:16 乘晴环线（¥200）
     e1.run(1 * MIN); // 00:13 JST 步行途中停机
     e1.c.close();
     e1.clock.t = jst('2026-11-19', 0, 25);
@@ -629,16 +629,16 @@ describe('M3-A 4：终电跨停运边界双重启对账探针（F10 持久恢复
     expect(ledgerImbalance(e2.c)).toBe(0);
     e2.c.close();
 
-    // ── 子场景 5（清晨早起室友步行赶首班车）：04:50 出门步行 12m 接 05:02 首班车去镜池站，不误判昨晚 00:20 终电截止 ──
+    // ── 子场景 5（清晨早起室友步行赶首班车）：04:50 出门步行 12m 接 05:02 首班车去棱光街站，不误判昨晚 00:20 终电截止 ──
     const dawn = makeCity({ at: jst('2026-11-19', 4, 50), house: SIX_HOUSEMATES });
     const kd = dawn.kernel('xingli');
     const dawnDep = kd.depart({ yen: 6_000, to: 'kagamiike:station', returnIn: 3 * HOUR }); // return_by = 07:50
     expect(dawnDep.payload.plan_blocked).toBeUndefined();
     expect(dawnDep.payload.trip).not.toBeNull();
-    dawn.run(5 * MIN); // 04:55 JST 仍在步行去绯渡站途中，不应被误判错过昨晚终电而提前拉回家
+    dawn.run(5 * MIN); // 04:55 JST 仍在步行去日和坂站途中，不应被误判错过昨晚终电而提前拉回家
     expect(kd.describe().state).toBe('active');
     expect(kd.view().visit.leave_by_ms).toBe(jst('2026-11-19', 7, 20)); // 07:50 - 25m 回程 - 5m 余量
-    dawn.run(20 * MIN); // 05:15 JST 正常搭首班车抵达镜池站
+    dawn.run(20 * MIN); // 05:15 JST 正常搭首班车抵达棱光街站
     expect(kd.view().location).toEqual({ place: 'kagamiike:station' });
     dawn.run(3 * HOUR);
     expect(kd.describe()).toMatchObject({ state: 'settled', return_reason: 'return_by' });

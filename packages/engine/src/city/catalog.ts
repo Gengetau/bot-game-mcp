@@ -11,7 +11,7 @@ import {
   type WardSpec,
 } from './packs/index.js';
 /**
- * 灯都城市世界的目录：片区、车站、线路、街区、地点、商品、来源。
+ * 晴空都城市世界的目录：片区、车站、线路、街区、地点、商品、来源。
  *
  * 架空都市拓扑与线路骨架 + 明确标注为模拟的耗时和票价。店铺都是虚构的（source: fictional）；
  * 公园、广场、河岸与露台为都市公共空间原型，天气取现实气象代表点坐标。
@@ -24,9 +24,9 @@ import {
  */
 
 export const CITY_WORLD_ID = 'city';
-export const CITY_WORLD_NAME = '灯都';
+export const CITY_WORLD_NAME = '晴空都';
 export const CITY_CATALOG_VERSION = 'toto-p2.0';
-export const CITY_TEXT_VERSION = 'toto-text-1.0';
+export const CITY_TEXT_VERSION = 'toto-text-1.1';
 export const FARE_RULE_VERSION = 'sim-2026-11';
 
 export const BOOK_SHELF_BUYBACK_YEN = 300;
@@ -57,16 +57,16 @@ const BASE_SOURCES: readonly SourceReference[] = [
   {
     id: 'prototype-network',
     kind: 'operator',
-    title: '灯都铁道干线骨架（北环快线、灯环线）',
-    note: '绯渡、镜池、千灯三站之间的干线直达连接采用现实大都市铁道拓扑原型映射，仅刻画站间连通关系，不依赖外部实时时刻表。',
+    title: '晴空都铁道干线骨架（北环快线、晴环线）',
+    note: '日和坂、棱光街、云港三站之间的干线直达连接采用现实大都市铁道拓扑原型映射，仅刻画站间连通关系，不依赖外部实时时刻表。',
     retrieved: '2026-11-17',
     sourcebook: ['T01', 'T04'],
   },
   {
     id: 'sim-fares',
     kind: 'simulated',
-    title: '模拟票价（按灯都铁道干线营业里程分段运价档）',
-    note: '按干线营业里程不足 1 km 进位模拟计价：4–6 km 档 ¥200，11–15 km 档 ¥260。绯渡—镜池 5.5 km、镜池—千灯 4.8 km 计入 4–6 km 档（¥200），绯渡—千灯 10.3 km 进位按 11 km 计入 11–15 km 档（¥260）。不设 IC 运价、换乘优惠或浮动调价，标注为 simulated。',
+    title: '模拟票价（按晴空都铁道干线营业里程分段运价档）',
+    note: '按干线营业里程不足 1 km 进位模拟计价：4–6 km 档 ¥200，11–15 km 档 ¥260。日和坂—棱光街 5.5 km、棱光街—云港 4.8 km 计入 4–6 km 档（¥200），日和坂—云港 10.3 km 进位按 11 km 计入 11–15 km 档（¥260）。不设 IC 运价、换乘优惠或浮动调价，标注为 simulated。',
     retrieved: '2026-11-17',
     sourcebook: ['T04'],
   },
@@ -88,7 +88,7 @@ const BASE_SOURCES: readonly SourceReference[] = [
     id: 'prototype-spaces',
     kind: 'public_space',
     title: '都市公共空间原型',
-    note: '绯渡站东口站前广场、澪川河岸、南镜池公园、千灯南口露台步道等都市公共空间原型；空间内发生的事件与互动均为架空模拟。',
+    note: '日和坂站东口站前广场、浮光川河岸、南棱光公园、云港南口露台步道等都市公共空间原型；空间内发生的事件与互动均为架空模拟。',
     retrieved: '2026-11-17',
   },
   { id: 'fictional', kind: 'fictional', title: '虚构店铺', note: '店名、商品、价格、营业时间都是虚构的，不对应任何真实商家。' },
@@ -96,7 +96,7 @@ const BASE_SOURCES: readonly SourceReference[] = [
     id: 'open-meteo',
     kind: 'open_data',
     title: 'Open-Meteo 天气数据',
-    note: '当前和逐小时天气来自 Open-Meteo 的预报模型，不是街区实测。灯都统一按各片区代表坐标抓取（每 30 分钟一次请求），全城各片区共用同一份天气快照。抓不到时先沿用最近一次快照，超过 3 小时退回合成天气并标注。',
+    note: '当前和逐小时天气来自 Open-Meteo 的预报模型，不是街区实测。晴空都统一按各片区代表坐标抓取（每 30 分钟一次请求），全城各片区共用同一份天气快照。抓不到时先沿用最近一次快照，超过 3 小时退回合成天气并标注。',
     url: 'https://open-meteo.com/',
     license: '数据 CC BY 4.0；免费托管的接口只限非商业用途（每天少于 10,000 次调用），带订阅或广告的服务要用付费接口',
     sourcebook: ['L02'],
@@ -141,8 +141,8 @@ export const WARDS: readonly WardSpec[] = mergeUniqueBy(
 const BASE_AREAS: readonly Area[] = [
   {
     id: 'hiwatari',
-    name: '绯渡',
-    blurb: '靠北的老街区：站前热闹，往北走到澪川就开阔了。',
+    name: '日和坂',
+    blurb: '靠北的坡道住宅区：坡两边是住家、小店和澡堂，站前热闹，往北走到浮光川就开阔了。',
     weatherPoint: { lat: 35.7776, lon: 139.7209 },
     districtId: 'dist:hiwatari',
     openness: 'livable',
@@ -150,8 +150,8 @@ const BASE_AREAS: readonly Area[] = [
   },
   {
     id: 'kagamiike',
-    name: '镜池',
-    blurb: '大车站、书店和喫茶店，巷子里还有一小片草坪。',
+    name: '棱光街',
+    blurb: '商场外墙会随天色变色，逛街的人最多；大车站、书店和喫茶店，巷子里还有一小片草坪。',
     weatherPoint: { lat: 35.7295, lon: 139.7109 },
     districtId: 'dist:kagamiike',
     openness: 'livable',
@@ -159,8 +159,8 @@ const BASE_AREAS: readonly Area[] = [
   },
   {
     id: 'sentou',
-    name: '千灯',
-    blurb: '全灯都人最多的车站，南口出去是一条能吹到风的露台步道。',
+    name: '云港',
+    blurb: '城市的空中港口，高楼顶上停着飞艇，入夜最热闹；全晴空都人最多的车站，南口出去是一条能吹到风的露台步道。',
     weatherPoint: { lat: 35.6896, lon: 139.7006 },
     districtId: 'dist:sentou',
     openness: 'livable',
@@ -201,31 +201,31 @@ export interface StationComplex {
 const BASE_STATIONS: readonly StationComplex[] = [
   {
     id: 'st:hiwatari',
-    name: '绯渡站',
+    name: '日和坂站',
     area: 'hiwatari',
     placeId: 'hiwatari:station',
     stops: [
-      { id: 'st:hiwatari:hokkan', line: '北环快线', operator: '灯都铁道' },
+      { id: 'st:hiwatari:hokkan', line: '北环快线', operator: '晴空都铁道' },
     ],
   },
   {
     id: 'st:kagamiike',
-    name: '镜池站',
+    name: '棱光街站',
     area: 'kagamiike',
     placeId: 'kagamiike:station',
     stops: [
-      { id: 'st:kagamiike:hokkan', line: '北环快线', operator: '灯都铁道' },
-      { id: 'st:kagamiike:toukan', line: '灯环线', operator: '灯都铁道' },
+      { id: 'st:kagamiike:hokkan', line: '北环快线', operator: '晴空都铁道' },
+      { id: 'st:kagamiike:toukan', line: '晴环线', operator: '晴空都铁道' },
     ],
   },
   {
     id: 'st:sentou',
-    name: '千灯站',
+    name: '云港站',
     area: 'sentou',
     placeId: 'sentou:station',
     stops: [
-      { id: 'st:sentou:hokkan', line: '北环快线', operator: '灯都铁道' },
-      { id: 'st:sentou:toukan', line: '灯环线', operator: '灯都铁道' },
+      { id: 'st:sentou:hokkan', line: '北环快线', operator: '晴空都铁道' },
+      { id: 'st:sentou:toukan', line: '晴环线', operator: '晴空都铁道' },
     ],
   },
 ];
@@ -262,7 +262,7 @@ export interface TransitEdge {
 const BASE_TRANSIT_EDGES: readonly TransitEdge[] = [
   { id: 'te:hiwatari-kagamiike', a: 'st:hiwatari', b: 'st:kagamiike', line: '北环快线', operator: 'toto-rail', transportKind: 'rail', distanceKm: 5.5, minutes: 13, fareYen: 200, hours: TRANSIT_DEFAULT_HOURS, sources: ['prototype-network', 'sim-fares', 'sim-times', 'sim-hours'] },
   { id: 'te:hiwatari-sentou', a: 'st:hiwatari', b: 'st:sentou', line: '北环快线', operator: 'toto-rail', transportKind: 'rail', distanceKm: 10.3, minutes: 19, fareYen: 260, hours: TRANSIT_DEFAULT_HOURS, sources: ['prototype-network', 'sim-fares', 'sim-times', 'sim-hours'] },
-  { id: 'te:kagamiike-sentou', a: 'st:kagamiike', b: 'st:sentou', line: '灯环线', operator: 'toto-rail', transportKind: 'rail', distanceKm: 4.8, minutes: 10, fareYen: 200, hours: TRANSIT_DEFAULT_HOURS, sources: ['prototype-network', 'sim-fares', 'sim-times', 'sim-hours'] },
+  { id: 'te:kagamiike-sentou', a: 'st:kagamiike', b: 'st:sentou', line: '晴环线', operator: 'toto-rail', transportKind: 'rail', distanceKm: 4.8, minutes: 10, fareYen: 200, hours: TRANSIT_DEFAULT_HOURS, sources: ['prototype-network', 'sim-fares', 'sim-times', 'sim-hours'] },
 ];
 
 export const TRANSIT_EDGES: readonly TransitEdge[] = [
@@ -277,11 +277,11 @@ export interface Neighborhood {
 }
 
 const BASE_NEIGHBORHOODS: readonly Neighborhood[] = [
-  { id: 'hiwatari:ekimae', area: 'hiwatari', name: '绯渡站前' },
-  { id: 'hiwatari:mio', area: 'hiwatari', name: '澪川河岸' },
-  { id: 'hiwatari:residential', area: 'hiwatari', name: '绯渡一带的住宅区' },
-  { id: 'kagamiike:east', area: 'kagamiike', name: '镜池东口' },
-  { id: 'sentou:south', area: 'sentou', name: '千灯南口' },
+  { id: 'hiwatari:ekimae', area: 'hiwatari', name: '日和坂站前' },
+  { id: 'hiwatari:mio', area: 'hiwatari', name: '浮光川河岸' },
+  { id: 'hiwatari:residential', area: 'hiwatari', name: '日和坂一带的住宅区' },
+  { id: 'kagamiike:east', area: 'kagamiike', name: '棱光街东口' },
+  { id: 'sentou:south', area: 'sentou', name: '云港南口' },
 ];
 
 export const NEIGHBORHOODS: readonly Neighborhood[] = [
@@ -432,12 +432,12 @@ const BASE_ACTIONS = ['say', 'travel', 'consume', 'give', 'read_item', 'inspect_
 const STATION_ACTIONS = [...BASE_ACTIONS, 'buy', 'store_locker', 'take_locker', 'drift_book', 'take_book', 'stamp_station'];
 
 const BASE_PLACES: readonly Place[] = [
-  // ── 绯渡 ──
+  // ── 日和坂 ──
   {
     id: 'hiwatari:station',
     area: 'hiwatari',
     neighborhood: 'hiwatari:ekimae',
-    name: '绯渡站',
+    name: '日和坂站',
     type: 'station',
     indoor: true,
     hours: null,
@@ -455,7 +455,7 @@ const BASE_PLACES: readonly Place[] = [
     id: 'hiwatari:ekimae-plaza',
     area: 'hiwatari',
     neighborhood: 'hiwatari:ekimae',
-    name: '绯渡站东口站前广场',
+    name: '日和坂站东口站前广场',
     type: 'plaza',
     indoor: false,
     hours: null,
@@ -473,7 +473,7 @@ const BASE_PLACES: readonly Place[] = [
     id: 'hiwatari:ekimae-conbini',
     area: 'hiwatari',
     neighborhood: 'hiwatari:ekimae',
-    name: '便利店「灯笼屋·绯渡站前」',
+    name: '便利店「灯笼屋·日和坂站前」',
     type: 'shop',
     indoor: true,
     hours: null,
@@ -491,7 +491,7 @@ const BASE_PLACES: readonly Place[] = [
     id: 'hiwatari:mio-riverbank',
     area: 'hiwatari',
     neighborhood: 'hiwatari:mio',
-    name: '澪川河岸',
+    name: '浮光川河岸',
     type: 'riverside',
     indoor: false,
     hours: null,
@@ -524,12 +524,12 @@ const BASE_PLACES: readonly Place[] = [
     fictional: true,
     hidden: true,
   },
-  // ── 镜池 ──
+  // ── 棱光街 ──
   {
     id: 'kagamiike:station',
     area: 'kagamiike',
     neighborhood: 'kagamiike:east',
-    name: '镜池站',
+    name: '棱光街站',
     type: 'station',
     indoor: true,
     hours: null,
@@ -591,7 +591,7 @@ const BASE_PLACES: readonly Place[] = [
     id: 'kagamiike:ekimae-conbini',
     area: 'kagamiike',
     neighborhood: 'kagamiike:east',
-    name: '便利店「灯笼屋·镜池东口」',
+    name: '便利店「灯笼屋·棱光街东口」',
     type: 'shop',
     indoor: true,
     hours: null,
@@ -634,7 +634,7 @@ const BASE_PLACES: readonly Place[] = [
     id: 'kagamiike:minami-park',
     area: 'kagamiike',
     neighborhood: 'kagamiike:east',
-    name: '南镜池公园',
+    name: '南棱光公园',
     type: 'park',
     indoor: false,
     hours: null,
@@ -648,12 +648,12 @@ const BASE_PLACES: readonly Place[] = [
     source: 'prototype-spaces',
     fictional: false,
   },
-  // ── 千灯 ──
+  // ── 云港 ──
   {
     id: 'sentou:station',
     area: 'sentou',
     neighborhood: 'sentou:south',
-    name: '千灯站',
+    name: '云港站',
     type: 'station',
     indoor: true,
     hours: null,
@@ -671,7 +671,7 @@ const BASE_PLACES: readonly Place[] = [
     id: 'sentou:south-conbini',
     area: 'sentou',
     neighborhood: 'sentou:south',
-    name: '便利店「灯笼屋·千灯南口」',
+    name: '便利店「灯笼屋·云港南口」',
     type: 'shop',
     indoor: true,
     hours: null,
@@ -689,7 +689,7 @@ const BASE_PLACES: readonly Place[] = [
     id: 'sentou:southern-terrace',
     area: 'sentou',
     neighborhood: 'sentou:south',
-    name: '千灯南口露台步道',
+    name: '云港南口露台步道',
     type: 'promenade',
     indoor: false,
     hours: null,
@@ -808,8 +808,8 @@ const BASE_STAMPS: readonly StationStampSpec[] = [
     stampId: 'stamp:hiwatari',
     stationId: 'st:hiwatari',
     placeId: 'hiwatari:station',
-    title: '绯渡站 · 澪川铁桥与晚霞',
-    motif: '跨越澪川河堤的桁架铁桥与归巢水鸟',
+    title: '日和坂站 · 浮光川铁桥与晚霞',
+    motif: '跨越浮光川河堤的桁架铁桥与归巢水鸟',
     inkColor: '#b91c1c',
     emblem: 'bridge',
   },
@@ -817,7 +817,7 @@ const BASE_STAMPS: readonly StationStampSpec[] = [
     stampId: 'stamp:kagamiike',
     stationId: 'st:kagamiike',
     placeId: 'kagamiike:station',
-    title: '镜池站 · 木雕猫头鹰与书灯',
+    title: '棱光街站 · 木雕猫头鹰与书灯',
     motif: '东口相聚的猫头鹰像与喫茶煤油灯',
     inkColor: '#1d4ed8',
     emblem: 'owl',
@@ -826,7 +826,7 @@ const BASE_STAMPS: readonly StationStampSpec[] = [
     stampId: 'stamp:sentou',
     stationId: 'st:sentou',
     placeId: 'sentou:station',
-    title: '千灯站 · 南口跨线露台与钟塔',
+    title: '云港站 · 南口跨线露台与钟塔',
     motif: '并列进站的轨道线群与南口步道灯柱',
     inkColor: '#15803d',
     emblem: 'terrace',
@@ -838,7 +838,7 @@ export const STATION_STAMPS: readonly StationStampSpec[] = [
   ...MOUNTED_CONTENT_PACKS.flatMap((p) => p.stamps ?? []),
 ];
 
-/** 不经过车站的步行近路（无向）。小屋在绯渡站和澪川之间，去河岸不用绕回站前。 */
+/** 不经过车站的步行近路（无向）。小屋在日和坂站和浮光川之间，去河岸不用绕回站前。 */
 export const WALK_SHORTCUTS: readonly { a: string; b: string; minutes: number }[] = [{ a: HOUSE_ENTRANCE, b: 'hiwatari:mio-riverbank', minutes: 9 }];
 
 const PLACE_BY_ID = new Map(PLACES.map((p) => [p.id, p]));
@@ -1079,7 +1079,7 @@ function normalizeCatalogTime(ctx?: string | CatalogTimeContext): Required<Catal
   return { dateStr, jstMonth, minuteOfDay };
 }
 
-/** 按灯都世界日与时段返回地点当前陈列商品（纯函数，无随机与外部状态）。 */
+/** 按晴空都世界日与时段返回地点当前陈列商品（纯函数，无随机与外部状态）。 */
 export function goodsForPlace(p: Place, ctx?: string | CatalogTimeContext): readonly Good[] {
   const t = normalizeCatalogTime(ctx);
   if (p.id in APPAREL_SHOP_PLACES) {

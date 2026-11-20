@@ -5,7 +5,7 @@ import { describe, expect, it } from 'vitest';
 import { BRIDGE, SHOPS, TRANSIT, latestReconcile, runReconcile, sceneView } from '../../src/city/index.js';
 import { COOKIE, HOUSE_ENTRANCE, KISSA, MIN, makeCity } from './helpers.js';
 
-describe('S1：妮娅带 ¥20,000 和一件零食去镜池的咖啡馆，再回家', () => {
+describe('S1：妮娅带 ¥20,000 和一件零食去棱光街的咖啡馆，再回家', () => {
   it('从 prepare 到 release 每一步都对得上', () => {
     const t = makeCity();
     const k = t.kernel('nia');
@@ -30,7 +30,7 @@ describe('S1：妮娅带 ¥20,000 和一件零食去镜池的咖啡馆，再回�
     expect(commit.payload.trip).toMatchObject({ to: KISSA, ends_at_ms: start + 31 * MIN });
     expect(k.view().location).toMatchObject({ in_transit: true });
 
-    // ── 4. 行程：小屋门口 → 绯渡站 → 镜池站 → 咖啡馆 ──
+    // ── 4. 行程：小屋门口 → 日和坂站 → 棱光街站 → 咖啡馆 ──
     t.run(20 * MIN);
     expect(k.view().location.trip.leg_index).toBe(1);
     t.run(11 * MIN);
@@ -42,8 +42,8 @@ describe('S1：妮娅带 ¥20,000 和一件零食去镜池的咖啡馆，再回�
       ['arrived_station', 'kagamiike:station'],
       ['arrived_place', KISSA],
     ]);
-    expect(progress[2].text).toBe('乘车中（北环快线），预计 10:25 到镜池站');
-    expect(progress[4].text).toBe('在镜池·喫茶「灯」');
+    expect(progress[2].text).toBe('乘车中（北环快线），预计 10:25 到棱光街站');
+    expect(progress[4].text).toBe('在棱光街·喫茶「灯」');
     // 每段的事件时间是原定的到达时刻
     expect(t.outbox(k.visitId).filter((r) => r.kind === 'visit_progress').map((r) => (r.occurred_at_ms - start) / MIN)).toEqual([0, 12, 12, 25, 31]);
     expect(k.view().location).toEqual({ place: KISSA });

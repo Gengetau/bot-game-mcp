@@ -1,5 +1,5 @@
 /**
- * 灯都 M3-D（#265）× R0 暂卸内容包与三站契约回归测试：
+ * 晴空都 M3-D（#265）× R0 暂卸内容包与三站契约回归测试：
  *  1. R0 内容包暂卸隔离（MOUNTED_CONTENT_PACKS === []，暂卸包零出现在目录/路由/印章/公开视图）与
  *     架空 CityContentPack 规范（ward:<slug> + 内部 prototype）自检；
  *  2. 车站印章帐（Eki-Stamp）：三站唯一印章、同站重复盖章幂等、非车站 422 拒绝、零占背包/储物柜槽位、按需查询明细；
@@ -49,12 +49,12 @@ const SYNTHETIC_FICTIONAL_PACK: CityContentPack = {
   district: {
     id: 'dist:sentou-west',
     areaId: 'sentou',
-    name: '千灯西庭',
+    name: '云港西庭',
     wardId: 'ward:seibu',
     openness: 'livable',
     hubStationId: 'st:tsukimori',
     weatherPoint: { lat: 35.661, lon: 139.668 },
-    blurb: '灯都西侧绿荫步道与旧书廊构成的安静街区。',
+    blurb: '晴空都西侧绿荫步道与旧书廊构成的安静街区。',
   },
   prototype: {
     weatherPoint: { lat: 35.661, lon: 139.668 },
@@ -66,7 +66,7 @@ const SYNTHETIC_FICTIONAL_PACK: CityContentPack = {
       name: '月森站',
       area: 'sentou',
       placeId: 'sentou:tsukimori-station',
-      stops: [{ id: 'st:tsukimori:seibu', line: '西庭支线', operator: '灯都铁道' }],
+      stops: [{ id: 'st:tsukimori:seibu', line: '西庭支线', operator: '晴空都铁道' }],
     },
   ],
   transitEdges: [
@@ -171,12 +171,12 @@ describe('M3-D 标准 ContentPack：R0 暂卸隔离与架空契约校验 (#265 /
 
     const rToukan = planRoute('kagamiike:station', 'sentou:station')!;
     expect(rToukan).toMatchObject({ minutes: 10, fareYen: 200 });
-    expect(rToukan.legs[0]).toMatchObject({ mode: 'train', line: '灯环线' });
+    expect(rToukan.legs[0]).toMatchObject({ mode: 'train', line: '晴环线' });
 
     expect(homeward('kagamiike:shiorido')).toEqual({ minutes: 30, fareYen: 200 });
     expect(homeward('sentou:kamitsuki')).toEqual({ minutes: 37, fareYen: 260 });
 
-    // 真雨天气下：三片街区同步实时降水，千灯露台步道保持开放并给出淋雨提示，绯渡澪川河岸按 rain 关闭
+    // 真雨天气下：三片街区同步实时降水，云港露台步道保持开放并给出淋雨提示，日和坂浮光川河岸按 rain 关闭
     const t = makeCity({ at: Date.UTC(2026, 10, 17, 3, 0, 0) }); // 12:00 JST
     const rainyReadings: WeatherReading[] = AREAS.map((a) => ({
       area: a.id,
@@ -202,7 +202,7 @@ describe('M3-D 标准 ContentPack：R0 暂卸隔离与架空契约校验 (#265 /
     expect((walker.view().here as any).place.rain_notice).toContain('下雨');
   });
 
-  it('零改 ledger/visits 下，室友赴镜池喫茶饮咖、逛书店并盖站章，返家结算与复式账本零误差', () => {
+  it('零改 ledger/visits 下，室友赴棱光街喫茶饮咖、逛书店并盖站章，返家结算与复式账本零误差', () => {
     const t = makeCity({ at: Date.UTC(2026, 10, 17, 3, 0, 0) }); // 12:00 JST
     const nia = t.kernel('nia');
 
@@ -214,11 +214,11 @@ describe('M3-D 标准 ContentPack：R0 暂卸隔离与架空契约校验 (#265 /
     nia.act({ type: 'buy', sku: 'coffee', qty: 2 });
     nia.act({ type: 'consume', item: 'coffee', qty: 1 });
 
-    // 步行去栞堂买一本文库本并写批注，再去镜池站大厅盖纪念章后回家
+    // 步行去栞堂买一本文库本并写批注，再去棱光街站大厅盖纪念章后回家
     nia.act({ type: 'travel', to: 'kagamiike:shiorido' });
     t.run(15 * MIN);
     nia.act({ type: 'buy', sku: 'paperback', qty: 1 });
-    nia.act({ type: 'read_item', item: 'paperback', title: '镜池旧书手记', note: '午后在书架旁读完序章' });
+    nia.act({ type: 'read_item', item: 'paperback', title: '棱光街旧书手记', note: '午后在书架旁读完序章' });
 
     nia.act({ type: 'travel', to: 'kagamiike:station' });
     t.run(10 * MIN);
@@ -261,7 +261,7 @@ describe('车站印章帐（Eki-Stamp）幂等、零占包与按需查询 (#265)
     // 在非车站店铺尝试盖章：明确返回 PRECONDITION_FAILED (not_at_stamp_desk)
     expect(() => traveler.act({ type: 'stamp_station' })).toThrowError(/印章台/);
 
-    // 首站：千灯站盖章，并测试 20 分钟后新 request_id 同站重复盖章幂等
+    // 首站：云港站盖章，并测试 20 分钟后新 request_id 同站重复盖章幂等
     traveler.go('sentou:station');
     const firstStamp = traveler.act({ type: 'stamp_station' });
     const firstAt = (firstStamp.stamp as any).stamped_at_ms as number;
@@ -278,7 +278,7 @@ describe('车站印章帐（Eki-Stamp）幂等、零占包与按需查询 (#265)
       stamp_book: { collected: 1, total: 3, here_stamped: true },
     });
 
-    // 继续巡游镜池与绯渡两站
+    // 继续巡游棱光街与日和坂两站
     for (const stPlace of ['kagamiike:station', 'hiwatari:station']) {
       traveler.go(stPlace);
       const out = traveler.act({ type: 'stamp_station' });
@@ -349,7 +349,7 @@ describe('三片街区高压满载 selfView <= 4 KB 与网页端 /city/play/ 契
         }
       };
 
-      // 先在千灯站盖章，再去镜池栞堂买 12 本具名批注文库本存入镜池站储物柜，再买 12 本随身携带
+      // 先在云港站盖章，再去棱光街栞堂买 12 本具名批注文库本存入棱光街站储物柜，再买 12 本随身携带
       await act({ type: 'stamp_station' });
       await act({ type: 'travel', to: 'kagamiike:shiorido' });
       await advanceOnline(20);
@@ -402,8 +402,8 @@ describe('三片街区高压满载 selfView <= 4 KB 与网页端 /city/play/ 契
             "INSERT INTO residents(resident_id, principal_id, name, bio, origin, in_city, place_id, present_until, created_at, last_seen_at) VALUES (?,?,?,?,'external',1,'kagamiike:shiorido',?,?,?)",
             resId,
             principalId,
-            `镜池书客${p}`,
-            '常年在镜池书街搜集近代文学初版本与手冲咖啡食评的独立读书人，遇到好书会写长笔记。',
+            `棱光街书客${p}`,
+            '常年在棱光街书街搜集近代文学初版本与手冲咖啡食评的独立读书人，遇到好书会写长笔记。',
             h.city.now() + HOUR,
             h.city.now(),
             h.city.now(),
@@ -411,7 +411,7 @@ describe('三片街区高压满载 selfView <= 4 KB 与网页端 /city/play/ 契
           return resId;
         });
         for (let m = 0; m < 2; m++) {
-          citySayForStress(h, pr, `第${p}-${m}条书评：` + '在镜池栞堂翻到了装帧考究的旧诗集与铁道地图册，纸页间还夹着当年的木纹书签。'.repeat(5));
+          citySayForStress(h, pr, `第${p}-${m}条书评：` + '在棱光街栞堂翻到了装帧考究的旧诗集与铁道地图册，纸页间还夹着当年的木纹书签。'.repeat(5));
         }
       }
 
@@ -448,7 +448,7 @@ describe('三片街区高压满载 selfView <= 4 KB 与网页端 /city/play/ 契
     }
   });
 
-  it('R265-01 & R265-02 回归：双会话在千灯流光工坊满载 12 件独立服饰背包 + 12 件柜件 + 80 字简介 + 300 字聊天时严守 <= 4096 B，且分段/offset 完整枚举 12/12', async () => {
+  it('R265-01 & R265-02 回归：双会话在云港流光工坊满载 12 件独立服饰背包 + 12 件柜件 + 80 字简介 + 300 字聊天时严守 <= 4096 B，且分段/offset 完整枚举 12/12', async () => {
     const h = await createIsolatedCityHarness();
     try {
       const auth = new Authenticator(
@@ -495,10 +495,10 @@ describe('三片街区高压满载 selfView <= 4 KB 与网页端 /city/play/ 契
       const sessA = await connectSession('7911', '成衣藏家甲');
       const sessB = await connectSession('7912', '同行买手乙');
 
-      // 推进到 12:00 JST，千灯流光工坊（11:00–21:00）正常营业
+      // 推进到 12:00 JST，云港流光工坊（11:00–21:00）正常营业
       h.advance(2 * HOUR);
-      const bio80A = '偏爱在千灯流光工坊与镜池书街之间漫步搜集四季成衣礼盒与初版诗集，每逢雨天便在窗边记录灯都街景与电车时刻的旅人甲。'.padEnd(80, '甲').slice(0, 80);
-      const bio80B = '常驻千灯与镜池窄巷寻访独立设计师礼服与喫茶手冲咖啡的买手同伴，习惯用长句分享每一套成衣剪裁细节的旅人乙。'.padEnd(80, '乙').slice(0, 80);
+      const bio80A = '偏爱在云港流光工坊与棱光街书街之间漫步搜集四季成衣礼盒与初版诗集，每逢雨天便在窗边记录晴空都街景与电车时刻的旅人甲。'.padEnd(80, '甲').slice(0, 80);
+      const bio80B = '常驻云港与棱光街窄巷寻访独立设计师礼服与喫茶手冲咖啡的买手同伴，习惯用长句分享每一套成衣剪裁细节的旅人乙。'.padEnd(80, '乙').slice(0, 80);
       expect([...bio80A]).toHaveLength(80);
       expect([...bio80B]).toHaveLength(80);
 
@@ -526,7 +526,7 @@ describe('三片街区高压满载 selfView <= 4 KB 与网页端 /city/play/ 契
         }
       };
 
-      // 双人步行至千灯流光工坊：甲买 12 件独立服饰，回千灯站全部存入个人储物柜；乙买 12 件独立服饰在店内当面送给甲
+      // 双人步行至云港流光工坊：甲买 12 件独立服饰，回云港站全部存入个人储物柜；乙买 12 件独立服饰在店内当面送给甲
       await sessA.act({ type: 'travel', to: 'sentou:lumiere-atelier' });
       await sessB.act({ type: 'travel', to: 'sentou:lumiere-atelier' });
       await advanceBoth(10);
@@ -571,8 +571,8 @@ describe('三片街区高压满载 selfView <= 4 KB 与网页端 /city/play/ 契
       expect(reEnter.bytes).toBeLessThanOrEqual(SELF_VIEW_MAX_BYTES);
 
       // ── 验证 R265-01b：同伴正常发 300 字长聊天（连发 2 条）后从旧游标读取，每页 <= 4096 B 且可续游标零漏事件 ──
-      const chat300_1 = '今天流光工坊橱窗里的礼服裙摆层次感真好，从千灯南口一路走过来正好赶上换季陈列，每一套缎面与蕾丝的配色都很适合带回小屋衣柜珍藏。'.repeat(6).slice(0, 300);
-      const chat300_2 = '等会儿逛完千灯我们还可以乘灯环线去镜池书店淘两本旧诗集，顺便在车站大厅把纪念印章也盖进印章帐里，傍晚再去澪川河岸散步。'.repeat(6).slice(0, 300);
+      const chat300_1 = '今天流光工坊橱窗里的礼服裙摆层次感真好，从云港南口一路走过来正好赶上换季陈列，每一套缎面与蕾丝的配色都很适合带回小屋衣柜珍藏。'.repeat(6).slice(0, 300);
+      const chat300_2 = '等会儿逛完云港我们还可以乘晴环线去棱光街书店淘两本旧诗集，顺便在车站大厅把纪念印章也盖进印章帐里，傍晚再去浮光川河岸散步。'.repeat(6).slice(0, 300);
       expect([...chat300_1]).toHaveLength(300);
       expect([...chat300_2]).toHaveLength(300);
       await sessB.call('speak', { text: chat300_1, request_id: 'r265_speak_0001' });
@@ -716,7 +716,7 @@ describe('三片街区高压满载 selfView <= 4 KB 与网页端 /city/play/ 契
             'UPDATE items SET meta_json = ? WHERE item_id = ?',
             JSON.stringify({
               title: '附长篇手写穿搭札记与季节剪裁卡片的限量礼服典藏盒',
-              summary: '在千灯流光工坊试穿后附上三百字面料保养说明与搭配手记，记录灯都秋日街景。'.repeat(9).slice(0, 300),
+              summary: '在云港流光工坊试穿后附上三百字面料保养说明与搭配手记，记录晴空都秋日街景。'.repeat(9).slice(0, 300),
               untrusted: true,
             }),
             id,
@@ -782,7 +782,7 @@ describe('三片街区高压满载 selfView <= 4 KB 与网页端 /city/play/ 契
     expect(css).toContain('color-scheme: dark');
     expect(css).toContain('prefers-reduced-motion: no-preference');
 
-    // HTTP 真链路：静态资源 CSP 头 + devLogin 登录入城 -> 乘灯环线赴镜池站 -> POST /city/api/act 盖章 -> GET /city/api/stamps
+    // HTTP 真链路：静态资源 CSP 头 + devLogin 登录入城 -> 乘晴环线赴棱光街站 -> POST /city/api/act 盖章 -> GET /city/api/stamps
     const h = await createIsolatedCityHarness({ cityOverrides: { devLogin: true } });
     try {
       const pageRes = await fetch(`${h.baseUrl}/city/play/`);
@@ -870,7 +870,7 @@ describe('三片街区高压满载 selfView <= 4 KB 与网页端 /city/play/ 契
             "INSERT INTO items(item_id, owner_id, type, quantity, state, instance, meta_json, created_at, updated_at) VALUES (?,?,'apparel_bundle',1,'held',1,?,?,?)",
             `it_bag_page_${idx}`,
             meId,
-            JSON.stringify({ title: `随身礼盒第${idx}号`, summary: '镜池与千灯逛街购入的成衣礼盒', untrusted: true }),
+            JSON.stringify({ title: `随身礼盒第${idx}号`, summary: '棱光街与云港逛街购入的成衣礼盒', untrusted: true }),
             h.city.now(),
             h.city.now() + idx,
           );

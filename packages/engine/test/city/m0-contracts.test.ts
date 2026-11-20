@@ -152,7 +152,7 @@ describe('隔离联调测试环境与确定性故障注入脚手架', () => {
     harness = await createIsolatedCityHarness({ enableControlRoutes: true });
     const h = harness;
 
-    // 1. F13/F14 天气控制：先注入镜池下雨，再连续超时超 3h 验证退回 fallback
+    // 1. F13/F14 天气控制：先注入棱光街下雨，再连续超时超 3h 验证退回 fallback
     h.setAreaRain({ kagamiike: true, hiwatari: false, sentou: false });
     const w1 = await bridgeCall(h, 'GET', '/weather');
     expect(w1.status).toBe(200);

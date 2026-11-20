@@ -6,7 +6,7 @@ import { resolvePendingOrder } from '../../src/city/actions.js';
 import { runReconcile } from '../../src/city/reconcile.js';
 import { HOUR, MIN, makeCity } from './helpers.js';
 
-describe('灯都服饰买手店与 mappings v3 返家入柜闭环 (#260)', () => {
+describe('晴空都服饰买手店与 mappings v3 返家入柜闭环 (#260)', () => {
   it('全量收录 1,407 套服饰（SFW 1,068 + 私密 339），三家店按日确定性轮换且单次视图不超 4 KB', () => {
     expect(APPAREL_CATALOG).toHaveLength(1407);
     expect(APPAREL_CATALOG.filter((x) => x.tier === 'sfw')).toHaveLength(1068);
@@ -32,7 +32,7 @@ describe('灯都服饰买手店与 mappings v3 返家入柜闭环 (#260)', () =>
     const niaResId = t.residentOf('nia');
     const bot = t.bot('送礼友人', { entry: 'sentou:station', stay: true });
 
-    // 外部 Bot 先去千灯「丝绒私语」买一件私密服饰礼盒，再去镜池「铃兰衣橱」等妮娅
+    // 外部 Bot 先去云港「丝绒私语」买一件私密服饰礼盒，再去棱光街「铃兰衣橱」等妮娅
     t.run(2 * HOUR); // 先推进到 12:00 JST 丝绒私语开门
     bot.act({ type: 'travel', to: 'sentou:velours-intime' });
     t.run(10 * MIN);

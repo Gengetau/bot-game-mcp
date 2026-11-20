@@ -176,7 +176,7 @@ describe('和栖灯镇共用工具名', () => {
     expect((await fails(b, 'enter_world', { world_id: 'osaka' })).code).toBe('NOT_AVAILABLE');
   });
 
-  it('工具说明里写了灯都；有城市指南资源', async () => {
+  it('工具说明里写了晴空都；有城市指南资源', async () => {
     const { connect } = makeEnv({ town: true });
     const b = await connect(B);
     const tools = (await b.listTools()).tools;

@@ -1,5 +1,5 @@
 /**
- * 灯都 R0 全量改名与暂卸内容包专项回归守卫（#277）。
+ * 晴空都 R0 全量改名与暂卸内容包专项回归守卫（#277）。
  *
  * 覆盖门禁：
  *  1. 目录、公开 HTML/网页资产、原始公开 JSON、MCP 指南/提示词/工具说明、外部 bot 视图及桥接 L3 JSON
@@ -58,7 +58,14 @@ const ENGINE_ROOT = fileURLToPath(new URL('../..', import.meta.url));
 const RENAME_R0 = JSON.parse(readFileSync(RENAME_R0_PATH, 'utf8')) as {
   forbidden_legacy_tokens_in_public_and_views: string[];
 };
-const FORBIDDEN_TOKENS = RENAME_R0.forbidden_legacy_tokens_in_public_and_views;
+// 晴空都 R1（主人 2026-11-20 定名）：R0 时的显示名（灯都、绯渡……）也不许再出现在公开页面和 bot 视图里。
+const RENAME_R1_PATH = fileURLToPath(new URL('../../../../docs/city/rename-r1.json', import.meta.url));
+const RENAME_R1 = JSON.parse(readFileSync(RENAME_R1_PATH, 'utf8')) as {
+  forbidden_legacy_tokens_in_public_and_views: string[];
+};
+const R0_TOKENS = RENAME_R0.forbidden_legacy_tokens_in_public_and_views;
+const R1_TOKENS = RENAME_R1.forbidden_legacy_tokens_in_public_and_views;
+const FORBIDDEN_TOKENS = [...R0_TOKENS, ...R1_TOKENS];
 
 const BRIDGE_KEY = 'bridge-key-r0-guard-0123456789';
 const PROBE_AGENT: Identity = { id: '7101', name: '探针旅人' };
@@ -145,9 +152,10 @@ async function callFail(
   };
 }
 
-describe('灯都 R0 全量改名与暂卸内容包专项守卫', () => {
+describe('晴空都 R0 全量改名与暂卸内容包专项守卫', () => {
   it('门禁 1a：目录导出与公开网页静态资源对 57 项旧词/旧编号零命中', async () => {
-    expect(FORBIDDEN_TOKENS).toHaveLength(57);
+    expect(R0_TOKENS).toHaveLength(57);
+    expect(R1_TOKENS).toEqual(['灯都', '绯渡', '镜池', '千灯', '澪川', '灯环线']);
 
     expectZeroLegacyTokens('catalog 导出面', {
       CITY_WORLD_ID,
@@ -194,10 +202,10 @@ describe('灯都 R0 全量改名与暂卸内容包专项守卫', () => {
     expectZeroLegacyTokens('GET /city/api/public 原始 JSON', pubRaw);
     expect(JSON.parse(pubRaw)).toMatchObject({
       world_id: 'city',
-      name: '灯都',
+      name: '晴空都',
       timezone: 'JST',
       city_catalog_version: 'toto-p2.0',
-      city_text_version: 'toto-text-1.0',
+      city_text_version: 'toto-text-1.1',
     });
 
     const cfgRes = await fetch(`${base}/city/api/config`);
@@ -205,7 +213,7 @@ describe('灯都 R0 全量改名与暂卸内容包专项守卫', () => {
     const cfgRaw = await cfgRes.text();
     expectZeroLegacyTokens('GET /city/api/config 原始 JSON', cfgRaw);
     expect(JSON.parse(cfgRaw)).toMatchObject({
-      world: { id: 'city', name: '灯都', timezone: 'JST' },
+      world: { id: 'city', name: '晴空都', timezone: 'JST' },
     });
 
     const routeRes = await fetch(`${base}/city/api/route?from=hiwatari:station&to=sentou:station`);
@@ -221,7 +229,7 @@ describe('灯都 R0 全量改名与暂卸内容包专项守卫', () => {
     expect(catBody).toMatchObject({
       protocol: 'city-bridge/1',
       city_catalog_version: 'toto-p2.0',
-      city_text_version: 'toto-text-1.0',
+      city_text_version: 'toto-text-1.1',
       handover_node: 'hiwatari:ai-house:entrance',
     });
     expectZeroLegacyTokens('GET /city/bridge/v1/catalog（除合法 handover_node 外）', {

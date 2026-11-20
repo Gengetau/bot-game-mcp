@@ -1,6 +1,6 @@
 /**
- * 灯都持续世界 AI 居民运行器（CityRunner）：
- * 复用 ResidentRunner 已验证的事件驱动与预算思想，针对灯都「无帧级坐标、持久电车/步行行程（trips）」模型定制。
+ * 晴空都持续世界 AI 居民运行器（CityRunner）：
+ * 复用 ResidentRunner 已验证的事件驱动与预算思想，针对晴空都「无帧级坐标、持久电车/步行行程（trips）」模型定制。
  *
  * 核心保证（对齐计划书 §五 M1-B 与 docs/city/IDENTITY-AND-FACTS.md §3.2）：
  *  1. 事件三级分类：
@@ -55,7 +55,7 @@ export interface CityClassifyContext {
 }
 
 /**
- * 灯都城市世界默认事件分级器（对齐计划书 §五 M1-B）：
+ * 晴空都城市世界默认事件分级器（对齐计划书 §五 M1-B）：
  *  - urgent：收到礼物、邀约、面向本人的交易报价、同行现场搭话、轮到本人的桌游回合；
  *  - normal：you_arrived、trip_stopped、weather、他人进出（arrived / left）、订单/委托结算、离线留言/明信片；
  *  - ignore：自身回显、trip_progress（途经换乘站）、control（运行器内部处理）及其他无关事件。
@@ -730,7 +730,7 @@ class CityResidentWorker implements CityResidentHandle {
         if (isFatalCityEnterError(ce)) throw ce;
         this.stats.reconnects++;
         const wait = Math.min(this.t.reconnectMaxMs, this.t.reconnectBaseMs * 2 ** Math.min(attempt, 16));
-        this.log(`进入灯都失败（${errText(ce)}），${wait}ms 后重试`);
+        this.log(`进入晴空都失败（${errText(ce)}），${wait}ms 后重试`);
         await this.sleepQuiet(wait);
       }
     }

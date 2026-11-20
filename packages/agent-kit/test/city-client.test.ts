@@ -269,7 +269,7 @@ describe('CityClient：真实隔离引擎（town.enabled=false, city.enabled=tru
     expect(entered.granted_yen).toBe(200_000);
     expect(entered.location).toEqual({ place: 'sentou:station' });
 
-    // 前往千灯南口露台步道（全天开放）验证移动
+    // 前往云港南口露台步道（全天开放）验证移动
     const terrace = await extBot.travel('sentou:southern-terrace');
     expect(terrace.status).toBe('accepted');
     const inTransitView = await extBot.view();

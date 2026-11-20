@@ -335,7 +335,7 @@ describe('协议产物和 schema 对得上', () => {
     const cat = await call('GET', '/catalog');
     expect(cat.status).toBe(200);
     expectValid('Catalog', cat.body);
-    expect(cat.body.city_text_version).toBe('toto-text-1.0');
+    expect(cat.body.city_text_version).toBe('toto-text-1.1');
     expect(cat.body.mappings).toEqual(JSON.parse(readFileSync(new URL('../../../../docs/city/mappings.json', import.meta.url), 'utf8')));
     expectValid('WeatherResponse', (await call('GET', '/weather')).body, 'http weather');
     expectValid('ReconcileResponse', (await call('GET', '/reconcile')).body, 'http reconcile');

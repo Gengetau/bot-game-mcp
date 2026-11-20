@@ -1,5 +1,5 @@
 /**
- * 灯都居民提示词契约单测：
+ * 晴空都居民提示词契约单测：
  *  1. 验证 prompts/city-resident-zh.md 与 cityResidentPrompt({ toolPrefix: '{p}' }) 字节级完全一致（Buffer.compare === 0）；
  *  2. 验证工具名前缀注入、核心 MCP 工具名、M1 全部城市动作与关键安全红线词完整覆盖。
  */
@@ -53,7 +53,7 @@ describe('cityResidentPrompt', () => {
     for (const token of [
       'world_id',
       'city',
-      '灯都',
+      '晴空都',
       'request_id',
       'locker_items',
       'carry_home:false',

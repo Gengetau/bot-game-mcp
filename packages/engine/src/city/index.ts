@@ -1,5 +1,5 @@
 /**
- * 灯都城市世界的入口。设计和接口契约见 docs/CITY.md，桥接协议见 docs/city/bridge-v1.schema.json。
+ * 晴空都城市世界的入口。设计和接口契约见 docs/CITY.md，桥接协议见 docs/city/bridge-v1.schema.json。
  */
 import { installActions } from './actions.js';
 import { ensureSystemAccounts } from './ledger.js';

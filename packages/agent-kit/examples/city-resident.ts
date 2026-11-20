@@ -1,5 +1,5 @@
 /**
- * 最小可运行的灯都独立 AI 居民示例（不依赖特定模型 SDK，可直接用 tsx 启动验证链路）：
+ * 最小可运行的晴空都独立 AI 居民示例（不依赖特定模型 SDK，可直接用 tsx 启动验证链路）：
  *
  *   BOTGAME_URL=http://127.0.0.1:17700/mcp BOTGAME_KEY=test_only_ext_bot_key_city_90001 CITY_NAME=小旅 npx tsx examples/city-resident.ts
  *
@@ -57,7 +57,7 @@ function decide(ctx: CityDecisionContext): CityDecision | null {
     };
   }
 
-  // 3. 初次在车站落脚且身边没人：坐车去镜池喫茶「灯」喝一杯咖啡
+  // 3. 初次在车站落脚且身边没人：坐车去棱光街喫茶「灯」喝一杯咖啡
   const placeId = v.here?.place.id ?? '';
   if (!visitedCafe && placeId.endsWith(':station') && v.can.includes('travel')) {
     const target = v.here?.exits.find((x) => x.id === 'kagamiike:kissa-tomoshibi' && x.open);

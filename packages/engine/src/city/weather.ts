@@ -6,11 +6,11 @@
  *  - 距最近一次成功不到 3 小时：沿用那次的数值，标 stale；
  *  - 超过 3 小时（或从来没抓到过）：退回合成天气，标 fallback。合成天气只有云量和按月份的常年气温，永远不下雨：
  *    不拿编出来的雨去关河岸、去叫醒人。
- * 小屋内核不自己抓灯都天气，统一读这里（GET /city/bridge/v1/weather），这样家里窗外和城里是同一片天。
+ * 小屋内核不自己抓晴空都天气，统一读这里（GET /city/bridge/v1/weather），这样家里窗外和城里是同一片天。
  *
  * 天气驱动的两个事件（每片每天各至多一次）：
- *  - rain_started：从不下雨转成下雨。露天地点里的人收到提示，雨天不开放的地点（澪川河岸）不能再进。
- *  - riverbank_evening：绯渡傍晚放晴时澪川河岸的一个公开小事件。
+ *  - rain_started：从不下雨转成下雨。露天地点里的人收到提示，雨天不开放的地点（浮光川河岸）不能再进。
+ *  - riverbank_evening：日和坂傍晚放晴时浮光川河岸的一个公开小事件。
  */
 import { parseJson, type Row } from '../world/db.js';
 import { localParts, localToUtc } from '../world/time.js';
@@ -118,7 +118,7 @@ export function parseOpenMeteo(areas: readonly Area[], body: unknown): WeatherRe
   return out;
 }
 
-/** 灯都各月的大致常年平均气温（合成天气用）。 */
+/** 晴空都各月的大致常年平均气温（合成天气用）。 */
 const MONTH_TEMP = [5.5, 6.5, 9.5, 14.5, 19, 22, 26, 27.5, 23.5, 18, 12.5, 8];
 
 /** 合成天气：不下雨，云量按日期轮换，气温按月份和钟点。确定性的（同一时刻同一片算出来一样）。 */
@@ -238,7 +238,7 @@ export function applyWeather(c: CityService, readings: readonly WeatherReading[]
     // ① 转雨：之前有快照而且不在下雨，现在下雨了
     // 「开始下雨」要有前后两份实况作比较：上一份是合成天气（不下雨）时，雨可能早就在下了，不算刚开始
     if (next.rain && prev && Number(prev.rain) === 0 && String(prev.status) !== 'fallback') {
-      const ev = addEvent(c, 'rain_started', a.id, null, `${a.name}下雨了`, `${a.name}一带开始下雨。露天的地方会淋到；澪川河岸这样雨天不开放的地点暂时不能再进。`, at, at + 60 * 60_000);
+      const ev = addEvent(c, 'rain_started', a.id, null, `${a.name}下雨了`, `${a.name}一带开始下雨。露天的地方会淋到；浮光川河岸这样雨天不开放的地点暂时不能再进。`, at, at + 60 * 60_000);
       if (ev) {
         events.push(ev);
         c.emitTo(residentsInArea(c, a.id, true), 'weather', { kind: 'rain_started', area: a.id, text: ev.title }, at);
@@ -250,12 +250,12 @@ export function applyWeather(c: CityService, readings: readonly WeatherReading[]
         }
       }
     }
-    // ② 绯渡傍晚放晴：澪川河岸的小事件
+    // ② 日和坂傍晚放晴：浮光川河岸的小事件
     if (a.id === 'hiwatari' && !next.rain && next.code <= 2) {
       const minute = c.minuteOfDay(at);
       if (minute >= 16 * 60 && minute < 18 * 60) {
         const ends = localToUtc(c.params.timezone, c.today(at), 18, 30);
-        const ev = addEvent(c, 'riverbank_evening', a.id, 'hiwatari:mio-riverbank', '澪川河岸的傍晚', '今天傍晚天晴，澪川的河堤上能看到很远的桥和晚霞。到 18:30 天黑之前，河岸上会有人散步、坐着看河。', at, ends);
+        const ev = addEvent(c, 'riverbank_evening', a.id, 'hiwatari:mio-riverbank', '浮光川河岸的傍晚', '今天傍晚天晴，浮光川的河堤上能看到很远的桥和晚霞。到 18:30 天黑之前，河岸上会有人散步、坐着看河。', at, ends);
         if (ev) events.push(ev);
       }
     }

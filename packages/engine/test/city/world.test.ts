@@ -38,7 +38,7 @@ describe('目录', () => {
     expect(planRoute(KISSA, 'sentou:station')).toMatchObject({ minutes: 16, fareYen: 200 });
     // 小屋和河岸之间有近路，不用绕回站前
     expect(planRoute(HOUSE_ENTRANCE, 'hiwatari:mio-riverbank')).toMatchObject({ minutes: 9, fareYen: 0 });
-    // 绯渡开放站前和澪川河岸
+    // 日和坂开放站前和浮光川河岸
     expect(PLACES.filter((p) => p.area === 'hiwatari' && !p.hidden).map((p) => p.id)).toEqual(['hiwatari:station', 'hiwatari:ekimae-plaza', 'hiwatari:ekimae-conbini', 'hiwatari:mio-riverbank']);
     const v: any = publicCityView(makeCity().c);
     expect(v.transit).toMatchObject({ source: 'simulated' });
@@ -306,13 +306,13 @@ describe('天气', () => {
     expect(eventsToday(t.c).map((e) => e.kind)).toEqual(['rain_started']);
   });
 
-  it('绯渡傍晚放晴：澪川河岸的公开小事件，每天一次；合成天气不触发', () => {
+  it('日和坂傍晚放晴：浮光川河岸的公开小事件，每天一次；合成天气不触发', () => {
     const t = makeCity({ at: T0 + 6 * HOUR + 30 * MIN }); // 16:30 JST
     expect(eventsToday(t.c)).toEqual([]); // 启动时只有合成天气
     setWeather(t, { hiwatari: 0 });
     setWeather(t, { hiwatari: 1 });
     const ev = eventsToday(t.c);
-    expect(ev).toEqual([expect.objectContaining({ kind: 'riverbank_evening', area: 'hiwatari', place: 'hiwatari:mio-riverbank', title: '澪川河岸的傍晚' })]);
+    expect(ev).toEqual([expect.objectContaining({ kind: 'riverbank_evening', area: 'hiwatari', place: 'hiwatari:mio-riverbank', title: '浮光川河岸的傍晚' })]);
     expect(t.c.clock(ev[0]!.ends_at_ms)).toBe('18:30');
     const pub: any = publicCityView(t.c);
     expect(pub.events_today).toHaveLength(1);

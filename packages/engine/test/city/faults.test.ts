@@ -471,7 +471,7 @@ describe('F12：随身钱包只剩回程车费', () => {
     // 账面上够买一杯咖啡，但买了就没有回程车费
     const e = rejects(() => k.act({ type: 'buy', sku: 'coffee' }), 'PRECONDITION_FAILED', 'return_fare_reserved');
     expect(e.data).toMatchObject({ price_yen: 450, return_reserve_yen: 200, spendable_yen: 250 });
-    // 去千灯要 ¥200，到了那里回家要 ¥260：也不行
+    // 去云港要 ¥200，到了那里回家要 ¥260：也不行
     rejects(() => k.act({ type: 'travel', to: 'sentou:station' }), 'PRECONDITION_FAILED', 'return_fare_reserved');
     // 真的不够就是 insufficient_funds
     rejects(() => k.act({ type: 'buy', sku: 'coffee_beans' }), 'PRECONDITION_FAILED', 'insufficient_funds');

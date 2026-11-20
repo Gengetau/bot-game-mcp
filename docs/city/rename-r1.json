@@ -1,0 +1,26 @@
+{
+  "$comment": "晴空都 R1 改名对照表：引擎（Gengetau/bot-game-mcp）与世界内核（Gengetau/ai-house-world）同一份。主人 2026-11-20 18:48 JST 定名，要未来感和生活感。只换显示名和文案，所有内部编号（world_id、片区/车站/地点/线路编号、目录版本）不动。R0 的历史记录见 rename-r0.json。",
+  "schema_version": 1,
+  "status": "owner_named",
+  "world": {
+    "world_id_unchanged": "city",
+    "display_name": { "old": "灯都", "new": "晴空都" },
+    "city_catalog_version_unchanged": "toto-p2.0",
+    "city_text_version": { "old": "toto-text-1.0", "new": "toto-text-1.1" }
+  },
+  "areas": [
+    { "id": "hiwatari", "old_name": "绯渡", "new_name": "日和坂", "theme": "坡道住宅区：住家、小店和澡堂；大家的家在这里" },
+    { "id": "kagamiike", "old_name": "镜池", "new_name": "棱光街", "theme": "商场外墙随天色变色，逛街的人最多" },
+    { "id": "sentou", "old_name": "千灯", "new_name": "云港", "theme": "城市的空中港口，楼顶停着飞艇，换乘和夜生活最热闹" }
+  ],
+  "rivers_and_landmarks": [
+    { "slug": "mio", "old_name": "澪川", "new_name": "浮光川", "theme": "河面映着天光，沿岸有步道" }
+  ],
+  "derived_names": [
+    { "old": "南镜池公园", "new": "南棱光公园", "note": "避免「南棱光街公园」" },
+    { "old": "灯环线", "new": "晴环线", "note": "线路编号 toukan 不动" },
+    { "old": "灯都铁道", "new": "晴空都铁道" }
+  ],
+  "kept_ids_note": "编号 hiwatari / kagamiike / sentou / mio / toukan 是旧名的罗马字，bot 能在地点编号里看到（如 kagamiike:station），本轮按主人「内部编号不动」保留。",
+  "forbidden_legacy_tokens_in_public_and_views": ["灯都", "绯渡", "镜池", "千灯", "澪川", "灯环线"]
+}

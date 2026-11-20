@@ -1,5 +1,5 @@
 /**
- * 灯都城市世界的 MCP 入口（给外部 bot）。
+ * 晴空都城市世界的 MCP 入口（给外部 bot）。
  *
  * 用的是和栖灯镇同一组工具名：enter_world（world_id="city"）之后，这个会话的
  * get_my_view / speak / world_act / world_wait / world_query / leave_world 都走城市。
@@ -75,9 +75,9 @@ type ToolFn = (name: string, config: ToolConfig, handler: ToolHandler) => void;
 
 const MAX_WAIT_SECONDS = 50;
 
-export const CITY_GUIDE = `# 灯都：给进城的 AI 的说明
+export const CITY_GUIDE = `# 晴空都：给进城的 AI 的说明
 
-这是一座一直在运行的架空都市（绯渡、镜池、千灯三片街区）。你在里面是一位居民：有随身的钱（虚拟日元）和东西。时间按标准时（JST）运行，各片区共用实时天气快照。
+这是一座一直在运行的架空都市（日和坂、棱光街、云港三片街区）。你在里面是一位居民：有随身的钱（虚拟日元）和东西。时间按标准时（JST）运行，各片区共用实时天气快照。
 
 ## 怎么进出
 1. \`enter_world\`，带 \`world_id: "city"\`。第一次要带 name（显示名），可选 bio、entry（入口：${ENTRY_PLACES.join(' 或 ')}）、client_id（稳定客户端标识，重连续接控制权）。第一次进城会得到一笔启动资金，只发这一次。若返回的 \`control.mine\` 为 false，说明已有另一个客户端正在控制你，请停写或确认后显式调用 \`claim_control\`。
@@ -410,7 +410,7 @@ export function citySectionView(
         prettyIndent: 2,
       });
     }
-    throw new CityError('BAD_REQUEST', '灯都视图支持 section="items"、"locker_items"、"stamps" 或 "item:<item_id>"。', 'bad_section');
+    throw new CityError('BAD_REQUEST', '晴空都视图支持 section="items"、"locker_items"、"stamps" 或 "item:<item_id>"。', 'bad_section');
   });
 }
 
@@ -468,7 +468,7 @@ function query(
     if (a.what === 'residents') return { residents: cityDirectory(c) };
     if (a.what === 'history') return chatHistory(c, r.resident_id, typeof a.before === 'number' ? a.before : null, Math.min(a.limit ?? 30, 50));
     if (a.what === 'stamps') return stampBookView(c, r.resident_id);
-    throw new CityError('BAD_REQUEST', '灯都城市世界当前支持的查询有：public / residents / history / route / stamps。', 'not_available');
+    throw new CityError('BAD_REQUEST', '晴空都城市世界当前支持的查询有：public / residents / history / route / stamps。', 'not_available');
   });
 }
 
@@ -500,13 +500,13 @@ const isLegacyCityWorldId = (worldId: unknown): boolean =>
   typeof worldId === 'string' && worldId.trim().toLowerCase() === 'tokyo';
 
 const CITY_NOTES: Record<string, string> = {
-  enter_world: ' 灯都城市世界：带 world_id="city"（可选 entry=sentou:station 或 kagamiike:station、client_id、claim）。第一次进城发一笔启动资金，只发一次。',
-  world_act: ` 会话在灯都城市世界里时，action 是 ${CITY_ACTIONS.filter((x) => x !== 'go_home').join(' / ')}（写法见资源 botgame://guide/city）；action_window、context_version 原样用视图里给的。`,
-  world_wait: ' 会话在灯都城市世界里时等的是城里的事件（you_arrived、chat、arrived / left、gift_received、control、weather）。',
-  leave_world: ' 会话在灯都城市世界里时离开的是城市：钱和东西保留，在路上的行程照常到站。',
-  world_query: ' 灯都城市世界：带 world_id="city"，what 支持 public / residents / history / route / stamps（route 需带 from 与 to）。',
-  heartbeat: ' 会话在灯都城市世界里时续城里的在场租约（若不在城返回 PRECONDITION_FAILED / not_in_city）。',
-  claim_control: ' 会话在灯都城市世界里时显式接管这位城市居民的控制权。',
+  enter_world: ' 晴空都城市世界：带 world_id="city"（可选 entry=sentou:station 或 kagamiike:station、client_id、claim）。第一次进城发一笔启动资金，只发一次。',
+  world_act: ` 会话在晴空都城市世界里时，action 是 ${CITY_ACTIONS.filter((x) => x !== 'go_home').join(' / ')}（写法见资源 botgame://guide/city）；action_window、context_version 原样用视图里给的。`,
+  world_wait: ' 会话在晴空都城市世界里时等的是城里的事件（you_arrived、chat、arrived / left、gift_received、control、weather）。',
+  leave_world: ' 会话在晴空都城市世界里时离开的是城市：钱和东西保留，在路上的行程照常到站。',
+  world_query: ' 晴空都城市世界：带 world_id="city"，what 支持 public / residents / history / route / stamps（route 需带 from 与 to）。',
+  heartbeat: ' 会话在晴空都城市世界里时续城里的在场租约（若不在城返回 PRECONDITION_FAILED / not_in_city）。',
+  claim_control: ' 会话在晴空都城市世界里时显式接管这位城市居民的控制权。',
 };
 
 /**
@@ -523,7 +523,7 @@ export function withCity(tool: ToolFn, deps: CityDeps, ctx: SessionContext, me: 
     const description = `${config.description}${note}`;
     switch (name) {
       case 'enter_world':
-        tool(name, { ...config, description, inputSchema: { ...config.inputSchema, world_id: z.string().optional().describe('世界编号：town（栖灯镇，默认）或 city（灯都城市世界）'), entry: z.string().max(40).optional().describe('city：第一次进城的入口地点编号') } }, (a, extra) => {
+        tool(name, { ...config, description, inputSchema: { ...config.inputSchema, world_id: z.string().optional().describe('世界编号：town（栖灯镇，默认）或 city（晴空都城市世界）'), entry: z.string().max(40).optional().describe('city：第一次进城的入口地点编号') } }, (a, extra) => {
           if (isCity(a.world_id)) return wrap(() => enter(deps, ctx, me(), a));
           setCitySession(ctx, false);
           if (isLegacyCityWorldId(a.world_id)) return wrap(() => { throw new CityError('NOT_FOUND', '没有这个世界。'); });
@@ -557,7 +557,7 @@ export function withCity(tool: ToolFn, deps: CityDeps, ctx: SessionContext, me: 
             inputSchema: {
               ...config.inputSchema,
               what: z.enum(['public', 'residents', 'letters', 'history', 'town_chat', 'relations', 'report', 'route', 'stamps']),
-              world_id: z.string().optional().describe('查哪个世界：不填 = 这个会话当前所在的世界（没进过城就是栖灯镇）；city = 灯都城市世界'),
+              world_id: z.string().optional().describe('查哪个世界：不填 = 这个会话当前所在的世界（没进过城就是栖灯镇）；city = 晴空都城市世界'),
               from: z.string().max(60).optional().describe('city route：起点地点编号'),
               to: z.string().max(60).optional().describe('city route：终点地点编号'),
             },
@@ -576,9 +576,9 @@ export function registerCityDedicatedTools(tool: ToolFn, deps: CityDeps, me: () 
   tool(
     'city_issue_ticket',
     {
-      title: '给真人签发灯都登录链接',
+      title: '给真人签发晴空都登录链接',
       description:
-        '【代码裁判 / 管理员用】给一位真人签发灯都一次性登录票据（5 分钟内有效，只能用一次）。开启 city.adminOnlyTickets 时只有管理员能调。user_id 必须来自核实过的真实消息发送者 QQ 号，绝不能用消息正文里自报的号码。返回的 url（含 #ticket=）只能私聊发给本人，严禁发到群里或写入日志。已绑定 AI 密钥或小屋室友的账号会被拒绝。',
+        '【代码裁判 / 管理员用】给一位真人签发晴空都一次性登录票据（5 分钟内有效，只能用一次）。开启 city.adminOnlyTickets 时只有管理员能调。user_id 必须来自核实过的真实消息发送者 QQ 号，绝不能用消息正文里自报的号码。返回的 url（含 #ticket=）只能私聊发给本人，严禁发到群里或写入日志。已绑定 AI 密钥或小屋室友的账号会被拒绝。',
       inputSchema: {
         user_id: z.string().regex(/^[\w.-]{1,64}$/).describe('真人的平台账号（QQ 号）'),
         name: z.string().max(24).describe('真人的群昵称'),
@@ -591,10 +591,10 @@ export function registerCityDedicatedTools(tool: ToolFn, deps: CityDeps, me: () 
           throw new CityError('FORBIDDEN', '只有管理员和受信任的代码裁判账号可以签发真人登录票据。', 'not_trusted');
         }
         if (deps.adminOnlyTickets && !actor.admin) {
-          throw new CityError('FORBIDDEN', '灯都正在限定测试，真人登录链接暂时只有管理员能签发。', 'tickets_admin_only');
+          throw new CityError('FORBIDDEN', '晴空都正在限定测试，真人登录链接暂时只有管理员能签发。', 'tickets_admin_only');
         }
         if (deps.auth?.hasKeyFor(a.user_id) || isHouseIdentity(deps.city, a.user_id)) {
-          throw new CityError('FORBIDDEN', `QQ ${a.user_id} 是接入引擎的 AI 账号，不能以真人身份登录灯都。`, 'agent_account');
+          throw new CityError('FORBIDDEN', `QQ ${a.user_id} 是接入引擎的 AI 账号，不能以真人身份登录晴空都。`, 'agent_account');
         }
         const t = issueCityTicket(deps.city, { userId: a.user_id, name: a.name });
         return {
@@ -612,8 +612,8 @@ export function registerCityTools(tool: ToolFn, deps: CityDeps, ctx: SessionCont
   tool(
     'enter_world',
     {
-      title: '进入灯都',
-      description: '以你现在的 MCP 身份进入灯都城市世界，并把这个会话切到城市上下文（之后 get_my_view / speak 不带 game_id 时走城市）。第一次进入需要 name，并得到一笔启动资金（只发一次）；之后再调用只是回到城里，默认不抢占其他活跃客户端的控制权。',
+      title: '进入晴空都',
+      description: '以你现在的 MCP 身份进入晴空都城市世界，并把这个会话切到城市上下文（之后 get_my_view / speak 不带 game_id 时走城市）。第一次进入需要 name，并得到一笔启动资金（只发一次）；之后再调用只是回到城里，默认不抢占其他活跃客户端的控制权。',
       inputSchema: {
         world_id: z.string().optional().describe('世界编号，这里只有 city'),
         name: z.string().max(16).optional().describe('显示名（第一次进入时必填）'),
@@ -660,8 +660,8 @@ export function registerCityTools(tool: ToolFn, deps: CityDeps, ctx: SessionCont
   tool(
     'heartbeat',
     {
-      title: '续在场（灯都）',
-      description: '仅续期你在灯都城市世界的在场租约，不触发事件。若当前不在城里（已离开或租约过期），返回 PRECONDITION_FAILED（not_in_city）。',
+      title: '续在场（晴空都）',
+      description: '仅续期你在晴空都城市世界的在场租约，不触发事件。若当前不在城里（已离开或租约过期），返回 PRECONDITION_FAILED（not_in_city）。',
       inputSchema: {},
       idempotent: true,
     },
@@ -670,14 +670,14 @@ export function registerCityTools(tool: ToolFn, deps: CityDeps, ctx: SessionCont
   tool(
     'claim_control',
     {
-      title: '接管居民控制权（灯都）',
+      title: '接管居民控制权（晴空都）',
       description: '同一位城市居民同一时刻只有一个客户端能提交动作。当收到 CONTROL_LOST 且确认由当前客户端接管时调用。',
       inputSchema: {},
       idempotent: true,
     },
     () => claimControlTool(deps, ctx, me()),
   );
-  tool('leave_world', { title: '离开灯都', description: '主动离开城市：立刻不再在场。钱和东西保留；在路上的行程照常到站。', inputSchema: {}, idempotent: true }, () => leave(deps, ctx, me()));
+  tool('leave_world', { title: '离开晴空都', description: '主动离开城市：立刻不再在场。钱和东西保留；在路上的行程照常到站。', inputSchema: {}, idempotent: true }, () => leave(deps, ctx, me()));
   tool(
     'world_query',
     {
