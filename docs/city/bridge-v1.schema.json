@@ -252,7 +252,7 @@
       "type": "integer"
     },
     "PlaceId": {
-      "description": "地点编号，形如 kagamiike:kissa-tomoshibi；小屋门口是 hiwatari:ai-house:entrance。",
+      "description": "地点编号，形如 ryokogai:kissa-tomoshibi；小屋门口是 hiyorizaka:ai-house:entrance。",
       "type": "string",
       "minLength": 1
     },
@@ -260,9 +260,9 @@
       "description": "晴空都开放街区编号（R0 开放日和坂/棱光街/云港三片区；后续内容包按架空标准 ID 扩展）。",
       "type": "string",
       "enum": [
-        "hiwatari",
-        "kagamiike",
-        "sentou"
+        "hiyorizaka",
+        "ryokogai",
+        "kumominato"
       ]
     },
     "KernelEffectName": {

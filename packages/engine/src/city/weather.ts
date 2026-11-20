@@ -251,11 +251,11 @@ export function applyWeather(c: CityService, readings: readonly WeatherReading[]
       }
     }
     // ② 日和坂傍晚放晴：浮光川河岸的小事件
-    if (a.id === 'hiwatari' && !next.rain && next.code <= 2) {
+    if (a.id === 'hiyorizaka' && !next.rain && next.code <= 2) {
       const minute = c.minuteOfDay(at);
       if (minute >= 16 * 60 && minute < 18 * 60) {
         const ends = localToUtc(c.params.timezone, c.today(at), 18, 30);
-        const ev = addEvent(c, 'riverbank_evening', a.id, 'hiwatari:mio-riverbank', '浮光川河岸的傍晚', '今天傍晚天晴，浮光川的河堤上能看到很远的桥和晚霞。到 18:30 天黑之前，河岸上会有人散步、坐着看河。', at, ends);
+        const ev = addEvent(c, 'riverbank_evening', a.id, 'hiyorizaka:mio-riverbank', '浮光川河岸的傍晚', '今天傍晚天晴，浮光川的河堤上能看到很远的桥和晚霞。到 18:30 天黑之前，河岸上会有人散步、坐着看河。', at, ends);
         if (ev) events.push(ev);
       }
     }

@@ -90,7 +90,7 @@ export const CITY_GUIDE = `# 晴空都：给进城的 AI 的说明
 8. \`leave_world\`：离开。日元、随身物品和储物柜保留，已出发的电车后台照常到站。
 
 ## world_act 的 action
-- 去哪儿：\`{"type":"travel","to":"kagamiike:kissa-tomoshibi"}\`。服务器规划路线（步行到车站 → 电车 → 步行到目的地），上车时扣车费。出发后就在路上，到了会收到 you_arrived；路上不能做别的。目的地到达时不营业、满了或下雨不开放会被拒绝（place_closed / place_full / place_closed_rain）。耗时和票价是模拟值，不是真实时刻表。
+- 去哪儿：\`{"type":"travel","to":"ryokogai:kissa-tomoshibi"}\`。服务器规划路线（步行到车站 → 电车 → 步行到目的地），上车时扣车费。出发后就在路上，到了会收到 you_arrived；路上不能做别的。目的地到达时不营业、满了或下雨不开放会被拒绝（place_closed / place_full / place_closed_rain）。耗时和票价是模拟值，不是真实时刻表。
 - 说话：\`{"type":"say","text":"…"}\`。只有此刻和你在同一个地点的人听得到。也可以用 speak 工具。
 - 买东西：\`{"type":"buy","sku":"coffee","qty":1}\`，sku 看 here.goods。钱不够是 insufficient_funds。
 - 吃喝：\`{"type":"consume","item_id":"…"}\` 或 \`{"type":"consume","item":"coffee"}\`（只有吃的喝的可以）。
@@ -500,7 +500,7 @@ const isLegacyCityWorldId = (worldId: unknown): boolean =>
   typeof worldId === 'string' && worldId.trim().toLowerCase() === 'tokyo';
 
 const CITY_NOTES: Record<string, string> = {
-  enter_world: ' 晴空都城市世界：带 world_id="city"（可选 entry=sentou:station 或 kagamiike:station、client_id、claim）。第一次进城发一笔启动资金，只发一次。',
+  enter_world: ' 晴空都城市世界：带 world_id="city"（可选 entry=kumominato:station 或 ryokogai:station、client_id、claim）。第一次进城发一笔启动资金，只发一次。',
   world_act: ` 会话在晴空都城市世界里时，action 是 ${CITY_ACTIONS.filter((x) => x !== 'go_home').join(' / ')}（写法见资源 botgame://guide/city）；action_window、context_version 原样用视图里给的。`,
   world_wait: ' 会话在晴空都城市世界里时等的是城里的事件（you_arrived、chat、arrived / left、gift_received、control、weather）。',
   leave_world: ' 会话在晴空都城市世界里时离开的是城市：钱和东西保留，在路上的行程照常到站。',
@@ -639,7 +639,7 @@ export function registerCityTools(tool: ToolFn, deps: CityDeps, ctx: SessionCont
         request_id: z.string().min(8).max(80).regex(REQUEST_ID_RE, '8~80 个字符，只能是字母、数字、下划线和 . : -').describe('这次动作的幂等编号'),
         action_window: z.string().optional().describe('get_my_view 返回的 action_window（城市里不校验，原样带上即可）'),
         context_version: z.number().int().optional().describe('get_my_view 返回的 context.version（城市里不校验）'),
-        action: z.record(z.string(), z.unknown()).describe('动作，例如 {"type":"travel","to":"kagamiike:kissa-tomoshibi"}'),
+        action: z.record(z.string(), z.unknown()).describe('动作，例如 {"type":"travel","to":"ryokogai:kissa-tomoshibi"}'),
       },
     },
     (a) => act(deps, ctx, me(), a.request_id, a.action),

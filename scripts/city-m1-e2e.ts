@@ -5,7 +5,7 @@
  * 覆盖范围（严格隔离于临时目录，绝不触碰线上 city.db / town.db / life1.db / world.db）：
  *  1. 隔离护栏：town.enabled === false、/town/ 返回 404、桌面游戏（number_bomb）照常可用；
  *  2. 门禁与身份硬拦截：室友 QQ 侧密钥调 enter_world 返回 ENTRY_VIA_HOME_ONLY（F16），非白名单外部 Bot 返回 FORBIDDEN；
- *     hiwatari:ai-house:entrance 在公开视图、外部 Bot 视图、人类网页视图中均完全隐藏；
+ *     hiyorizaka:ai-house:entrance 在公开视图、外部 Bot 视图、人类网页视图中均完全隐藏；
  *  3. 出门前雨伞规则（F13）：目的地降雨且妮娅无自有雨伞时，T1 冻结前即拒绝，零钱包/物品残留；
  *  4. 真实跨进程 T1 -> prepare -> commit -> T2 交接：注入 bridge503Count=2 + dropResponseOnce=true（F4），
  *     验证 Python world-kernel CityBridgeAdapter 原 request_id 退避重试 + GET /visits/:id 对账恢复，随身钱包只入账一次；
@@ -515,9 +515,9 @@ async function main(): Promise<void> {
     await kernel.call({ op: 'strip_umbrellas', actor: 'nia' });
     const niaPre0 = await kernel.call({ op: 'inspect', actor: 'nia' });
     const initialNiaWallet = Number(niaPre0.wallet_balance);
-    harness.setAreaRain({ kagamiike: true });
+    harness.setAreaRain({ ryokogai: true });
     const rainRefused = await kernel.call(
-      { op: 'depart', actor: 'nia', destination: 'kagamiike:kissa-tomoshibi', carry_yen: 20_000 },
+      { op: 'depart', actor: 'nia', destination: 'ryokogai:kissa-tomoshibi', carry_yen: 20_000 },
       { allowRefused: true },
     );
     assert.equal(rainRefused.ok, false);
@@ -529,11 +529,11 @@ async function main(): Promise<void> {
     assert.equal(niaAfterRainRefuse.authority.domain_epoch, 0);
 
     // 天放晴后正式出门（携带 ¥20,000 与 1 份家庭曲奇 nia_cookie_1）
-    harness.setAreaRain({ hiwatari: false, kagamiike: false, sentou: false });
+    harness.setAreaRain({ hiyorizaka: false, ryokogai: false, kumominato: false });
     const dep1 = await kernel.call({
       op: 'depart',
       actor: 'nia',
-      destination: 'kagamiike:kissa-tomoshibi',
+      destination: 'ryokogai:kissa-tomoshibi',
       carry_yen: 20_000,
       carry_items: [{ resource_id: 'nia_cookie_1', qty: 1 }],
       visit_id: 'vis_m1_e2e_1',
@@ -566,7 +566,7 @@ async function main(): Promise<void> {
     const enterB1 = await botB1.enterWorld({
       name: '旅人一叶',
       bio: '带着旧相机的旅人',
-      entry: 'kagamiike:station',
+      entry: 'ryokogai:station',
     });
     assert.equal(enterB1.created, true);
     assert.equal(enterB1.granted_yen, 200_000);
@@ -641,19 +641,19 @@ async function main(): Promise<void> {
         const placeId = ctx.view.here?.place.id;
         const hasPostcard = ctx.view.items.some((i) => i.type === 'postcard' && i.qty > 0);
         const hasCookieFromNia = ctx.view.items.some((i) => i.type === 'cookie' && i.qty > 0);
-        if (placeId === 'kagamiike:station' && !hasPostcard) {
-          return { actions: [{ type: 'travel', to: 'kagamiike:shiorido' }] };
+        if (placeId === 'ryokogai:station' && !hasPostcard) {
+          return { actions: [{ type: 'travel', to: 'ryokogai:shiorido' }] };
         }
-        if (placeId === 'kagamiike:shiorido' && !hasPostcard) {
+        if (placeId === 'ryokogai:shiorido' && !hasPostcard) {
           botHeadedToCafe = true;
           return {
             actions: [
               { type: 'buy', sku: 'postcard', qty: 2 },
-              { type: 'travel', to: 'kagamiike:kissa-tomoshibi' },
+              { type: 'travel', to: 'ryokogai:kissa-tomoshibi' },
             ],
           };
         }
-        if (placeId === 'kagamiike:kissa-tomoshibi' && hasCookieFromNia && !botGiftedNia) {
+        if (placeId === 'ryokogai:kissa-tomoshibi' && hasCookieFromNia && !botGiftedNia) {
           botGiftedNia = true;
           return {
             actions: [
@@ -716,7 +716,7 @@ async function main(): Promise<void> {
         origin: harness.baseUrl,
         cookie: humanSessionHeader,
       },
-      body: JSON.stringify({ name: '阿澄', entry: 'sentou:station', client_id: 'human-web-1' }),
+      body: JSON.stringify({ name: '阿澄', entry: 'kumominato:station', client_id: 'human-web-1' }),
     });
     assert.equal(noCsrfResp.status, 403, '缺少 x-city-csrf 必须返回 403');
 
@@ -732,7 +732,7 @@ async function main(): Promise<void> {
       body: JSON.stringify({
         name: '阿澄',
         bio: '周末散步的人类旅人',
-        entry: 'sentou:station',
+        entry: 'kumominato:station',
         client_id: 'human-web-1',
       }),
     });
@@ -755,7 +755,7 @@ async function main(): Promise<void> {
       body: JSON.stringify({
         request_id: 'human-travel-kissa-0001',
         client_id: 'human-web-1',
-        action: { type: 'travel', to: 'kagamiike:kissa-tomoshibi' },
+        action: { type: 'travel', to: 'ryokogai:kissa-tomoshibi' },
       }),
     });
     assert.equal(humanTravelResp.status, 200);
@@ -799,7 +799,7 @@ async function main(): Promise<void> {
         headers: { cookie: humanSessionHeader },
       })
     ).json()) as Record<string, any>;
-    assert.equal(humanMeAfterRestart.here?.place?.id, 'kagamiike:kissa-tomoshibi');
+    assert.equal(humanMeAfterRestart.here?.place?.id, 'ryokogai:kissa-tomoshibi');
     assert.equal(humanMeAfterRestart.wallet?.yen, 199_800, '跨引擎重启后晴环线车费严禁二次扣款');
     assert.ok(!JSON.stringify(humanMeAfterRestart).includes('ai-house:entrance'), '人类视图严禁暴露小屋交接点');
 
@@ -807,13 +807,13 @@ async function main(): Promise<void> {
     await waitFor(() => botBCurrent !== botB1, 'CityRunner 跨引擎重启自动建立新 MCP 连接');
     await waitFor(() => botHandle.status === 'running', 'CityRunner 重连后保持 running');
     const botViewAtCafe = await botBCurrent.view();
-    assert.equal(botViewAtCafe.here?.place.id, 'kagamiike:kissa-tomoshibi');
+    assert.equal(botViewAtCafe.here?.place.id, 'ryokogai:kissa-tomoshibi');
     assert.ok(!JSON.stringify(botViewAtCafe).includes('ai-house:entrance'), '外部 Bot 视图严禁暴露小屋交接点');
 
     // ── 7. 三方在棱光街·喫茶「灯」真实同场交互 ──
     const pubAtCafe = (await (await fetch(`${harness.baseUrl}/city/api/public`)).json()) as Record<string, any>;
-    const kagArea = (pubAtCafe.areas as any[]).find((a) => a.id === 'kagamiike');
-    const cafePlace = (kagArea.places as any[]).find((p) => p.id === 'kagamiike:kissa-tomoshibi');
+    const kagArea = (pubAtCafe.areas as any[]).find((a) => a.id === 'ryokogai');
+    const cafePlace = (kagArea.places as any[]).find((p) => p.id === 'ryokogai:kissa-tomoshibi');
     const cafeNames = (cafePlace.here as any[]).map((x) => x.name).sort();
     assert.deepEqual(cafeNames, ['妮娅', '旅人一叶', '阿澄'].sort(), '三类玩家必须在棱光街·喫茶「灯」同场共处');
 
@@ -996,7 +996,7 @@ async function main(): Promise<void> {
     const dep2 = await kernel.call({
       op: 'depart',
       actor: 'claire',
-      destination: 'kagamiike:shiorido',
+      destination: 'ryokogai:shiorido',
       carry_yen: 5_000,
       visit_id: 'vis_m1_e2e_2',
     });
@@ -1045,7 +1045,7 @@ async function main(): Promise<void> {
         {
           ok: true,
           scenario: 'city-m1-three-party-and-fault-e2e',
-          coPresentAt: 'kagamiike:kissa-tomoshibi',
+          coPresentAt: 'ryokogai:kissa-tomoshibi',
           participants: {
             house: { actor: 'nia', residentId: niaResidentId, secondActor: 'claire' },
             externalBot: { name: '旅人一叶', residentId: botBResidentId },

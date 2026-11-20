@@ -60,7 +60,7 @@ function decide(ctx: CityDecisionContext): CityDecision | null {
   // 3. 初次在车站落脚且身边没人：坐车去棱光街喫茶「灯」喝一杯咖啡
   const placeId = v.here?.place.id ?? '';
   if (!visitedCafe && placeId.endsWith(':station') && v.can.includes('travel')) {
-    const target = v.here?.exits.find((x) => x.id === 'kagamiike:kissa-tomoshibi' && x.open);
+    const target = v.here?.exits.find((x) => x.id === 'ryokogai:kissa-tomoshibi' && x.open);
     if (target) {
       visitedCafe = true;
       return { actions: [{ type: 'travel', to: target.id }] };
@@ -68,7 +68,7 @@ function decide(ctx: CityDecisionContext): CityDecision | null {
   }
 
   // 4. 到了喫茶「灯」：若钱包充裕且还没买过咖啡，买一杯混合咖啡并品尝
-  if (placeId === 'kagamiike:kissa-tomoshibi' && !greeted) {
+  if (placeId === 'ryokogai:kissa-tomoshibi' && !greeted) {
     greeted = true;
     const coffee = v.here?.goods.find((g) => g.sku === 'coffee');
     if (coffee && v.wallet.spendable_yen >= coffee.price_yen && v.can.includes('buy')) {
@@ -91,7 +91,7 @@ const runner = new CityRunner({
 const handle = runner.add({
   label: name,
   city,
-  profile: { name, bio: '喜欢坐电车逛书店与喫茶店的旅人', entry: 'kagamiike:station' },
+  profile: { name, bio: '喜欢坐电车逛书店与喫茶店的旅人', entry: 'ryokogai:station' },
   decide,
   reconnect: () =>
     CityClient.connect({

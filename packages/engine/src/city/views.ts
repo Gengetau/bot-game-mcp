@@ -359,7 +359,7 @@ export function sceneView(
     return { place: { id: p.id, name: p.name, area: p.area, type: p.type }, people: [], goods: [], exits, recent_chat: [], weather };
   }
   const ct = c.catalogTime(at);
-  const cornerMode = p.id === 'kagamiike:shiorido' ? 'shelf' : p.type === 'station' ? 'drift' : null;
+  const cornerMode = p.id === 'ryokogai:shiorido' ? 'shelf' : p.type === 'station' ? 'drift' : null;
   const allBooks = cornerMode
     ? cornerBooksAt(c, cornerMode, p.id, 5).map((b) => {
         const m = parseJson<Record<string, unknown> | null>(b.meta_json, null);

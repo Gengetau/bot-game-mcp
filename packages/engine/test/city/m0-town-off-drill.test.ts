@@ -175,14 +175,14 @@ describe('M0 栖灯镇关停封存演练：town.enabled=false + city.enabled=tru
     expect((await callTool(niaQq, 'world_query', { what: 'public', world_id: 'city' })).world_id).toBe('city');
 
     // 90001（曾在旧镇有记录）首次进晴空都：独立新居民、独立发 ¥200,000，无任何旧镇币混入
-    const enteredTokyo = await callTool(bot1, 'enter_world', { world_id: 'city', name: '旧镇旅人', entry: 'kagamiike:station' });
+    const enteredTokyo = await callTool(bot1, 'enter_world', { world_id: 'city', name: '旧镇旅人', entry: 'ryokogai:station' });
     expect(enteredTokyo).toMatchObject({
       ok: true,
       world_id: 'city',
       created: true,
       granted_yen: 200_000,
       wallet: { yen: 200_000 },
-      location: { place: 'kagamiike:station' },
+      location: { place: 'ryokogai:station' },
     });
 
     // 桥接驱动妮娅进城并正常立即申请返家结算（起点已在门口，0 分钟结算闭环）

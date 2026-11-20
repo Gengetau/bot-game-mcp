@@ -235,9 +235,9 @@ const toggleMotionBtn = /** @type {HTMLButtonElement} */ (mustEl('toggle-motion-
 /** @type {readonly StationMeta[]} */
 const RAIL_STATIONS = [
   {
-    id: 'st:hiwatari',
-    placeId: 'hiwatari:station',
-    area: 'hiwatari',
+    id: 'st:hiyorizaka',
+    placeId: 'hiyorizaka:station',
+    area: 'hiyorizaka',
     code: 'HW',
     name: '日和坂站',
     lineKey: 'hokkan',
@@ -248,9 +248,9 @@ const RAIL_STATIONS = [
     labelDy: 32,
   },
   {
-    id: 'st:kagamiike',
-    placeId: 'kagamiike:station',
-    area: 'kagamiike',
+    id: 'st:ryokogai',
+    placeId: 'ryokogai:station',
+    area: 'ryokogai',
     code: 'KG',
     name: '棱光街站',
     lineKey: 'toukan',
@@ -261,9 +261,9 @@ const RAIL_STATIONS = [
     labelDy: 32,
   },
   {
-    id: 'st:sentou',
-    placeId: 'sentou:station',
-    area: 'sentou',
+    id: 'st:kumominato',
+    placeId: 'kumominato:station',
+    area: 'kumominato',
     code: 'ST',
     name: '云港站',
     lineKey: 'toukan',
@@ -277,9 +277,9 @@ const RAIL_STATIONS = [
 
 const RAIL_EDGES = [
   {
-    id: 'te:hiwatari-kagamiike',
-    fromPlace: 'hiwatari:station',
-    toPlace: 'kagamiike:station',
+    id: 'te:hiyorizaka-ryokogai',
+    fromPlace: 'hiyorizaka:station',
+    toPlace: 'ryokogai:station',
     d: 'M 148 64 L 336 138',
     className: 'rail-hokkan',
     label: '北环快线 · 13分 · ¥200',
@@ -287,9 +287,9 @@ const RAIL_EDGES = [
     ly: 118,
   },
   {
-    id: 'te:hiwatari-sentou',
-    fromPlace: 'hiwatari:station',
-    toPlace: 'sentou:station',
+    id: 'te:hiyorizaka-kumominato',
+    fromPlace: 'hiyorizaka:station',
+    toPlace: 'kumominato:station',
     d: 'M 148 64 Q 368 18 524 178',
     className: 'rail-direct',
     label: '北环快线直达 · 19分 · ¥260',
@@ -297,9 +297,9 @@ const RAIL_EDGES = [
     ly: 52,
   },
   {
-    id: 'te:kagamiike-sentou',
-    fromPlace: 'kagamiike:station',
-    toPlace: 'sentou:station',
+    id: 'te:ryokogai-kumominato',
+    fromPlace: 'ryokogai:station',
+    toPlace: 'kumominato:station',
     d: 'M 336 138 L 524 178',
     className: 'rail-toukan',
     label: '晴环线 · 10分 · ¥200',
@@ -849,12 +849,12 @@ function renderWindowSilhouette(areaKey) {
   // 地面基底
   g.appendChild(makeSvg('rect', { x: 0, y: 96, width: 280, height: 32 }));
 
-  if (areaKey === 'hiwatari') {
+  if (areaKey === 'hiyorizaka') {
     // 日和坂：浮光川铁桥桁架与商店街屋檐
     g.appendChild(makeSvg('path', { d: 'M8 96 L36 62 L68 96 L100 62 L132 96 L164 62 L196 96 Z' }));
     g.appendChild(makeSvg('rect', { x: 204, y: 60, width: 58, height: 36 }));
     g.appendChild(makeSvg('rect', { x: 216, y: 74, width: 14, height: 12, class: 'win-lamp' }));
-  } else if (areaKey === 'kagamiike') {
+  } else if (areaKey === 'ryokogai') {
     // 棱光街：南棱光公园树影与中层楼宇、喫茶灯窗
     g.appendChild(makeSvg('rect', { x: 22, y: 44, width: 44, height: 52 }));
     g.appendChild(makeSvg('circle', { cx: 96, cy: 76, r: 16 }));
@@ -1138,7 +1138,7 @@ function renderStampBook() {
         area: st.area,
         title: st.stampTitle,
         motif: `${st.name}纪念站章`,
-        emblem: st.area === 'hiwatari' ? 'bridge' : st.area === 'kagamiike' ? 'owl' : 'terrace',
+        emblem: st.area === 'hiyorizaka' ? 'bridge' : st.area === 'ryokogai' ? 'owl' : 'terrace',
         collected: false,
         stamped_at_ms: null,
       }));
@@ -1146,7 +1146,7 @@ function renderStampBook() {
   for (const s of entries) {
     const collected = Boolean(s.collected);
     const li = make('li', { className: collected ? 'stamp-slot stamp-slot-collected' : 'stamp-slot' });
-    li.appendChild(buildStampEmblemSvg(String(s.emblem || ''), String(s.area || 'sentou'), collected));
+    li.appendChild(buildStampEmblemSvg(String(s.emblem || ''), String(s.area || 'kumominato'), collected));
     const meta = make('div', { className: 'entity-meta' });
     meta.appendChild(make('strong', { text: String(s.title || s.station_name) }));
     meta.appendChild(

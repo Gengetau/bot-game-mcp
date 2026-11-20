@@ -56,7 +56,7 @@
 | **室友家庭身份、画像、私人长记忆、衣着** | 小屋内核 + 记忆服务 | `life1.db` / `memory.db` | 不传城内（仅可带简短公开 `bio`） | 城市仅存 `actor_id ↔ resident_id`、显示名与一句话公开简介；衣着在 M1 不作为城市物品流转 | M0–M5 |
 | **室友身体状态**（`hunger`、`energy` 等 `life1` 生理值） | **小屋内核（`life1`）全程唯一** | `life1.db` `actors.body` + `effects` + `city_body_effects` | 城市写入 `bridge_outbox` 的 `body_effect`（带唯一 `effect_id`）；内核按 `effect_id` 去重后按 `life1` 规则结算 | 引擎不为室友计算 `energy/social/interest`，也不直接写身体数值；内核自身基础时间漂移（`_integrate`）在城期间照常连续运行 | M0–M5 |
 | **室友家中位置（各房间 / `away`）与家庭日程** | 小屋内核（`life1`） | `life1.db` `actors.location`、`actions`、`plans` | 出门 T1：`living → away` 后 `prepare → commit`；返家 T3：`settled` 应用后 `release` + `away → living` | 室友在城期间（`preparing` 之后至 `closed/reconcile/aborted` 之前）`actors.location` 恒为 `'away'`，家庭认知/做饭/日程不为她排新动作（`ACTOR_OUT_IN_CITY`） | M0–M5 |
-| **室友在城实时位置与在途行程** | **`CityService`（城市引擎）** | `city.db` `residents.place_id` / `trips` | `bridge_outbox` 的 `visit_progress`、`return_started`；故障恢复读 `GET /visits/:id` | 内核 `city_visit_projections` / `world.db` / 状态卡只读展示「外出中 · 在棱光街·喫茶「灯」」「乘车中，预计 HH:MM 到…」「外出中，状态待确认」；**`hiwatari:ai-house:entrance` 与虚构洋房门牌在一切公开页、外部 Bot 视图与内核对外卡片中一律遮蔽（最多写「日和坂一带」）** | M0–M5 |
+| **室友在城实时位置与在途行程** | **`CityService`（城市引擎）** | `city.db` `residents.place_id` / `trips` | `bridge_outbox` 的 `visit_progress`、`return_started`；故障恢复读 `GET /visits/:id` | 内核 `city_visit_projections` / `world.db` / 状态卡只读展示「外出中 · 在棱光街·喫茶「灯」」「乘车中，预计 HH:MM 到…」「外出中，状态待确认」；**`hiyorizaka:ai-house:entrance` 与虚构洋房门牌在一切公开页、外部 Bot 视图与内核对外卡片中一律遮蔽（最多写「日和坂一带」）** | M0–M5 |
 | **室友留在家中的现金与家庭库存** | 小屋内核（`life1`） | `life1.db` `wallets` / `wallet_holds` / `resources` / `reservations` | T1 冻结 `carry.yen` 与 `carry.items`；T3 按 `Settlement` 净额记账并解冻/扣减/入库 | 引擎对室友家中总余额与未带出库存零可见、零权限 | M0–M5 |
 | **室友本次带出的随身日元与携带物** | 访问 `active/returning` 期间：**`CityService` 托管账本** | `city.db` `accounts(acct:<res>)`、`items`、`orders` | `commit`（`visit:<id>:in`）入账激活并动态锁定回程车费 `return_reserve_yen`；`visit_settled` + `release`（`visit:<id>:out`）清算 | 内核在访问期间将现金保持 `wallet_holds(state='held')`、带出物保持“随身在外”托管态不可在家使用；`purchase` 记录仅作投影展示，绝不直接改 `life1.db` 余额 | M0–M5 |
 | **城市目录、四层地理、交通、店铺、公开事件** | **`CityService`（版本化内容包 + `city.db`）** | `catalog` / 内容包 + `city.db` `city_events`、`catalog_versions` | `GET /city/bridge/v1/catalog`、公开视图、MCP `world_query` | 三类玩家共享同一份 `city_catalog_version`、`fare_rule_version` 与实时营业/雨天开闭判定 | M0–M5 |
@@ -94,7 +94,7 @@
      - 若访问已处于 `closed / reconcile / aborted`：一律返 `409 STALE_DOMAIN_EPOCH`；
      - 若访问仍为 `prepared`：返 `409 VISIT_NOT_ACTIVE / not_committed`；
      - 若 `domain_epoch !== visits.domain_epoch`：一律返 `409 STALE_DOMAIN_EPOCH`（附 `{ domain_epoch: visits.domain_epoch }`）。
-  4. **返家收口（`releaseVisit`）**：引擎到达 `hiwatari:ai-house:entrance` 并写入不可变 `Settlement` 后，访问进入 `settled`（只读态，拒绝一切城内新 `act`）。内核消费 `visit_settled` 在单事务 T3 内完成钱包解冻净额入账、物品结算、将本地 `actor_domains` 升为 `domain = 'home', domain_epoch = E_home`（`E_home = E_city + 1`），随后调 `POST /visits/:id/release` 传入 `domain_epoch = E_home`。引擎校验 `E_home > visits.domain_epoch`，更新 `house_members.last_epoch = MAX(last_epoch, E_home)` 并结清随身钱包。
+  4. **返家收口（`releaseVisit`）**：引擎到达 `hiyorizaka:ai-house:entrance` 并写入不可变 `Settlement` 后，访问进入 `settled`（只读态，拒绝一切城内新 `act`）。内核消费 `visit_settled` 在单事务 T3 内完成钱包解冻净额入账、物品结算、将本地 `actor_domains` 升为 `domain = 'home', domain_epoch = E_home`（`E_home = E_city + 1`），随后调 `POST /visits/:id/release` 传入 `domain_epoch = E_home`。引擎校验 `E_home > visits.domain_epoch`，更新 `house_members.last_epoch = MAX(last_epoch, E_home)` 并结清随身钱包。
   5. **取消出门（`abortVisit`）**：仅在 `commit` 前有效，动作权从未离开 `home`，不消耗城域代次（或本地安全归回 `home`），引擎永久记录 `visit-aborted:<visit_id>` 阻断迟到的幽灵 `prepare`。
 
 ### 3.2 层 B：城内客户端控制代次（`residents.control_epoch` + `residents.controller_id`）
@@ -193,5 +193,5 @@
    - 当共享池、单角色日目标或单次访问子上限耗尽时，适配器标记 `budget_exhausted` 并跳过非紧急自主模型调用，但**绝不阻塞城内与返家确定性状态机**：
      - 已出发的电车/步行 `trips` 照常按 `scheduled_jobs` 到站；
      - M2 已开始的制作作业照常完成；
-     - 到达 `leave_by_ms`（`return_by_ms - homeward.minutes - returnMarginMs`）时引擎自动排回程送达 `hiwatari:ai-house:entrance` 产出 `visit_settled`；
+     - 到达 `leave_by_ms`（`return_by_ms - homeward.minutes - returnMarginMs`）时引擎自动排回程送达 `hiyorizaka:ai-house:entrance` 产出 `visit_settled`；
      - 内核 outbox 消费器（零模型依赖）照常执行事务 T3 解冻结算并调 `release` 让室友平安返家。

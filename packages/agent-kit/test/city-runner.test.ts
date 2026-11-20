@@ -80,7 +80,7 @@ class FakeCityPort implements CityPort {
   controlEpoch = 1;
   controlMine = true;
   inTransit = false;
-  place = 'kagamiike:kissa-tomoshibi';
+  place = 'ryokogai:kissa-tomoshibi';
   actHook?: (action: CityAction, requestId: string) => void;
 
   private seq = 0;
@@ -115,7 +115,7 @@ class FakeCityPort implements CityPort {
       me: { id: this.residentId, name: '小旅', origin: 'external', in_city: true },
       control: { epoch: this.controlEpoch, mine: this.controlMine },
       location: this.inTransit
-        ? { in_transit: true, trip: { trip_id: 'tr_1', from: 'hiwatari:station', to: this.place } }
+        ? { in_transit: true, trip: { trip_id: 'tr_1', from: 'hiyorizaka:station', to: this.place } }
         : { place: this.place },
       wallet: { yen: 199_000, held_yen: 0, spendable_yen: 199_000 },
       items: [],
@@ -123,7 +123,7 @@ class FakeCityPort implements CityPort {
       here: this.inTransit
         ? null
         : {
-            place: { id: this.place, name: '喫茶「灯」', area: 'kagamiike', type: 'cafe', open: true },
+            place: { id: this.place, name: '喫茶「灯」', area: 'ryokogai', type: 'cafe', open: true },
             people: [],
             goods: [{ sku: 'coffee', name: '混合咖啡', price_yen: 450 }],
             exits: [],
@@ -256,7 +256,7 @@ describe('CityRunner：事件分级、3s–10s 短窗合并、预算治理与 CO
 
     // 连续推送 ignore 事件：自身回显 + 电车途经中间站 -> 0 次决策
     port.emit({ type: 'chat', from: { id: port.residentId }, text: '自言自语' });
-    port.emit({ type: 'trip_progress', at_place: 'kagamiike:station' });
+    port.emit({ type: 'trip_progress', at_place: 'ryokogai:station' });
     await clock.advance(15_000);
     expect(handle.stats.decisions).toBe(0);
 
@@ -265,7 +265,7 @@ describe('CityRunner：事件分级、3s–10s 短窗合并、预算治理与 CO
     await clock.advance(2_000);
     port.emit({ type: 'weather', kind: 'rain_started' });
     await clock.advance(2_000);
-    port.emit({ type: 'you_arrived', place: 'kagamiike:kissa-tomoshibi' });
+    port.emit({ type: 'you_arrived', place: 'ryokogai:kissa-tomoshibi' });
     await clock.advance(2_500);
     expect(handle.stats.decisions).toBe(0); // 距最后一条仅 2.5s，仍在合并窗内
 
@@ -389,7 +389,7 @@ describe('CityRunner：事件分级、3s–10s 短窗合并、预算治理与 CO
     expect(handle.stats.budgetBlocked).toBeGreaterThanOrEqual(1);
     expect(handle.stats.decisions).toBe(1);
 
-    port.emit({ type: 'you_arrived', place: 'sentou:station' });
+    port.emit({ type: 'you_arrived', place: 'kumominato:station' });
     await clock.advance(5_000);
     expect(handle.stats.events).toBe(3); // 游标照常推进，未卡死
 

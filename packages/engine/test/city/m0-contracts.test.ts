@@ -43,7 +43,7 @@ describe('M0 四份工程规格文档与 mappings v2 守门', () => {
       },
       {
         file: 'CONTENT-PACK-SPEC.md',
-        mustContain: ['ward:', 'st:', 'dist:', 'cataloged', 'transitable', 'livable', 'PLACE_OF_STATION', 'hiwatari:ai-house:entrance'],
+        mustContain: ['ward:', 'st:', 'dist:', 'cataloged', 'transitable', 'livable', 'PLACE_OF_STATION', 'hiyorizaka:ai-house:entrance'],
       },
     ];
     for (const { file, mustContain } of specs) {
@@ -153,11 +153,11 @@ describe('隔离联调测试环境与确定性故障注入脚手架', () => {
     const h = harness;
 
     // 1. F13/F14 天气控制：先注入棱光街下雨，再连续超时超 3h 验证退回 fallback
-    h.setAreaRain({ kagamiike: true, hiwatari: false, sentou: false });
+    h.setAreaRain({ ryokogai: true, hiyorizaka: false, kumominato: false });
     const w1 = await bridgeCall(h, 'GET', '/weather');
     expect(w1.status).toBe(200);
-    expect(w1.body.areas.find((a: any) => a.area === 'kagamiike')).toMatchObject({ rain: true, status: 'ok' });
-    expect(w1.body.areas.find((a: any) => a.area === 'hiwatari')).toMatchObject({ rain: false, status: 'ok' });
+    expect(w1.body.areas.find((a: any) => a.area === 'ryokogai')).toMatchObject({ rain: true, status: 'ok' });
+    expect(w1.body.areas.find((a: any) => a.area === 'hiyorizaka')).toMatchObject({ rain: false, status: 'ok' });
 
     h.advance(4 * HOUR);
     h.injectWeather(null);

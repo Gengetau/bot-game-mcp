@@ -642,9 +642,9 @@ async function main(): Promise<void> {
     // ── 1. 目录完整性与协议版本 v3 校验 ──
     assert.equal(APPAREL_CATALOG.length, 1_407, '全量服饰目录必须完整收录 1,407 套');
     assert.equal(Object.keys(APPAREL_SHOP_PLACES).length, 3, '三家晴空都虚构服饰店全部启用');
-    const suzuranToday = apparelWindowForPlace('kagamiike:suzuran-closet', '2026-11-18');
-    const lumiereToday = apparelWindowForPlace('sentou:lumiere-atelier', '2026-11-18');
-    const veloursToday = apparelWindowForPlace('sentou:velours-intime', '2026-11-18');
+    const suzuranToday = apparelWindowForPlace('ryokogai:suzuran-closet', '2026-11-18');
+    const lumiereToday = apparelWindowForPlace('kumominato:lumiere-atelier', '2026-11-18');
+    const veloursToday = apparelWindowForPlace('kumominato:velours-intime', '2026-11-18');
     assert.equal(suzuranToday.length, 6);
     assert.equal(lumiereToday.length, 6);
     assert.equal(veloursToday.length, 6);
@@ -677,15 +677,15 @@ async function main(): Promise<void> {
     const enterAoi = await extBot.enterWorld({
       name: '时尚买手葵',
       bio: '搜集晴空都独立买手店礼盒的旅人',
-      entry: 'sentou:station',
+      entry: 'kumominato:station',
     });
     assert.equal(enterAoi.granted_yen, 200_000);
     activeExtBot = extBot;
 
-    await extBot.travel('sentou:velours-intime');
+    await extBot.travel('kumominato:velours-intime');
     await advanceBoth(8 * 60_000); // 7m 步行抵达云港·丝绒私语
     const viewAtVelours = await extBot.view();
-    assert.equal(viewAtVelours.here?.place.id, 'sentou:velours-intime');
+    assert.equal(viewAtVelours.here?.place.id, 'kumominato:velours-intime');
     assert.ok(Buffer.byteLength(JSON.stringify(viewAtVelours), 'utf8') < 4_096, '单店轮换窗口必须保持 selfView < 4 KB');
     assert.equal(viewAtVelours.here?.goods?.length, 6);
 
@@ -694,20 +694,20 @@ async function main(): Promise<void> {
     const aoiGiftItem = viewAfterIntimateBuy.items.find((i) => i.type === 'apparel_bundle');
     assert.ok(aoiGiftItem?.item_id, '服饰礼盒必须作为带唯一 item_id 的实例物品入包');
 
-    await extBot.travel('kagamiike:suzuran-closet');
+    await extBot.travel('ryokogai:suzuran-closet');
     await advanceBoth(30 * 60_000); // 7m 步行 + 晴环线 + 5m 步行抵达棱光街·铃兰衣橱
-    assert.equal((await extBot.view()).here?.place.id, 'kagamiike:suzuran-closet');
+    assert.equal((await extBot.view()).here?.place.id, 'ryokogai:suzuran-closet');
 
     // ── 3. 妮娅从 AI 小屋出门前往棱光街·铃兰衣橱（mappings_version = 3） ──
     const dep = await driver.call({
       op: 'depart',
       actor: 'nia',
-      destination: 'kagamiike:suzuran-closet',
+      destination: 'ryokogai:suzuran-closet',
       carry_yen: 35_000,
       visit_id: 'vis_m2_apparel_1',
     });
     assert.equal(dep.visit.mappings_version, 3);
-    assert.equal(dep.visit.city_catalog_version, 'toto-p2.0');
+    assert.equal(dep.visit.city_catalog_version, 'toto-p3.0');
 
     await advanceBoth(60_000); // 走到玄关 away
     const hand = await driver.call({ op: 'advance_handover', visit_id: 'vis_m2_apparel_1' });
@@ -819,7 +819,7 @@ async function main(): Promise<void> {
           ok: true,
           scenario: 'city-m2-apparel-wardrobe-drive-e2e',
           catalog: {
-            version: 'toto-p2.0',
+            version: 'toto-p3.0',
             mappingsVersion: 3,
             totalCostumes: APPAREL_CATALOG.length,
             shops: APPAREL_SHOP_PLACES,

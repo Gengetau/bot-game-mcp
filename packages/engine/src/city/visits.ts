@@ -134,7 +134,7 @@ function statusText(c: CityService, phase: string, data: Record<string, unknown>
   }
 }
 
-const areaName = (id: string): string => ({ hiwatari: '日和坂', kagamiike: '棱光街', sentou: '云港' })[id] ?? id;
+const areaName = (id: string): string => ({ hiyorizaka: '日和坂', ryokogai: '棱光街', kumominato: '云港' })[id] ?? id;
 
 /** 行程进度（出发、上车、到站、到达地点、离开地点）。内核用它更新投影。 */
 export function progress(c: CityService, visit: VisitRow, phase: 'departed' | 'left_place' | 'boarded' | 'arrived_station' | 'arrived_place' | 'stopped', at: number, data: Record<string, unknown>): void {

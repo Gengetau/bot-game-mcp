@@ -47,8 +47,8 @@ const SYNTHETIC_FICTIONAL_PACK: CityContentPack = {
   specVersion: 1,
   ward: { id: 'ward:seibu', name: '西灯区', source: 'fictional' },
   district: {
-    id: 'dist:sentou-west',
-    areaId: 'sentou',
+    id: 'dist:kumominato-west',
+    areaId: 'kumominato',
     name: '云港西庭',
     wardId: 'ward:seibu',
     openness: 'livable',
@@ -64,15 +64,15 @@ const SYNTHETIC_FICTIONAL_PACK: CityContentPack = {
     {
       id: 'st:tsukimori',
       name: '月森站',
-      area: 'sentou',
-      placeId: 'sentou:tsukimori-station',
+      area: 'kumominato',
+      placeId: 'kumominato:tsukimori-station',
       stops: [{ id: 'st:tsukimori:seibu', line: '西庭支线', operator: '晴空都铁道' }],
     },
   ],
   transitEdges: [
     {
-      id: 'te:sentou-tsukimori',
-      a: 'st:sentou',
+      id: 'te:kumominato-tsukimori',
+      a: 'st:kumominato',
       b: 'st:tsukimori',
       line: '西庭支线',
       operator: 'toto-rail',
@@ -84,13 +84,13 @@ const SYNTHETIC_FICTIONAL_PACK: CityContentPack = {
       sources: ['prototype-network', 'sim-fares', 'sim-times', 'sim-hours'],
     },
   ],
-  neighborhoods: [{ id: 'sentou:tsukimori', area: 'sentou', name: '月森绿道' }],
+  neighborhoods: [{ id: 'kumominato:tsukimori', area: 'kumominato', name: '月森绿道' }],
   places: [
     {
-      id: 'sentou:tsukimori-station',
+      id: 'kumominato:tsukimori-station',
       name: '月森站',
-      area: 'sentou',
-      neighborhood: 'sentou:tsukimori',
+      area: 'kumominato',
+      neighborhood: 'kumominato:tsukimori',
       station: 'st:tsukimori',
       walkMinutes: 0,
       type: 'station',
@@ -109,7 +109,7 @@ const SYNTHETIC_FICTIONAL_PACK: CityContentPack = {
     {
       stampId: 'stamp:tsukimori',
       stationId: 'st:tsukimori',
-      placeId: 'sentou:tsukimori-station',
+      placeId: 'kumominato:tsukimori-station',
       title: '月森站 · 绿道木叶与拱门',
       motif: '绿道木叶与小站木棚',
       inkColor: '#1f5e3b',
@@ -130,16 +130,16 @@ const SYNTHETIC_FICTIONAL_PACK: CityContentPack = {
 
 describe('M3-D 标准 ContentPack：R0 暂卸隔离与架空契约校验 (#265 / #277)', () => {
   it('R0 MOUNTED_CONTENT_PACKS 为空且目录自检零错误，合成架空 ContentPack 正反例校验生效并落库 catalog_versions', () => {
-    expect(CITY_CATALOG_VERSION).toBe('toto-p2.0');
+    expect(CITY_CATALOG_VERSION).toBe('toto-p3.0');
     expect(MOUNTED_CONTENT_PACKS).toEqual([]);
     expect(WARDS).toEqual([]);
-    expect(AREAS.map((a) => a.id)).toEqual(['hiwatari', 'kagamiike', 'sentou']);
+    expect(AREAS.map((a) => a.id)).toEqual(['hiyorizaka', 'ryokogai', 'kumominato']);
     expect(validateCatalog()).toEqual([]);
 
     // 暂卸内容包地点与路由完全不可见
     for (const deferredId of ['jinbocho:station', 'jinbocho:koushodou', 'shimokitazawa:station', 'shimokitazawa:kissa-yorufune']) {
       expect(place(deferredId)).toBeUndefined();
-      expect(planRoute('sentou:station', deferredId)).toBeNull();
+      expect(planRoute('kumominato:station', deferredId)).toBeNull();
     }
 
     // 架空 ContentPack 规范校验：合法架空包零错误，塞入旧 mun:13xxx 或越权 hidden 地点报错
@@ -154,7 +154,7 @@ describe('M3-D 标准 ContentPack：R0 暂卸隔离与架空契约校验 (#265 /
     const t = makeCity();
     const verRow = t.c.db.get<{ catalog_version: string; fare_rule_version: string; summary_json: string }>(
       'SELECT catalog_version, fare_rule_version, summary_json FROM catalog_versions WHERE catalog_version = ?',
-      'toto-p2.0',
+      'toto-p3.0',
     );
     expect(verRow).toBeDefined();
     expect(JSON.parse(verRow!.summary_json)).toMatchObject({
@@ -164,17 +164,17 @@ describe('M3-D 标准 ContentPack：R0 暂卸隔离与架空契约校验 (#265 /
   });
 
   it('三片区换乘距离、模拟票价、回程预留与雨天开闭规则全部确定性成立', () => {
-    const rHokkan = planRoute('hiwatari:station', 'kagamiike:station')!;
+    const rHokkan = planRoute('hiyorizaka:station', 'ryokogai:station')!;
     expect(rHokkan).toMatchObject({ minutes: 13, fareYen: 200 });
     expect(rHokkan.legs[0]).toMatchObject({ mode: 'train', line: '北环快线' });
     expect(TRANSIT_EDGES.every((e) => e.operator === 'toto-rail')).toBe(true);
 
-    const rToukan = planRoute('kagamiike:station', 'sentou:station')!;
+    const rToukan = planRoute('ryokogai:station', 'kumominato:station')!;
     expect(rToukan).toMatchObject({ minutes: 10, fareYen: 200 });
     expect(rToukan.legs[0]).toMatchObject({ mode: 'train', line: '晴环线' });
 
-    expect(homeward('kagamiike:shiorido')).toEqual({ minutes: 30, fareYen: 200 });
-    expect(homeward('sentou:kamitsuki')).toEqual({ minutes: 37, fareYen: 260 });
+    expect(homeward('ryokogai:shiorido')).toEqual({ minutes: 30, fareYen: 200 });
+    expect(homeward('kumominato:kamitsuki')).toEqual({ minutes: 37, fareYen: 260 });
 
     // 真雨天气下：三片街区同步实时降水，云港露台步道保持开放并给出淋雨提示，日和坂浮光川河岸按 rain 关闭
     const t = makeCity({ at: Date.UTC(2026, 10, 17, 3, 0, 0) }); // 12:00 JST
@@ -190,15 +190,15 @@ describe('M3-D 标准 ContentPack：R0 暂卸隔离与架空契约校验 (#265 /
 
     const pub = publicCityView(t.c) as any;
     expect(pub.areas).toHaveLength(3);
-    const stArea = pub.areas.find((a: any) => a.id === 'sentou');
-    const hwArea = pub.areas.find((a: any) => a.id === 'hiwatari');
-    expect(stArea.places.find((p: any) => p.id === 'sentou:southern-terrace').open).toBe(true);
-    expect(hwArea.places.find((p: any) => p.id === 'hiwatari:mio-riverbank')).toMatchObject({
+    const stArea = pub.areas.find((a: any) => a.id === 'kumominato');
+    const hwArea = pub.areas.find((a: any) => a.id === 'hiyorizaka');
+    expect(stArea.places.find((p: any) => p.id === 'kumominato:southern-terrace').open).toBe(true);
+    expect(hwArea.places.find((p: any) => p.id === 'hiyorizaka:mio-riverbank')).toMatchObject({
       open: false,
       closed_reason: 'rain',
     });
-    const walker = t.bot('雨中旅人', { entry: 'sentou:station' });
-    walker.go('sentou:southern-terrace');
+    const walker = t.bot('雨中旅人', { entry: 'kumominato:station' });
+    walker.go('kumominato:southern-terrace');
     expect((walker.view().here as any).place.rain_notice).toContain('下雨');
   });
 
@@ -206,27 +206,27 @@ describe('M3-D 标准 ContentPack：R0 暂卸隔离与架空契约校验 (#265 /
     const t = makeCity({ at: Date.UTC(2026, 10, 17, 3, 0, 0) }); // 12:00 JST
     const nia = t.kernel('nia');
 
-    nia.depart({ yen: 15_000, items: [], to: 'kagamiike:kissa-tomoshibi' });
+    nia.depart({ yen: 15_000, items: [], to: 'ryokogai:kissa-tomoshibi' });
     t.run(35 * MIN);
 
-    expect((nia.view().location as any).place).toBe('kagamiike:kissa-tomoshibi');
+    expect((nia.view().location as any).place).toBe('ryokogai:kissa-tomoshibi');
     // 买两杯现点热咖啡：喝掉 1 杯，剩 1 杯验证返家按 carry_home=false 自动归 disposed
     nia.act({ type: 'buy', sku: 'coffee', qty: 2 });
     nia.act({ type: 'consume', item: 'coffee', qty: 1 });
 
     // 步行去栞堂买一本文库本并写批注，再去棱光街站大厅盖纪念章后回家
-    nia.act({ type: 'travel', to: 'kagamiike:shiorido' });
+    nia.act({ type: 'travel', to: 'ryokogai:shiorido' });
     t.run(15 * MIN);
     nia.act({ type: 'buy', sku: 'paperback', qty: 1 });
     nia.act({ type: 'read_item', item: 'paperback', title: '棱光街旧书手记', note: '午后在书架旁读完序章' });
 
-    nia.act({ type: 'travel', to: 'kagamiike:station' });
+    nia.act({ type: 'travel', to: 'ryokogai:station' });
     t.run(10 * MIN);
     const stampRes = nia.act({ type: 'stamp_station' });
     expect(stampRes.payload).toMatchObject({
       status: 'completed',
       newly_stamped: true,
-      stamp: { stamp_id: 'stamp:kagamiike', station_id: 'st:kagamiike' },
+      stamp: { stamp_id: 'stamp:ryokogai', station_id: 'st:ryokogai' },
       stamp_book: { collected: 1, total: 3, here_stamped: true },
     });
 
@@ -251,10 +251,10 @@ describe('车站印章帐（Eki-Stamp）幂等、零占包与按需查询 (#265)
     expect(new Set(STATION_STAMPS.map((s) => s.stampId)).size).toBe(3);
 
     const t = makeCity({ at: T0 });
-    const traveler = t.bot('集章旅人', { entry: 'sentou:station', stay: true });
+    const traveler = t.bot('集章旅人', { entry: 'kumominato:station', stay: true });
 
     // 先把随身背包买满 12 件手账本，证明满包状态下依然可以在全部车站自由盖章，零占槽位
-    traveler.go('sentou:kamitsuki');
+    traveler.go('kumominato:kamitsuki');
     for (let i = 0; i < 12; i++) traveler.act({ type: 'buy', sku: 'notebook', qty: 1 });
     expect((traveler.view().items as any[]).reduce((n, x) => n + x.qty, 0)).toBe(12);
 
@@ -262,7 +262,7 @@ describe('车站印章帐（Eki-Stamp）幂等、零占包与按需查询 (#265)
     expect(() => traveler.act({ type: 'stamp_station' })).toThrowError(/印章台/);
 
     // 首站：云港站盖章，并测试 20 分钟后新 request_id 同站重复盖章幂等
-    traveler.go('sentou:station');
+    traveler.go('kumominato:station');
     const firstStamp = traveler.act({ type: 'stamp_station' });
     const firstAt = (firstStamp.stamp as any).stamped_at_ms as number;
     expect(firstStamp).toMatchObject({
@@ -274,12 +274,12 @@ describe('车站印章帐（Eki-Stamp）幂等、零占包与按需查询 (#265)
     const repeatStamp = traveler.act({ type: 'stamp_station' });
     expect(repeatStamp).toMatchObject({
       newly_stamped: false,
-      stamp: { stamp_id: 'stamp:sentou', stamped_at_ms: firstAt },
+      stamp: { stamp_id: 'stamp:kumominato', stamped_at_ms: firstAt },
       stamp_book: { collected: 1, total: 3, here_stamped: true },
     });
 
     // 继续巡游棱光街与日和坂两站
-    for (const stPlace of ['kagamiike:station', 'hiwatari:station']) {
+    for (const stPlace of ['ryokogai:station', 'hiyorizaka:station']) {
       traveler.go(stPlace);
       const out = traveler.act({ type: 'stamp_station' });
       expect(out.newly_stamped).toBe(true);
@@ -294,7 +294,7 @@ describe('车站印章帐（Eki-Stamp）幂等、零占包与按需查询 (#265)
     expect(detail.collected).toBe(3);
     expect(detail.total).toBe(3);
     expect(detail.stamps.every((s) => s.collected && typeof s.stamped_at_ms === 'number')).toBe(true);
-    expect(detail.stamps.find((s) => s.station_id === 'st:sentou')!.stamped_at_ms).toBe(firstAt);
+    expect(detail.stamps.find((s) => s.station_id === 'st:kumominato')!.stamped_at_ms).toBe(firstAt);
   });
 });
 
@@ -327,7 +327,7 @@ describe('三片街区高压满载 selfView <= 4 KB 与网页端 /city/play/ 契
         world_id: 'city',
         name: '满载测算员',
         bio: '在三片街区满载旧书与明信片验证四千字节契约上限的旅人',
-        entry: 'sentou:station',
+        entry: 'kumominato:station',
         client_id: 'm3d_budget_cli',
       });
       let ctxVer = entered.data.context.version as number;
@@ -351,13 +351,13 @@ describe('三片街区高压满载 selfView <= 4 KB 与网页端 /city/play/ 契
 
       // 先在云港站盖章，再去棱光街栞堂买 12 本具名批注文库本存入棱光街站储物柜，再买 12 本随身携带
       await act({ type: 'stamp_station' });
-      await act({ type: 'travel', to: 'kagamiike:shiorido' });
+      await act({ type: 'travel', to: 'ryokogai:shiorido' });
       await advanceOnline(20);
       const firstShopView = await callJson('get_my_view', {});
       ctxVer = firstShopView.data.context.version;
       expect(firstShopView.bytes).toBeLessThanOrEqual(SELF_VIEW_MAX_BYTES);
       expect(firstShopView.data.here.exits.map((e: any) => e.id)).toEqual(
-        expect.arrayContaining(['kagamiike:station', 'sentou:station', 'hiwatari:station']),
+        expect.arrayContaining(['ryokogai:station', 'kumominato:station', 'hiyorizaka:station']),
       );
 
       const lockerBookIds: string[] = [];
@@ -366,7 +366,7 @@ describe('三片街区高压满载 selfView <= 4 KB 与网页端 /city/play/ 契
         const rd = await act({ type: 'read_item', item: 'paperback', title: `柜藏旧书第${i + 1}册`, note: `扉页短笺${i + 1}` });
         lockerBookIds.push(String(rd.item.item_id));
       }
-      await act({ type: 'travel', to: 'kagamiike:station' });
+      await act({ type: 'travel', to: 'ryokogai:station' });
       await advanceOnline(10);
       let viewCall = await callJson('get_my_view', {});
       ctxVer = viewCall.data.context.version;
@@ -375,7 +375,7 @@ describe('三片街区高压满载 selfView <= 4 KB 与网页端 /city/play/ 契
         await act({ type: 'store_locker', item_id: itemId, qty: 1 });
       }
 
-      await act({ type: 'travel', to: 'kagamiike:shiorido' });
+      await act({ type: 'travel', to: 'ryokogai:shiorido' });
       await advanceOnline(65);
       const normalView = await callJson('get_my_view', {});
       ctxVer = normalView.data.context.version;
@@ -399,7 +399,7 @@ describe('三片街区高压满载 selfView <= 4 KB 与网页端 /city/play/ 契
           );
           const resId = `res_stress_${p}`;
           h.city.db.run(
-            "INSERT INTO residents(resident_id, principal_id, name, bio, origin, in_city, place_id, present_until, created_at, last_seen_at) VALUES (?,?,?,?,'external',1,'kagamiike:shiorido',?,?,?)",
+            "INSERT INTO residents(resident_id, principal_id, name, bio, origin, in_city, place_id, present_until, created_at, last_seen_at) VALUES (?,?,?,?,'external',1,'ryokogai:shiorido',?,?,?)",
             resId,
             principalId,
             `棱光街书客${p}`,
@@ -420,7 +420,7 @@ describe('三片街区高压满载 selfView <= 4 KB 与网页端 /city/play/ 契
       expect(vPlain.bytes).toBeLessThanOrEqual(SELF_VIEW_MAX_BYTES);
       expect(vPlain.data.here.exits.length).toBeLessThanOrEqual(24);
       const exitIds = vPlain.data.here.exits.map((e: any) => e.id);
-      expect(exitIds).toContain('kagamiike:station');
+      expect(exitIds).toContain('ryokogai:station');
       expect(vPlain.data.stamp_book).toEqual({ collected: 2, total: 3 });
 
       // 2) 带旧 cursor 的 get_my_view 合并 new_events 时同样 <= 4096 B，且分页读取完整找回全部 10 条 chat 事件零跳漏
@@ -506,7 +506,7 @@ describe('三片街区高压满载 selfView <= 4 KB 与网页端 /city/play/ 契
         world_id: 'city',
         name: '成衣藏家甲',
         bio: bio80A,
-        entry: 'sentou:station',
+        entry: 'kumominato:station',
         client_id: 'r265_cli_a',
       });
       const resIdA = enterA.data.resident_id as string;
@@ -514,7 +514,7 @@ describe('三片街区高压满载 selfView <= 4 KB 与网页端 /city/play/ 契
         world_id: 'city',
         name: '同行买手乙',
         bio: bio80B,
-        entry: 'sentou:station',
+        entry: 'kumominato:station',
         client_id: 'r265_cli_b',
       });
 
@@ -527,8 +527,8 @@ describe('三片街区高压满载 selfView <= 4 KB 与网页端 /city/play/ 契
       };
 
       // 双人步行至云港流光工坊：甲买 12 件独立服饰，回云港站全部存入个人储物柜；乙买 12 件独立服饰在店内当面送给甲
-      await sessA.act({ type: 'travel', to: 'sentou:lumiere-atelier' });
-      await sessB.act({ type: 'travel', to: 'sentou:lumiere-atelier' });
+      await sessA.act({ type: 'travel', to: 'kumominato:lumiere-atelier' });
+      await sessB.act({ type: 'travel', to: 'kumominato:lumiere-atelier' });
       await advanceBoth(10);
 
       const shopViewA = await sessA.call('get_my_view', {});
@@ -542,13 +542,13 @@ describe('三片街区高压满载 selfView <= 4 KB 与网页端 /city/play/ 契
         const bought = await sessA.act({ type: 'buy', sku: cheapSku, qty: 1 });
         lockerExpectedIds.push(String(bought.item.item_id));
       }
-      await sessA.act({ type: 'travel', to: 'sentou:station' });
+      await sessA.act({ type: 'travel', to: 'kumominato:station' });
       await advanceBoth(10);
       for (const id of lockerExpectedIds) {
         await sessA.act({ type: 'store_locker', item_id: id, qty: 1 });
       }
 
-      await sessA.act({ type: 'travel', to: 'sentou:lumiere-atelier' });
+      await sessA.act({ type: 'travel', to: 'kumominato:lumiere-atelier' });
       await advanceBoth(10);
 
       const bagExpectedIds: string[] = [];
@@ -673,7 +673,7 @@ describe('三片街区高压满载 selfView <= 4 KB 与网页端 /city/play/ 契
           'chat',
           {
             message_id: 99001,
-            place: 'sentou:lumiere-atelier',
+            place: 'kumominato:lumiere-atelier',
             from: { id: 'res_oversize', name: '长文客', bio: bio80B },
             text: '超长书信段落'.repeat(300),
             untrusted: true,
@@ -766,7 +766,7 @@ describe('三片街区高压满载 selfView <= 4 KB 与网页端 /city/play/ 契
     expect(jsCode).not.toMatch(/\b(innerHTML|outerHTML|insertAdjacentHTML)\b/);
     expect(jsCode).not.toMatch(/\.style\b/);
     expect(jsCode).not.toMatch(/setAttribute\s*\(\s*['"`]style['"`]/);
-    for (const stId of ['st:hiwatari', 'st:kagamiike', 'st:sentou']) {
+    for (const stId of ['st:hiyorizaka', 'st:ryokogai', 'st:kumominato']) {
       expect(jsCode).toContain(stId);
     }
     for (const legacySt of ['st:akabane', 'st:ikebukuro', 'st:shinjuku', 'st:jinbocho', 'st:shimokitazawa']) {
@@ -815,7 +815,7 @@ describe('三片街区高压满载 selfView <= 4 KB 与网页端 /city/play/ 契
 
       const entered = await authed('POST', '/enter', {
         name: '网页旅人',
-        entry: 'sentou:station',
+        entry: 'kumominato:station',
         client_id: 'web_m3d_e2e',
       });
       expect(entered.status).toBe(200);
@@ -824,7 +824,7 @@ describe('三片街区高压满载 selfView <= 4 KB 与网页端 /city/play/ 契
       const traveled = await authed('POST', '/act', {
         client_id: 'web_m3d_e2e',
         request_id: 'web_m3d_travel_kg',
-        action: { type: 'travel', to: 'kagamiike:station' },
+        action: { type: 'travel', to: 'ryokogai:station' },
       });
       expect(traveled.status).toBe(200);
       for (let i = 0; i < 6; i++) {
@@ -840,14 +840,14 @@ describe('三片街区高压满载 selfView <= 4 KB 与网页端 /city/play/ 契
       expect(stamped.status).toBe(200);
       expect(stamped.body).toMatchObject({
         newly_stamped: true,
-        stamp: { stamp_id: 'stamp:kagamiike', station_id: 'st:kagamiike' },
+        stamp: { stamp_id: 'stamp:ryokogai', station_id: 'st:ryokogai' },
         view: { stamp_book: { collected: 1, total: 3, here_stamped: true } },
       });
 
       const book = await authed('GET', '/stamps');
       expect(book.status).toBe(200);
       expect(book.body).toMatchObject({ collected: 1, total: 3 });
-      expect(book.body.stamps.find((s: any) => s.station_id === 'st:kagamiike')).toMatchObject({
+      expect(book.body.stamps.find((s: any) => s.station_id === 'st:ryokogai')).toMatchObject({
         collected: true,
         emblem: 'owl',
       });
@@ -913,14 +913,14 @@ function citySayForStress(h: Awaited<ReturnType<typeof createIsolatedCityHarness
   h.city.commit(() => {
     const now = h.city.now();
     const msgId = Number(
-      h.city.db.run('INSERT INTO chat_messages(place_id, sender_id, body, sent_at) VALUES (?,?,?,?)', 'kagamiike:shiorido', residentId, text, now)
+      h.city.db.run('INSERT INTO chat_messages(place_id, sender_id, body, sent_at) VALUES (?,?,?,?)', 'ryokogai:shiorido', residentId, text, now)
         .lastInsertRowid,
     );
-    for (const r of h.city.presentAt('kagamiike:shiorido')) {
+    for (const r of h.city.presentAt('ryokogai:shiorido')) {
       h.city.db.run('INSERT OR IGNORE INTO chat_audience(message_id, resident_id) VALUES (?,?)', msgId, r.resident_id);
     }
     const targets = h.city
-      .presentAt('kagamiike:shiorido')
+      .presentAt('ryokogai:shiorido')
       .map((r) => r.resident_id)
       .filter((id) => id !== residentId);
     h.city.emitTo(
@@ -928,7 +928,7 @@ function citySayForStress(h: Awaited<ReturnType<typeof createIsolatedCityHarness
       'chat',
       {
         message_id: msgId,
-        place: 'kagamiike:shiorido',
+        place: 'ryokogai:shiorido',
         from: { id: residentId, name: `书客${seq}` },
         text,
         untrusted: true,

@@ -296,7 +296,7 @@ export function revokeCitySession(c: CityService, rawSessionToken: string | unde
 export interface EnterInput {
   name?: unknown;
   bio?: unknown;
-  /** 第一次进城的入口：sentou:station 或 kagamiike:station */
+  /** 第一次进城的入口：kumominato:station 或 ryokogai:station */
   entry?: unknown;
   /** 归一化后的客户端标识（mcp:<id> 或 web:<id>） */
   clientId?: string;
@@ -304,7 +304,7 @@ export interface EnterInput {
   claim?: boolean;
 }
 
-export const ENTRY_PLACES = ['sentou:station', 'kagamiike:station'] as const;
+export const ENTRY_PLACES = ['kumominato:station', 'ryokogai:station'] as const;
 
 /** 外部 bot 或真人玩家进城（或回到城里）。幂等：已经在场只续租约；默认不暗抢活跃控制权。 */
 export function enterCity(

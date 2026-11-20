@@ -12,7 +12,7 @@ describe('S1：妮娅带 ¥20,000 和一件零食去棱光街的咖啡馆，再�
     const nia = t.residentOf('nia');
     const purse = `acct:${nia}`;
     // 前置：外部 bot B 已经在城里
-    const b = t.bot('小B', { entry: 'kagamiike:station' });
+    const b = t.bot('小B', { entry: 'ryokogai:station' });
 
     // ── 3. prepare → commit ──
     const start = t.clock.t;
@@ -37,9 +37,9 @@ describe('S1：妮娅带 ¥20,000 和一件零食去棱光街的咖啡馆，再�
     const progress = k.records('visit_progress');
     expect(progress.map((p) => [p.phase, p.place ?? p.to])).toEqual([
       ['departed', HOUSE_ENTRANCE],
-      ['arrived_station', 'hiwatari:station'],
-      ['boarded', 'kagamiike:station'],
-      ['arrived_station', 'kagamiike:station'],
+      ['arrived_station', 'hiyorizaka:station'],
+      ['boarded', 'ryokogai:station'],
+      ['arrived_station', 'ryokogai:station'],
       ['arrived_place', KISSA],
     ]);
     expect(progress[2].text).toBe('乘车中（北环快线），预计 10:25 到棱光街站');
@@ -136,7 +136,7 @@ describe('S1：妮娅带 ¥20,000 和一件零食去棱光街的咖啡馆，再�
   it('任何时刻只有一边接受她的动作：交接前、到家后、交回后城里都拒绝', () => {
     const t = makeCity();
     const k = t.kernel('nia');
-    k.depart({ yen: 5000, to: 'hiwatari:ekimae-plaza' });
+    k.depart({ yen: 5000, to: 'hiyorizaka:ekimae-plaza' });
     t.run(20 * MIN);
     k.act({ type: 'go_home' });
     t.run(20 * MIN);

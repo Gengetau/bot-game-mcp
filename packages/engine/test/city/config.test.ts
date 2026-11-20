@@ -57,9 +57,9 @@ describe('city 配置', () => {
   });
 
   it('参数：入口只能是两个车站之一', () => {
-    expect(resolveCityParams({}).entryPlace).toBe('sentou:station');
-    expect(resolveCityParams({ entryPlace: 'kagamiike:station' }).entryPlace).toBe('kagamiike:station');
-    expect(() => resolveCityParams({ entryPlace: 'hiwatari:station' })).toThrow();
+    expect(resolveCityParams({}).entryPlace).toBe('kumominato:station');
+    expect(resolveCityParams({ entryPlace: 'ryokogai:station' }).entryPlace).toBe('ryokogai:station');
+    expect(() => resolveCityParams({ entryPlace: 'hiyorizaka:station' })).toThrow();
     expect(() => resolveCityParams({ entryPlace: 'shinjuku:station' })).toThrow();
     expect(resolveCityParams({}).backupKeep).toBe(14);
   });

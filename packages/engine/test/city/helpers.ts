@@ -3,7 +3,7 @@
  *
  *   const t = makeCity();
  *   const k = t.kernel('nia');                 // 假内核：管她家里的钱、动作权代次、outbox 游标
- *   k.depart({ yen: 20000, items: [COOKIE], to: 'kagamiike:kissa-tomoshibi' });   // prepare + commit
+ *   k.depart({ yen: 20000, items: [COOKIE], to: 'ryokogai:kissa-tomoshibi' });   // prepare + commit
  *   t.run(40 * MIN);                           // 推进时间，到期的行程作业照常结算
  *   k.act({ type: 'buy', sku: 'coffee' });
  *   const b = t.bot('小B');                    // 外部 bot
@@ -45,7 +45,7 @@ export const HOUSE: HouseMemberConfig[] = [
 ];
 
 export const COOKIE = { ref: 'res:cookie:1', kernel: { kind: 'food', item: 'cookie' }, qty: 1 };
-export const KISSA = 'kagamiike:kissa-tomoshibi';
+export const KISSA = 'ryokogai:kissa-tomoshibi';
 
 export interface CityTestOpts {
   at?: number;

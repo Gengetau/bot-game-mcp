@@ -203,7 +203,7 @@ export interface CityEnterOptions {
   name?: string;
   /** 公开一句话简介（<=80 字） */
   bio?: string;
-  /** 首次进城落点（如 sentou:station 或 kagamiike:station） */
+  /** 首次进城落点（如 kumominato:station 或 ryokogai:station） */
   entry?: string;
   /** 已有其他活跃客户端持权时是否立即抢占控制权（默认 false：安全旁观，避免双实例互抢） */
   claim?: boolean;

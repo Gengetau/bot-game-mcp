@@ -32,9 +32,9 @@ export interface PackPrototypeSpec {
 }
 
 export interface DistrictSpec {
-  /** 标准四层街区 ID，如 'dist:kagamiike' */
+  /** 标准四层街区 ID，如 'dist:ryokogai' */
   id: string;
-  /** 兼容引擎 AreaId 的短别名，如 'kagamiike' */
+  /** 兼容引擎 AreaId 的短别名，如 'ryokogai' */
   areaId: AreaId;
   name: string;
   /** 可选架空区归属短名（R0 不设） */
@@ -56,11 +56,11 @@ export type PackTransitEdge = TransitEdge & {
 
 /** 开放车站大厅的一枚确定性纪念站章（駅スタンプ）。 */
 export interface StationStampSpec {
-  /** 全局唯一站章 ID，如 'stamp:kagamiike' */
+  /** 全局唯一站章 ID，如 'stamp:ryokogai' */
   stampId: string;
-  /** 绑定车站综合体 ID，如 'st:kagamiike' */
+  /** 绑定车站综合体 ID，如 'st:ryokogai' */
   stationId: string;
-  /** 盖章台所在的车站大厅地点 ID，如 'kagamiike:station' */
+  /** 盖章台所在的车站大厅地点 ID，如 'ryokogai:station' */
   placeId: string;
   /** 站章题名 */
   title: string;
@@ -73,7 +73,7 @@ export interface StationStampSpec {
 }
 
 export interface CityContentPack {
-  /** 内容包唯一标识，如 'pack:kagamiike-ext' */
+  /** 内容包唯一标识，如 'pack:ryokogai-ext' */
   packId: string;
   /** 内容包语义版本，任何地点/票价/商品价格变动必须递增 */
   version: string;

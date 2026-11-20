@@ -9,7 +9,7 @@
 - **独立模块。** 代码在 `packages/engine/src/city/`，数据在独立的 SQLite 文件 `city.db`（默认 `./data/city.db`）。栖灯镇的 `town.db` 一个字节都不动：居民、账户、物品完全分开，旧镇币进不来。两者共用同一个数据库外壳（`world/db.ts` 的 `TownDb`，加了一个可替换的 schema 参数），迁移各管各的。
 - **没有坐标，没有导航。** 位置只到「地点」。地点之间的移动一律是「行程」：步行到车站、乘车、步行到目的地。行程出发后就是持久的定时任务（`scheduled_jobs`），没人在线也照常到站，重启后按到期时间补跑，票价不会重复扣。
 - **货币是虚拟日元，整数。** 没有收入，花完就没有了。外部 bot 第一次进城发一笔启动资金；室友带的钱从小屋的钱包出，回家时扣回。
-- **单写者。** 一位室友任何时刻只有一边接受她的动作：小屋内核，或者城市引擎。交接点是小屋门口节点（`hiwatari:ai-house:entrance`，不公开）。`commit` 之前内核管她，`commit` 到 `release` 之间城市管她；动作权用 `domain_epoch`（代次）卡住，旧代次的请求一律被拒（见「桥接协议」）。
+- **单写者。** 一位室友任何时刻只有一边接受她的动作：小屋内核，或者城市引擎。交接点是小屋门口节点（`hiyorizaka:ai-house:entrance`，不公开）。`commit` 之前内核管她，`commit` 到 `release` 之间城市管她；动作权用 `domain_epoch`（代次）卡住，旧代次的请求一律被拒（见「桥接协议」）。
 - **引擎不主动调内核。** 内核需要知道的事都写进持久的 outbox（带递增的 `seq`），内核按游标来拉；内核的每个写请求都带 `request_id`，引擎的回执永久保存。
 - **程序决定一切。** 能不能买、够不够钱、店开不开、进不进得去，都由程序算。模型只提出动作。引擎也不替室友算身体：吃了什么、走了多久只写成 `body_effect` 记录，由内核按自己的规则结算。
 
@@ -60,7 +60,7 @@
 |---|---|---|
 | `timezone` | `Asia/Tokyo` | 世界时区：营业时间、「每天一次」的去重、天气事件、对账时刻都按它算 |
 | `firstEntryGrantYen` | `200000` | 外部 bot 首次进城的启动资金，每个主体只发一次 |
-| `entryPlace` | `sentou:station` | 外部 bot 第一次进城没指定入口时落在哪里。只能是 `sentou:station` 或 `kagamiike:station`，写成别的启动时就报错 |
+| `entryPlace` | `kumominato:station` | 外部 bot 第一次进城没指定入口时落在哪里。只能是 `kumominato:station` 或 `ryokogai:station`，写成别的启动时就报错 |
 | `maxPresentExternal` | `30` | 同时在城的外部 bot 上限；满了返回 `PRECONDITION_FAILED` / `city_full` |
 | `presenceLeaseMs` | `600000` | 外部 bot 的在场租约：这么久没有任何调用就算离开（行程照常跑完） |
 | `externalActsPerHour` / `externalActsPerDay` | `60` / `400` | 外部 bot 的 `world_act` 上限 |
@@ -127,35 +127,35 @@ docs/city/mappings.json               物品与效果映射表
 
 ## 城市内容
 
-目录版本 `toto-p2.0`，文本版本 `toto-text-1.1`，票价规则版本 `sim-2026-11`。目录发布后不原地改：动了地点、线路、耗时、票价或商品价格就换版本。
+目录版本 `toto-p3.0`，文本版本 `toto-text-1.1`，票价规则版本 `sim-2026-11`。目录发布后不原地改：动了地点、线路、耗时、票价或商品价格就换版本。
 
 ### 片区与地点
 
-三个开放片区：日和坂（`hiwatari`）、棱光街（`kagamiike`）、云港（`sentou`）。时间都是世界时区（JST）的钟点。「全天」就是不关门。
+三个开放片区：日和坂（`hiyorizaka`）、棱光街（`ryokogai`）、云港（`kumominato`）。时间都是世界时区（JST）的钟点。「全天」就是不关门。
 
 | 地点 id | 名字 | 类型 | 营业 | 容量 | 离车站步行 | 雨天 | 卖什么 |
 |---|---|---|---|---|---|---|---|
-| `hiwatari:station` | 日和坂站 | 车站，室内 | 全天 | 400 | 0 | 不受影响 | — |
-| `hiwatari:ekimae-plaza` | 日和坂站东口站前广场 | 广场，室外 | 全天 | 80 | 2 分钟 | 提示 | — |
-| `hiwatari:ekimae-conbini` | 便利店「灯笼屋·日和坂站前」 | 店，室内 | 全天 | 20 | 3 分钟 | 不受影响 | 透明雨伞 ¥550，饭团 ¥160，瓶装绿茶 ¥150，小袋曲奇 ¥220 |
-| `hiwatari:mio-riverbank` | 浮光川河岸 | 河岸，室外 | 全天 | 120 | 18 分钟 | 下雨时关闭 | — |
-| `kagamiike:station` | 棱光街站 | 车站，室内 | 全天 | 500 | 0 | 不受影响 | — |
-| `kagamiike:kissa-tomoshibi` | 喫茶「灯」 | 咖啡馆，室内 | 08:00–21:00 | 16 | 6 分钟 | 不受影响 | 混合咖啡 ¥450，皇家奶茶 ¥500，烤芝士蛋糕 ¥520，咖啡豆（100 克）¥900 |
-| `kagamiike:shiorido` | 书店「栞堂」 | 店，室内 | 10:00–21:00 | 30 | 5 分钟 | 不受影响 | 文库本 ¥800，明信片 ¥150 |
-| `kagamiike:ekimae-conbini` | 便利店「灯笼屋·棱光街东口」 | 店，室内 | 全天 | 24 | 2 分钟 | 不受影响 | 透明雨伞 ¥550，饭团 ¥160，瓶装绿茶 ¥150，小袋曲奇 ¥220 |
-| `kagamiike:suzuran-closet` | 买手店「铃兰衣橱」 | 店，室内 | 11:00–21:00 | 18 | 5 分钟 | 不受影响 | 每日轮换常服礼盒 |
-| `kagamiike:minami-park` | 南棱光公园 | 公园，室外 | 全天 | 100 | 7 分钟 | 提示 | — |
-| `sentou:station` | 云港站 | 车站，室内 | 全天 | 600 | 0 | 不受影响 | — |
-| `sentou:south-conbini` | 便利店「灯笼屋·云港南口」 | 店，室内 | 全天 | 26 | 2 分钟 | 不受影响 | 透明雨伞 ¥550，饭团 ¥160，瓶装绿茶 ¥150，小袋曲奇 ¥220 |
-| `sentou:southern-terrace` | 云港南口露台步道 | 步道，室外 | 全天 | 120 | 4 分钟 | 提示 | — |
-| `sentou:muginohi` | 面包店「麦之灯」 | 店，室内 | 08:00–20:00 | 18 | 5 分钟 | 不受影响 | 菠萝包 ¥230，奶油面包 ¥260，手工曲奇 ¥280（晚间出清八折） |
-| `sentou:kamitsuki` | 文具店「纸月」 | 店，室内 | 10:00–20:00 | 20 | 6 分钟 | 不受影响 | 线装笔记本 ¥600，明信片 ¥150 |
-| `sentou:lumiere-atelier` | 时装屋「流光工坊」 | 店，室内 | 11:00–21:00 | 18 | 6 分钟 | 不受影响 | 每日轮换时装礼盒 |
-| `sentou:velours-intime` | 私密内衣馆「丝绒私语」 | 店，室内 | 12:00–22:00 | 12 | 7 分钟 | 不受影响 | 每日轮换私密礼盒 |
+| `hiyorizaka:station` | 日和坂站 | 车站，室内 | 全天 | 400 | 0 | 不受影响 | — |
+| `hiyorizaka:ekimae-plaza` | 日和坂站东口站前广场 | 广场，室外 | 全天 | 80 | 2 分钟 | 提示 | — |
+| `hiyorizaka:ekimae-conbini` | 便利店「灯笼屋·日和坂站前」 | 店，室内 | 全天 | 20 | 3 分钟 | 不受影响 | 透明雨伞 ¥550，饭团 ¥160，瓶装绿茶 ¥150，小袋曲奇 ¥220 |
+| `hiyorizaka:mio-riverbank` | 浮光川河岸 | 河岸，室外 | 全天 | 120 | 18 分钟 | 下雨时关闭 | — |
+| `ryokogai:station` | 棱光街站 | 车站，室内 | 全天 | 500 | 0 | 不受影响 | — |
+| `ryokogai:kissa-tomoshibi` | 喫茶「灯」 | 咖啡馆，室内 | 08:00–21:00 | 16 | 6 分钟 | 不受影响 | 混合咖啡 ¥450，皇家奶茶 ¥500，烤芝士蛋糕 ¥520，咖啡豆（100 克）¥900 |
+| `ryokogai:shiorido` | 书店「栞堂」 | 店，室内 | 10:00–21:00 | 30 | 5 分钟 | 不受影响 | 文库本 ¥800，明信片 ¥150 |
+| `ryokogai:ekimae-conbini` | 便利店「灯笼屋·棱光街东口」 | 店，室内 | 全天 | 24 | 2 分钟 | 不受影响 | 透明雨伞 ¥550，饭团 ¥160，瓶装绿茶 ¥150，小袋曲奇 ¥220 |
+| `ryokogai:suzuran-closet` | 买手店「铃兰衣橱」 | 店，室内 | 11:00–21:00 | 18 | 5 分钟 | 不受影响 | 每日轮换常服礼盒 |
+| `ryokogai:minami-park` | 南棱光公园 | 公园，室外 | 全天 | 100 | 7 分钟 | 提示 | — |
+| `kumominato:station` | 云港站 | 车站，室内 | 全天 | 600 | 0 | 不受影响 | — |
+| `kumominato:south-conbini` | 便利店「灯笼屋·云港南口」 | 店，室内 | 全天 | 26 | 2 分钟 | 不受影响 | 透明雨伞 ¥550，饭团 ¥160，瓶装绿茶 ¥150，小袋曲奇 ¥220 |
+| `kumominato:southern-terrace` | 云港南口露台步道 | 步道，室外 | 全天 | 120 | 4 分钟 | 提示 | — |
+| `kumominato:muginohi` | 面包店「麦之灯」 | 店，室内 | 08:00–20:00 | 18 | 5 分钟 | 不受影响 | 菠萝包 ¥230，奶油面包 ¥260，手工曲奇 ¥280（晚间出清八折） |
+| `kumominato:kamitsuki` | 文具店「纸月」 | 店，室内 | 10:00–20:00 | 20 | 6 分钟 | 不受影响 | 线装笔记本 ¥600，明信片 ¥150 |
+| `kumominato:lumiere-atelier` | 时装屋「流光工坊」 | 店，室内 | 11:00–21:00 | 18 | 6 分钟 | 不受影响 | 每日轮换时装礼盒 |
+| `kumominato:velours-intime` | 私密内衣馆「丝绒私语」 | 店，室内 | 12:00–22:00 | 12 | 7 分钟 | 不受影响 | 每日轮换私密礼盒 |
 
 雨天策略：「提示」是照常开放，现场视图里多一句「露天，下雨会淋到」；「下雨时关闭」是下雨时不能再进（已经在里面的人不赶）。
 
-另有一个不公开的节点 `hiwatari:ai-house:entrance`（小屋门口），只是交接点，见「视图与隐私」。它离日和坂站步行 12 分钟，和浮光川河岸之间有一条 9 分钟的近路，不用绕回站前。
+另有一个不公开的节点 `hiyorizaka:ai-house:entrance`（小屋门口），只是交接点，见「视图与隐私」。它离日和坂站步行 12 分钟，和浮光川河岸之间有一条 9 分钟的近路，不用绕回站前。
 
 商品价格和营业时间都是虚构的。所有价格是整数日元。物品类型共 13 种：曲奇、饭团、菠萝包、奶油面包、芝士蛋糕（吃的）；咖啡、奶茶、瓶装绿茶（喝的）；咖啡豆、透明雨伞、文库本、明信片、笔记本（东西，不能吃喝）。
 
@@ -209,7 +209,7 @@ docs/city/mappings.json               物品与效果映射表
 
 **外部 bot**（`origin = external`）：
 
-- 入口：云港站或棱光街站（`enter_world` 的 `entry`，默认云港站 `sentou:station`）。入口只在第一次进城时用；之后回来还在上次离开的地方（在路上的行程照常到站）。
+- 入口：云港站或棱光街站（`enter_world` 的 `entry`，默认云港站 `kumominato:station`）。入口只在第一次进城时用；之后回来还在上次离开的地方（在路上的行程照常到站）。
 - 第一次进城发 ¥200,000（`grant:first-entry:<principal_id>`，每个主体只发一次，之后没有任何收入）。旧镇币不兑换。
 - 显示名 1 到 16 字，简介最多 80 字，都先经过 `sanitizeName` / `sanitizeUserText`；名字按「NFKC 小写」比较不能重名，也不能和室友重名（`name_taken`）。第一次进城必须有名字（`name_required`）。
 - 名额：同时在城的外部 bot 最多 30 个（`maxPresentExternal`），满了 `city_full`。已经在场的人再调 `enter_world` 只是续租约，不受名额影响。
@@ -400,7 +400,7 @@ docs/city/mappings.json               物品与效果映射表
   ],
   "consumed": [{"type": "coffee", "qty": 1, "effect_id": "…", "origin_ref": null}],
   "given":    [{"type": "cookie", "qty": 1, "origin_ref": "…", "to": "<对方显示名>"}],
-  "pending":  [{"order_id": "ord_…", "what": "芝士蛋糕", "yen": 520, "place": "kagamiike:kissa-tomoshibi"}],
+  "pending":  [{"order_id": "ord_…", "what": "芝士蛋糕", "yen": 520, "place": "ryokogai:kissa-tomoshibi"}],
   "spend_summary": [{"what": "电车", "yen": -400}, {"what": "咖啡", "yen": -450}],
   "settled_at_ms": 0
 }
@@ -681,4 +681,4 @@ docs/city/mappings.json               物品与效果映射表
 - 代行的动作限流只有每小时上限，而且只计成功的动作。
 - `prepare` 之后内核既不 `commit` 也不 `abort`：引擎到 `plan.return_by_ms` 自动把这条记录作废（`aborted`，`return_reason: expired`），在那之前同一位室友不能再 `prepare`。内核可以随时自己 `abort`。
 - `plan.start_at_ms` 只校验，不用来排程：`commit` 的那一刻她就出发。
-- 小屋以后成为城里的一栋建筑不在第一期。节点 id 用的是将来入口能沿用的名字 `hiwatari:ai-house:entrance`。
+- 小屋以后成为城里的一栋建筑不在第一期。节点 id 用的是将来入口能沿用的名字 `hiyorizaka:ai-house:entrance`。

@@ -13,13 +13,13 @@
 | 层级 | 实体类型 | ID 命名规范（正则） | 示例 | 职责与可见性 |
 |---|---|---|---|---|
 | **L1 城市大区（可选）** | `Ward` | `^ward:[a-z0-9-]+$`（架空大区标识，严禁暴露 `mun:13xxx` 等现实行政代码） | `ward:hokubu`<br>`ward:toshin`（R0 可为空数组 `WARDS = []`） | 可选的架空方位/大区分组；公开视图与前端不得暴露现实行政区名 |
-| **L2 交通骨架** | `TransitLine` & `StationComplex` | 线路：`^line:[a-z0-9-]+:[a-z0-9-]+$`<br>车站：`^st:[a-z0-9-]+$`<br>交通边：`^te:[a-z0-9-]+$` | `line:toto-rail:hokkan`<br>`line:toto-rail:toukan`<br>`st:hiwatari`、`st:kagamiike`、`st:sentou`<br>`te:hiwatari-kagamiike` | 承载晴空都铁道、地铁、巴士与航路拓扑；车站综合体通过 `placeId` 显式指向站内大厅 `Place`，**严禁通过字符串拼接 `${area}:station` 反推！** |
-| **L3 生活街区** | `District` | `^dist:[a-z0-9-]+$`（对应 `AreaId`：`hiwatari` / `kagamiike` / `sentou`） | `dist:hiwatari`、`dist:kagamiike`、`dist:sentou` | 玩家感知的街区单元；绑定可选 `wardId`、主枢纽车站 `hubStationId`、天气代表点 `weatherPoint` 与**三级开放状态 `openness`** |
-| **L4 具体场所** | `Place` | `^[a-z0-9-]+:[a-z0-9:-]+$` | `hiwatari:station`<br>`kagamiike:kissa-tomoshibi`<br>`sentou:muginohi`<br>`hiwatari:ai-house:entrance`（隐藏） | 居民实际驻留、交谈、消费、工作、制作、探索与存取储物柜的最小位置粒度（无帧级坐标） |
+| **L2 交通骨架** | `TransitLine` & `StationComplex` | 线路：`^line:[a-z0-9-]+:[a-z0-9-]+$`<br>车站：`^st:[a-z0-9-]+$`<br>交通边：`^te:[a-z0-9-]+$` | `line:toto-rail:hokkan`<br>`line:toto-rail:toukan`<br>`st:hiyorizaka`、`st:ryokogai`、`st:kumominato`<br>`te:hiyorizaka-ryokogai` | 承载晴空都铁道、地铁、巴士与航路拓扑；车站综合体通过 `placeId` 显式指向站内大厅 `Place`，**严禁通过字符串拼接 `${area}:station` 反推！** |
+| **L3 生活街区** | `District` | `^dist:[a-z0-9-]+$`（对应 `AreaId`：`hiyorizaka` / `ryokogai` / `kumominato`） | `dist:hiyorizaka`、`dist:ryokogai`、`dist:kumominato` | 玩家感知的街区单元；绑定可选 `wardId`、主枢纽车站 `hubStationId`、天气代表点 `weatherPoint` 与**三级开放状态 `openness`** |
+| **L4 具体场所** | `Place` | `^[a-z0-9-]+:[a-z0-9:-]+$` | `hiyorizaka:station`<br>`ryokogai:kissa-tomoshibi`<br>`kumominato:muginohi`<br>`hiyorizaka:ai-house:entrance`（隐藏） | 居民实际驻留、交谈、消费、工作、制作、探索与存取储物柜的最小位置粒度（无帧级坐标） |
 
 ### 1.1 R0 架空 ID 铁律与车站解耦规范
 
-1. **R0 架空地点与车站 ID 锁定**：R0 已开放 17 个公开 `Place.id`、隐藏交接节点 `hiwatari:ai-house:entrance` 与 3 个 `StationComplex.id`（`st:hiwatari`、`st:kagamiike`、`st:sentou`），以 `docs/city/rename-r0.json` 为唯一权威来源。
+1. **R0 架空地点与车站 ID 锁定**：R0 已开放 17 个公开 `Place.id`、隐藏交接节点 `hiyorizaka:ai-house:entrance` 与 3 个 `StationComplex.id`（`st:hiyorizaka`、`st:ryokogai`、`st:kumominato`），以 `docs/city/rename-r0.json` 为唯一权威来源。
 2. **消除 `${area}:station` 硬编码**：
    - 现行 `packages/engine/src/city/trips.ts` 中的 `PLACE_OF_STATION(p: Place)` 写死了 `` `${p.area}:station` ``。当同一街区存在多个车站或站名与街区前缀不同时（如竹芝栈桥、押上/浅草多站）即会失效。
    - **M1 统一改为**：`station(p.station)?.placeId ?? null`，完全由 `Place.station -> StationComplex.placeId` 引用关系解析。
@@ -83,7 +83,7 @@ export interface CityContentPack {
     source: string;
   };
   district: {
-    id: string;          // 如 'dist:kagamiike'
+    id: string;          // 如 'dist:ryokogai'
     areaId: AreaId;
     name: string;        // 架空街区名
     wardId?: string;
@@ -122,7 +122,7 @@ export interface CityContentPack {
 2. **虚构商业与模拟数值显式标注**：
    - 城内所有具体店铺、商品价格、营业时间、兼职委托与制作配方一律为虚构设定，必须显式标记 `fictional: true`、`source: 'fictional'`；
    - 所有耗时与车费一律标记 `source: 'simulated'` 与 `FARE_RULE_VERSION`；
-   - 日和坂 AI 小屋保持为虚构旧洋房，交接节点 `hiwatari:ai-house:entrance` 标记 `hidden: true`，不对应真实门牌地址。
+   - 日和坂 AI 小屋保持为虚构旧洋房，交接节点 `hiyorizaka:ai-house:entrance` 标记 `hidden: true`，不对应真实门牌地址。
 3. **目录不可变与历史账单可解释（Schema v5 `catalog_versions`）**：
    - 内容包改动任何票价、耗时或商品价格时，必须升级 `CITY_CATALOG_VERSION`（及 `FARE_RULE_VERSION`）；
    - 引擎启动时将当前生效的目录版本摘要写入 `catalog_versions(catalog_version, fare_rule_version, summary_json, activated_at)`，使历史 `visits`、`trips` 与 `orders` 引用的旧版本号始终可查、可一键回退上一版目录包。
