@@ -169,9 +169,9 @@ describe('M3-D 标准 ContentPack：R0 暂卸隔离与架空契约校验 (#265 /
     expect(rHokkan.legs[0]).toMatchObject({ mode: 'train', line: '北环快线' });
     expect(TRANSIT_EDGES.every((e) => e.operator === 'toto-rail')).toBe(true);
 
-    const rToukan = planRoute('ryokogai:station', 'kumominato:station')!;
-    expect(rToukan).toMatchObject({ minutes: 10, fareYen: 200 });
-    expect(rToukan.legs[0]).toMatchObject({ mode: 'train', line: '晴环线' });
+    const rSeikan = planRoute('ryokogai:station', 'kumominato:station')!;
+    expect(rSeikan).toMatchObject({ minutes: 10, fareYen: 200 });
+    expect(rSeikan.legs[0]).toMatchObject({ mode: 'train', line: '晴环线' });
 
     expect(homeward('ryokogai:shiorido')).toEqual({ minutes: 30, fareYen: 200 });
     expect(homeward('kumominato:kamitsuki')).toEqual({ minutes: 37, fareYen: 260 });
@@ -193,7 +193,7 @@ describe('M3-D 标准 ContentPack：R0 暂卸隔离与架空契约校验 (#265 /
     const stArea = pub.areas.find((a: any) => a.id === 'kumominato');
     const hwArea = pub.areas.find((a: any) => a.id === 'hiyorizaka');
     expect(stArea.places.find((p: any) => p.id === 'kumominato:southern-terrace').open).toBe(true);
-    expect(hwArea.places.find((p: any) => p.id === 'hiyorizaka:mio-riverbank')).toMatchObject({
+    expect(hwArea.places.find((p: any) => p.id === 'hiyorizaka:fukogawa-riverbank')).toMatchObject({
       open: false,
       closed_reason: 'rain',
     });

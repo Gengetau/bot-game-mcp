@@ -246,7 +246,7 @@ describe('M3-A 2：小屋室友终电归家护栏（23:30 后进城、跨午夜�
     t.run(35 * MIN); // 23:55 JST
 
     // 23:55 克蕾雅从棱光街站前往日和坂浮光川河岸（13m 电车 23:55->00:08 到日和坂站 + 18m 步行 00:08->00:26）
-    claire.act({ type: 'travel', to: 'hiyorizaka:mio-riverbank' });
+    claire.act({ type: 'travel', to: 'hiyorizaka:fukogawa-riverbank' });
 
     // 23:58 云港与日和坂同时转雨：妮娅在露天步道收到 rain 唤醒；克蕾雅在途，浮光川河岸雨天关闭
     t.run(3 * MIN); // 23:58 JST

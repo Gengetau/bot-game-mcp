@@ -13,7 +13,7 @@
 | 层级 | 实体类型 | ID 命名规范（正则） | 示例 | 职责与可见性 |
 |---|---|---|---|---|
 | **L1 城市大区（可选）** | `Ward` | `^ward:[a-z0-9-]+$`（架空大区标识，严禁暴露 `mun:13xxx` 等现实行政代码） | `ward:hokubu`<br>`ward:toshin`（R0 可为空数组 `WARDS = []`） | 可选的架空方位/大区分组；公开视图与前端不得暴露现实行政区名 |
-| **L2 交通骨架** | `TransitLine` & `StationComplex` | 线路：`^line:[a-z0-9-]+:[a-z0-9-]+$`<br>车站：`^st:[a-z0-9-]+$`<br>交通边：`^te:[a-z0-9-]+$` | `line:toto-rail:hokkan`<br>`line:toto-rail:toukan`<br>`st:hiyorizaka`、`st:ryokogai`、`st:kumominato`<br>`te:hiyorizaka-ryokogai` | 承载晴空都铁道、地铁、巴士与航路拓扑；车站综合体通过 `placeId` 显式指向站内大厅 `Place`，**严禁通过字符串拼接 `${area}:station` 反推！** |
+| **L2 交通骨架** | `TransitLine` & `StationComplex` | 线路：`^line:[a-z0-9-]+:[a-z0-9-]+$`<br>车站：`^st:[a-z0-9-]+$`<br>交通边：`^te:[a-z0-9-]+$` | `line:toto-rail:hokkan`<br>`line:toto-rail:seikan`<br>`st:hiyorizaka`、`st:ryokogai`、`st:kumominato`<br>`te:hiyorizaka-ryokogai` | 承载晴空都铁道、地铁、巴士与航路拓扑；车站综合体通过 `placeId` 显式指向站内大厅 `Place`，**严禁通过字符串拼接 `${area}:station` 反推！** |
 | **L3 生活街区** | `District` | `^dist:[a-z0-9-]+$`（对应 `AreaId`：`hiyorizaka` / `ryokogai` / `kumominato`） | `dist:hiyorizaka`、`dist:ryokogai`、`dist:kumominato` | 玩家感知的街区单元；绑定可选 `wardId`、主枢纽车站 `hubStationId`、天气代表点 `weatherPoint` 与**三级开放状态 `openness`** |
 | **L4 具体场所** | `Place` | `^[a-z0-9-]+:[a-z0-9:-]+$` | `hiyorizaka:station`<br>`ryokogai:kissa-tomoshibi`<br>`kumominato:muginohi`<br>`hiyorizaka:ai-house:entrance`（隐藏） | 居民实际驻留、交谈、消费、工作、制作、探索与存取储物柜的最小位置粒度（无帧级坐标） |
 

@@ -155,7 +155,10 @@ async function callFail(
 describe('晴空都 R0 全量改名与暂卸内容包专项守卫', () => {
   it('门禁 1a：目录导出与公开网页静态资源对 57 项旧词/旧编号零命中', async () => {
     expect(R0_TOKENS).toHaveLength(57);
-    expect(R1_TOKENS).toEqual(['灯都', '绯渡', '镜池', '千灯', '澪川', '灯环线', 'hiwatari', 'kagamiike', 'sentou']);
+    expect(R1_TOKENS).toEqual([
+      '灯都', '绯渡', '镜池', '千灯', '澪川', '灯环线',
+      'hiwatari', 'kagamiike', 'sentou', 'toukan', 'hiyorizaka:mio',
+    ]);
 
     expectZeroLegacyTokens('catalog 导出面', {
       CITY_WORLD_ID,

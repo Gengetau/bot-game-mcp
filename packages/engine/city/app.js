@@ -253,7 +253,7 @@ const RAIL_STATIONS = [
     area: 'ryokogai',
     code: 'KG',
     name: '棱光街站',
-    lineKey: 'toukan',
+    lineKey: 'seikan',
     lineSummary: '晴空都铁道 晴环线 · 北环快线',
     stampTitle: '棱光街站 · 木雕猫头鹰与书灯',
     x: 336,
@@ -266,7 +266,7 @@ const RAIL_STATIONS = [
     area: 'kumominato',
     code: 'ST',
     name: '云港站',
-    lineKey: 'toukan',
+    lineKey: 'seikan',
     lineSummary: '晴空都铁道 晴环线 · 北环快线',
     stampTitle: '云港站 · 南口跨线露台与钟塔',
     x: 524,
@@ -301,7 +301,7 @@ const RAIL_EDGES = [
     fromPlace: 'ryokogai:station',
     toPlace: 'kumominato:station',
     d: 'M 336 138 L 524 178',
-    className: 'rail-toukan',
+    className: 'rail-seikan',
     label: '晴环线 · 10分 · ¥200',
     lx: 424,
     ly: 176,
@@ -327,7 +327,7 @@ function lineKeyOf(lineName, mode) {
   if (mode === 'walk') return 'walk';
   const s = String(lineName || '');
   if (s.includes('北环')) return 'hokkan';
-  return 'toukan';
+  return 'seikan';
 }
 
 /**

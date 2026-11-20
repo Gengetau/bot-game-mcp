@@ -453,7 +453,7 @@ textarea:user-invalid {
 .lcd-board[data-line="hokkan"] {
   --lcd-line: #16a34a;
 }
-.lcd-board[data-line="toukan"] {
+.lcd-board[data-line="seikan"] {
   --lcd-line: #65a30d;
 }
 .lcd-board[data-line="walk"] {
@@ -882,7 +882,7 @@ textarea:user-invalid {
   stroke-dasharray: 8 5;
   fill: none;
 }
-.rail-toukan {
+.rail-seikan {
   stroke: #65a30d;
   stroke-width: 5;
   fill: none;

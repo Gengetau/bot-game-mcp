@@ -492,7 +492,7 @@ describe('F12：随身钱包只剩回程车费', () => {
     expect(k.records('decision_wake')).toEqual([expect.objectContaining({ reason: 'plan_blocked', why: 'return_fare_reserved', destination: KISSA })]);
     expect(k.view().location).toEqual({ place: HOUSE_ENTRANCE });
     // 不花钱的地方还是能去（河岸走得到）
-    expect(k.view().here.exits.find((x: any) => x.id === 'hiyorizaka:mio-riverbank')).toMatchObject({ minutes: 9, fare_yen: 0 });
+    expect(k.view().here.exits.find((x: any) => x.id === 'hiyorizaka:fukogawa-riverbank')).toMatchObject({ minutes: 9, fare_yen: 0 });
     expect(k.act({ type: 'go_home' }).state).toBe('settled');
     k.pull();
     expect(k.settlement).toMatchObject({ purse_final_yen: 300, items: [] });

@@ -37,9 +37,9 @@ describe('目录', () => {
     expect(planRoute(HOUSE_ENTRANCE, 'kumominato:muginohi')).toMatchObject({ minutes: 36, fareYen: 260 });
     expect(planRoute(KISSA, 'kumominato:station')).toMatchObject({ minutes: 16, fareYen: 200 });
     // 小屋和河岸之间有近路，不用绕回站前
-    expect(planRoute(HOUSE_ENTRANCE, 'hiyorizaka:mio-riverbank')).toMatchObject({ minutes: 9, fareYen: 0 });
+    expect(planRoute(HOUSE_ENTRANCE, 'hiyorizaka:fukogawa-riverbank')).toMatchObject({ minutes: 9, fareYen: 0 });
     // 日和坂开放站前和浮光川河岸
-    expect(PLACES.filter((p) => p.area === 'hiyorizaka' && !p.hidden).map((p) => p.id)).toEqual(['hiyorizaka:station', 'hiyorizaka:ekimae-plaza', 'hiyorizaka:ekimae-conbini', 'hiyorizaka:mio-riverbank']);
+    expect(PLACES.filter((p) => p.area === 'hiyorizaka' && !p.hidden).map((p) => p.id)).toEqual(['hiyorizaka:station', 'hiyorizaka:ekimae-plaza', 'hiyorizaka:ekimae-conbini', 'hiyorizaka:fukogawa-riverbank']);
     const v: any = publicCityView(makeCity().c);
     expect(v.transit).toMatchObject({ source: 'simulated' });
   });
@@ -261,9 +261,9 @@ describe('天气', () => {
     const inside = t.bot('河边', { entry: 'ryokogai:station' });
     const outside = t.bot('路人', { entry: 'ryokogai:station' });
     setWeather(t, {});
-    inside.go('hiyorizaka:mio-riverbank');
+    inside.go('hiyorizaka:fukogawa-riverbank');
     outside.go('hiyorizaka:ekimae-plaza');
-    k.depart({ yen: 3000, to: 'hiyorizaka:mio-riverbank' });
+    k.depart({ yen: 3000, to: 'hiyorizaka:fukogawa-riverbank' });
     t.run(9 * MIN);
     setWeather(t, { hiyorizaka: 63 });
     expect(isRaining(t.c, 'hiyorizaka')).toBe(true);
@@ -274,9 +274,9 @@ describe('天气', () => {
     expect(outside.events().filter((e) => e.type === 'weather')).toHaveLength(1);
     expect(k.records('decision_wake').map((w) => w.reason)).toEqual(['arrived', 'rain']);
     // 河岸：已经在的人还在，新来的进不去
-    expect(inside.view().location).toEqual({ place: 'hiyorizaka:mio-riverbank' });
+    expect(inside.view().location).toEqual({ place: 'hiyorizaka:fukogawa-riverbank' });
     expect(inside.view().here.place).toMatchObject({ open: false, closed_reason: 'rain' });
-    rejects(() => outside.act({ type: 'travel', to: 'hiyorizaka:mio-riverbank' }), 'PRECONDITION_FAILED', 'place_closed_rain');
+    rejects(() => outside.act({ type: 'travel', to: 'hiyorizaka:fukogawa-riverbank' }), 'PRECONDITION_FAILED', 'place_closed_rain');
     // 站前广场只是提示，照常能去
     expect(inside.view().here.exits.find((x: any) => x.id === 'hiyorizaka:ekimae-plaza')).toMatchObject({ open: true });
     // 雨停了又下：同一天不再发第二次
@@ -300,7 +300,7 @@ describe('天气', () => {
     // 雨天不开放的地方照样按实况关着
     const b = t.bot('路人', { entry: 'ryokogai:station' });
     b.go('hiyorizaka:station');
-    rejects(() => b.act({ type: 'travel', to: 'hiyorizaka:mio-riverbank' }), 'PRECONDITION_FAILED', 'place_closed_rain');
+    rejects(() => b.act({ type: 'travel', to: 'hiyorizaka:fukogawa-riverbank' }), 'PRECONDITION_FAILED', 'place_closed_rain');
     setWeather(t, {});
     setWeather(t, { hiyorizaka: 63 });
     expect(eventsToday(t.c).map((e) => e.kind)).toEqual(['rain_started']);
@@ -312,7 +312,7 @@ describe('天气', () => {
     setWeather(t, { hiyorizaka: 0 });
     setWeather(t, { hiyorizaka: 1 });
     const ev = eventsToday(t.c);
-    expect(ev).toEqual([expect.objectContaining({ kind: 'riverbank_evening', area: 'hiyorizaka', place: 'hiyorizaka:mio-riverbank', title: '浮光川河岸的傍晚' })]);
+    expect(ev).toEqual([expect.objectContaining({ kind: 'riverbank_evening', area: 'hiyorizaka', place: 'hiyorizaka:fukogawa-riverbank', title: '浮光川河岸的傍晚' })]);
     expect(t.c.clock(ev[0]!.ends_at_ms)).toBe('18:30');
     const pub: any = publicCityView(t.c);
     expect(pub.events_today).toHaveLength(1);

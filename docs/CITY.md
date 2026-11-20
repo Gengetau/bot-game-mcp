@@ -138,7 +138,7 @@ docs/city/mappings.json               物品与效果映射表
 | `hiyorizaka:station` | 日和坂站 | 车站，室内 | 全天 | 400 | 0 | 不受影响 | — |
 | `hiyorizaka:ekimae-plaza` | 日和坂站东口站前广场 | 广场，室外 | 全天 | 80 | 2 分钟 | 提示 | — |
 | `hiyorizaka:ekimae-conbini` | 便利店「灯笼屋·日和坂站前」 | 店，室内 | 全天 | 20 | 3 分钟 | 不受影响 | 透明雨伞 ¥550，饭团 ¥160，瓶装绿茶 ¥150，小袋曲奇 ¥220 |
-| `hiyorizaka:mio-riverbank` | 浮光川河岸 | 河岸，室外 | 全天 | 120 | 18 分钟 | 下雨时关闭 | — |
+| `hiyorizaka:fukogawa-riverbank` | 浮光川河岸 | 河岸，室外 | 全天 | 120 | 18 分钟 | 下雨时关闭 | — |
 | `ryokogai:station` | 棱光街站 | 车站，室内 | 全天 | 500 | 0 | 不受影响 | — |
 | `ryokogai:kissa-tomoshibi` | 喫茶「灯」 | 咖啡馆，室内 | 08:00–21:00 | 16 | 6 分钟 | 不受影响 | 混合咖啡 ¥450，皇家奶茶 ¥500，烤芝士蛋糕 ¥520，咖啡豆（100 克）¥900 |
 | `ryokogai:shiorido` | 书店「栞堂」 | 店，室内 | 10:00–21:00 | 30 | 5 分钟 | 不受影响 | 文库本 ¥800，明信片 ¥150 |

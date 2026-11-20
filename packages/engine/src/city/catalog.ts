@@ -215,7 +215,7 @@ const BASE_STATIONS: readonly StationComplex[] = [
     placeId: 'ryokogai:station',
     stops: [
       { id: 'st:ryokogai:hokkan', line: '北环快线', operator: '晴空都铁道' },
-      { id: 'st:ryokogai:toukan', line: '晴环线', operator: '晴空都铁道' },
+      { id: 'st:ryokogai:seikan', line: '晴环线', operator: '晴空都铁道' },
     ],
   },
   {
@@ -225,7 +225,7 @@ const BASE_STATIONS: readonly StationComplex[] = [
     placeId: 'kumominato:station',
     stops: [
       { id: 'st:kumominato:hokkan', line: '北环快线', operator: '晴空都铁道' },
-      { id: 'st:kumominato:toukan', line: '晴环线', operator: '晴空都铁道' },
+      { id: 'st:kumominato:seikan', line: '晴环线', operator: '晴空都铁道' },
     ],
   },
 ];
@@ -278,7 +278,7 @@ export interface Neighborhood {
 
 const BASE_NEIGHBORHOODS: readonly Neighborhood[] = [
   { id: 'hiyorizaka:ekimae', area: 'hiyorizaka', name: '日和坂站前' },
-  { id: 'hiyorizaka:mio', area: 'hiyorizaka', name: '浮光川河岸' },
+  { id: 'hiyorizaka:fukogawa', area: 'hiyorizaka', name: '浮光川河岸' },
   { id: 'hiyorizaka:residential', area: 'hiyorizaka', name: '日和坂一带的住宅区' },
   { id: 'ryokogai:east', area: 'ryokogai', name: '棱光街东口' },
   { id: 'kumominato:south', area: 'kumominato', name: '云港南口' },
@@ -488,9 +488,9 @@ const BASE_PLACES: readonly Place[] = [
     fictional: true,
   },
   {
-    id: 'hiyorizaka:mio-riverbank',
+    id: 'hiyorizaka:fukogawa-riverbank',
     area: 'hiyorizaka',
-    neighborhood: 'hiyorizaka:mio',
+    neighborhood: 'hiyorizaka:fukogawa',
     name: '浮光川河岸',
     type: 'riverside',
     indoor: false,
@@ -839,7 +839,7 @@ export const STATION_STAMPS: readonly StationStampSpec[] = [
 ];
 
 /** 不经过车站的步行近路（无向）。小屋在日和坂站和浮光川之间，去河岸不用绕回站前。 */
-export const WALK_SHORTCUTS: readonly { a: string; b: string; minutes: number }[] = [{ a: HOUSE_ENTRANCE, b: 'hiyorizaka:mio-riverbank', minutes: 9 }];
+export const WALK_SHORTCUTS: readonly { a: string; b: string; minutes: number }[] = [{ a: HOUSE_ENTRANCE, b: 'hiyorizaka:fukogawa-riverbank', minutes: 9 }];
 
 const PLACE_BY_ID = new Map(PLACES.map((p) => [p.id, p]));
 const STATION_BY_ID = new Map(STATIONS.map((s) => [s.id, s]));
