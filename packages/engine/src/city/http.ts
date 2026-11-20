@@ -4,6 +4,8 @@
  *  公开（不用登录，只有公开投影）：
  *   GET  /city/                          文字版的城市页面（服务器直接渲染，没有脚本）
  *   GET  /city/api/public                公开视图（JSON）
+ *   GET  /city/api/ready                 就绪探针：只回 {status}；status 为 running 时 200，
+ *                                        recovering / degraded / closed 时 503；不带数据、不要凭据、不缓存
  *
  *  桥接（只给小屋内核用；`Authorization: Bearer <city.bridgeKey>`；没配密钥时整组接口不存在）。前缀 /city/bridge/v1：
  *   GET  /catalog                        目录版本、映射表、地点和票价（内核做出门前的检查用）
@@ -343,6 +345,12 @@ export function mountCity(app: Express, c: CityService, log: (msg: string) => vo
   };
 
   api.get('/public', apiSync(() => publicCityView(c)));
+  // 就绪探针（第 1 闸 P8）：/public 只读快照、不看城市状态，启动恢复失败时它照样 200。
+  // 部署脚本以这里的 200 + running 为城市就绪的唯一判据。只回状态字，不带任何城市数据。
+  api.get('/ready', (_req, res) => {
+    const status = c.status;
+    res.status(status === 'running' ? 200 : 503).json({ status });
+  });
   api.get(
     '/config',
     apiSync(() => ({
