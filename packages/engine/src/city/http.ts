@@ -31,6 +31,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import express, { type Express, type NextFunction, type Request, type Response } from 'express';
 import { cityCommand, inspectSingleItem, requireActingVisit, resolvePendingOrder, visitAct } from './actions.js';
+import { listFeedback, setFeedbackStatus, showFeedback } from './feedback.js';
 import {
   CITY_CATALOG_VERSION,
   CITY_TEXT_VERSION,
@@ -715,17 +716,47 @@ export function mountCity(app: Express, c: CityService, log: (msg: string) => vo
   });
 
   const adminDigests = (opts.adminKeys ?? []).map((k) => digest(k));
+  const requireAdmin = (req: Request): void => {
+    const m = /^Bearer\s+(.+)$/i.exec(req.headers.authorization ?? '');
+    if (!m || adminDigests.length === 0) {
+      throw new CityError('UNAUTHENTICATED', '管理接口需要管理员 Bearer 密钥。', 'admin_auth_required');
+    }
+    const got = digest(m[1]!.trim());
+    if (!adminDigests.some((want) => timingSafeEqual(got, want))) {
+      throw new CityError('FORBIDDEN', '管理员密钥无效。', 'admin_forbidden');
+    }
+  };
+  // 反馈（feedback.ts）：列表、单条、开关。正文是别人写的内容，带 untrusted
+  api.get(
+    '/admin/feedback',
+    apiSync((req) => {
+      requireAdmin(req);
+      const q = req.query as Record<string, unknown>;
+      const status = q.status === 'closed' || q.status === 'all' ? q.status : 'open';
+      const limit = Number(q.limit ?? 20);
+      const since = q.since_ms !== undefined ? Number(q.since_ms) : undefined;
+      return listFeedback(c, { status, ...(Number.isFinite(limit) ? { limit } : {}), ...(since !== undefined && Number.isFinite(since) ? { sinceMs: since } : {}) });
+    }),
+  );
+  api.get(
+    '/admin/feedback/:id',
+    apiSync((req) => {
+      requireAdmin(req);
+      return showFeedback(c, String(req.params.id ?? ''));
+    }),
+  );
+  api.post(
+    '/admin/feedback/:id',
+    apiSync((req) => {
+      requireAdmin(req);
+      const b = jsonObj(req);
+      return { ok: true, feedback: setFeedbackStatus(c, String(req.params.id ?? ''), b.status, b.note) };
+    }),
+  );
   api.post(
     '/admin/orders/:id/resolve',
     apiSync((req) => {
-      const m = /^Bearer\s+(.+)$/i.exec(req.headers.authorization ?? '');
-      if (!m || adminDigests.length === 0) {
-        throw new CityError('UNAUTHENTICATED', '管理接口需要管理员 Bearer 密钥。', 'admin_auth_required');
-      }
-      const got = digest(m[1]!.trim());
-      if (!adminDigests.some((want) => timingSafeEqual(got, want))) {
-        throw new CityError('FORBIDDEN', '管理员密钥无效。', 'admin_forbidden');
-      }
+      requireAdmin(req);
       const b = jsonObj(req);
       const outcome = b.outcome;
       if (outcome !== 'completed' && outcome !== 'failed') {
