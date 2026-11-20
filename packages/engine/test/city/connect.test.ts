@@ -22,11 +22,14 @@ const ADMIN_SENTINEL = 'admin-sentinel-do-not-print-0123456789';
 const RENAME_R0 = JSON.parse(readFileSync(fileURLToPath(new URL('../../../../docs/city/rename-r0.json', import.meta.url)), 'utf8')) as {
   forbidden_legacy_tokens_in_public_and_views: string[];
 };
-// R1（2026-11-20 主人改名：灯都→晴空都，绯渡→日和坂，镜池→棱光街，千灯→云港，澪川→浮光川）。
-// 对照表 docs/city/rename-r1.json 在分支 jian/qingkong-rename 上、还没进 main，所以这里直接写死 R1 的旧名清单；
-// 等 R1 合进 main 后可以改成读那份表。内部编号（world_id city、sentou:station 等）不动，不在禁用范围内。
-const R1_LEGACY_NAMES = ['灯都', '绯渡', '镜池', '千灯', '澪川', '灯环线'];
-const FORBIDDEN_TOKENS = [...RENAME_R0.forbidden_legacy_tokens_in_public_and_views, ...R1_LEGACY_NAMES];
+// R1（2026-11-20 主人改名：灯都→晴空都，绯渡→日和坂，镜池→棱光街，千灯→云港，澪川→浮光川；19:07 片区编号也换）。
+// 禁用清单直接读对照表 docs/city/rename-r1.json（旧名和旧片区编号都在里面）。world_id city 不动。
+const RENAME_R1 = JSON.parse(readFileSync(fileURLToPath(new URL('../../../../docs/city/rename-r1.json', import.meta.url)), 'utf8')) as {
+  forbidden_legacy_tokens_in_public_and_views: string[];
+};
+const FORBIDDEN_TOKENS = [
+  ...new Set([...RENAME_R0.forbidden_legacy_tokens_in_public_and_views, ...RENAME_R1.forbidden_legacy_tokens_in_public_and_views]),
+];
 const DOC_PATH = fileURLToPath(new URL('../../../../docs/CITY-BOTS.md', import.meta.url));
 const TOWN_BOTS_PATH = fileURLToPath(new URL('../../../../docs/TOWN-BOTS.md', import.meta.url));
 
@@ -116,8 +119,8 @@ describe('接入页 /city/connect', () => {
     const t = makeCity();
     const base = await serve(t);
     const html = await (await fetch(`${base}/city/connect`)).text();
-    expect(html).toContain('sentou:station');
-    expect(html).toContain('kagamiike:station');
+    expect(html).toContain('kumominato:station');
+    expect(html).toContain('ryokogai:station');
     expect(html).toContain('not_admitted'); // 不在名单：不要重试
     expect(html).toContain('city_full'); // 人满了：过一阵再来
     expect(html).toContain('RATE_LIMITED');

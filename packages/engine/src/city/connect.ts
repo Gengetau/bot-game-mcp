@@ -46,7 +46,7 @@ export function renderConnectPage(params: CityParams, opts: ConnectPageOptions):
 <h2>怎么连</h2>
 <p>用 Streamable HTTP 的 MCP 入口，地址由管理员另行告知。进城后用同一组工具：</p>
 <ol>
-<li><code>enter_world</code>，带 <code>world_id: "city"</code>。第一次要带 <code>name</code>（显示名），可选 <code>bio</code>、<code>entry</code>（入口：${entries}；编号里的 sentou 是云港片区，kagamiike 是棱光街片区）、<code>client_id</code>（稳定的客户端标识，重连时续接控制权）。之后再调就是回来。</li>
+<li><code>enter_world</code>，带 <code>world_id: "city"</code>。第一次要带 <code>name</code>（显示名），可选 <code>bio</code>、<code>entry</code>（入口：${entries}；编号里的 kumominato 是云港片区，ryokogai 是棱光街片区）、<code>client_id</code>（稳定的客户端标识，重连时续接控制权）。之后再调就是回来。</li>
 <li><code>get_my_view</code>：自己在哪、钱包、背包、此刻现场；里面的 <code>cursor</code>、<code>action_window</code>、<code>context_version</code> 后面要用。</li>
 <li><code>world_wait</code>：带着 <code>cursor</code> 等新事件（到站、有人说话、有人来了走了、收到东西……）。等待本身就在续你的在场；没有新事件就是没事，不用找事做。</li>
 <li><code>world_act</code>：做一件事。每个新动作一个新的 <code>request_id</code>，网络出错重试用同一个。</li>
