@@ -1,5 +1,5 @@
 /**
- * 城市里的动作（第一期）：travel / say / buy / consume / give / go_home。
+ * 城市里的动作（第一期）：travel / say / buy / consume / give / go_home，以及 feedback（反馈，见 feedback.ts）。
  *
  * 两个入口，同一套处理器：
  *  - 外部 bot：cityCommand()，经 MCP 的 world_act 进来。回执会过期（只管网络重试），每个主体每小时 / 每天有动作上限。
@@ -11,6 +11,7 @@ import { parseJson, type Row } from '../world/db.js';
 import { REQUEST_ID_RE, sha256, stableStringify } from '../world/service.js';
 import { BOOK_SHELF_BUYBACK_YEN, BOOK_SHELF_RESALE_YEN, findGoodAtPlace, isCarryHome, itemName, itemType, place, publicPlace } from './catalog.js';
 import { CityError, cityBadRequest, cityConflict, cityControlLost, cityPrecondition } from './errors.js';
+import { feedbackSubmitterOf, recordFeedback } from './feedback.js';
 import {
   BRIDGE,
   SHOPS,
@@ -62,6 +63,7 @@ export const CITY_ACTIONS = [
   'take_locker',
   'stamp_station',
   'update_profile',
+  'feedback',
   'go_home',
 ] as const;
 
@@ -553,6 +555,9 @@ function perform(c: CityService, r: CityResident, action: unknown, at: number, v
       return doStampStation(c, r, at, visit);
     case 'update_profile':
       return doUpdateProfile(c, r, a, visit);
+    case 'feedback':
+      // 不挑地点、路上也能提；限流和合并在 recordFeedback 里（和动作上限分开算）
+      return { ...recordFeedback(c, feedbackSubmitterOf(c, r, visit?.visit_id ?? null), { category: a.category, text: a.text }, visit ? 'bridge' : feedbackChannelOf(r), at) };
     case 'go_home':
       // 外部 bot 没有这个动作，也不该从报错里知道有它
       if (!visit) throw unknownAction(false);
@@ -560,6 +565,11 @@ function perform(c: CityService, r: CityResident, action: unknown, at: number, v
     default:
       throw unknownAction(visit !== null);
   }
+}
+
+/** 外部 / 真人提交的入口：真人只能从网页来，bot 从 MCP 的 world_act 来。 */
+function feedbackChannelOf(r: CityResident): 'web' | 'world_act' {
+  return r.controller_id?.startsWith('web:') ? 'web' : 'world_act';
 }
 
 const unknownAction = (house: boolean): CityError =>
@@ -661,7 +671,7 @@ export function visitAct(c: CityService, visitId: string, body: Record<string, u
       const type = (body.action as Action | undefined)?.type;
       if (visit.state === 'settling' || visit.state === 'settled') throw new CityError('VISIT_NOT_ACTIVE', '她已经到家门口了，城里的事到此为止。', 'settled', { state: visit.state });
       // 回家路上不再接受新交易和新去处，只能说话
-      if (visit.state === 'returning' && type !== 'say' && type !== 'go_home') throw new CityError('VISIT_NOT_ACTIVE', '她在回家的路上，不能再做别的。', 'returning', { state: visit.state });
+      if (visit.state === 'returning' && type !== 'say' && type !== 'go_home' && type !== 'feedback') throw new CityError('VISIT_NOT_ACTIVE', '她在回家的路上，不能再做别的。', 'returning', { state: visit.state });
       const r = c.mustResident(visit.resident_id);
       const subject = `house:${visit.actor_id}`;
       rateCheck(c, subject, 'act', c.params.houseActsPerHour, 3600_000, now);

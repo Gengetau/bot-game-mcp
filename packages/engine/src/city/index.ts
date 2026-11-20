@@ -38,6 +38,7 @@ export * from './actions.js';
 export * from './catalog.js';
 export { CITY_SCHEMA_VERSION } from './db.js';
 export * from './errors.js';
+export * from './feedback.js';
 export * from './ledger.js';
 export * from './mappings.js';
 export * from './packs/index.js';

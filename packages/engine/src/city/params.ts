@@ -52,6 +52,15 @@ export const cityParamsSchema = z.object({
   lockerLeaseMs: z.number().int().min(60_000).default(72 * 3600_000),
   /** 单人同时占用的活跃公共代取柜位上限 */
   maxActiveLockerDeposits: z.number().int().min(1).default(5),
+  /** 反馈（city_feedback）：每个提交者每小时 / 每天几条，全城每天几条 */
+  feedbackPerHour: z.number().int().min(1).default(3),
+  feedbackPerDay: z.number().int().min(1).default(10),
+  feedbackGlobalPerDay: z.number().int().min(1).default(200),
+  /** 反馈正文最少 / 最多几个字 */
+  feedbackMinChars: z.number().int().min(1).default(4),
+  feedbackMaxChars: z.number().int().min(10).max(4000).default(800),
+  /** 同一段话在这段时间内（看最近一次提交）只记一条、合并计数 */
+  feedbackMergeMs: z.number().int().min(60_000).default(7 * 24 * 3600_000),
 });
 
 export type CityParams = z.infer<typeof cityParamsSchema>;
