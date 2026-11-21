@@ -2,7 +2,7 @@
 
 - **文档编号**：`docs/city/IDENTITY-AND-FACTS.md`（M0 四份冻结契约之一）
 - **状态**：M0 候选定稿（主笔：内核侧 `gemini4-ext`；共编对齐：引擎侧 `gemini3-ext`）
-- **锁定基线**：引擎 `Gengetau/bot-game-mcp` + 小屋内核 `world-kernel/life1`（`vocab_version: life1-*`，`mappings_version: 3`，协议 `city-bridge/1`）
+- **锁定基线**：引擎 `Gengetau/bot-game-mcp` + 小屋内核 `world-kernel/life1`（`vocab_version: life1-*`，`mappings_version: 4`，协议 `city-bridge/1`）
 - **覆盖周期**：M0–M5 全量演进预留（M1 三类真实玩家闭环、M2 经济与兼职制作、M3 异步社交/个人空间/共建、M4 四层地理内容包、M5 监控与灾难恢复）
 
 ---

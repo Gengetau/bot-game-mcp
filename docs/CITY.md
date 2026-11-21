@@ -429,9 +429,9 @@ docs/city/mappings.json               物品与效果映射表
 
 步行效果：每满 15 分钟（映射表的 `min_minutes`）的步行写一条 `walked`，不满的累计到下一次。
 
-物品与效果映射表（`docs/city/mappings.json`，版本 2）。`prepare` 里的 `mappings_version` 对不上就是 `VERSION_MISMATCH`。改映射时 `mappings.ts` 和 `mappings.json` 一起改，版本加一（`test/city/mappings.test.ts` 检查两边一致）。
+物品与效果映射表（`docs/city/mappings.json`，版本 4）。`prepare` 里的 `mappings_version` 对不上就是 `VERSION_MISMATCH`。改映射时 `mappings.ts` 和 `mappings.json` 一起改，版本加一（`test/city/mappings.test.ts` 检查两边一致）。
 
-物品（内核一侧的名字取自内核词表 life1 那一档，`kind` 只有 `food`）：
+物品（内核一侧的名字取自内核词表 life1 那一档；吃的 `kind` 是 `food`，服饰是 `wardrobe_asset`，雨伞是 `garment`）：
 
 | 引擎的物品类型 | 内核的资源 | 方向 |
 |---|---|---|
@@ -441,10 +441,12 @@ docs/city/mappings.json               物品与效果映射表
 | `coffee_beans` 咖啡豆 | `food/coffee`（内核里是一包咖啡） | 只回家 |
 | `melon_pan` 菠萝包、`cream_bun` 奶油面包 | `food/bread` | 只回家 |
 | `cheesecake` 芝士蛋糕 | `food/dessert` | 只回家 |
+| `apparel_bundle` 服饰礼盒 | `wardrobe_asset/<可信 asset_id>` | 只回家 |
+| `umbrella` 透明雨伞 | `garment/umbrella`（v4：内核把它加进她的衣橱，成为一件配饰，下雨天出门算自有雨伞） | 只回家 |
 
 - 双向：出门能带（`prepare` 按它换成引擎的物品类型），城里得到的回家时也按它换回去。
 - 只回家（`direction: "home"`）：城里的具体品种归到内核已有的大类。出门时不按这些行换算——内核的一个面包没法确定是城里的哪一种；这类物品现在不能带出门。
-- 不在表里、回家时进寄存包裹的：现点的杯装饮料（`coffee`、`milk_tea`）、`umbrella`（内核里伞是衣橱里的服饰，不是资源）、`paperback`、`postcard`、`notebook`（内核词表里没有书和文具）。
+- 不在表里、回家时进寄存包裹的：现点的杯装饮料（`coffee`、`milk_tea`）、`paperback`、`postcard`、`notebook`（内核词表里没有书和文具），以及借来的东西（`borrowed_from` 不为空）。
 - 一件数量 1 的引擎物品回家是数量 1 的内核资源，不换算份量。
 
 效果：吃 `cookie` / `onigiri` / `melon_pan` / `cream_bun` / `cheesecake` → `snack`；喝 `coffee` → `drink_coffee`；喝 `milk_tea` / `green_tea` → `drink_tea`；步行 15 分钟 → `walk_15m`。这四个效果名是这张表定的，内核词表里没有同名的东西（内核现在只有固定的一次进食效果），具体数值由内核的适配器实现。
@@ -663,7 +665,7 @@ docs/city/mappings.json               物品与效果映射表
 ## 已知限制 / 没做的
 
 - **票价和耗时是模拟值。** 票价的数值对照过 2026-03-14 改定后的纸质车票运价档（见「车站、线路、票价、时间」），但没有 IC 运价、换乘、折扣，也不会跟着真实运价变；耗时是估计。
-- **映射表没有覆盖全部商品。** 版本 2 让饭团、瓶装绿茶、曲奇、咖啡豆、两种面包、芝士蛋糕能回家；现点的杯装饮料、雨伞、文库本、明信片、笔记本在内核词表里没有对应的资源，只要没吃掉、没送出，回家时还是 `locker`，访问停在 `reconcile`，需要人工处理。要让它们回家，得内核先加这些资源。内核词表有 p1a 和 life1 两档，表里的名字按 life1 取（`bread`、`bottled_tea`、`dessert` 只在 life1 里），线上用的是哪一档要内核那边确认。`locker` 的物品没有取回的动作，也看不到（本人视图只列可用的物品）。
+- **映射表没有覆盖全部商品。** 版本 2 让饭团、瓶装绿茶、曲奇、咖啡豆、两种面包、芝士蛋糕能回家；现点的杯装饮料、文库本、明信片、笔记本在内核词表里没有对应的资源（雨伞从版本 4 起能回家），只要没吃掉、没送出，回家时还是 `locker`，访问停在 `reconcile`，需要人工处理。要让它们回家，得内核先加这些资源。内核词表有 p1a 和 life1 两档，表里的名字按 life1 取（`bread`、`bottled_tea`、`dessert` 只在 life1 里），线上用的是哪一档要内核那边确认。`locker` 的物品没有取回的动作，也看不到（本人视图只列可用的物品）。
 - `resolvePendingOrder` 只处理她还在城里的情况，也没有 HTTP / MCP 入口。访问关闭后的 `pending` 订单和锁住的钱要按对账报告人工处理。`pending` 目前只能由测试用的故障注入点产生（第一期没有真的会「结果未知」的店家）。
 - **F13 在内核侧**，引擎没有对应的测试。
 - 天气用的是 Open-Meteo 免费托管的接口，只限非商业用途（主人定了这个服务是免费的，可以用）；气象厅的数据源没有接（见「和《建城资料源》表的对照」）。

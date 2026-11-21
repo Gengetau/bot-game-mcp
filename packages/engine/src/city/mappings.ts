@@ -33,7 +33,7 @@ export interface Mappings {
 }
 
 export const MAPPINGS: Mappings = {
-  version: 3,
+  version: 4,
   items: [
     // 双向：内核词表里有同名或同义的资源
     { kernel: { kind: 'food', item: 'cookie' }, engine_type: 'cookie', stack: true, edible: true },
@@ -45,6 +45,8 @@ export const MAPPINGS: Mappings = {
     { kernel: { kind: 'food', item: 'bread' }, engine_type: 'cream_bun', stack: true, edible: true, direction: 'home' },
     { kernel: { kind: 'food', item: 'dessert' }, engine_type: 'cheesecake', stack: true, edible: true, direction: 'home' },
     { kernel: { kind: 'wardrobe_asset', item: '*' }, engine_type: 'apparel_bundle', stack: false, edible: false, direction: 'home' },
+    // v4：城里买的透明雨伞回家变成她自己的一件配饰（内核衣柜），下雨天出门就有伞可带
+    { kernel: { kind: 'garment', item: 'umbrella' }, engine_type: 'umbrella', stack: false, edible: false, direction: 'home' },
   ],
   effects: [
     { engine_kind: 'ate', engine_type: 'cookie', kernel_effect: 'snack' },
