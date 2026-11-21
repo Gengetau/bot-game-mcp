@@ -72,7 +72,7 @@ describe('lobby & referee election', () => {
     const id = summary.game_id;
     manager.joinGame(bot(2), id, { as: 'player' });
     // 房主和已报名的 bot 都不能替人报名（WW-X9DG：bot 编了个不存在的 QQ 号塞进来）
-    expect(() => manager.addHuman(host, id, { userId: '3969120864', name: '新人' })).toThrow(/自己在群里说「加入」/);
+    expect(() => manager.addHuman(host, id, { userId: '1000000007', name: '新人' })).toThrow(/自己在群里说「加入」/);
     expect(() => manager.addHuman(bot(2), id, human(1))).toThrow(GameError);
     expect(() => manager.relayHumanMessage(bot(2), id, { userId: '20001', text: '加入', channel: 'group' })).toThrow(/不能替别人报名/);
     const lobby = () => manager.getRecord(id).lobby.filter((e) => e.kind === 'human').map((e) => e.id);
