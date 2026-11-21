@@ -115,7 +115,7 @@ export function formatHeldItemSummary(i: ItemRow, r: Pick<CityResident, 'origin'
     ...(r.origin === 'house'
       ? {
           from_home: i.origin_ref !== null,
-          can_go_home: carryHome && (i.origin_ref !== null || (i.type === 'apparel_bundle' ? trustedAssetIdOf(i) !== null : kernelItemOf(i.type) !== null)),
+          can_go_home: carryHome && (i.origin_ref !== null || (i.borrowed_from === null && (i.type === 'apparel_bundle' ? trustedAssetIdOf(i) !== null : kernelItemOf(i.type) !== null))),
         }
       : {}),
   };
