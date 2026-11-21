@@ -7,6 +7,7 @@ enum Phase { BOOT, READY, BUSY, LOGIN, ERROR, PLAYING }
 const QL := preload("res://scripts/quality_logic.gd")
 const API := "/town/api"
 const PickLogic := preload("res://scripts/pick_logic.gd")
+const NavRoute := preload("res://scripts/nav_route.gd")
 const SceneLogic := preload("res://scripts/scene_logic.gd")
 const DebugFlags := preload("res://scripts/debug_flags.gd")
 const ActLogic := preload("res://scripts/features/activity_logic.gd")  # 只用里面的纯函数（谁算坐着）
@@ -112,6 +113,8 @@ var nav_generation: int = 0
 ## 快照里的 has_nav 要晚一两帧才跟上：这段空档里按 Esc / 点「停下」也得算「正在走」，否则刚点错地方马上按 Esc 会没反应
 var nav_inflight: int = 0
 var nav_acked_ms: float = -1.0e9
+## 分辨一次 you_arrived 是哪一趟路走完了（上一趟路的到达可能晚到，落在新的 navigate 之后）：见 nav_route.gd
+var nav_route := NavRoute.new()
 const NAV_ACK_GRACE_MS := 1500.0
 var req_counter: int = 0
 var _was_moving: bool = false
@@ -571,6 +574,7 @@ func _new_session() -> void:
 	me_again = false
 	poll_busy = false
 	claiming = false
+	nav_route.reset()
 
 
 func _relogin() -> void:
@@ -806,6 +810,14 @@ func _on_ws_message(msg: Dictionary) -> void:
 func _on_event(ev: Dictionary) -> void:
 	var t: String = str(ev.get("type", ""))
 	var data: Dictionary = ev.get("data", {}) if ev.get("data") is Dictionary else {}
+	if t == "you_arrived":
+		# 上一趟路的到达可能晚到（服务器的结算晚一拍），落在新的 navigate 之后：标出来，等到达的功能不把它当成现在这一趟的结局。
+		# 自己的 navigate 还在路上时没法判断，先扣着，回答到了再放（_do_navigate）
+		if nav_inflight > 0:
+			nav_route.hold(ev)
+			return
+		if nav_route.is_prior(nav_generation, float(ev.get("at", 0))):
+			ev["prior_route"] = true
 	# 提示音：按事件编号去重，太旧的不补播。自己说的附近聊天回声不响（只在这里过滤，不动 audio.gd）
 	var echo: bool = false
 	if t == "chat":
@@ -1151,6 +1163,11 @@ func _do_navigate(to: Dictionary, label: String, mark = null) -> void:
 	nav_inflight -= 1
 	if r["ok"] and r["data"] is Dictionary and r["data"].get("navigation") is Dictionary:
 		nav_acked_ms = clock.ticks_ms()  # 服务器已经让角色走起来了（不管这个回答还代不代表现状）
+		nav_route.accepted(gen, float((r["data"]["navigation"] as Dictionary).get("arriveAt", 0)))
+	if nav_inflight == 0:
+		# 等回答的时候到的 you_arrived：现在分得清是不是这一趟出发之前的路了，按到的先后放出来
+		for held in nav_route.take_held():
+			_on_event(held)
 	if gen != nav_generation:
 		# 之后又点了别处或又按了方向键，这个回答不再代表现状，不画标记；但服务器的现状照记：谁生效由服务器的序号栅栏决定
 		if r["ok"] and r["data"] is Dictionary and r["data"].get("navigation") is Dictionary:

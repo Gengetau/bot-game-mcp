@@ -57,10 +57,19 @@ var _far_t0: float = 0.0
 var _want_id: String = ""
 var _want_until: float = 0.0
 var _arrivals: int = 0
+var _last_arrival: Dictionary = {}  # 最近一次 you_arrived：第几次、目标、是不是之前的路（只进 debug()，端到端拿它当屏障）
+var _far_log: Array = []  # 诊断：远处点选这条线上最近的几件事（本地秒、事情、当时的导航代号；只进 debug()）
 
 
 func _init() -> void:
 	id = "npc"
+
+
+## 诊断流水：端到端等不到菜单时，报错里带着它就能看出记号是被谁用掉的
+func _flog(what: String) -> void:
+	_far_log.append("%.2f %s g%d" % [_clock, what, ctx.nav_gen()])
+	if _far_log.size() > 12:
+		_far_log.pop_front()
 
 
 func event_types() -> PackedStringArray:
@@ -162,6 +171,7 @@ func on_event(ev: Dictionary) -> void:
 	var data: Dictionary = ev.get("data", {}) if ev.get("data") is Dictionary else {}
 	match str(ev.get("type", "")):
 		"nav_stopped":
+			_flog("nav_stopped far=%s reason=%s" % [_far_id, str(data.get("reason", ""))])
 			# 路线被服务器停了：不再等着开菜单，也不再算「正在走过去」
 			_far_id = ""
 			_want_id = ""
@@ -170,13 +180,21 @@ func on_event(ev: Dictionary) -> void:
 				_push()
 		"you_arrived":
 			_arrivals += 1
+			var tg = data.get("target")
+			var prior: bool = bool(ev.get("prior_route", false))
+			_last_arrival = {"n": _arrivals, "kind": str(tg.get("kind", "")) if tg is Dictionary else "", "id": str(tg.get("id", "")) if tg is Dictionary else "", "prior": prior}
+			if prior:
+				# 这一趟出发之前的路走完了（服务器的结算晚一拍，main 标出来的，见 nav_route.gd）：和现在这一趟无关。
+				# 不能让它用掉「在这里点的」记号（真到了就不开菜单了），也不能让它结束「正在走过去」
+				_flog("arrived(prior) %s:%s far=%s" % [_last_arrival["kind"], _last_arrival["id"], _far_id])
+				return
 			if _walking and _open_id != "":
 				# 点了「走过去」之后的到达（无论目标是谁，路线已经结束）：等位置跟上，别一直卡在「正在走」
 				_want_id = _open_id
 				_want_until = _clock + WANT_WINDOW
-			var tg = data.get("target")
 			# 这次到达是不是在这里点出来的：每次到达都把记号用掉，不留给下一次
 			var mine: String = _far_id if _clock <= _far_until else ""
+			_flog("arrived %s:%s far=%s mine=%s" % [_last_arrival["kind"], _last_arrival["id"], _far_id, mine])
 			_far_id = ""
 			_far_armed = false
 			if tg is Dictionary and str(tg.get("kind", "")) == "npc":
@@ -208,6 +226,8 @@ func _dist_to(pid: String) -> float:
 
 func on_pick(kind: String, pid: String) -> bool:
 	if kind != "actor" or not _is_npc(pid):
+		if _far_id != "":
+			_flog("pick other %s:%s" % [kind, pid])
 		_far_id = ""  # 改去点别的东西了：之前点的那个 NPC 不再等
 		_far_armed = false
 		return false
@@ -225,6 +245,7 @@ func on_pick(kind: String, pid: String) -> bool:
 	_far_gen = ctx.nav_gen()
 	_far_armed = false
 	_far_t0 = _clock
+	_flog("pick far %s d=%.2f" % [pid, _dist_to(pid)])
 	return false
 
 
@@ -486,6 +507,7 @@ func tick(dt: float, _now_ms: float) -> void:
 	# 点了远处的 NPC：main 随后发 navigate（导航代号 +1）；中途改道、被顶掉、一直没发出，都不再等
 	if _far_id != "":
 		if _clock > _far_until or not _is_npc(_far_id):
+			_flog("far drop timeout/gone")
 			_far_id = ""
 			_far_armed = false
 		else:
@@ -493,17 +515,20 @@ func tick(dt: float, _now_ms: float) -> void:
 			_far_armed = bool(st["armed"])
 			_far_gen = int(st["gen"])
 			if not bool(st["far"]):
+				_flog("far drop step armed=%s gen=%d waited=%.2f" % [str(_far_armed), _far_gen, _clock - _far_t0])
 				_far_id = ""
 				_far_armed = false
 	# 到了：等位置跟上再开
 	if _want_id != "":
 		if _clock > _want_until or not _is_npc(_want_id):
+			_flog("want drop d=%.2f reach=%.2f" % [_dist_to(_want_id), reach])
 			if _walking and _want_id == _open_id:
 				_walking = false  # 到了但位置一直没跟上（目标走开了）：「走过去」可以再点
 			_want_id = ""
 		elif _dist_to(_want_id) <= reach + REACH_SLACK:
 			var wid: String = _want_id
 			_want_id = ""
+			_flog("want ok d=%.2f" % _dist_to(wid))
 			if not ctx.in_game():
 				if _open_id == wid:
 					_walking = false  # 走过去的按钮：到了
@@ -624,6 +649,8 @@ func debug() -> Dictionary:
 		"asks": _asks,
 		"buys": _buys,
 		"arrivals": _arrivals,
+		"lastArrival": _last_arrival,
+		"farLog": _far_log,
 		"lastAck": _last_ack,
 		"me": _me_id,
 		"gen": _gen,

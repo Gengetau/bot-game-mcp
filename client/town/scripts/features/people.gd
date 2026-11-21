@@ -274,6 +274,12 @@ func on_event(ev: Dictionary) -> void:
 		"you_arrived":
 			_arrivals += 1
 			var tg = data.get("target")
+			if bool(ev.get("prior_route", false)):
+				# 这一趟出发之前的路走完了（服务器的结算晚一拍，main 标出来的，见 nav_route.gd）：和现在这一趟无关，
+				# 不能让它用掉「在这里点的」记号（真走到 ta 身边就不开卡了）。走进了某户人家这件事照记
+				if tg is Dictionary and str(tg.get("kind", "")) == "home":
+					_visited(str(tg.get("id", "")))
+				return
 			# 这次到达是不是在这里点出来的：每次到达都把记号用掉，不留给下一次
 			var mine: String = _far_id if _clock <= _far_until else ""
 			_far_id = ""

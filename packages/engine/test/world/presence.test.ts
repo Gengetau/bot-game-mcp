@@ -636,6 +636,29 @@ describe('栖灯镇导航：用时由路程决定，路上属于脚下的区域'
     expect(a.view().location.navigation).toBeNull();
   });
 
+  it('到点了还没结算就又出发：上一趟的 you_arrived 这时才补发，时间早于新路线的 arriveAt；新路线自己的到达不早于它', () => {
+    // 三维客户端（client/town/scripts/nav_route.gd）靠这两个不等式分辨「这次到达是不是现在这一趟出发之前的路」：
+    // 结算晚一拍（调度器每秒一次，或下一条命令顺手结清），上一趟的 you_arrived 会落在新的 navigate 之后
+    const t = makeTown();
+    const a = t.join('阿灯');
+    const arrived = () => t.w.db.all("SELECT occurred_at FROM recipient_events WHERE resident_id = ? AND type = 'you_arrived' ORDER BY cursor", a.residentId).map((r) => Number(r.occurred_at));
+    const first = a.act('navigate', { to: 'tea_house' });
+    const arrive1: number = first.navigation.arriveAt;
+    stepWalk(t, 5_000, [a]);
+    t.clock.advance(arrive1 + 300 - t.clock.t); // 人到点已经停了，但还没有谁来结算
+    expect(arrived()).toEqual([]);
+    const second = a.act('navigate', { to: 'plaza' });
+    expect(second.status).toBe('accepted');
+    const arrive2: number = second.navigation.arriveAt;
+    expect(arrived()).toEqual([arrive1]);
+    expect(arrive1).toBeLessThanOrEqual(t.clock.t);
+    expect(arrive1).toBeLessThan(arrive2);
+    a.walk();
+    const all = arrived();
+    expect(all.length).toBe(2);
+    expect(all[1]).toBeGreaterThanOrEqual(arrive2);
+  });
+
   it('路上的人属于脚下的区域：能说话、能做事、能再次改道；公开地图把他放在「路上」', () => {
     const t = makeTown();
     const a = t.join('阿灯');
