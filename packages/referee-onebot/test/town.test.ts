@@ -11,8 +11,8 @@ import { DEFAULT_TOWN_KEYWORDS, isTownCommand, runReferee, type RefereeOptions }
 import { FakeOneBot, callText, type ApiCall } from './onebot-fake.js';
 
 const REF_KEY = 'bgk_referee_town_key_0';
-const REF_ID = '2362232313';
-const GROUP = '1127334885';
+const REF_ID = '1000000001';
+const GROUP = '9000000001';
 const ALICE = '10001';
 const BOB = '10002';
 const MALLORY = '66666';

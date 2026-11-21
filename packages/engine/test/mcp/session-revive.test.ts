@@ -10,7 +10,7 @@ const NIA = `bgk_${'n'.repeat(32)}`;
 describe('引擎重启后接回会话', () => {
   it('a client keeps its session id across an engine restart; a bad key still gets 401', async () => {
     const config = (port: number) =>
-      configSchema.parse({ host: '127.0.0.1', port, stateFile: null, auth: { mode: 'keys', agents: [{ key: NIA, id: '2362232313', name: '妮娅' }], issuedKeysFile: null } });
+      configSchema.parse({ host: '127.0.0.1', port, stateFile: null, auth: { mode: 'keys', agents: [{ key: NIA, id: '1000000001', name: '妮娅' }], issuedKeysFile: null } });
     const logs: string[] = [];
     let rt = createRuntime(config(0), () => undefined);
     let http = await startHttpServer(rt, (l) => logs.push(l));
@@ -20,7 +20,7 @@ describe('引擎重启后接回会话', () => {
     await client.connect(transport);
     const sid = transport.sessionId!;
     const whoami = async () => JSON.parse(((await client.callTool({ name: 'whoami', arguments: {} })) as any).content[0].text).identity.id;
-    expect(await whoami()).toBe('2362232313');
+    expect(await whoami()).toBe('1000000001');
 
     // 重启：同一端口起新进程，内存里的会话全丢了
     await http.close();
@@ -38,7 +38,7 @@ describe('引擎重启后接回会话', () => {
     }
     try {
       // 测试里客户端复用了连到旧进程的 keep-alive 连接，第一次可能直接断开；真实部署（隧道）每次是新连接
-      expect(await whoami().catch(() => whoami())).toBe('2362232313');
+      expect(await whoami().catch(() => whoami())).toBe('1000000001');
       expect(transport.sessionId).toBe(sid);
       expect(logs.some((l) => l.includes(`接回会话 ${sid.slice(0, 8)}`))).toBe(true);
 

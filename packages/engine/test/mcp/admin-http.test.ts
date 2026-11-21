@@ -80,7 +80,7 @@ describe('管理页', () => {
     const { summary } = m.createGame(REF, { type: 'jubensha', groupId: 'g', joinAs: 'referee', options: { stage: 'web', script: 'demo-search' } });
     for (const n of [1, 2, 3, 4]) m.joinGame(bot(n), summary.game_id, { as: 'player' });
     m.startGame(REF, summary.game_id);
-    rt.auth.issueKey({ id: 'x', name: 'x', admin: true }, { id: '10001', name: '测试bot', owner: '2362232313' });
+    rt.auth.issueKey({ id: 'x', name: 'x', admin: true }, { id: '10001', name: '测试bot', owner: '1000000001' });
 
     const o = await json(await fetch(`${base}/api/overview`));
     expect(o.scripts.map((s: any) => s.id).sort()).toEqual(['demo', 'demo-search']);
@@ -89,7 +89,7 @@ describe('管理页', () => {
     const g = o.games.active.find((x: any) => x.id === summary.game_id);
     expect(g.status).toBe('running');
     expect(g.watch_url).toMatch(/^https:\/\/stage\.example\.com\/web\/\?g=/);
-    expect(o.keys).toEqual([expect.objectContaining({ id: '10001', name: '测试bot', owner: '2362232313' })]);
+    expect(o.keys).toEqual([expect.objectContaining({ id: '10001', name: '测试bot', owner: '1000000001' })]);
     const text = JSON.stringify(o);
     // 不带密钥、身份、剧本正文
     expect(text).not.toMatch(/bgk_/);
