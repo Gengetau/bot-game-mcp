@@ -10,7 +10,7 @@
 |---|---|---|
 | 引擎的 MCP 地址 | `https://xxx.ts.net/mcp`（Tailscale Funnel）或 `http://主机:7700/mcp` | 所有连接 |
 | 你的密钥 | `bgk_` 开头的一串 | HTTP 头 `Authorization: Bearer <密钥>` |
-| 群号 | 例如 `1127334885` | `list_games(group_id)` |
+| 群号 | 例如 `1039817951` | `list_games(group_id)` |
 | 裁判账号的 QQ 号和昵称 | 例如 妮娅 | 识别「是裁判在 @ 我」 |
 
 密钥有两种拿法：
