@@ -1,5 +1,5 @@
 {
-  "version": 3,
+  "version": 4,
   "items": [
     {
       "kernel": {
@@ -74,6 +74,16 @@
         "item": "*"
       },
       "engine_type": "apparel_bundle",
+      "stack": false,
+      "edible": false,
+      "direction": "home"
+    },
+    {
+      "kernel": {
+        "kind": "garment",
+        "item": "umbrella"
+      },
+      "engine_type": "umbrella",
       "stack": false,
       "edible": false,
       "direction": "home"

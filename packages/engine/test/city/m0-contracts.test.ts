@@ -39,7 +39,7 @@ describe('M0 四份工程规格文档与 mappings v2 守门', () => {
       },
       {
         file: 'ITEM-AND-LOCKER-SPEC.md',
-        mustContain: ['instance', 'origin_ref', 'store_locker', 'take_locker', 'carry_home', 'disposed', 'resolvePendingOrder', 'order_refunded', 'mappings_version: 3'],
+        mustContain: ['instance', 'origin_ref', 'store_locker', 'take_locker', 'carry_home', 'disposed', 'resolvePendingOrder', 'order_refunded', 'mappings_version: 4'],
       },
       {
         file: 'CONTENT-PACK-SPEC.md',
@@ -56,8 +56,8 @@ describe('M0 四份工程规格文档与 mappings v2 守门', () => {
   });
 
   it('mappings.json 与 mappings.ts 锁定 version = 2 且对齐 life1 四项身体效果', () => {
-    expect(mappingsJson.version).toBe(3);
-    expect(MAPPINGS.version).toBe(3);
+    expect(mappingsJson.version).toBe(4);
+    expect(MAPPINGS.version).toBe(4);
     expect(mappingsJson).toEqual(MAPPINGS);
     const effects = [...new Set<string>(mappingsJson.effects.map((e: any) => String(e.kernel_effect)))].sort();
     expect(effects).toEqual(['drink_coffee', 'drink_tea', 'snack', 'walk_15m']);
@@ -171,7 +171,7 @@ describe('隔离联调测试环境与确定性故障注入脚手架', () => {
       request_id: `${visitId}:prepare`,
       protocol: 'city-bridge/1',
       vocab_version: 'life1-0.2',
-      mappings_version: 3,
+      mappings_version: 4,
       visit_id: visitId,
       actor_id: 'nia',
       carry: { yen: 10_000, items: [COOKIE] },

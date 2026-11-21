@@ -27,16 +27,16 @@ function validateDef(def: string, value: unknown): boolean {
 
 describe('M0 桥接协议与 life1 词表对齐守门', () => {
   it('锁定 mappings_version = 2，拒绝旧版本或未知版本', () => {
-    expect(schema['x-mappings-version']).toBe(3);
-    expect(mappingsJson.version).toBe(3);
-    expect(MAPPINGS.version).toBe(3);
+    expect(schema['x-mappings-version']).toBe(4);
+    expect(mappingsJson.version).toBe(4);
+    expect(MAPPINGS.version).toBe(4);
     expect(validateDef('MappingsTable', mappingsJson)).toBe(true);
     expect(validateDef('MappingsTable', { ...mappingsJson, version: 1 })).toBe(false);
 
     const basePrepare = {
       request_id: 'visit:v1:prepare',
       protocol: 'city-bridge/1',
-      mappings_version: 3,
+      mappings_version: 4,
       visit_id: 'v-nia-m0',
       actor_id: 'nia',
       carry: {
@@ -59,7 +59,8 @@ describe('M0 桥接协议与 life1 词表对齐守门', () => {
     expect(validateDef('PrepareRequest', basePrepare)).toBe(true);
     expect(validateDef('PrepareRequest', { ...basePrepare, mappings_version: 1 })).toBe(false);
     expect(validateDef('PrepareRequest', { ...basePrepare, mappings_version: 2 })).toBe(false);
-    expect(validateDef('PrepareRequest', { ...basePrepare, mappings_version: 4 })).toBe(false);
+    expect(validateDef('PrepareRequest', { ...basePrepare, mappings_version: 3 })).toBe(false);
+    expect(validateDef('PrepareRequest', { ...basePrepare, mappings_version: 5 })).toBe(false);
   });
 
   it('四个城市身体效果名与 life1 约定严格一致（snack / drink_coffee / drink_tea / walk_15m）', () => {

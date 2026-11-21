@@ -2,7 +2,7 @@
 
 - **文档编号**：`docs/city/ITEM-AND-LOCKER-SPEC.md`（M0 四份冻结契约之一）
 - **状态**：M0 候选定稿（内核侧与跨库结算主笔：`gemini4-ext`；引擎侧 Schema v2 / 动作实现共编：`gemini3-ext`）
-- **锁定基线**：引擎 `Gengetau/bot-game-mcp` + 小屋内核 `world-kernel/life1`（`mappings_version: 3`，协议 `city-bridge/1`）
+- **锁定基线**：引擎 `Gengetau/bot-game-mcp` + 小屋内核 `world-kernel/life1`（`mappings_version: 4`，协议 `city-bridge/1`）
 - **配套机器契约**：`docs/city/bridge-v1.schema.json`、`docs/city/mappings.json`
 
 ---
@@ -122,7 +122,7 @@
 | `cheesecake` | 芝士蛋糕 | `food` | `0` | `true` | `true` | **只回家（`direction: "home"`）** → `food/dessert` | `'back'` |
 | `coffee` | 混合咖啡（现点杯装） | `drink` | `0` | **`false`** | **`false`** | 不映射（堂食/随身即饮，非内核袋装咖啡粉） | **`'disposed'`**（返家前清理，不进储物柜、不写身体效果） |
 | `milk_tea` | 皇家奶茶（现点杯装） | `drink` | `0` | **`false`** | **`false`** | 不映射（堂食/随身即饮） | **`'disposed'`**（返家前清理，不进储物柜、不写身体效果） |
-| `umbrella` | 透明雨伞 | `thing` | `0`（借出时 `1`） | `true`（城内可携；无 `life1` 映射） | **`true`** | 不映射（内核雨伞属衣橱 `garments` 而非食物资源） | **`'locker'`**（存入城市储物柜，访问正常 `closed`） |
+| `umbrella` | 透明雨伞 | `thing` | `0`（借出时 `1`） | `true` | **`true`** | v4 起映射 `garment/umbrella`（只回家）：内核把它加进她的衣橱，成为一件配饰，下雨天出门算「自有雨伞」 | **`'back'`**（v3 及以前、或借来的伞：`'locker'`） |
 | `paperback` | 文库本 | `thing` | `0`（批注/借出 `1`） | `true`（城内可携；无 `life1` 映射） | **`true`** | 不映射 | **`'locker'`**（存入城市储物柜，访问正常 `closed`） |
 | `postcard` | 明信片 | `thing` | `0`（书写后 `1`） | `true`（城内可携；无 `life1` 映射） | **`true`** | 不映射 | **`'locker'`**（存入城市储物柜，访问正常 `closed`） |
 | `notebook` | 笔记本 | `thing` | `0`（书写后 `1`） | `true`（城内可携；无 `life1` 映射） | **`true`** | 不映射 | **`'locker'`**（存入城市储物柜，访问正常 `closed`） |

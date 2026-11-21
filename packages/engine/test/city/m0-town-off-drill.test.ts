@@ -189,7 +189,7 @@ describe('M0 栖灯镇关停封存演练：town.enabled=false + city.enabled=tru
         request_id: 'v-drill-nia:prepare',
         protocol: 'city-bridge/1',
         vocab_version: 'life1-0.2',
-        mappings_version: 3,
+        mappings_version: 4,
         visit_id: 'v-drill-nia',
         actor_id: 'nia',
         carry: { yen: 5000, items: [COOKIE] },
