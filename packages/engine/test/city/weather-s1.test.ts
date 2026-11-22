@@ -463,7 +463,7 @@ describe('S1 自研天象引擎', () => {
     c4.close();
   });
 
-  it('受控栈顶降级脚本：v4 -> v3 清洗 qingkong 留存并可再升级；非栈顶 v5 拒绝执行且零改库', async () => {
+  it('受控栈顶降级脚本：v5 -> v4 -> v3 逐级降级并可再升级；非栈顶拒绝执行且零改库', async () => {
     const dbPath = makeTmpDb('downgrade-city.db');
     const clock = new FakeClock();
     clock.t = T0;
@@ -478,17 +478,27 @@ describe('S1 自研天象引擎', () => {
     expect(c1.db.get<{ user_version: number }>('PRAGMA user_version')?.user_version).toBe(CITY_SCHEMA_VERSION);
     c1.close();
 
-    // 1) 模拟已存在后续更高版本 v5 迁移 -> 非栈顶必须非 0 拒绝并保持 v5 不变
-    const v5Db = new DatabaseSync(dbPath);
-    v5Db.exec('PRAGMA user_version = 5');
-    v5Db.close();
+    // 1) 模拟已存在后续更高版本 v6 迁移 -> --to 4 与 --to 3 均非栈顶，必须非 0 拒绝并保持 v6 不变
+    const v6Db = new DatabaseSync(dbPath);
+    v6Db.exec('PRAGMA user_version = 6');
+    v6Db.close();
+    expect(() => execFileSync(process.execPath, [DOWNGRADE_SCRIPT, '--db', dbPath, '--to', '4'], { stdio: 'pipe' })).toThrow();
     expect(() => execFileSync(process.execPath, [DOWNGRADE_SCRIPT, '--db', dbPath, '--to', '3'], { stdio: 'pipe' })).toThrow();
-    const checkV5 = new DatabaseSync(dbPath);
-    expect(checkV5.prepare('PRAGMA user_version').get()).toEqual({ user_version: 5 });
-    checkV5.exec('PRAGMA user_version = 4');
-    checkV5.close();
+    const checkV6 = new DatabaseSync(dbPath);
+    expect(checkV6.prepare('PRAGMA user_version').get()).toEqual({ user_version: 6 });
+    checkV6.exec('PRAGMA user_version = 5');
+    checkV6.close();
 
-    // 2) 栈顶 v4 -> v3 降级成功，qingkong 快照清洗为 synthetic/fallback，且备份完整生成
+    // 2) v5 下直接 --to 3 拒绝，先 --to 4 栈顶降级至 v4，再清 pending 标记后 --to 3 降级至 v3
+    expect(() => execFileSync(process.execPath, [DOWNGRADE_SCRIPT, '--db', dbPath, '--to', '3'], { stdio: 'pipe' })).toThrow();
+    const out4 = execFileSync(process.execPath, [DOWNGRADE_SCRIPT, '--db', dbPath, '--to', '4'], { encoding: 'utf8' });
+    expect(JSON.parse(out4.trim())).toMatchObject({ ok: true, from_version: 5, to_version: 4 });
+    const checkV4 = new DatabaseSync(dbPath);
+    expect(checkV4.prepare('PRAGMA user_version').get()).toEqual({ user_version: 4 });
+    checkV4.exec("DELETE FROM meta WHERE key LIKE 's2_pending_restore_%'");
+    checkV4.close();
+
+    // 3) 栈顶 v4 -> v3 降级成功，qingkong 快照清洗为 synthetic/fallback，且备份完整生成
     const out = execFileSync(process.execPath, [DOWNGRADE_SCRIPT, '--db', dbPath, '--to', '3'], { encoding: 'utf8' });
     const parsed = JSON.parse(out.trim()) as { ok: boolean; from_version: number; to_version: number; backup: string };
     expect(parsed.ok).toBe(true);
@@ -503,7 +513,7 @@ describe('S1 自研天象引擎', () => {
     expect(snaps.every((s) => s.source === 'synthetic' && s.status === 'fallback' && s.rain === 0)).toBe(true);
     checkV3.close();
 
-    // 3) 再升级恢复 v4 无损启动
+    // 4) 再升级恢复最新 schema 无损启动
     const dbReopen = openCityDb(dbPath);
     expect(dbReopen.get<{ user_version: number }>('PRAGMA user_version')?.user_version).toBe(CITY_SCHEMA_VERSION);
     dbReopen.close();

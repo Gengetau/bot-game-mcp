@@ -56,6 +56,12 @@ export const cityParamsSchema = z.object({
   weatherSource: z.enum(['legacy_open_meteo', 'qingkong']).default('legacy_open_meteo'),
   /** 自研天象引擎固定种子（留空则首次启动生成并持久化到 city.db meta['weather_seed']） */
   weatherSeed: z.string().min(1).max(128).optional(),
+  /** S2 场所异步留痕总开关（默认关闭；与 houseViewTraces 同批启用前暂停全部写入与透出） */
+  tracesEnabled: z.boolean().default(false),
+  /** S2 室友桥接留痕视图开关（仅在内核外部文本隔离就位后同批开启） */
+  houseViewTraces: z.boolean().default(false),
+  /** S2 人类网页端留痕写入开关（默认关闭，网页端仅只读浏览） */
+  allowHumanTraces: z.boolean().default(false),
 });
 
 export type CityParams = z.infer<typeof cityParamsSchema>;
