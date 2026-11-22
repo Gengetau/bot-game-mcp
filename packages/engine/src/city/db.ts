@@ -514,6 +514,51 @@ const MIGRATIONS: readonly string[] = [
     activated_at INTEGER NOT NULL
   ) STRICT, WITHOUT ROWID;
   `,
+  // ───── v4：反馈（主人 2026-11-20「所有进入的 bot 都能提，统一汇总到一个地方」）─────
+  `
+  -- 一件事一条：同一段话（规范化后 body_key 相同）在合并窗口内只记一条，count 加一
+  CREATE TABLE city_feedback (
+    feedback_id TEXT PRIMARY KEY,
+    category TEXT NOT NULL CHECK (category IN ('bug','suggestion','content','other')),
+    body TEXT NOT NULL,
+    body_key TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','closed')),
+    -- 第一位提交者（后来合并进来的人在 city_feedback_submits 里）
+    submitter_kind TEXT NOT NULL CHECK (submitter_kind IN ('external','house','human')),
+    submitter_name TEXT NOT NULL,
+    resident_id TEXT,
+    principal_id TEXT,
+    actor_id TEXT,
+    place_id TEXT,
+    in_transit INTEGER NOT NULL DEFAULT 0 CHECK (in_transit IN (0,1)),
+    visit_id TEXT,
+    channel TEXT NOT NULL CHECK (channel IN ('mcp_tool','world_act','bridge','web')),
+    count INTEGER NOT NULL DEFAULT 1 CHECK (count >= 1),
+    created_at INTEGER NOT NULL,
+    last_at INTEGER NOT NULL,
+    closed_at INTEGER,
+    note TEXT NOT NULL DEFAULT ''
+  ) STRICT;
+  CREATE INDEX city_feedback_status ON city_feedback(status, last_at);
+  CREATE INDEX city_feedback_key ON city_feedback(body_key, last_at);
+
+  -- 每次提交一行：限流、去重和「谁也提过」都看这里。永久保存
+  CREATE TABLE city_feedback_submits (
+    submit_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    feedback_id TEXT NOT NULL REFERENCES city_feedback(feedback_id),
+    subject TEXT NOT NULL,
+    submitter_kind TEXT NOT NULL,
+    submitter_name TEXT NOT NULL,
+    category TEXT NOT NULL,
+    place_id TEXT,
+    in_transit INTEGER NOT NULL DEFAULT 0,
+    channel TEXT NOT NULL,
+    at INTEGER NOT NULL
+  ) STRICT;
+  CREATE INDEX city_feedback_submits_subject ON city_feedback_submits(subject, at);
+  CREATE INDEX city_feedback_submits_time ON city_feedback_submits(at);
+  CREATE INDEX city_feedback_submits_item ON city_feedback_submits(feedback_id, subject);
+  `,
 ];
 
 export const CITY_SCHEMA: SchemaSpec = { label: '城市世界数据库', migrations: MIGRATIONS, backupPrefix: 'city-' };

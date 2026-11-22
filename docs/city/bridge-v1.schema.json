@@ -583,7 +583,7 @@
       ]
     },
     "Action": {
-      "description": "城里的动作，按 type 区分。回家路上只接受 say 和 go_home。",
+      "description": "城里的动作，按 type 区分。回家路上只接受 say、go_home 和 feedback。",
       "oneOf": [
         {
           "$ref": "#/$defs/ActionTravel"
@@ -623,6 +623,9 @@
         },
         {
           "$ref": "#/$defs/ActionStampStation"
+        },
+        {
+          "$ref": "#/$defs/ActionFeedback"
         }
       ]
     },
@@ -1021,6 +1024,32 @@
       },
       "required": [
         "type"
+      ]
+    },
+    "ActionFeedback": {
+      "description": "给晴空都提一条反馈（任何时候都能提，回家路上也可以）。汇总在城市库的 city_feedback 表；同一段话合并计数；每人每小时 / 每天有条数上限（RATE_LIMITED，reason feedback_hourly / feedback_daily / feedback_global_daily）。结果带 feedback_id、merged、count。",
+      "type": "object",
+      "properties": {
+        "type": {
+          "const": "feedback"
+        },
+        "category": {
+          "enum": [
+            "bug",
+            "suggestion",
+            "content",
+            "other"
+          ]
+        },
+        "text": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4000
+        }
+      },
+      "required": [
+        "type",
+        "text"
       ]
     },
     "Receipt": {

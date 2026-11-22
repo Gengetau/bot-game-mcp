@@ -11,7 +11,7 @@ import type { ActionInput, Identity } from '../core/types.js';
 import type { Authenticator, SessionContext } from './auth.js';
 import { OVERVIEW, PLAYER_GUIDE, REFEREE_GUIDE, gameTips, gameTypeTable } from './guides.js';
 import { renderDelivery, type DeliveryFormat } from './render.js';
-import { CITY_GUIDE, citySectionView, cityView, citySession, citySpeak, registerCityDedicatedTools, registerCityTools, withCity, type CityDeps } from './city.js';
+import { CITY_GUIDE, citySectionView, cityView, citySession, citySpeak, registerCityDedicatedTools, registerCityFeedbackTools, registerCityTools, withCity, type CityDeps } from './city.js';
 import { TOWN_GUIDE, registerTownTools, townGameAct, townSession, townSpeak, townView, type TownDeps } from './town.js';
 
 export interface ServerDeps {
@@ -618,6 +618,7 @@ export function createMcpServer(deps: ServerDeps, ctx: SessionContext): McpServe
   if (city) {
     if (!town) registerCityTools(tool as never, city, ctx, me);
     registerCityDedicatedTools(tool as never, city, me);
+    registerCityFeedbackTools(tool as never, city, ctx, me);
     server.registerResource('guide-city', 'botgame://guide/city', { title: '晴空都城市世界：进城说明', mimeType: 'text/markdown' }, (uri) => ({
       contents: [{ uri: uri.href, mimeType: 'text/markdown', text: CITY_GUIDE }],
     }));
