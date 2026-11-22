@@ -3,6 +3,7 @@
  */
 import { installActions } from './actions.js';
 import { ensureSystemAccounts } from './ledger.js';
+import { resolveCityParams } from './params.js';
 import { installReconcile } from './reconcile.js';
 import { ensureHouseMembers, installResidents } from './residents.js';
 import { CityService, type CityOptions } from './service.js';
@@ -13,7 +14,14 @@ import { installWeather, openMeteoFetcher } from './weather.js';
 
 /** 建一个城市世界（还没有开始恢复：调用方接着调 start() 或 startSync()）。 */
 export function createCity(opts: CityOptions): CityService {
-  const c = new CityService({ ...opts, fetchWeather: opts.fetchWeather === undefined ? openMeteoFetcher : opts.fetchWeather });
+  const params = resolveCityParams(opts.params ?? {});
+  const fetchWeather =
+    opts.fetchWeather !== undefined
+      ? opts.fetchWeather
+      : params.weatherSource === 'qingkong'
+        ? undefined
+        : openMeteoFetcher;
+  const c = new CityService({ ...opts, fetchWeather });
   try {
     // 系统账户和身份映射要先于一切：启动恢复补跑到期作业时会用到
     c.hooks.recover.push((now) => {

@@ -123,6 +123,8 @@ export class CityService {
   readonly hooks = {
     /** 启动恢复时（追赶到期作业之前） */
     recover: [] as ((now: number) => void)[],
+    /** 启动恢复结束、开放 HTTP/桥接流量前（仅 start() 异步等待，如切回旧天象源时阻塞刷新首份快照） */
+    recoverAsync: [] as ((now: number) => Promise<void>)[],
     /** 每次 tick（已在 running 状态；可以发起事务外的异步工作，比如抓天气） */
     tick: [] as ((now: number) => void)[],
   };
@@ -601,6 +603,7 @@ export class CityService {
     }
     return (async () => {
       while (this.runDue(100) > 0) await yieldFn();
+      for (const h of this.hooks.recoverAsync) await h(this.now());
       finish();
     })();
   }

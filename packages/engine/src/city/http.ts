@@ -66,7 +66,7 @@ import type { CityService } from './service.js';
 import { stampBookView } from './stamps.js';
 import { SELF_VIEW_MAX_BYTES, chatHistory, publicCityView, routePreview, selfView } from './views.js';
 import { BRIDGE_PROTOCOL, abortVisit, commitVisit, describeVisit, prepareVisit, readOutbox, releaseVisit, requestReturn } from './visits.js';
-import { allWeather } from './weather.js';
+import { adminClearWeatherOverride, adminGetWeather, adminSetWeatherOverride, allWeather, weatherAttribution } from './weather.js';
 
 export interface CityHttpOptions {
   /** 桥接密钥。不给 = 不挂桥接接口 */
@@ -221,7 +221,7 @@ export function renderCityPage(c: CityService): string {
     .map((a) => {
       const w = a.weather;
       const weather = w
-        ? `<p class="w">天气：${esc(w.text)}，${esc(w.temp_c)}°C${w.rain ? '，正在下雨' : ''}。<small>来源：${w.source === 'open-meteo' ? 'Open-Meteo' : '合成天气'}，${esc(statusText[w.status] ?? w.status)}，${esc(clock(w.observed_at_ms))} 的数据</small></p>`
+        ? `<p class="w">天气：${esc(w.text)}，${esc(w.temp_c)}°C${w.rain ? '，正在下雨' : ''}。<small>来源：${w.source === 'open-meteo' ? 'Open-Meteo' : w.source === 'qingkong' ? '晴空都气象台' : '合成天气'}，${esc(statusText[w.status] ?? w.status)}，${esc(clock(w.observed_at_ms))} 的数据</small></p>`
         : '';
       const places = (a.places as any[])
         .map((p) => {
@@ -249,7 +249,7 @@ export function renderCityPage(c: CityService): string {
 ${events ? `<section><h2>今天</h2><ul>${events}</ul></section>` : ''}
 ${areas}
 <section><h2>电车</h2><p><small>${esc(v.transit.note)}（规则版本 ${esc(v.transit.rule_version)}）</small></p><ul>${edges}</ul></section>
-<section><h2>来源</h2><ul>${sources}</ul><p><small>天气数据：<a href="https://open-meteo.com/">Open-Meteo</a>（CC BY 4.0）。目录版本 ${esc(v.city_catalog_version)}，文案版本 ${esc(v.city_text_version)}。</small></p></section>
+<section><h2>来源</h2><ul>${sources}</ul><p><small>天气数据：${c.params.weatherSource === 'qingkong' && c.fetchWeather === undefined ? '晴空都自研天象引擎（Qingkong City Climate Engine）' : '<a href="https://open-meteo.com/">Open-Meteo</a>（CC BY 4.0）'}。目录版本 ${esc(v.city_catalog_version)}，文案版本 ${esc(v.city_text_version)}。</small></p></section>
 </body></html>`;
 }
 
@@ -715,6 +715,29 @@ export function mountCity(app: Express, c: CityService, log: (msg: string) => vo
   });
 
   const adminDigests = (opts.adminKeys ?? []).map((k) => digest(k));
+  const requireAdminKey = (req: Request): string => {
+    if (adminDigests.length === 0) {
+      throw new CityError('NOT_FOUND', '没有这个接口。');
+    }
+    const m = /^Bearer\s+(.+)$/i.exec(req.headers.authorization ?? '');
+    if (!m) {
+      throw new CityError('UNAUTHENTICATED', '管理接口需要管理员 Bearer 密钥。', 'admin_auth_required');
+    }
+    const rawKey = m[1]!.trim();
+    const got = digest(rawKey);
+    if (!adminDigests.some((want) => timingSafeEqual(got, want))) {
+      throw new CityError('FORBIDDEN', '管理员密钥无效。', 'admin_forbidden');
+    }
+    return rawKey;
+  };
+  const requireAdminPostJson = (req: Request): Record<string, unknown> => {
+    const ct = String(req.headers['content-type'] ?? '').toLowerCase();
+    if (!ct.startsWith('application/json')) {
+      throw cityBadRequest('POST 请求头 Content-Type 必须是 application/json。', 'json_required');
+    }
+    return jsonObj(req);
+  };
+
   api.post(
     '/admin/orders/:id/resolve',
     apiSync((req) => {
@@ -733,6 +756,27 @@ export function mountCity(app: Express, c: CityService, log: (msg: string) => vo
       }
       const out = resolvePendingOrder(c, String(req.params.id ?? ''), outcome);
       return { ok: true, ...out };
+    }),
+  );
+  api.get(
+    '/admin/weather',
+    apiSync((req) => {
+      requireAdminKey(req);
+      return adminGetWeather(c);
+    }),
+  );
+  api.post(
+    '/admin/weather/override',
+    apiSync((req) => {
+      const rawKey = requireAdminKey(req);
+      return adminSetWeatherOverride(c, requireAdminPostJson(req), rawKey);
+    }),
+  );
+  api.post(
+    '/admin/weather/clear',
+    apiSync((req) => {
+      const rawKey = requireAdminKey(req);
+      return adminClearWeatherOverride(c, requireAdminPostJson(req), rawKey);
     }),
   );
 
@@ -832,7 +876,7 @@ export function mountCity(app: Express, c: CityService, log: (msg: string) => vo
   bridge.post('/visits/:id/return-request', sync((req) => requestReturn(c, visitId(req), body(req))));
   bridge.post('/visits/:id/release', sync((req) => releaseVisit(c, visitId(req), body(req))));
   bridge.get('/visits/:id', sync((req) => describeVisit(c, visitId(req))));
-  bridge.get('/weather', sync(() => ({ at_ms: c.now(), attribution: 'Weather data by Open-Meteo.com (CC BY 4.0)', areas: allWeather(c) })));
+  bridge.get('/weather', sync(() => ({ at_ms: c.now(), attribution: weatherAttribution(c), areas: allWeather(c) })));
   bridge.get('/reconcile', sync(() => ({ reports: latestReconcile(c, 10) })));
 
   bridge.get('/outbox', async (req, res) => {
