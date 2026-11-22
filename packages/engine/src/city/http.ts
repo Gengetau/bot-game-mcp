@@ -66,7 +66,7 @@ import type { CityService } from './service.js';
 import { stampBookView } from './stamps.js';
 import { SELF_VIEW_MAX_BYTES, chatHistory, publicCityView, routePreview, selfView } from './views.js';
 import { BRIDGE_PROTOCOL, abortVisit, commitVisit, describeVisit, prepareVisit, readOutbox, releaseVisit, requestReturn } from './visits.js';
-import { adminClearWeatherOverride, adminGetWeather, adminSetWeatherOverride, allWeather, weatherAttribution } from './weather.js';
+import { adminClearWeatherOverride, adminGetWeather, adminSetWeatherOverride, allWeather, isQingkongMode, weatherAttribution } from './weather.js';
 
 export interface CityHttpOptions {
   /** 桥接密钥。不给 = 不挂桥接接口 */
@@ -249,7 +249,7 @@ export function renderCityPage(c: CityService): string {
 ${events ? `<section><h2>今天</h2><ul>${events}</ul></section>` : ''}
 ${areas}
 <section><h2>电车</h2><p><small>${esc(v.transit.note)}（规则版本 ${esc(v.transit.rule_version)}）</small></p><ul>${edges}</ul></section>
-<section><h2>来源</h2><ul>${sources}</ul><p><small>天气数据：${c.params.weatherSource === 'qingkong' && c.fetchWeather === undefined ? '晴空都自研天象引擎（Qingkong City Climate Engine）' : '<a href="https://open-meteo.com/">Open-Meteo</a>（CC BY 4.0）'}。目录版本 ${esc(v.city_catalog_version)}，文案版本 ${esc(v.city_text_version)}。</small></p></section>
+<section><h2>来源</h2><ul>${sources}</ul><p><small>天气数据：${isQingkongMode(c) ? '晴空都自研天象引擎（Qingkong City Climate Engine）' : '<a href="https://open-meteo.com/">Open-Meteo</a>（CC BY 4.0）'}。目录版本 ${esc(v.city_catalog_version)}，文案版本 ${esc(v.city_text_version)}。</small></p></section>
 </body></html>`;
 }
 
@@ -355,6 +355,7 @@ export function mountCity(app: Express, c: CityService, log: (msg: string) => vo
     '/config',
     apiSync(() => ({
       world: { id: c.worldId, name: c.worldName, timezone: c.params.timezone === 'Asia/Tokyo' ? 'JST' : c.params.timezone },
+      weather_source: isQingkongMode(c) ? 'qingkong' : 'legacy_open_meteo',
       catalog_version: CITY_CATALOG_VERSION,
       text_version: CITY_TEXT_VERSION,
       fare_rule_version: FARE_RULE_VERSION,

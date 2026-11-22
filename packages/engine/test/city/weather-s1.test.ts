@@ -508,4 +508,53 @@ describe('S1 自研天象引擎', () => {
     expect(dbReopen.get<{ user_version: number }>('PRAGMA user_version')?.user_version).toBe(CITY_SCHEMA_VERSION);
     dbReopen.close();
   });
+
+  it('P2 与页脚回归：自然雨紧邻整点 18:00 停雨精确报告，且 qingkong 下城市公开页/视图不含 Open-Meteo', async () => {
+    // P2 固定复现输入：seed='s1-hourly-test', hiyorizaka, 2026-11-01 17:20 JST
+    const at1720 = Date.UTC(2026, 10, 1, 8, 20, 0); // 17:20 JST
+    const h17 = Date.UTC(2026, 10, 1, 8, 0, 0); // 17:00 JST
+    const h18 = Date.UTC(2026, 10, 1, 9, 0, 0); // 18:00 JST
+    const t = makeCity({
+      at: at1720,
+      params: { weatherSource: 'qingkong', weatherSeed: 's1-hourly-test' },
+    });
+    const snap = weatherOf(t.c, 'hiyorizaka')!;
+    expect(snap.rain).toBe(true);
+    expect(snap.hourly[0]!.at_ms).toBe(h17);
+    expect(snap.hourly[0]!.rain).toBe(true);
+    expect(snap.hourly[1]!.at_ms).toBe(h18);
+    expect(snap.hourly[1]!.rain).toBe(false);
+    expect(snap.hourly[2]!.rain).toBe(false);
+    // 18:00 即已停雨，clear_window_at_ms 必须为 18:00 JST（不得跳到 19:00）
+    expect(snap.clear_window_at_ms).toBe(h18);
+
+    // 城市文字页 /city/、/city/api/public、/city/api/config 切换 qingkong 后均不再带 Open-Meteo
+    const { base } = await serveAdmin(t.c, { adminKeys: [ADMIN_KEY] });
+    const htmlRes = await fetch(`${base}/city/`);
+    expect(htmlRes.status).toBe(200);
+    const html = await htmlRes.text();
+    expect(html.toLowerCase()).not.toContain('open-meteo');
+    expect(html).toContain('晴空都气象台');
+    expect(html).toContain('晴空都自研天象引擎');
+
+    const pubRes = await fetch(`${base}/city/api/public`);
+    expect(pubRes.status).toBe(200);
+    const pub = (await pubRes.json()) as any;
+    expect(JSON.stringify(pub).toLowerCase()).not.toContain('open-meteo');
+    expect(pub.sources.some((s: any) => s.id === 'qingkong-weather')).toBe(true);
+
+    const cfgRes = await fetch(`${base}/city/api/config`);
+    expect(cfgRes.status).toBe(200);
+    const cfg = (await cfgRes.json()) as any;
+    expect(cfg.weather_source).toBe('qingkong');
+
+    // 整点拨盘覆盖（17:20 + 40m = 18:00 JST 到期且 18:00 自然态已停雨）同样精确返回 18:00
+    const ovRes = await fetch(`${base}/city/api/admin/weather/override`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${ADMIN_KEY}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ request_id: 'p2-1800-exp', area: 'hiyorizaka', preset: 'rain', duration_minutes: 40 }),
+    });
+    expect(ovRes.status).toBe(200);
+    expect(weatherOf(t.c, 'hiyorizaka')!.clear_window_at_ms).toBe(h18);
+  });
 });

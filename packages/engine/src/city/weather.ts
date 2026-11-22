@@ -482,19 +482,19 @@ function computeClearWindowMs(
 ): number | null {
   if (!currentlyRain) return null;
   const activeOv = ov && Number(ov.starts_at_ms) <= now && now < Number(ov.expires_at_ms) ? ov : null;
-  const startScanMs = activeOv ? Number(activeOv.expires_at_ms) : floorHour(now) + HOUR_MS;
   if (activeOv) {
-    const atExp = evalNaturalAt(seed, timezone, areaId, Number(activeOv.expires_at_ms));
-    if (!atExp.rain) return Number(activeOv.expires_at_ms);
+    const exp = Number(activeOv.expires_at_ms);
+    if (!evalNaturalAt(seed, timezone, areaId, exp).rain) return exp;
+    const firstHourAfterExp = floorHour(exp) + HOUR_MS;
+    for (let k = 0; k < 72; k++) {
+      const t = firstHourAfterExp + k * HOUR_MS;
+      if (!evalNaturalAt(seed, timezone, areaId, t).rain) return t;
+    }
+    return null;
   }
-  const firstHour = floorHour(startScanMs) + HOUR_MS;
+  const firstHour = floorHour(now) + HOUR_MS;
   for (let k = 0; k < 72; k++) {
     const t = firstHour + k * HOUR_MS;
-    if (t <= now) continue;
-    if (activeOv && Number(activeOv.starts_at_ms) <= t && t < Number(activeOv.expires_at_ms)) {
-      if (Number(activeOv.rain) === 0) return t;
-      continue;
-    }
     if (!evalNaturalAt(seed, timezone, areaId, t).rain) return t;
   }
   return null;
