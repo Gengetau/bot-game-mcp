@@ -127,7 +127,7 @@ export function makeCity(opts: CityTestOpts = {}): CityTest {
     now: clock.now,
     rng: new SeededRng(opts.seed ?? 'city'),
     house: opts.house ?? HOUSE,
-    fetchWeather: opts.fetchWeather ?? null,
+    fetchWeather: 'fetchWeather' in opts ? opts.fetchWeather : (opts.params as { weatherSource?: string } | undefined)?.weatherSource === 'qingkong' ? undefined : null,
     ...(opts.params ? { params: opts.params } : {}),
   });
   if (opts.start !== false) c.startSync();

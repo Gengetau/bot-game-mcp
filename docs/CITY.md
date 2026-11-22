@@ -72,6 +72,8 @@
 | `returnMarginMs` | `300000` | 自动回程比「最晚能到家的出发时刻」再提前多少 |
 | `weatherIntervalMs` | `1800000` | 多久抓一次天气 |
 | `weatherFallbackAfterMs` | `10800000` | 多久没抓到之后退回合成天气 |
+| `weatherSource` | `legacy_open_meteo` | S1 天象模式开关（`legacy_open_meteo` 走原 Open-Meteo；`qingkong` 启用内置自研天象引擎） |
+| `weatherSeed` | （空） | 自研天象引擎固定种子（留空则首次启动生成并持久化到 `meta['weather_seed']`） |
 | `eventRetentionMs` | `604800000` | 居民事件、公开事件、聊天的保留时间（7 天），每小时清一次 |
 | `reconcileHour` | `4` | 每日对账几点跑（世界时区） |
 | `backupKeep` | `14` | 每天一次的数据库备份保留几份（`city.db` 同目录的 `backups/`）；`0` 不备份 |
@@ -105,7 +107,7 @@ BOTGAME_CITY=1 BOTGAME_CITY_DB=./data/city-dev.db npm run dev -w bot-game-mcp --
 packages/engine/src/city/
   index.ts      createCity：装配所有模块
   service.ts    CityService：写事务（commit）、事件流、定时作业、启动恢复、订阅与等待
-  db.ts         SQLite schema（CITY_SCHEMA，PRAGMA user_version 迁移，目前 v1）
+  db.ts         SQLite schema（CITY_SCHEMA，PRAGMA user_version 迁移，目前 v4：v4 新增 weather_overrides、weather_override_receipts）
   params.ts     全部可调参数和默认值
   errors.ts     失败码和 HTTP 状态
   catalog.ts    目录：片区、车站、线路、地点、商品、来源说明、行程规划（纯函数）
@@ -496,6 +498,16 @@ docs/city/mappings.json               物品与效果映射表
   - `riverbank_evening`：赤羽傍晚（16:00 到 18:00 之间）放晴（不下雨、`code` 不超过 2）时，荒川河岸的公开小事件，持续到 18:30。
 - 当天已经有过的事件不会再发第二次，但河岸开不开始终跟着当前快照走。
 - `city.weather = false`：不抓。每片一直是合成天气（`fallback`），不下雨，没有任何天气事件；调度仍按间隔跑，只负责把过期的快照降级。
+
+### 自研天象引擎与天象拨盘（S1，`weatherSource = 'qingkong'`）
+
+- **暗装门控与防串源切换**：默认保持 `weatherSource = 'legacy_open_meteo'`。当且仅当配置 `weatherSource = 'qingkong'`（且未显式覆盖 `fetchWeather`）时启用纯本地确定性天象模型，`weather_snapshots.source = 'qingkong'`，`GET /city/bridge/v1/weather` 的 `attribution` 为 `Qingkong City Climate Engine (built-in deterministic model)`。若撤回至 `'legacy_open_meteo'`，启动恢复阶段在开放流量前清空 `weather_overrides`、禁用跨源 `'stale'` 复用并异步等待重抓（失败直接回退 `'synthetic'` 无雨 `fallback`）。
+- **自然基底双护栏与 25 点半开预报**：自然基底纯函数 `evalNaturalSlot(seed, localDate, slot, areaId)` 按 2 小时槽演算日和坂、棱光街、云港（含 `breeze_level`）四季晴雨雪，`12–2` 月且气温 `<= 2.5℃` 转小雪/阵雪（`rain = false`），单次自然连续降雨 `<= 3` 槽、任意连续 3 个自然日 `10:00–17:59` 无雨槽 `>= 6`、晨雾 `45` 仅限 `04:00–09:59`。`WeatherSnapshot.hourly` 固定输出 25 个整点 `[at_ms, at_ms + 3_600_000)` 半开区间并保留 `natural` 纯自然基底，另附 `override`、`clear_window_at_ms`、`tomorrow_daytime`。
+- **管理员天象拨盘（仅 Bearer，不写 `scheduled_jobs`）**：
+  - `GET /city/api/admin/weather`：只读查看当前天象源、三片快照、有效覆盖与最近 20 条拨盘审计。
+  - `POST /city/api/admin/weather/override`：未切入 `'qingkong'` 时返回 `409`（`weather_cutover_inactive`，零写库）；未配 `adminKeys` 返回 `404`；缺/Cookie 鉴权返回 `401`；错密钥返回 `403`；非 `application/json` 返回 `400`。按 `request_id` + `payload_hash` 保证幂等（同返 `200`、异返 `409`），`weather_overrides` 到期由 `tick`/读取实时归位自然天气，不写 `scheduled_jobs`。
+  - `POST /city/api/admin/weather/clear`：在两种模式下均幂等清除活动覆盖并重算当前快照。
+- **栈顶受控降级（`scripts/city-schema-downgrade.mjs`）**：仅当 `PRAGMA user_version === 4` 时允许执行 `v4 -> v3`（先 `VACUUM INTO` 备份、清洗 `'qingkong'` 快照为 `'synthetic'` 并删除 `weather_overrides` / `weather_override_receipts`）；若后续迁移已将 `user_version` 推高至 `>= 5`，脚本立即非 0 退出并拒绝改库。
 
 ## 视图与隐私
 

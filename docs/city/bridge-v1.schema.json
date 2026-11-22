@@ -2656,6 +2656,33 @@
         },
         "precip_mm": {
           "type": "number"
+        },
+        "rain": {
+          "type": "boolean"
+        },
+        "natural": {
+          "description": "自研天象下该整点半开区间 [at_ms, at_ms+1h) 的纯自然基底天气。",
+          "type": "object",
+          "properties": {
+            "code": {
+              "type": "integer"
+            },
+            "temp_c": {
+              "type": "number"
+            },
+            "precip_mm": {
+              "type": "number"
+            },
+            "rain": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "code",
+            "temp_c",
+            "precip_mm",
+            "rain"
+          ]
         }
       },
       "required": [
@@ -2665,8 +2692,77 @@
         "precip_mm"
       ]
     },
+    "WeatherOverride": {
+      "type": "object",
+      "properties": {
+        "preset": {
+          "type": "string"
+        },
+        "code": {
+          "type": "integer"
+        },
+        "temp_c": {
+          "type": "number"
+        },
+        "precip_mm": {
+          "type": "number"
+        },
+        "rain": {
+          "type": "boolean"
+        },
+        "breeze_level": {
+          "type": "string"
+        },
+        "starts_at_ms": {
+          "$ref": "#/$defs/TimeMs"
+        },
+        "expires_at_ms": {
+          "$ref": "#/$defs/TimeMs"
+        },
+        "reason": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "preset",
+        "code",
+        "temp_c",
+        "precip_mm",
+        "rain",
+        "starts_at_ms",
+        "expires_at_ms"
+      ]
+    },
+    "TomorrowDaytimeForecast": {
+      "type": "object",
+      "properties": {
+        "date": {
+          "type": "string"
+        },
+        "summary_text": {
+          "type": "string"
+        },
+        "rain_hours": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "min_temp_c": {
+          "type": "number"
+        },
+        "max_temp_c": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "date",
+        "summary_text",
+        "rain_hours",
+        "min_temp_c",
+        "max_temp_c"
+      ]
+    },
     "WeatherSnapshot": {
-      "description": "一片区域的天气快照。status：ok 实时；stale 沿用上一次；fallback 合成天气（source = synthetic，永远不下雨）。",
+      "description": "一片区域的天气快照。status：ok 实时或自研确定性天象；stale 仅同源沿用上一次；fallback 合成天气（source = synthetic，永远不下雨）。",
       "type": "object",
       "properties": {
         "area": {
@@ -2709,6 +2805,37 @@
           "items": {
             "$ref": "#/$defs/HourlyPoint"
           }
+        },
+        "override": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/WeatherOverride"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "breeze_level": {
+          "type": "string",
+          "enum": [
+            "calm",
+            "breezy",
+            "gusty"
+          ]
+        },
+        "clear_window_at_ms": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/TimeMs"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "tomorrow_daytime": {
+          "$ref": "#/$defs/TomorrowDaytimeForecast"
         }
       },
       "required": [

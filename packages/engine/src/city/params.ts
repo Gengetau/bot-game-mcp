@@ -52,6 +52,10 @@ export const cityParamsSchema = z.object({
   lockerLeaseMs: z.number().int().min(60_000).default(72 * 3600_000),
   /** 单人同时占用的活跃公共代取柜位上限 */
   maxActiveLockerDeposits: z.number().int().min(1).default(5),
+  /** 天象引擎模式（S1 暗装切换开关）：legacy_open_meteo 走原 Open-Meteo，qingkong 启用自研确定性天象引擎 */
+  weatherSource: z.enum(['legacy_open_meteo', 'qingkong']).default('legacy_open_meteo'),
+  /** 自研天象引擎固定种子（留空则首次启动生成并持久化到 city.db meta['weather_seed']） */
+  weatherSeed: z.string().min(1).max(128).optional(),
 });
 
 export type CityParams = z.infer<typeof cityParamsSchema>;
