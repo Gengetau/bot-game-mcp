@@ -341,6 +341,7 @@ export function beginReturn(c: CityService, visit: VisitRow, reason: string, at:
   c.db.run("UPDATE visits SET state = 'returning', return_reason = ?, returning_at = ? WHERE visit_id = ?", cleanReason, departAt, fresh.visit_id);
   c.cancelJob(`visit:${fresh.visit_id}:return`);
   const returning = visitById(c, fresh.visit_id)!;
+  for (const fn of c.hooks.departPlace) fn(r.resident_id, r.place_id, `return:${cleanReason}`, departAt);
   outbox(c, returning, 'return_started', departAt, { reason: cleanReason, from: fromPlace });
   c.emitTo([r.resident_id], 'returning', { reason: cleanReason, return_by_ms: fresh.return_by_ms }, departAt);
   // 站在某个地点：立刻动身。在路上：这一段照常走完，到站作业会改走回程（trips.ts）

@@ -320,6 +320,7 @@ const BASE_ITEM_TYPES: readonly ItemType[] = [
   { type: 'postcard', name: '明信片', kind: 'thing' },
   { type: 'notebook', name: '笔记本', kind: 'thing' },
   { type: 'apparel_bundle', name: '服饰礼盒', kind: 'thing' },
+  { type: 'antique_curio', name: '古董旧物', kind: 'thing' },
 ];
 
 export const ITEM_TYPES: readonly ItemType[] = [
@@ -627,6 +628,27 @@ const BASE_PLACES: readonly Place[] = [
     })),
     actions: [...BASE_ACTIONS, 'buy'],
     blurb: '挂满当季针织衫、百褶裙与通勤外套的街角衣橱，木衣架按色系排得很整齐。',
+    source: 'fictional',
+    fictional: true,
+  },
+  {
+    id: 'ryokogai:boardgame-chaya',
+    area: 'ryokogai',
+    neighborhood: 'ryokogai:east',
+    name: '桌游茶屋「路地裏」',
+    type: 'cafe',
+    indoor: true,
+    hours: null,
+    capacity: 24,
+    station: 'st:ryokogai',
+    walkMinutes: 5,
+    rain: 'none',
+    goods: [
+      { sku: 'green_tea', type: 'green_tea', name: '瓶装绿茶', priceYen: 150 },
+      { sku: 'cookie', type: 'cookie', name: '小袋曲奇', priceYen: 220 },
+    ],
+    actions: [...BASE_ACTIONS, 'buy', 'open_table', 'join_table', 'start_table', 'game_act', 'leave_table', 'auction_bid', 'auction_view'],
+    blurb: '巷子深处的木门帘后摆着几张原木桌与旧物展柜，雨天也点着暖灯照常营业。',
     source: 'fictional',
     fictional: true,
   },

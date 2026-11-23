@@ -82,6 +82,8 @@ export const CITY_JOB_PRIORITY: Record<string, number> = {
   visit_return: 2,
   presence_expire: 3,
   locker_expire: 4,
+  venue_table_tick: 4,
+  venue_auction_settle: 4,
   reconcile_daily: 9,
   prune: 9,
 };
@@ -127,6 +129,10 @@ export class CityService {
     recoverAsync: [] as ((now: number) => Promise<void>)[],
     /** 每次 tick（已在 running 状态；可以发起事务外的异步工作，比如抓天气） */
     tick: [] as ((now: number) => void)[],
+    /** 居民离开当前地点、掉线或开始返程时触发（用于牌桌退座与未结算竞拍撤回） */
+    departPlace: [] as ((residentId: string, placeId: string | null, reason: string, at: number) => void)[],
+    /** 居民到达某个地点时触发（用于按需激活茶屋固定场次竞拍） */
+    arrivePlace: [] as ((residentId: string, placeId: string, at: number) => void)[],
   };
   /** 测试用故障注入：返回 true 时这笔购买的店家入账「结果未知」（规格 F9） */
   failpoints: { purchaseUnknown?: (ctx: { residentId: string; sku: string }) => boolean } = {};

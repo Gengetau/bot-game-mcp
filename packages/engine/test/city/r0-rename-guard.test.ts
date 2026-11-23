@@ -7,7 +7,7 @@
  *  2. world_id: "tokyo" 在仅开城市与城市+栖灯镇同开两种配置下均返回 NOT_FOUND；
  *  3. 隐藏交接点（新/旧）与暂卸包地点对外部 bot travel 的报错码、原因与文案同不存在的乱写地点逐字一致；
  *  4. 非 JST 宿主机时区（TZ=UTC 子进程）下 city/app.js fmtClock 的 Intl 正常路径与异常算术回退路径均输出东京时间；
- *  5. 暂卸内容包（jinbocho / shimokitazawa）留仓不删、脱离挂载与编译产物，维持 3 片区 / 17 公开地点 / 3 车站印章。
+ *  5. 暂卸内容包（jinbocho / shimokitazawa）留仓不删、脱离挂载与编译产物，维持 3 片区 / 18 公开地点（含桌游茶屋）/ 3 车站印章。
  */
 import { execFileSync } from 'node:child_process';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
@@ -479,7 +479,7 @@ describe('晴空都 R0 全量改名与暂卸内容包专项守卫', () => {
     expect(MOUNTED_CONTENT_PACKS).toEqual([]);
     expect(AREAS.map((a) => a.id)).toEqual(['hiyorizaka', 'ryokogai', 'kumominato']);
     expect(WARDS).toEqual([]);
-    expect(publicPlaces()).toHaveLength(17);
+    expect(publicPlaces()).toHaveLength(18);
     expect(STATION_STAMPS.map((s) => s.stampId)).toEqual(['stamp:hiyorizaka', 'stamp:ryokogai', 'stamp:kumominato']);
 
     expect(place('jinbocho:station')).toBeUndefined();

@@ -266,6 +266,65 @@
               <h3 id="scene-shop-title">店内商品</h3>
               <ul id="scene-goods-list" class="entity-list"></ul>
             </article>
+
+            <article class="card" id="scene-venue-card" aria-labelledby="scene-venue-title" hidden>
+              <header class="card-head">
+                <h3 id="scene-venue-title">茶屋牌桌</h3>
+                <span class="badge" id="scene-venue-badge"></span>
+              </header>
+              <div id="venue-lobby-box">
+                <form id="venue-open-form" class="stack-form" aria-labelledby="venue-open-legend" novalidate>
+                  <fieldset class="field-group">
+                    <legend id="venue-open-legend">在当前茶屋开一桌短时桌游</legend>
+                    <div class="radio-grid">
+                      <label class="radio-card" for="venue-game-liars-dice">
+                        <input type="radio" id="venue-game-liars-dice" name="venue_game" value="liars_dice" checked>
+                        <span>
+                          <strong>大话骰</strong>
+                          <small>每人摇骰保秘密，轮流叫牌或开牌质疑</small>
+                        </span>
+                      </label>
+                      <label class="radio-card" for="venue-game-color-chain">
+                        <input type="radio" id="venue-game-color-chain" name="venue_game" value="color_chain">
+                        <span>
+                          <strong>彩牌接龙</strong>
+                          <small>同色同数接牌，率先清空手牌获胜</small>
+                        </span>
+                      </label>
+                    </div>
+                  </fieldset>
+                  <div class="form-actions">
+                    <button type="submit" class="btn btn-primary" id="venue-open-submit-btn">开一桌</button>
+                  </div>
+                </form>
+                <div class="divider-top">
+                  <h4>店内牌桌</h4>
+                  <ul id="venue-tables-list" class="entity-list"></ul>
+                </div>
+              </div>
+              <div id="venue-active-box" class="card-stack" hidden>
+                <div id="venue-table-summary"></div>
+                <div id="venue-private-box" class="venue-private-box" hidden></div>
+                <div id="venue-todo-box" class="venue-todo-box" hidden></div>
+                <div class="form-actions" id="venue-table-controls">
+                  <button type="button" class="btn btn-primary" id="venue-start-btn" hidden>开始牌局</button>
+                  <button type="button" class="btn btn-secondary" id="venue-leave-btn">离开牌桌</button>
+                </div>
+              </div>
+            </article>
+
+            <article class="card" id="scene-auction-card" aria-labelledby="scene-auction-title" hidden>
+              <header class="card-head">
+                <h3 id="scene-auction-title">具名旧物密封竞拍会</h3>
+                <button type="button" class="btn btn-ghost" id="auction-refresh-btn">查看场次记录</button>
+              </header>
+              <p class="muted small-note">每 15 分钟一场（整点 / 15 分 / 30 分 / 45 分开标），每人每场限密封出价一次，离店自动撤回未开标出价。</p>
+              <ul id="scene-auctions-list" class="entity-list"></ul>
+              <div id="auction-history-box" class="divider-top" hidden>
+                <h4>最近竞拍场次</h4>
+                <ul id="auction-history-list" class="entity-list"></ul>
+              </div>
+            </article>
           </div>
 
           <div class="card-stack">

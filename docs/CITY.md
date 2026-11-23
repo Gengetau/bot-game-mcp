@@ -107,7 +107,7 @@ BOTGAME_CITY=1 BOTGAME_CITY_DB=./data/city-dev.db npm run dev -w bot-game-mcp --
 packages/engine/src/city/
   index.ts      createCity：装配所有模块
   service.ts    CityService：写事务（commit）、事件流、定时作业、启动恢复、订阅与等待
-  db.ts         SQLite schema（CITY_SCHEMA，PRAGMA user_version 迁移，目前 v4：v4 新增 weather_overrides、weather_override_receipts）
+  db.ts         SQLite schema（CITY_SCHEMA，PRAGMA user_version 迁移，目前 v5：v4 新增 weather_overrides、weather_override_receipts；v5 新增桌游茶屋与旧物竞拍的 venue_* 四表）
   params.ts     全部可调参数和默认值
   errors.ts     失败码和 HTTP 状态
   catalog.ts    目录：片区、车站、线路、地点、商品、来源说明、行程规划（纯函数）
@@ -507,7 +507,7 @@ docs/city/mappings.json               物品与效果映射表
   - `GET /city/api/admin/weather`：只读查看当前天象源、三片快照、有效覆盖与最近 20 条拨盘审计。
   - `POST /city/api/admin/weather/override`：未切入 `'qingkong'` 时返回 `409`（`weather_cutover_inactive`，零写库）；未配 `adminKeys` 返回 `404`；缺/Cookie 鉴权返回 `401`；错密钥返回 `403`；非 `application/json` 返回 `400`。按 `request_id` + `payload_hash` 保证幂等（同返 `200`、异返 `409`），`weather_overrides` 到期由 `tick`/读取实时归位自然天气，不写 `scheduled_jobs`。
   - `POST /city/api/admin/weather/clear`：在两种模式下均幂等清除活动覆盖并重算当前快照。
-- **栈顶受控降级（`scripts/city-schema-downgrade.mjs`）**：仅当 `PRAGMA user_version === 4` 时允许执行 `v4 -> v3`（先 `VACUUM INTO` 备份、清洗 `'qingkong'` 快照为 `'synthetic'` 并删除 `weather_overrides` / `weather_override_receipts`）；若后续迁移已将 `user_version` 推高至 `>= 5`，脚本立即非 0 退出并拒绝改库。
+- **栈顶受控降级（`scripts/city-schema-downgrade.mjs`）**：仅当 `PRAGMA user_version === 4` 时允许执行 `v4 -> v3`（先 `VACUUM INTO` 备份、清洗 `'qingkong'` 快照为 `'synthetic'` 并删除 `weather_overrides` / `weather_override_receipts`）；若后续迁移已将 `user_version` 推高至 `>= 5`，脚本立即非 0 退出并拒绝改库。v5 库要先用 `scripts/city-schema-downgrade-v5.mjs` 降到 v4（见 `docs/CITY-V5-ROLLBACK.md`）。
 
 ## 视图与隐私
 
