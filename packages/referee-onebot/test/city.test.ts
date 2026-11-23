@@ -13,8 +13,8 @@ import { DEFAULT_CITY_KEYWORDS, isCityCommand, runReferee } from '../src/index.j
 import { FakeOneBot, callText, type ApiCall } from './onebot-fake.js';
 
 const REF_KEY = 'bgk_referee_city_key_0';
-const REF_ID = '2362232313';
-const GROUP = '1127334885';
+const REF_ID = '1000000001';
+const GROUP = '9000000001';
 const ALICE = '10001';
 const BOB = '10002';
 const CITY_URL = 'https://city.example.com/city/play/';

@@ -370,7 +370,7 @@ function parseTimeOfDay(localTime) {
  */
 function resolveWindowSky(w) {
   if (!w) return { sky: 'clear', summary: '天气同步中' };
-  const src = w.source === 'open-meteo' ? 'Open-Meteo' : '合成回退';
+  const src = w.source === 'open-meteo' ? 'Open-Meteo' : w.source === 'qingkong' ? '晴空都气象台' : '合成回退';
   const temp = typeof w.temp_c === 'number' ? ` ${w.temp_c}°C` : '';
   if (w.rain === true && w.source !== 'synthetic') {
     return { sky: 'rain', summary: `${w.text || '降雨'}${temp}（实时真雨 · ${src}）` };
@@ -379,6 +379,12 @@ function resolveWindowSky(w) {
     return { sky: 'cloudy', summary: `${w.text || '多云'}${temp}（${src}）` };
   }
   return { sky: 'clear', summary: `${w.text || '晴朗'}${temp}（${src}）` };
+}
+
+/** @param {boolean} isQingkong */
+function syncFooterWeatherSource(isQingkong) {
+  const el = document.getElementById('footer-weather-source');
+  if (el) el.textContent = isQingkong ? '晴空都自研天象引擎' : 'Open-Meteo（CC BY 4.0）';
 }
 
 const bagPager = mustEl('bag-pager');
@@ -742,6 +748,10 @@ async function submitCityAction(action, successNote) {
 async function loadPublicOverview() {
   try {
     state.publicView = await apiCall('GET', '/public');
+    const srcList = state.publicView?.sources;
+    if (Array.isArray(srcList)) {
+      syncFooterWeatherSource(srcList.some((s) => s && s.id === 'qingkong-weather'));
+    }
     renderOverview();
     if (state.view?.me?.in_city) {
       renderCommuterDeck();
@@ -1235,7 +1245,8 @@ function renderScenePanel() {
 
   const w = here.weather;
   if (w) {
-    weatherEl.textContent = `天气：${w.text} · ${w.temp_c}°C${w.rain ? '（正在下雨）' : ''} · 来源：${w.source === 'open-meteo' ? 'Open-Meteo' : '合成天气'}`;
+    const srcLabel = w.source === 'open-meteo' ? 'Open-Meteo' : w.source === 'qingkong' ? '晴空都气象台' : '合成天气';
+    weatherEl.textContent = `天气：${w.text} · ${w.temp_c}°C${w.rain ? '（正在下雨）' : ''} · 来源：${srcLabel}`;
   } else {
     weatherEl.textContent = '天气快照加载中…';
   }
@@ -2115,6 +2126,7 @@ async function boot() {
     state.chatMaxChars = Number(cfg.limits?.chat_max_chars || 300);
     chatInput.maxLength = state.chatMaxChars;
     devForm.hidden = !cfg.dev_login;
+    syncFooterWeatherSource(cfg.weather_source === 'qingkong');
   } catch {
     /* config probe failed; keep safe defaults */
   }

@@ -9,12 +9,12 @@ import { cqToPlain, parseOptionTokens, runReferee, segmentsToCq } from '../src/i
 import { FakeOneBot, callText, type ApiCall } from './onebot-fake.js';
 
 const KEYS = { ref: 'bgk_referee_key_000000', ai: 'bgk_ai_key_0000000000', ai2: 'bgk_ai2_key_000000000', admin: 'bgk_admin_key_00000000' };
-const GROUP = '1127334885';
-const OWNER = '1156798139';
-const REF_ID = '2362232313';
-const AI_ID = '3127771953';
+const GROUP = '9000000001';
+const OWNER = '1000000002';
+const REF_ID = '1000000001';
+const AI_ID = '1000000003';
 const OTHER = '55555';
-const AI2_ID = '2742096348';
+const AI2_ID = '1000000004';
 let msgSeq = 0; // 真实 OneBot 的 message_id 唯一；裁判按它去重，所以这里不能用时间戳
 
 describe('pure helpers', () => {
@@ -820,7 +820,7 @@ describe('OneBot referee against the real engine', () => {
   }, 60_000);
 
   it('main-plays: the main account joins as a player through its own model; it hosts only when no other referee can be drawn', async () => {
-    const GROUP_MP = '1127300555';
+    const GROUP_MP = '9000000003';
     const qqM = new FakeOneBot('tm');
     const qqA = new FakeOneBot('ta');
     await Promise.all([qqM.start(), qqA.start()]);
@@ -1138,7 +1138,7 @@ describe('OneBot referee against the real engine', () => {
   }, 60_000);
 
   it('web stage: mirrors speeches (a voice speaks with its own account), recalls playing bots who talk in the group, leaves spectators alone', async () => {
-    const G2 = '1127334886'; // 单独的群：和共用的常驻裁判互不干扰
+    const G2 = '9000000002'; // 单独的群：和共用的常驻裁判互不干扰
     const m = rt.manager;
     const ids = { ai: { id: AI_ID, name: '克蕾雅' }, ai2: { id: AI2_ID, name: '艾莉希娅' }, p3: { id: '7003', name: '林夕' } };
     // 先在引擎里开好一局网页舞台（裁判 = 妮娅本人，没有代行登记）：裁判进程起来后直接接手主持

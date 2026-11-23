@@ -514,6 +514,31 @@ const MIGRATIONS: readonly string[] = [
     activated_at INTEGER NOT NULL
   ) STRICT, WITHOUT ROWID;
   `,
+  // v4：S1 自研天象拨盘（当前覆盖行与幂等回执审计，不写 scheduled_jobs）
+  `
+  CREATE TABLE weather_overrides (
+    area TEXT PRIMARY KEY,
+    preset TEXT NOT NULL,
+    code INTEGER NOT NULL,
+    temp_c REAL,
+    precip_mm REAL NOT NULL,
+    rain INTEGER NOT NULL CHECK (rain IN (0, 1)),
+    breeze_level TEXT,
+    reason TEXT,
+    actor_tag TEXT NOT NULL,
+    starts_at_ms INTEGER NOT NULL,
+    created_at_ms INTEGER NOT NULL,
+    expires_at_ms INTEGER NOT NULL
+  ) STRICT, WITHOUT ROWID;
+
+  CREATE TABLE weather_override_receipts (
+    request_id TEXT PRIMARY KEY,
+    payload_hash TEXT NOT NULL,
+    response_json TEXT NOT NULL,
+    actor_tag TEXT NOT NULL,
+    created_at_ms INTEGER NOT NULL
+  ) STRICT, WITHOUT ROWID;
+  `,
 ];
 
 export const CITY_SCHEMA: SchemaSpec = { label: '城市世界数据库', migrations: MIGRATIONS, backupPrefix: 'city-' };

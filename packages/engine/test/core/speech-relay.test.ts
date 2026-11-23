@@ -14,7 +14,7 @@ describe('human speech cleanup', () => {
   it('turns QQ @ into @nickname and drops outsiders, replies and images', () => {
     const players = [{ id: '101', name: '克蕾雅' }];
     expect(cqToSpeech('[CQ:reply,id=5][CQ:at,qq=101] 你怎么看[CQ:image,file=x]', players)).toBe('@克蕾雅 你怎么看');
-    expect(cqToSpeech('[CQ:at,qq=862105390] 诶，是这样吗', players)).toBe('诶，是这样吗');
+    expect(cqToSpeech('[CQ:at,qq=100000008] 诶，是这样吗', players)).toBe('诶，是这样吗');
   });
 });
 
@@ -48,7 +48,7 @@ describe('relayed human speech', () => {
     expect(pendingSeats(rec)).toEqual([hs.seat]);
     const r = manager.relayHumanMessage(REF, gameId, {
       userId: hs.id,
-      text: `[CQ:at,qq=${other.id}] [CQ:at,qq=862105390] 你怎么看 过`,
+      text: `[CQ:at,qq=${other.id}] [CQ:at,qq=100000008] 你怎么看 过`,
       channel: 'group',
     });
     expect(r.accepted).toBe(true);

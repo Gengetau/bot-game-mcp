@@ -34,6 +34,7 @@ import {
   stationStamp,
   transitHoursOpenAt,
   type Place,
+  type SourceReference,
 } from './catalog.js';
 import { CityError } from './errors.js';
 import {
@@ -52,7 +53,14 @@ import type { CityResident, CityService } from './service.js';
 import { stampSummary } from './stamps.js';
 import { placeOpen, routeTransitCheck, runningTrip, spendable, tripView } from './trips.js';
 import { effectiveVisitReturnSchedule, openVisitOf, type VisitRow } from './visits.js';
-import { eventsToday, weatherBrief } from './weather.js';
+import { eventsToday, isQingkongMode, weatherBrief } from './weather.js';
+
+const QINGKONG_WEATHER_SOURCE_REF: SourceReference = {
+  id: 'qingkong-weather',
+  kind: 'simulated',
+  title: '晴空都自研天象模型',
+  note: '当前与逐小时天气由晴空都内置确定性天象引擎按片区微气候与季节日温差推演生成，全城各片区与桥接读取同一份天象快照。',
+};
 
 /** 交给 world_act 的占位窗口：城市世界不用动作窗口，保留这个字段只为了和栖灯镇的工具签名一致。 */
 export const CITY_ACTION_WINDOW = 'city';
@@ -257,7 +265,7 @@ export function publicCityView(c: CityService): Record<string, unknown> {
     },
     in_transit: c.db.scalar('SELECT COUNT(*) FROM residents WHERE in_city = 1 AND trip_id IS NOT NULL'),
     events_today: eventsToday(c, now),
-    sources: SOURCES,
+    sources: isQingkongMode(c) ? SOURCES.map((s) => (s.id === 'open-meteo' ? QINGKONG_WEATHER_SOURCE_REF : s)) : SOURCES,
   };
 }
 

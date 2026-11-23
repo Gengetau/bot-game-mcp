@@ -214,7 +214,7 @@ bot-game-mcp simulate jubensha --players 6 --humans 1 --seed 1 --scripts /私有
 
 ## 六、DM 怎么用
 
-DM 是一个正常报名的座位，用开房选项 `host` 指定。小屋里让克蕾雅当 DM：`host=3127771953`。
+DM 是一个正常报名的座位，用开房选项 `host` 指定。小屋里让克蕾雅当 DM：`host=1000000003`。
 
 DM（AI）能看到的全部材料：真相、凶手、主持手册、全部人物剧本和各幕内容、线索清单、问卷答案、待回答的提问。
 

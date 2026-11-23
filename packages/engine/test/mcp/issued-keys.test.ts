@@ -33,7 +33,7 @@ describe('runtime key issuance', () => {
       host: '127.0.0.1',
       port: 0,
       stateFile: null,
-      auth: { mode: 'keys', adminKeys: [ADMIN], agents: [{ key: NIA, id: '2362232313', name: '妮娅' }], issuedKeysFile: keysFile },
+      auth: { mode: 'keys', adminKeys: [ADMIN], agents: [{ key: NIA, id: '1000000001', name: '妮娅' }], issuedKeysFile: keysFile },
     });
   let rt: Runtime;
   let http: HttpHandle;
@@ -79,7 +79,7 @@ describe('runtime key issuance', () => {
     expect(list.keys[0].key).toBeUndefined();
 
     // 配置文件里的账号不能重新发放；别人申请过的 QQ 号只有申请人能重新申请
-    await expect(call(admin, 'issue_key', { qq_id: '2362232313', name: 'x' })).rejects.toThrow(/配置文件/);
+    await expect(call(admin, 'issue_key', { qq_id: '1000000001', name: 'x' })).rejects.toThrow(/配置文件/);
     await expect(call(admin, 'issue_key', { qq_id: '10086', name: '抢号', owner: '666' })).rejects.toThrow(/申请人/);
     const forced = await call(admin, 'issue_key', { qq_id: '10086', name: '抢号', owner: '666', force: true });
     expect(forced.rotated).toBe(true);
@@ -105,7 +105,7 @@ describe('runtime key issuance', () => {
     const admin2 = await connect(http.url, ADMIN);
     expect((await call(admin2, 'revoke_key', { qq_id: '10086' })).revoked).toBe(true);
     expect((await call(admin2, 'revoke_key', { qq_id: '10086' })).revoked).toBe(false);
-    await expect(call(admin2, 'revoke_key', { qq_id: '2362232313' })).rejects.toThrow(/配置文件/);
+    await expect(call(admin2, 'revoke_key', { qq_id: '1000000001' })).rejects.toThrow(/配置文件/);
     await expect(call(bot3, 'whoami')).rejects.toThrow();
     expect(JSON.parse(readFileSync(keysFile, 'utf8')).keys).toHaveLength(0);
   });
@@ -121,8 +121,8 @@ describe('runtime key issuance', () => {
         mode: 'keys',
         adminKeys: [ADMIN],
         agents: [
-          { key: NIA, id: '2362232313', name: '妮娅' },
-          { key: XL, id: '3842854846', name: '星璃', keyIssuer: true },
+          { key: NIA, id: '1000000001', name: '妮娅' },
+          { key: XL, id: '1000000005', name: '星璃', keyIssuer: true },
         ],
         issuedKeysFile: file2,
       },
@@ -131,9 +131,9 @@ describe('runtime key issuance', () => {
     const http2 = await startHttpServer(rt2, () => undefined);
     try {
       const xl = await connect(http2.url, XL);
-      expect((await call(xl, 'whoami')).identity).toEqual({ id: '3842854846', name: '星璃', keyIssuer: true });
-      const r = await call(xl, 'issue_key', { qq_id: '20001', name: '阿豆', owner: '1156798139' });
-      expect(r.issuedBy).toBe('3842854846');
+      expect((await call(xl, 'whoami')).identity).toEqual({ id: '1000000005', name: '星璃', keyIssuer: true });
+      const r = await call(xl, 'issue_key', { qq_id: '20001', name: '阿豆', owner: '1000000002' });
+      expect(r.issuedBy).toBe('1000000005');
       const adou = await connect(http2.url, r.key);
       expect((await call(adou, 'whoami')).identity).toEqual({ id: '20001', name: '阿豆' });
       // 发出去的密钥不带任何权限
@@ -145,7 +145,7 @@ describe('runtime key issuance', () => {
       const g = await call(nia, 'create_game', { game_type: 'number_bomb', group_id: 'g1', join_as: 'referee' });
       await expect(call(xl, 'abort_game', { game_id: g.summary.game_id })).rejects.toThrow();
       expect((await call(xl, 'revoke_key', { qq_id: '20001' })).revoked).toBe(true);
-      await expect(call(xl, 'issue_key', { qq_id: '2362232313', name: 'x' })).rejects.toThrow(/配置文件/);
+      await expect(call(xl, 'issue_key', { qq_id: '1000000001', name: 'x' })).rejects.toThrow(/配置文件/);
     } finally {
       await http2.close();
       rt2.close();
