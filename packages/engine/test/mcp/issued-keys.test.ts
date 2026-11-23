@@ -7,6 +7,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { configSchema } from '../../src/config.js';
 import { startHttpServer, type HttpHandle } from '../../src/server/http.js';
 import { createRuntime, type Runtime } from '../../src/server/runtime.js';
+import { REF, bot } from '../helpers.js';
 
 type ToolResult = { isError?: boolean; content: { type: string; text: string }[] };
 
@@ -159,6 +160,33 @@ describe('runtime key issuance', () => {
     try {
       const admin = await connect(http2.url, ADMIN);
       await expect(call(admin, 'issue_key', { qq_id: '1', name: 'x' })).rejects.toThrow(/关闭/);
+    } finally {
+      await http2.close();
+      rt2.close();
+    }
+  });
+});
+
+describe('abort_game expected_status over MCP', () => {
+  it('closes a lobby, refuses a started game with STATUS_MISMATCH, rejects other values', async () => {
+    const cfg = configSchema.parse({ host: '127.0.0.1', port: 0, stateFile: null, auth: { adminKeys: [ADMIN], agents: [], issuedKeysFile: null } });
+    const rt2 = createRuntime(cfg, () => undefined);
+    const http2 = await startHttpServer(rt2, () => undefined);
+    try {
+      const admin = await connect(http2.url, ADMIN);
+      const m = rt2.manager;
+      const { summary: lobby } = m.createGame(REF, { type: 'number_bomb', groupId: 'g-mcp-lobby', joinAs: 'referee' });
+      const { summary: live } = m.createGame(REF, { type: 'number_bomb', groupId: 'g-mcp-live', joinAs: 'referee' });
+      m.joinGame(bot(71), live.game_id, { as: 'player' });
+      m.joinGame(bot(72), live.game_id, { as: 'player' });
+      m.startGame(REF, live.game_id);
+
+      await expect(call(admin, 'abort_game', { game_id: live.game_id, expected_status: 'lobby' })).rejects.toThrow(/STATUS_MISMATCH/);
+      expect(m.getRecord(live.game_id).status).toBe('running');
+      await expect(call(admin, 'abort_game', { game_id: lobby.game_id, expected_status: 'running' })).rejects.toThrow();
+      expect(m.getRecord(lobby.game_id).status).toBe('lobby');
+      await call(admin, 'abort_game', { game_id: lobby.game_id, expected_status: 'lobby', reason: '空大厅' });
+      expect(m.getRecord(lobby.game_id).status).toBe('aborted');
     } finally {
       await http2.close();
       rt2.close();

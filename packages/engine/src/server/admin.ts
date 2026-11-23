@@ -120,7 +120,9 @@ export async function startAdminServer(rt: Runtime, log: (msg: string) => void):
     if (!guard(req, res)) return;
     try {
       const reason = String(req.body?.reason ?? '').trim() || '主人在管理页中止';
-      manager.abortGame(ADMIN, String(req.params.id), reason);
+      const expected = req.body?.expected_status;
+      // 只有字段缺省才算「不带条件」；null、空串等一律交给 manager 校验并返回 400，免得出错时偏向放行
+      manager.abortGame(ADMIN, String(req.params.id), reason, expected === undefined ? undefined : { expectedStatus: expected });
       log(`[admin] 中止对局 ${req.params.id}：${reason}`);
       res.json(overview());
     } catch (e) {
