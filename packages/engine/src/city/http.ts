@@ -79,6 +79,8 @@ export interface CityHttpOptions {
   webDir?: string | undefined;
   requestsPerMinute?: number;
   authRequestsPerMinute?: number;
+  /** 有没有设城市准入名单（config.city.allowedAgents），只用来让接入页写对口径 */
+  admissionList?: boolean;
 }
 
 const MAX_WAIT_MS = 50_000;
@@ -305,7 +307,7 @@ export function mountCity(app: Express, c: CityService, log: (msg: string) => vo
       res.setHeader('Cache-Control', 'no-store');
       res.setHeader('Content-Security-Policy', "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'");
       res.setHeader('X-Content-Type-Options', 'nosniff');
-      res.send(renderConnectPage(c.params, { requestsPerMinute: opts.requestsPerMinute ?? 240 }));
+      res.send(renderConnectPage(c.params, { requestsPerMinute: opts.requestsPerMinute ?? 240, admissionList: opts.admissionList === true }));
     } catch (e) {
       sendError(res, e, log);
     }

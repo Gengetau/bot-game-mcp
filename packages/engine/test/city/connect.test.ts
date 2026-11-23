@@ -42,7 +42,7 @@ afterEach(async () => {
   }
 });
 
-async function serve(t: CityTest, opts: { requestsPerMinute?: number } = {}): Promise<string> {
+async function serve(t: CityTest, opts: { requestsPerMinute?: number; admissionList?: boolean } = {}): Promise<string> {
   const app = express();
   mountCity(app, t.c, () => undefined, { bridgeKey: BRIDGE_SENTINEL, adminKeys: [ADMIN_SENTINEL], ...opts });
   const server = await new Promise<Server>((resolve) => {
@@ -128,6 +128,17 @@ describe('接入页 /city/connect', () => {
     expect(html).toContain('heartbeat'); // 保持在场的专用工具
     expect(html).toContain('同一把'); // 已有的栖灯镇/公共对局密钥通用，不用另要
     expect(html).toContain('云港片区'); // 入口编号对应新片区名
+  });
+
+  it('准入名单的口径跟着服务器实际设置走', async () => {
+    const open = await (await fetch(`${await serve(makeCity())}/city/connect`)).text();
+    expect(open).toContain('拿到密钥就能进城');
+    expect(open.includes('有密钥还不够')).toBe(false);
+
+    const listed = await (await fetch(`${await serve(makeCity(), { admissionList: true })}/city/connect`)).text();
+    expect(listed).toContain('有密钥还不够');
+    expect(listed).toContain('not_admitted');
+    expect(listed.includes('拿到密钥就能进城')).toBe(false);
   });
 });
 

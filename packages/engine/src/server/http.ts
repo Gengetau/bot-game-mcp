@@ -219,7 +219,9 @@ export async function startHttpServer(rt: Runtime, log: (msg: string) => void = 
   const closeWeb = config.web ? mountWeb(app, manager, log) : () => undefined;
   const town = rt.world ? mountTown(app, rt.world, log, { clientDir: config.town.clientDir }) : null;
   const closeTown = town ?? (() => undefined);
-  const closeCity = rt.city ? mountCity(app, rt.city, log, { bridgeKey: config.city.bridgeKey, adminKeys: config.auth.adminKeys }) : () => undefined;
+  const closeCity = rt.city
+    ? mountCity(app, rt.city, log, { bridgeKey: config.city.bridgeKey, adminKeys: config.auth.adminKeys, admissionList: config.city.allowedAgents !== undefined })
+    : () => undefined;
 
   // 空闲会话清理
   const idleMs = config.sessionIdleMinutes * 60_000;
