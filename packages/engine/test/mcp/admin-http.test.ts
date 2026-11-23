@@ -147,4 +147,33 @@ describe('管理页', () => {
     expect((await json(k)).keys).toEqual([]);
     expect((await post('/api/keys/10001/revoke', {})).status).toBe(400);
   });
+
+  it('conditional abort over HTTP: lobby is closed, a started game is refused with STATUS_MISMATCH, other values are 400', async () => {
+    const m = rt.manager;
+    const { summary: lobby } = m.createGame(REF, { type: 'number_bomb', groupId: 'g-http-lobby', joinAs: 'referee' });
+    const bad = await post(`/api/games/${lobby.game_id}/abort`, { expected_status: 'running' });
+    expect(bad.status).toBe(400);
+    expect((await json(bad)).error).toBe('BAD_REQUEST');
+    expect(m.getRecord(lobby.game_id).status).toBe('lobby');
+    // null / 空串 / 大写 都不能被当成「不带条件」放行
+    for (const v of [null, '', 'LOBBY', 0]) {
+      const r = await post(`/api/games/${lobby.game_id}/abort`, { expected_status: v });
+      expect(r.status, JSON.stringify(v)).toBe(400);
+      expect((await json(r)).error).toBe('BAD_REQUEST');
+      expect(m.getRecord(lobby.game_id).status).toBe('lobby');
+    }
+
+    const { summary: live } = m.createGame(REF, { type: 'number_bomb', groupId: 'g-http-live', joinAs: 'referee' });
+    m.joinGame(bot(61), live.game_id, { as: 'player' });
+    m.joinGame(bot(62), live.game_id, { as: 'player' });
+    m.startGame(REF, live.game_id);
+    const refused = await post(`/api/games/${live.game_id}/abort`, { expected_status: 'lobby' });
+    expect(refused.status).toBe(400);
+    expect((await json(refused)).error).toBe('STATUS_MISMATCH');
+    expect(m.getRecord(live.game_id).status).toBe('running');
+
+    const ok = await post(`/api/games/${lobby.game_id}/abort`, { expected_status: 'lobby', reason: '空大厅' });
+    expect(ok.status).toBe(200);
+    expect(m.getRecord(lobby.game_id).status).toBe('aborted');
+  });
 });

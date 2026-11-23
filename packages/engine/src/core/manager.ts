@@ -825,11 +825,21 @@ export class GameManager {
     };
   }
 
-  abortGame(actor: Identity, gameId: string, reason?: string) {
+  /**
+   * 中止对局。可选 expectedStatus（目前只接受 'lobby'）：带上时，引擎在同一步里核对对局
+   * 还是大厅，不是就抛 STATUS_MISMATCH、对局原样不动；不带时行为和以前完全一致。
+   * 方法全程同步，核对和中止之间不会插进开局。
+   */
+  abortGame(actor: Identity, gameId: string, reason?: string, opts?: { expectedStatus?: 'lobby' }) {
+    const expected = opts?.expectedStatus;
+    if (expected !== undefined && expected !== 'lobby') throw badRequest('expected_status 目前只接受 lobby。');
     const rec = this.getRecord(gameId);
-    if (rec.status === 'ended' || rec.status === 'aborted') throw invalidState('对局已经结束。');
+    if (expected === undefined && (rec.status === 'ended' || rec.status === 'aborted')) throw invalidState('对局已经结束。');
     const allowed = actor.admin || rec.hostId === actor.id || this.isReferee(rec, actor);
     if (!allowed) throw forbidden('只有房主、裁判或管理员可以中止对局。');
+    if (expected !== undefined && rec.status !== expected) {
+      throw new GameError('STATUS_MISMATCH', `对局现在是「${rec.status}」，不是大厅，没有中止。`, '带了 expected_status=lobby 只会中止还没开局的大厅；对局不受影响。');
+    }
     const why = sanitizeName((reason ?? '').trim(), 100) || '房主/裁判中止';
     this.closeGame(rec, why);
     return { summary: this.summary(rec), message: `对局已中止：${why}`, group_message: `⛔ 对局 ${rec.id} 已中止：${why}` };
