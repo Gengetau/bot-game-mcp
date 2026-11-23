@@ -7,7 +7,7 @@
  *  - --to 3：仅当 PRAGMA user_version === 4 时执行，VACUUM INTO 备份、清理 'qingkong' 残留快照/状态、删除 v4 两表并回拨 user_version = 3。
  */
 import { createHash } from 'node:crypto';
-import { closeSync, existsSync, fsyncSync, openSync, renameSync, writeSync } from 'node:fs';
+import { closeSync, existsSync, fsyncSync, openSync, readFileSync, renameSync, writeSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
@@ -75,6 +75,10 @@ function main() {
       if (args.to === 4) {
         const hwRow = db.prepare("SELECT value FROM meta WHERE key = 'trace_reply_high_water'").get();
         const metaHw = Number(hwRow?.value ?? 0);
+        const pendingFileRow = db.prepare("SELECT value FROM meta WHERE key = 's2_pending_restore_file'").get();
+        const pendingShaRow = db.prepare("SELECT value FROM meta WHERE key = 's2_pending_restore_sha256'").get();
+        const existingPendingFile = String(pendingFileRow?.value ?? '').trim();
+        const existingPendingSha = String(pendingShaRow?.value ?? '').trim();
         const placeTraces = db
           .prepare(
             'SELECT trace_id, place_id, author_id, author_name, author_origin, body, reply_to, visit_id, business_date, created_at_ms FROM place_traces ORDER BY created_at_ms ASC, trace_id ASC',
@@ -86,41 +90,94 @@ function main() {
           )
           .all();
         const tableMax = replies.reduce((m, row) => Math.max(m, Number(row.reply_seq ?? 0)), 0);
-        const highWater = Math.max(Number.isFinite(metaHw) && metaHw >= 0 ? metaHw : 0, tableMax);
-
-        const ts = Date.now();
-        const archiveName = `${basename(args.db)}.s2-archive-${ts}.json`;
-        const archivePath = join(dirname(args.db), archiveName);
-        const archivePayload = `${JSON.stringify({
-          version: 1,
-          exported_at_ms: ts,
-          high_water: highWater,
-          place_traces: placeTraces,
-          house_trace_replies: replies,
-        })}\n`;
-        const archiveBuf = Buffer.from(archivePayload, 'utf8');
-        const archiveSha256 = createHash('sha256').update(archiveBuf).digest('hex');
-        atomicWriteFsync(archivePath, archiveBuf);
 
         const upsertMeta = db.prepare(
           'INSERT INTO meta(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
         );
-        upsertMeta.run('trace_reply_high_water', String(highWater));
-        upsertMeta.run('s2_pending_restore_file', archiveName);
-        upsertMeta.run('s2_pending_restore_sha256', archiveSha256);
-        db.exec(`
-          DROP TABLE IF EXISTS house_trace_replies;
-          DROP TABLE IF EXISTS place_traces;
-          PRAGMA user_version = 4;
-        `);
-        extraOut = {
-          archive: archivePath,
-          archive_file: archiveName,
-          archive_sha256: archiveSha256,
-          high_water: highWater,
-          place_traces_exported: placeTraces.length,
-          replies_exported: replies.length,
-        };
+        if (existingPendingFile !== '' || existingPendingSha !== '') {
+          if (!existingPendingFile || !existingPendingSha || basename(existingPendingFile) !== existingPendingFile) {
+            throw new Error(`检测到损坏的 s2_pending_restore 元数据（file=${existingPendingFile}），拒绝覆盖归档指针`);
+          }
+          const existingArchivePath = join(dirname(args.db), existingPendingFile);
+          if (!existsSync(existingArchivePath)) {
+            throw new Error(`检测到未消费的 S2 归档缺失（${existingPendingFile}），拒绝覆盖归档指针`);
+          }
+          const existingBuf = readFileSync(existingArchivePath);
+          const actualSha = createHash('sha256').update(existingBuf).digest('hex');
+          if (actualSha !== existingPendingSha) {
+            throw new Error(`检测到未消费的 S2 归档 SHA-256 不匹配（${existingPendingFile}），拒绝覆盖归档指针`);
+          }
+          let existingDoc;
+          try {
+            existingDoc = JSON.parse(existingBuf.toString('utf8'));
+          } catch (e) {
+            throw new Error(`未消费的 S2 归档 JSON 解析失败（${existingPendingFile}）：${e instanceof Error ? e.message : String(e)}`);
+          }
+          if (
+            !existingDoc ||
+            existingDoc.version !== 1 ||
+            !Array.isArray(existingDoc.place_traces) ||
+            !Array.isArray(existingDoc.house_trace_replies)
+          ) {
+            throw new Error(`未消费的 S2 归档格式无效（${existingPendingFile}），拒绝覆盖归档指针`);
+          }
+          if (placeTraces.length > 0 || replies.length > 0) {
+            throw new Error('检测到未消费的 s2_pending_restore_file 同时 v5 表含新记录，拒绝覆盖原归档；请先完成恢复');
+          }
+          const archivedHw = Number(existingDoc.high_water ?? 0);
+          const highWater = Math.max(
+            Number.isFinite(metaHw) && metaHw >= 0 ? metaHw : 0,
+            Number.isFinite(archivedHw) && archivedHw >= 0 ? archivedHw : 0,
+          );
+          upsertMeta.run('trace_reply_high_water', String(highWater));
+          db.exec(`
+            DROP TABLE IF EXISTS house_trace_replies;
+            DROP TABLE IF EXISTS place_traces;
+            PRAGMA user_version = 4;
+          `);
+          extraOut = {
+            archive: existingArchivePath,
+            archive_file: existingPendingFile,
+            archive_sha256: existingPendingSha,
+            preserved_pending_archive: true,
+            high_water: highWater,
+            place_traces_exported: 0,
+            replies_exported: 0,
+          };
+        } else {
+          const highWater = Math.max(Number.isFinite(metaHw) && metaHw >= 0 ? metaHw : 0, tableMax);
+          const ts = Date.now();
+          const archiveName = `${basename(args.db)}.s2-archive-${ts}.json`;
+          const archivePath = join(dirname(args.db), archiveName);
+          const archivePayload = `${JSON.stringify({
+            version: 1,
+            exported_at_ms: ts,
+            high_water: highWater,
+            place_traces: placeTraces,
+            house_trace_replies: replies,
+          })}\n`;
+          const archiveBuf = Buffer.from(archivePayload, 'utf8');
+          const archiveSha256 = createHash('sha256').update(archiveBuf).digest('hex');
+          atomicWriteFsync(archivePath, archiveBuf);
+
+          upsertMeta.run('trace_reply_high_water', String(highWater));
+          upsertMeta.run('s2_pending_restore_file', archiveName);
+          upsertMeta.run('s2_pending_restore_sha256', archiveSha256);
+          db.exec(`
+            DROP TABLE IF EXISTS house_trace_replies;
+            DROP TABLE IF EXISTS place_traces;
+            PRAGMA user_version = 4;
+          `);
+          extraOut = {
+            archive: archivePath,
+            archive_file: archiveName,
+            archive_sha256: archiveSha256,
+            preserved_pending_archive: false,
+            high_water: highWater,
+            place_traces_exported: placeTraces.length,
+            replies_exported: replies.length,
+          };
+        }
       } else {
         db.exec(`
           UPDATE weather_snapshots

@@ -103,7 +103,7 @@ describe('S2 晴空都异步留痕（traces-s2）', () => {
 
     // tracesEnabled=false 下失败不记入外部动作 rate_log
     const beforeRates = t.c.db.scalar("SELECT COUNT(*) FROM rate_log WHERE bucket = 'act'");
-    rejects(() => b.act({ type: 'leave_trace', text: '今天点了一杯手冲咖啡' }), 'PRECONDITION_FAILED', 'traces_disabled');
+    rejects(() => b.act({ type: 'leave_trace', text: '今天点了一杯手冲咖啡' }), 'CONFLICT', 'traces_disabled');
     expect(t.c.db.scalar("SELECT COUNT(*) FROM rate_log WHERE bucket = 'act'")).toBe(beforeRates);
 
     // 室友与网页端也一律返回 traces_disabled
@@ -124,8 +124,8 @@ describe('S2 晴空都异步留痕（traces-s2）', () => {
       domain_epoch: k.epoch,
       action: { type: 'leave_trace', text: '店里的唱片声真好听啊' },
     });
-    expect(bridgeActRes.status).toBe(422);
-    expect(bridgeActRes.body).toMatchObject({ error: 'PRECONDITION_FAILED', reason: 'traces_disabled' });
+    expect(bridgeActRes.status).toBe(409);
+    expect(bridgeActRes.body).toMatchObject({ error: 'CONFLICT', reason: 'traces_disabled' });
 
     const pulseRes = await bridge('GET', '/pulse');
     expect(pulseRes.status).toBe(200);
@@ -168,8 +168,8 @@ describe('S2 晴空都异步留痕（traces-s2）', () => {
       headers: { 'content-type': 'application/json', origin, cookie, 'x-city-csrf': csrf, 'x-city-client': 'web_s2_dark' },
       body: JSON.stringify({ client_id: 'web_s2_dark', request_id: 'web_tr_dark', action: { type: 'leave_trace', text: '网页留痕暗装测试' } }),
     });
-    expect(webAct.status).toBe(422);
-    expect(await webAct.json()).toMatchObject({ reason: 'traces_disabled' });
+    expect(webAct.status).toBe(409);
+    expect(await webAct.json()).toMatchObject({ error: 'CONFLICT', reason: 'traces_disabled' });
     await h.close();
 
     // 开过后再关回 false（同库无降级撤回）也能彻底静音
@@ -235,8 +235,8 @@ describe('S2 晴空都异步留痕（traces-s2）', () => {
       domain_epoch: k.epoch,
       action: { type: 'leave_trace', text: '想在吧台留下一张便签呀' },
     });
-    expect(houseTry.status).toBe(422);
-    expect(houseTry.body).toMatchObject({ reason: 'house_traces_disabled' });
+    expect(houseTry.status).toBe(409);
+    expect(houseTry.body).toMatchObject({ error: 'CONFLICT', reason: 'house_traces_disabled' });
     expect((await bridge('GET', '/pulse')).body.recent_traces).toEqual([]);
     expect((await bridge('GET', '/traces/replies?after_seq=0')).body).toEqual({ replies: [], next_after_seq: 0 });
 
@@ -519,5 +519,109 @@ describe('S2 晴空都异步留痕（traces-s2）', () => {
     const cMissing = createCity({ dbPath, now: clock.now, rng: new SeededRng('missing'), house: HOUSE });
     expect(() => cMissing.startSync()).toThrow(/归档缺失/);
     cMissing.close();
+  });
+
+  it('降级后遇仅建表未调用 start() 的中断升级，再次降级必须保留原归档指针且不覆盖为空归档', async () => {
+    const dbPath = makeTmpDb('interrupted-upgrade-downgrade.db');
+    const clock = new FakeClock();
+    clock.t = T0;
+    const c1 = createCity({
+      dbPath,
+      now: clock.now,
+      rng: new SeededRng('s2-int-1'),
+      house: HOUSE,
+      params: { tracesEnabled: true, houseViewTraces: true },
+    });
+    await c1.start();
+    const t1 = new CityTest(c1, clock);
+    const k = t1.kernel('nia');
+    k.depart({ yen: 10000, to: SPOT_KISSA });
+    t1.run(40 * MIN);
+    const traceId = (k.act({ type: 'leave_trace', text: '中断升级前保留下来的便签内容' }).payload as any).trace.trace_id as string;
+    const ext = t1.bot('茶客甲', { id: '9201', entry: 'ryokogai:station' });
+    ext.go(SPOT_KISSA);
+    ext.act({ type: 'leave_trace', text: '茶客甲回复了这条保留便签等待读取', reply_to: traceId });
+    c1.close();
+
+    // 1. 第一次降级 v5 -> v4：生成真实非空归档并写入 meta 恢复指针
+    const dg1 = JSON.parse(
+      execFileSync(process.execPath, [DOWNGRADE_SCRIPT, '--db', dbPath, '--to', '4'], { encoding: 'utf8' }).trim(),
+    ) as {
+      ok: boolean;
+      archive: string;
+      archive_file: string;
+      archive_sha256: string;
+      preserved_pending_archive: boolean;
+      high_water: number;
+      place_traces_exported: number;
+      replies_exported: number;
+    };
+    expect(dg1).toMatchObject({
+      ok: true,
+      preserved_pending_archive: false,
+      high_water: 1,
+      place_traces_exported: 2,
+      replies_exported: 1,
+    });
+
+    // 2. 模拟升级跑完 openCityDb 建表（user_version=5，两表为空）但在 start()/installTraces 恢复前意外退出
+    const interrupted = createCity({
+      dbPath,
+      now: clock.now,
+      rng: new SeededRng('s2-int-mid'),
+      house: HOUSE,
+      params: { tracesEnabled: true, houseViewTraces: true },
+    });
+    expect(interrupted.db.get<{ user_version: number }>('PRAGMA user_version')?.user_version).toBe(5);
+    expect(interrupted.db.scalar('SELECT COUNT(*) FROM place_traces')).toBe(0);
+    expect(interrupted.db.scalar('SELECT COUNT(*) FROM house_trace_replies')).toBe(0);
+    expect(interrupted.db.getMeta('s2_pending_restore_file')).toBe(dg1.archive_file);
+    interrupted.close();
+
+    // 3. 再次执行降级 --to 4：绝不能写出空归档覆盖原有 s2_pending_restore_file / sha256
+    const dg2 = JSON.parse(
+      execFileSync(process.execPath, [DOWNGRADE_SCRIPT, '--db', dbPath, '--to', '4'], { encoding: 'utf8' }).trim(),
+    ) as {
+      ok: boolean;
+      archive: string;
+      archive_file: string;
+      archive_sha256: string;
+      preserved_pending_archive: boolean;
+      high_water: number;
+      place_traces_exported: number;
+      replies_exported: number;
+    };
+    expect(dg2).toMatchObject({
+      ok: true,
+      archive: dg1.archive,
+      archive_file: dg1.archive_file,
+      archive_sha256: dg1.archive_sha256,
+      preserved_pending_archive: true,
+      high_water: 1,
+      place_traces_exported: 0,
+      replies_exported: 0,
+    });
+
+    // 4. 最终重新升级并完整 start()：原始 trace_id、未读 reply_seq 与 trace_reply_high_water 全数恢复
+    const cRecovered = createCity({
+      dbPath,
+      now: clock.now,
+      rng: new SeededRng('s2-int-recover'),
+      house: HOUSE,
+      params: { tracesEnabled: true, houseViewTraces: true },
+    });
+    await cRecovered.start();
+    expect(cRecovered.status).toBe('running');
+    expect(cRecovered.db.getMeta('s2_pending_restore_file')).toBeUndefined();
+    expect(cRecovered.db.getMeta('s2_pending_restore_sha256')).toBeUndefined();
+    expect(cRecovered.db.getMeta('trace_reply_high_water')).toBe('1');
+    const restoredTrace = cRecovered.db.get<{ trace_id: string }>('SELECT trace_id FROM place_traces WHERE trace_id = ?', traceId);
+    expect(restoredTrace?.trace_id).toBe(traceId);
+    const restoredReplies = readTraceReplies(cRecovered, 0, 50);
+    expect(restoredReplies.replies.map((r) => ({ seq: r.reply_seq, trace_id: r.trace_id }))).toEqual([
+      { seq: 1, trace_id: traceId },
+    ]);
+    expect(restoredReplies.next_after_seq).toBe(1);
+    cRecovered.close();
   });
 });

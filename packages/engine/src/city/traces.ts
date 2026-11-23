@@ -11,7 +11,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 import type { Row } from '../world/db.js';
 import { area as areaOf, place } from './catalog.js';
-import { CityError, cityBadRequest, cityPrecondition } from './errors.js';
+import { CityError, cityBadRequest, cityConflict, cityPrecondition } from './errors.js';
 import type { CityResident, CityService } from './service.js';
 import type { VisitRow } from './visits.js';
 import { allWeather, eventsToday } from './weather.js';
@@ -144,10 +144,10 @@ export function doLeaveTrace(
   visit: VisitRow | null,
 ): Record<string, unknown> {
   if (!c.params.tracesEnabled) {
-    throw cityPrecondition('全城留言簿与寄语牌暂未开放。', 'traces_disabled');
+    throw cityConflict('全城留言簿与寄语牌暂未开放。', 'traces_disabled');
   }
   if (r.origin === 'house' && !c.params.houseViewTraces) {
-    throw cityPrecondition('室友城内留痕通道暂未开放。', 'house_traces_disabled');
+    throw cityConflict('室友城内留痕通道暂未开放。', 'house_traces_disabled');
   }
   if (r.origin === 'human' && !c.params.allowHumanTraces) {
     throw new CityError('FORBIDDEN', '网页端当前仅开放只读浏览，暂未开放留痕写入。', 'human_trace_disabled');
