@@ -201,14 +201,25 @@ async function main(): Promise<void> {
     src.exec(`VACUUM INTO '${heldCopy.replace(/'/g, "''")}'`);
     src.close();
   }
-  let refusal = '';
-  try {
-    execFileSync(process.execPath, [DOWNGRADE, '--db', heldCopy, '--dry-run'], { encoding: 'utf8', stdio: 'pipe' });
-  } catch (e: any) {
-    refusal = String(e.stderr ?? e.message).trim();
-  }
+  /** 对 live 库现拍一份拷贝，跑降级脚本 --dry-run；被拒绝返回拒绝原因，通过返回空串。 */
+  let copySeq = 0;
+  const dryRunRefusal = (src: string, label: string): string => {
+    const copy = src === heldCopy ? heldCopy : join(WORK, `city.${label}-${++copySeq}.db`);
+    if (src !== heldCopy) {
+      const s = new DatabaseSync(src);
+      s.exec(`VACUUM INTO '${copy.replace(/'/g, "''")}'`);
+      s.close();
+    }
+    try {
+      execFileSync(process.execPath, [DOWNGRADE, '--db', copy, '--dry-run'], { encoding: 'utf8', stdio: 'pipe' });
+      return '';
+    } catch (e: any) {
+      return String(e.stderr ?? e.message).trim();
+    }
+  };
+  const refusal = dryRunRefusal(heldCopy, 'held');
   probes.downgrade_refused_while_bid_held = refusal;
-  assert(refusal.includes('拒绝降级'), '有出价押金的竞拍进行中，降级必须被拒绝');
+  assert(refusal.includes('拒绝降级') && refusal.includes('押金'), `有出价押金的竞拍进行中，降级必须因押金被拒绝：${refusal}`);
   a.act({ type: 'travel', to: 'ryokogai:station' });
   assert(accountBalance(t.c, AUCTION_ESCROW) === 0, '出价人离开后托管应清零');
   const reconcile = runReconcile(t.c, 'drill-v5');
@@ -216,6 +227,41 @@ async function main(): Promise<void> {
   probes.reconcile_ok = reconcile.ok;
   assert(finalImbalance === 0, '最终账本差额应为 0（Σ=0）');
   assert(reconcile.ok, '对账应通过');
+
+  // 疏散：茶屋是 v5 才有的地点，旧引擎不认识。有人在店、在途（去/出茶屋）、还坐在牌桌上时降级脚本必须拒绝；
+  // 在 v5 引擎还在跑的时候把人都走出去之后才放行。
+  const evac: Record<string, string> = {};
+  t.run(10 * MIN); // 甲刚从茶屋出发去车站：让他先走完，下面每种情形才只剩要测的那一个人
+  const dgLive = () => dryRunRefusal(live, 'evac');
+  // (1) 在店：乙散局后一直留在茶屋里
+  assert(b.view().location.place === BOARDGAME_CHAYA_ID, '乙应还在茶屋里');
+  evac.in_shop = dgLive();
+  assert(evac.in_shop.includes('拒绝降级') && evac.in_shop.includes('在店居民 1'), `有人在店时必须拒绝降级：${evac.in_shop}`);
+  // (2) 去茶屋的路上
+  c.act({ type: 'travel', to: BOARDGAME_CHAYA_ID });
+  evac.in_transit_to_shop = dgLive();
+  assert(evac.in_transit_to_shop.includes('涉及茶屋的进行中行程 1'), `有人正走向茶屋时必须拒绝降级：${evac.in_transit_to_shop}`);
+  t.run(10 * MIN);
+  // (3) 坐在牌桌上
+  const tbl4 = c.act({ type: 'open_table', game: 'liars_dice', options: { lives: 1, dice_per_player: 2, random_seats: false } });
+  evac.seated = dgLive();
+  assert(evac.seated.includes('未离座 1'), `有人坐在牌桌上时必须拒绝降级：${evac.seated}`);
+  // (4) 从茶屋出来的路上：先离座，再让乙、丙走去车站，趁他们在路上再试一次
+  c.act({ type: 'leave_table' });
+  assert(status(tbl4.table_id).status === 'aborted', '丙离座后牌桌 4 应散局');
+  b.act({ type: 'travel', to: 'ryokogai:station' });
+  c.act({ type: 'travel', to: 'ryokogai:station' });
+  evac.in_transit_from_shop = dgLive();
+  assert(evac.in_transit_from_shop.includes('涉及茶屋的进行中行程 2'), `有人正走出茶屋时必须拒绝降级：${evac.in_transit_from_shop}`);
+  // (5) 疏散完成：都在车站了，才放行
+  t.run(15 * MIN);
+  for (const x of [a, b, c]) assert(x.view().location.place === 'ryokogai:station', `${x.name} 应已在车站`);
+  evac.after_evacuation = dgLive();
+  assert(evac.after_evacuation === '', `疏散后降级 dry-run 应通过：${evac.after_evacuation}`);
+  probes.evacuation = evac;
+  assert(ledgerImbalance(t.c) === 0, '疏散后账本差额应为 0');
+  assert(runReconcile(t.c, 'drill-v5-evac').ok, '疏散后对账应通过');
+  const drillClockMs = clock.t;
   t.c.close();
   report.probes = probes;
 
@@ -232,6 +278,15 @@ async function main(): Promise<void> {
   assert(!oldOnV5.ok, '旧引擎不应能打开 v5 库');
 
   // 3) v5 -> v4 降级（先 dry-run，再真降），旧引擎重开
+  const balancesOf = (p: string): string => {
+    const d = new DatabaseSync(p, { readOnly: true });
+    try {
+      return JSON.stringify(d.prepare('SELECT account_id, balance, held FROM accounts ORDER BY account_id').all());
+    } finally {
+      d.close();
+    }
+  };
+  const balancesBeforeDowngrade = balancesOf(live);
   const dry = JSON.parse(execFileSync(process.execPath, [DOWNGRADE, '--db', live, '--dry-run'], { encoding: 'utf8' }));
   report.downgrade_dry_run = dry;
   const down = JSON.parse(execFileSync(process.execPath, [DOWNGRADE, '--db', live, '--backup', join(WORK, 'city.pre-downgrade.sqlite')], { encoding: 'utf8' }));
@@ -243,14 +298,40 @@ async function main(): Promise<void> {
   const oldOnV4 = await oldEngineOpen(live);
   report.old_engine_on_downgraded = oldOnV4;
   assert(oldOnV4.ok && oldOnV4.user_version === 4, '旧引擎应能打开降级后的 v4 库');
+  assert(balancesOf(live) === balancesBeforeDowngrade, '降级前后所有账户余额/冻结应逐项一致');
 
   // 旧引擎不只是「能打开」：在降级后的库上真跑两天的作业循环，再对账，不能出现失败作业
   const oldHelpers = (await import(pathToFileURL(join(OLD_ENGINE, 'packages/engine/test/city/helpers.ts')).href)) as { makeCity: (o: any) => any; HOUSE: unknown; MIN: number };
   const oldTestHelpers = (await import(pathToFileURL(join(OLD_ENGINE, 'packages/engine/test/helpers.ts')).href)) as { FakeClock: new () => { t: number } };
-  const oldCityIdx = (await import(pathToFileURL(join(OLD_ENGINE, 'packages/engine/src/city/index.ts')).href)) as { runReconcile: (c: any, tag: string) => { ok: boolean } };
+  const oldCityIdx = (await import(pathToFileURL(join(OLD_ENGINE, 'packages/engine/src/city/index.ts')).href)) as {
+    runReconcile: (c: any, tag: string) => { ok: boolean };
+    cityCommand: (c: any, residentId: string, requestId: string, action: Record<string, unknown>) => any;
+    selfView: (c: any, resident: any) => any;
+    enterCity: (c: any, principal: any) => unknown;
+    ledgerImbalance: (c: any) => number;
+  };
   const oldClock = new oldTestHelpers.FakeClock();
-  oldClock.t = Date.UTC(2026, 10, 25, 10, 0, 0); // 降级之后两天
+  oldClock.t = drillClockMs + oldHelpers.MIN; // 降级后紧接着：先让旧引擎读视图、走路
   const oldT = oldHelpers.makeCity({ dbPath: live, clock: oldClock, house: oldHelpers.HOUSE });
+
+  // 疏散过的三位居民：旧引擎读视图（不抛错、位置在车站）、从车站走到别的地方、账本对得上
+  const oldLeg: Record<string, unknown> = {};
+  for (const x of [a, b, c]) {
+    const pr = oldT.c.db.get('SELECT principal_id, provider, subject, kind, display_name FROM principals WHERE principal_id = ?', x.principalId);
+    oldCityIdx.enterCity(oldT.c, pr); // 续在场（外部 bot 在线租约）
+    (oldT.online as Map<string, { principalId: string }>).set(x.id, { principalId: x.principalId }); // 推进时间时继续替它们续租
+    const v = oldCityIdx.selfView(oldT.c, oldT.c.mustResident(x.id));
+    assert(v.location.place === 'ryokogai:station', `旧引擎读视图：${x.name} 应在车站，实际 ${JSON.stringify(v.location)}`);
+    const go = oldCityIdx.cityCommand(oldT.c, x.id, `old-go-${x.id}`, { type: 'travel', to: 'ryokogai:kissa-tomoshibi' });
+    oldLeg[x.name] = { view_place: v.location.place, travel_status: go.trip?.status ?? go.status ?? 'ok' };
+  }
+  oldT.run(40 * oldHelpers.MIN);
+  for (const x of [a, b, c]) {
+    const v = oldCityIdx.selfView(oldT.c, oldT.c.mustResident(x.id));
+    assert(v.location.place === 'ryokogai:kissa-tomoshibi', `旧引擎走路：${x.name} 应到达咖啡店，实际 ${JSON.stringify(v.location)}`);
+  }
+  assert(oldCityIdx.ledgerImbalance(oldT.c) === 0, '旧引擎走完路后账本差额应为 0');
+  report.old_engine_after_evacuation = { ...oldLeg, ledger_imbalance: 0, arrived: 'ryokogai:kissa-tomoshibi' };
   oldT.run(48 * 60 * oldHelpers.MIN);
   const failedJobs = oldT.c.db.scalar("SELECT COUNT(*) FROM scheduled_jobs WHERE status = 'failed'");
   const stuckJobs = oldT.c.db.scalar("SELECT COUNT(*) FROM scheduled_jobs WHERE status = 'pending' AND attempts >= 5");

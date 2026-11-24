@@ -4,6 +4,11 @@
  *
  * 约束：
  *  - 仅当 PRAGMA user_version === 5 时执行；其它版本一律报错退出且不改库。
+ *  - 茶屋（ryokogai:boardgame-chaya）是 v5 才有的地点，旧引擎的目录里没有它：只要还有居民站在茶屋里、
+ *    有未结束（running）的行程以茶屋为起点/终点/途经、或还有没离座的座位，一律拒绝并保持 v5。
+ *    否则旧引擎读视图会抛 TypeError、从茶屋走去车站返回 NOT_FOUND、去茶屋的行程永远 running。
+ *    处理办法：在 v5 引擎还在跑的时候让这些居民走出茶屋（去车站）、等去茶屋的行程结束，再停服降级；
+ *    来不及疏散的紧急情况走整库还原（回退方案 A，见 docs/CITY-V5-ROLLBACK.md）。
  *  - 进行中的竞拍（venue_auctions.status = 'open'）里只要还有未结的出价押金（active 出价且 held_yen > 0）就拒绝：
  *    押金还在竞拍托管账户里，直接删表会让这笔钱失去对应出价记录。先等竞拍结算（或流拍退款）再降级。
  *    没有任何押金的进行中竞拍（例如每日自动开的、还没人出价的）不影响账本，可以随表一起丢。
@@ -24,6 +29,8 @@ const EXPECTED_TO = 4;
 const VENUE_TABLES = ['venue_auction_bids', 'venue_auctions', 'venue_table_seats', 'venue_tables'];
 const VENUE_JOB_KINDS = ['venue_table_tick', 'venue_auction_settle'];
 const ESCROW_ACCOUNT = 'sys:auction';
+// v5 新增的公开地点；旧引擎目录里没有。与 packages/engine/src/city/venue-games.ts 的 BOARDGAME_CHAYA_ID 一致
+const CHAYA_PLACE = 'ryokogai:boardgame-chaya';
 
 function parseArgs(argv) {
   const out = { db: '', to: EXPECTED_TO, backup: '', dryRun: false };
@@ -60,6 +67,25 @@ function main() {
     if (currentVersion !== EXPECTED_FROM) {
       throw new Error(`栈顶门禁拒绝执行：仅允许 v${EXPECTED_FROM} -> v${EXPECTED_TO} 栈顶降级，当前 PRAGMA user_version = ${currentVersion}`);
     }
+    const assertNoVenueOccupants = () => {
+      const inShop = db.prepare('SELECT resident_id FROM residents WHERE place_id = ? ORDER BY resident_id').all(CHAYA_PLACE);
+      const trips = db
+        .prepare(
+          `SELECT trip_id, resident_id FROM trips
+           WHERE status = 'running' AND (from_place = ? OR to_place = ? OR instr(legs_json, ?) > 0)
+           ORDER BY trip_id`,
+        )
+        .all(CHAYA_PLACE, CHAYA_PLACE, CHAYA_PLACE);
+      const seated = db
+        .prepare('SELECT DISTINCT resident_id FROM venue_table_seats WHERE left_at IS NULL ORDER BY resident_id')
+        .all();
+      if (inShop.length > 0 || trips.length > 0 || seated.length > 0) {
+        throw new Error(
+          `拒绝降级：茶屋还有人或未结束的行程（在店居民 ${inShop.length}、涉及茶屋的进行中行程 ${trips.length}、未离座 ${seated.length}）；` +
+            `旧引擎不认识茶屋这个地点。请在 v5 引擎运行时先让他们走出茶屋、等去茶屋的行程结束，再停服降级；紧急时改走整库还原（回退方案 A）`,
+        );
+      }
+    };
     const assertNoHeldDeposits = () => {
       const heldAuctions = Number(
         db
@@ -77,6 +103,7 @@ function main() {
       if (escrow !== 0) {
         throw new Error(`拒绝降级：竞拍托管账户 ${ESCROW_ACCOUNT} 余额为 ${escrow}，不是 0；押金没有退清，先结算或退款再降级`);
       }
+      assertNoVenueOccupants();
     };
     assertNoHeldDeposits();
     const openNoHold = countOf(db, 'venue_auctions', "status = 'open'");
