@@ -170,6 +170,22 @@ describe('协议产物和 schema 对得上', () => {
       { type: 'inspect_item', item_id: 'itm_x' },
       { type: 'inspect_item', scope: 'held', offset: 0, limit: 10 },
       { type: 'go_home' },
+      { type: 'open_table' },
+      { type: 'open_table', game: 'liars_dice', options: { lives: 1 } },
+      { type: 'open_table', game: 'color_chain' },
+      { type: 'join_table' },
+      { type: 'join_table', table_id: 'tbl_1' },
+      { type: 'start_table' },
+      { type: 'start_table', table_id: 'tbl_1' },
+      { type: 'game_act', input: { action: 'challenge' } },
+      { type: 'game_act', input: { game_action: 'bid', quantity: 2, face: 4 } },
+      { type: 'game_act', table_id: 'tbl_1', move: 'draw' },
+      { type: 'game_act', action: 'pass' },
+      { type: 'leave_table' },
+      { type: 'auction_bid', yen: 500 },
+      { type: 'auction_bid', auction_id: 'auc_1', yen: 650 },
+      { type: 'auction_view' },
+      { type: 'auction_view', auction_id: 'auc_1' },
     ]) {
       expectValid('Action', action);
     }
@@ -434,6 +450,23 @@ describe('反例：schema 不是什么都放过', () => {
     expectInvalid('Action', { type: 'say' });
     expectInvalid('Action', { type: 'buy', sku: 'coffee', qty: 10 });
     expectInvalid('Action', { type: 'consume' });
+    expectInvalid('Action', { type: 'open_table', game: 'chess' });
+    expectInvalid('Action', { type: 'game_act' });
+    for (const [i, badGameAct] of [
+      { type: 'game_act', input: {} },
+      { type: 'game_act', input: {}, move: 'challenge' },
+      { type: 'game_act', input: { action: ' ' } },
+      { type: 'game_act', input: { action: 'game_act' } },
+      { type: 'game_act', input: { action: ' game_act ' } },
+      { type: 'game_act', input: { game_action: ' ', action: 'challenge' } },
+      { type: 'game_act', move: '   ' },
+      { type: 'game_act', action: 'game_act' },
+    ].entries()) {
+      expectInvalid('Action', badGameAct);
+      expectInvalid('ActRequest', { request_id: `bad-game-act-${i}`, domain_epoch: 1, action: badGameAct });
+    }
+    expectInvalid('Action', { type: 'auction_bid' });
+    expectInvalid('Action', { type: 'auction_bid', yen: 0 });
   });
 
   it('outbox 记录', () => {

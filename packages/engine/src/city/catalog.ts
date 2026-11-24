@@ -25,7 +25,7 @@ import {
 
 export const CITY_WORLD_ID = 'city';
 export const CITY_WORLD_NAME = '晴空都';
-export const CITY_CATALOG_VERSION = 'toto-p3.0';
+export const CITY_CATALOG_VERSION = 'toto-p3.1';
 export const CITY_TEXT_VERSION = 'toto-text-1.1';
 export const FARE_RULE_VERSION = 'sim-2026-11';
 

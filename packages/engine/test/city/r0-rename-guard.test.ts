@@ -207,7 +207,7 @@ describe('晴空都 R0 全量改名与暂卸内容包专项守卫', () => {
       world_id: 'city',
       name: '晴空都',
       timezone: 'JST',
-      city_catalog_version: 'toto-p3.0',
+      city_catalog_version: 'toto-p3.1',
       city_text_version: 'toto-text-1.1',
     });
 
@@ -231,7 +231,7 @@ describe('晴空都 R0 全量改名与暂卸内容包专项守卫', () => {
     const catBody = (await catRes.json()) as Record<string, unknown>;
     expect(catBody).toMatchObject({
       protocol: 'city-bridge/1',
-      city_catalog_version: 'toto-p3.0',
+      city_catalog_version: 'toto-p3.1',
       city_text_version: 'toto-text-1.1',
       handover_node: 'hiyorizaka:ai-house:entrance',
     });

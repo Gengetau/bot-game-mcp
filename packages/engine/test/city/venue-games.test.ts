@@ -1,9 +1,14 @@
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import express from 'express';
 import { describe, expect, it } from 'vitest';
 import {
   AUCTION_ESCROW,
   AUCTION_HOUSE_RESIDENT,
   BOARDGAME_CHAYA_ID,
+  CITY_CATALOG_VERSION,
+  VENUE_ACTIONS,
   accountBalance,
   createCity,
   createVenueAuction,
@@ -12,9 +17,11 @@ import {
   leaveCity,
   place,
   placeOpen,
+  publicPlaces,
   runReconcile,
 } from '../../src/city/index.js';
 import { mountCity } from '../../src/city/http.js';
+import { CITY_GUIDE } from '../../src/mcp/city.js';
 import { SeededRng } from '../../src/core/rng.js';
 import { FakeClock } from '../helpers.js';
 import { CityTest, HOUSE, MIN, T0, makeCity, rejects } from './helpers.js';
@@ -694,5 +701,56 @@ describe('晴空都 M3-B：桌游茶屋同店成局 + 旧物密封竞拍会 (#26
     expect(finalTbl.status).toBe('completed');
     const watcherEndEvs = t.c.readResidentEvents(cWatcher.id, cCurBeforeEnd, 20).events;
     expect(watcherEndEvs.some((e) => e.type === 'venue_table_ended')).toBe(true);
+  });
+
+  it('目录版本升至 toto-p3.1：已有 toto-p3.0（17 地点）库启动后刷新写入 18 地点摘要，且 MCP 指南覆盖全部 7 个茶屋动作', () => {
+    expect(CITY_CATALOG_VERSION).toBe('toto-p3.1');
+    expect(publicPlaces()).toHaveLength(18);
+    for (const action of VENUE_ACTIONS) {
+      expect(CITY_GUIDE, `CITY_GUIDE 缺少 ${action}`).toContain(action);
+    }
+
+    const dir = mkdtempSync(join(tmpdir(), 'city-catalog-v31-'));
+    try {
+      const dbPath = join(dir, 'city.db');
+      const clock = new FakeClock();
+      clock.t = T0;
+      const c1 = createCity({
+        dbPath,
+        now: clock.now,
+        rng: new SeededRng('cat-v31-1'),
+        house: HOUSE,
+        fetchWeather: null,
+      });
+      c1.startSync();
+      // 模拟旧版 v4 启动留下的 toto-p3.0（17 地点）记录，并清掉新行以验证重启按新版本号写入刷新
+      c1.db.run('DELETE FROM catalog_versions');
+      c1.db.run(
+        `INSERT INTO catalog_versions(catalog_version, fare_rule_version, summary_json, activated_at)
+         VALUES ('toto-p3.0', 'sim-2026-11', ?, ?)`,
+        JSON.stringify({ packs: [], stations: 3, places: 17, stamps: 3 }),
+        T0 - 60_000,
+      );
+      c1.close();
+
+      const c2 = createCity({
+        dbPath,
+        now: clock.now,
+        rng: new SeededRng('cat-v31-2'),
+        house: HOUSE,
+        fetchWeather: null,
+      });
+      c2.startSync();
+      const rows = c2.db.all<{ catalog_version: string; summary_json: string }>(
+        'SELECT catalog_version, summary_json FROM catalog_versions ORDER BY catalog_version',
+      );
+      c2.close();
+
+      expect(rows.map((r) => r.catalog_version)).toEqual(['toto-p3.0', 'toto-p3.1']);
+      expect(JSON.parse(rows[0]!.summary_json).places).toBe(17);
+      expect(JSON.parse(rows[1]!.summary_json).places).toBe(18);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

@@ -130,7 +130,7 @@ const SYNTHETIC_FICTIONAL_PACK: CityContentPack = {
 
 describe('M3-D 标准 ContentPack：R0 暂卸隔离与架空契约校验 (#265 / #277)', () => {
   it('R0 MOUNTED_CONTENT_PACKS 为空且目录自检零错误，合成架空 ContentPack 正反例校验生效并落库 catalog_versions', () => {
-    expect(CITY_CATALOG_VERSION).toBe('toto-p3.0');
+    expect(CITY_CATALOG_VERSION).toBe('toto-p3.1');
     expect(MOUNTED_CONTENT_PACKS).toEqual([]);
     expect(WARDS).toEqual([]);
     expect(AREAS.map((a) => a.id)).toEqual(['hiyorizaka', 'ryokogai', 'kumominato']);
@@ -154,11 +154,12 @@ describe('M3-D 标准 ContentPack：R0 暂卸隔离与架空契约校验 (#265 /
     const t = makeCity();
     const verRow = t.c.db.get<{ catalog_version: string; fare_rule_version: string; summary_json: string }>(
       'SELECT catalog_version, fare_rule_version, summary_json FROM catalog_versions WHERE catalog_version = ?',
-      'toto-p3.0',
+      'toto-p3.1',
     );
     expect(verRow).toBeDefined();
     expect(JSON.parse(verRow!.summary_json)).toMatchObject({
       stations: 3,
+      places: 18,
       stamps: 3,
     });
   });
