@@ -602,7 +602,7 @@ const MIGRATIONS: readonly string[] = [
   ) STRICT, WITHOUT ROWID;
   CREATE INDEX venue_auction_bids_resident ON venue_auction_bids(resident_id, status);
   `,
-  // v6：S2 场所异步留痕（place_traces）与室友便签回响收件表（house_trace_replies，高水位存于 meta['trace_reply_high_water']）
+  // v6：S2 场所异步留痕（place_traces）、独立日用量计数（place_trace_daily_usage）与室友便签回响收件表（house_trace_replies，高水位存于 meta['trace_reply_high_water']）
   `
   CREATE TABLE place_traces (
     trace_id TEXT PRIMARY KEY,
@@ -618,6 +618,15 @@ const MIGRATIONS: readonly string[] = [
   ) STRICT;
   CREATE INDEX place_traces_place_time ON place_traces(place_id, created_at_ms DESC);
   CREATE INDEX place_traces_author_day ON place_traces(author_id, business_date);
+
+  CREATE TABLE place_trace_daily_usage (
+    author_id TEXT NOT NULL,
+    business_date TEXT NOT NULL,
+    place_id TEXT NOT NULL,
+    count INTEGER NOT NULL CHECK (count >= 0),
+    PRIMARY KEY (author_id, business_date, place_id)
+  ) STRICT, WITHOUT ROWID;
+  CREATE INDEX place_trace_daily_usage_date ON place_trace_daily_usage(business_date);
 
   CREATE TABLE house_trace_replies (
     reply_seq INTEGER PRIMARY KEY,

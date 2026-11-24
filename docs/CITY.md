@@ -110,7 +110,7 @@ BOTGAME_CITY=1 BOTGAME_CITY_DB=./data/city-dev.db npm run dev -w bot-game-mcp --
 packages/engine/src/city/
   index.ts      createCity：装配所有模块
   service.ts    CityService：写事务（commit）、事件流、定时作业、启动恢复、订阅与等待
-  db.ts         SQLite schema（CITY_SCHEMA，PRAGMA user_version 迁移，目前 v6：v4 新增 weather_overrides、weather_override_receipts；v5 新增桌游茶屋与旧物竞拍的 venue_* 四表；v6 新增 S2 场所异步留痕 place_traces、house_trace_replies）
+  db.ts         SQLite schema（CITY_SCHEMA，PRAGMA user_version 迁移，目前 v6：v4 新增 weather_overrides、weather_override_receipts；v5 新增桌游茶屋与旧物竞拍的 venue_* 四表；v6 新增 S2 场所异步留痕 place_traces、place_trace_daily_usage、house_trace_replies）
   params.ts     全部可调参数和默认值
   errors.ts     失败码和 HTTP 状态
   catalog.ts    目录：片区、车站、线路、地点、商品、来源说明、行程规划（纯函数）
@@ -535,9 +535,9 @@ docs/city/mappings.json               物品与效果映射表
 ### 场所异步留痕与桥接脉搏（S2，`user_version = 6`）
 
 - **三重暗装门禁**：`tracesEnabled`、`houseViewTraces`、`allowHumanTraces` 默认全 `false`。`tracesEnabled = false` 时全渠道 `leave_trace` 返回 `409 CONFLICT`（`traces_disabled`，不写入也不计外部动作频次），所有视图不含 `traces`，`/pulse` 与 `/traces/replies` 返回空集。仅当 `tracesEnabled && houseViewTraces` 同为 `true` 时，才向 `/visits/:id/view`、`decision_wake.traces_summary`、`/pulse`、`/traces/replies` 与室友 `leave_trace` 开放（`houseViewTraces = false` 时室友 `leave_trace` 返回 `409 CONFLICT` / `house_traces_disabled`）。`allowHumanTraces = false` 时网页端写 `leave_trace` 返回 `403 FORBIDDEN`（`human_trace_disabled`）。
-- **挂载地点、配额与反注入过滤**：在 `ryokogai:kissa-tomoshibi`、`ryokogai:shiorido`、`kumominato:muginohi`、`kumominato:southern-terrace`、`hiyorizaka:fukogawa-riverbank` 五处挂载，同一居民每处每日最多 `2` 条、全城每日最多 `5` 条（超限 `429 RATE_LIMITED / trace_quota_exceeded`）。拒绝控制/零宽字符、`<>@＠`、`[CQ:`、`{@`、提示词注入定界符，经 `NFKC` + 中文大小写数字映射 + 去分隔符后拦截 `>= 6` 位数字与 URL/域名（`400 BAD_REQUEST / trace_forbidden_content`）。
-- **实算字节裁剪与独立高水位收件**：`here.traces` 按 `Buffer.byteLength <= 600` 逐条装入，`selfView` 受 `4096` 字节预算控制；`/pulse` 限制 `<= 2048` 字节。跨时间回复室友便签写入 `house_trace_replies` 并由 `meta['trace_reply_high_water']` 维护单调 `reply_seq`（绝不写 `bridge_outbox`）。定期 `prune` 按 `eventRetentionMs` 清理并每店保留最新 `50` 条，不重置高水位。
-- **v6 ↔ v5 归档降级与强制启动恢复**：`node scripts/city-schema-downgrade.mjs --db <city.db> --to 5` 仅在 `user_version === 6` 时执行，`VACUUM INTO` 备份后以原子 `fsync` 写出 SHA-256 归档 JSON 并在 `meta` 写入 `s2_pending_restore_file` / `s2_pending_restore_sha256` 后仅删除 S2 两表并回拨 `user_version = 5`（茶屋牌桌、密封竞拍与账本等 v5 数据原样保留；若已存在未消费的待恢复归档且 v6 表为空，重复降级保留原归档指针不覆盖）；再升级回 v6 启动恢复时若归档缺失或 SHA-256 校验失败直接中止恢复并拒绝写入。
+- **挂载地点、配额与反注入过滤**：在 `ryokogai:kissa-tomoshibi`、`ryokogai:shiorido`、`kumominato:muginohi`、`kumominato:southern-terrace`、`hiyorizaka:fukogawa-riverbank` 五处挂载，同一居民每处每日最多 `2` 条、全城每日最多 `5` 条（超限 `429 RATE_LIMITED / trace_quota_exceeded`），日用量独立记于 `place_trace_daily_usage`（不受正文保留上限清理重置）。拒绝控制/零宽字符、`<>@＠`、`[CQ:`、`{@`、提示词注入定界符，经 `NFKC` + 中文大小写数字映射 + 去分隔符后拦截 `>= 6` 位数字与 URL/域名（`400 BAD_REQUEST / trace_forbidden_content`）。
+- **实算字节裁剪与独立高水位收件**：`here.traces` 按 `Buffer.byteLength <= 600` 逐条装入，`selfView` 受 `4096` 字节预算控制；`/pulse` 限制 `<= 2048` 字节。跨时间回复室友便签写入 `house_trace_replies` 并由 `meta['trace_reply_high_water']` 维护单调 `reply_seq`（绝不写 `bridge_outbox`）。定期 `prune` 按 `eventRetentionMs` 清理并每店保留最新 `50` 条，不重置高水位与当日配额。
+- **v6 ↔ v5 归档降级与强制启动恢复**：`node scripts/city-schema-downgrade.mjs --db <city.db> --to 5` 仅在 `user_version === 6` 时执行，`VACUUM INTO` 备份后在事务内写 `s2_pending_restore_file` / `s2_pending_restore_sha256`、删除 S2 三表（`place_traces`、`place_trace_daily_usage`、`house_trace_replies`）、回拨 `user_version = 5` 并于提交前校验 `PRAGMA foreign_key_check` / `integrity_check`，校验通过后以原子 `fsync` 写出 SHA-256 归档 JSON 并提交（任一失败完整回滚且清理本次生成的归档与临时文件，保留预降级备份与既有待恢复归档；茶屋牌桌、密封竞拍与账本等 v5 数据原样保留；若已存在未消费的待恢复归档键则进入校验，空值/缺项/损坏一律拒绝覆盖，合法且 v6 表为空时保留原归档指针）；再升级回 v6 启动恢复时按 `meta` 键存在性进入校验，空值、缺项、归档缺失或 SHA-256 不匹配一律 fail-closed 停留在 `recovering`。
 
 ## 视图与隐私
 

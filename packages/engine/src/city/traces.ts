@@ -177,12 +177,19 @@ export function doLeaveTrace(
   }
 
   const businessDate = c.today(at);
-  const placeToday = c.db.scalar(
+  const placeUsage = c.db.scalar(
+    'SELECT COALESCE(count, 0) FROM place_trace_daily_usage WHERE author_id = ? AND business_date = ? AND place_id = ?',
+    r.resident_id,
+    businessDate,
+    r.place_id,
+  );
+  const placeLive = c.db.scalar(
     'SELECT COUNT(*) FROM place_traces WHERE author_id = ? AND place_id = ? AND business_date = ?',
     r.resident_id,
     r.place_id,
     businessDate,
   );
+  const placeToday = Math.max(placeUsage, placeLive);
   if (placeToday >= MAX_TRACES_PER_PLACE_PER_DAY) {
     throw new CityError(
       'RATE_LIMITED',
@@ -191,7 +198,21 @@ export function doLeaveTrace(
     );
   }
   const cityToday = c.db.scalar(
-    'SELECT COUNT(*) FROM place_traces WHERE author_id = ? AND business_date = ?',
+    `SELECT COALESCE(SUM(cnt), 0) FROM (
+       SELECT place_id, MAX(cnt) AS cnt FROM (
+         SELECT place_id, count AS cnt
+           FROM place_trace_daily_usage
+          WHERE author_id = ? AND business_date = ?
+         UNION ALL
+         SELECT place_id, COUNT(*) AS cnt
+           FROM place_traces
+          WHERE author_id = ? AND business_date = ?
+          GROUP BY place_id
+       )
+       GROUP BY place_id
+     )`,
+    r.resident_id,
+    businessDate,
     r.resident_id,
     businessDate,
   );
@@ -217,6 +238,17 @@ export function doLeaveTrace(
     visit?.visit_id ?? null,
     businessDate,
     at,
+  );
+  const nextPlaceCount = placeToday + 1;
+  c.db.run(
+    `INSERT INTO place_trace_daily_usage(author_id, business_date, place_id, count)
+     VALUES (?, ?, ?, ?)
+     ON CONFLICT(author_id, business_date, place_id)
+     DO UPDATE SET count = MAX(count + 1, excluded.count)`,
+    r.resident_id,
+    businessDate,
+    r.place_id,
+    nextPlaceCount,
   );
 
   // 跨时间回复室友便签时，仅写入独立收件表 house_trace_replies（绝不写入 bridge_outbox）
@@ -527,6 +559,10 @@ export function pruneTraces(c: CityService, now: number): void {
     );
   }
   c.db.run('DELETE FROM house_trace_replies WHERE created_at_ms <= ?', cut);
+  const today = c.today(now);
+  const cutDate = c.today(cut);
+  const retainDate = cutDate < today ? cutDate : today;
+  c.db.run('DELETE FROM place_trace_daily_usage WHERE business_date < ?', retainDate);
 }
 
 interface S2RestoreArchive {
@@ -534,16 +570,32 @@ interface S2RestoreArchive {
   high_water?: number;
   place_traces: Row[];
   house_trace_replies: Row[];
+  place_trace_daily_usage?: Row[];
 }
 
 export function installTraces(c: CityService): void {
   c.hooks.recover.push((now) => {
-    const pendingFile = c.db.getMeta('s2_pending_restore_file');
-    const expectedSha = c.db.getMeta('s2_pending_restore_sha256');
-    if (!pendingFile && !expectedSha) return;
+    const pendingFileRow = c.db.get<{ value: string }>("SELECT value FROM meta WHERE key = 's2_pending_restore_file'");
+    const expectedShaRow = c.db.get<{ value: string }>("SELECT value FROM meta WHERE key = 's2_pending_restore_sha256'");
+    if (!pendingFileRow && !expectedShaRow) return;
 
-    if (!pendingFile || !expectedSha || c.db.inMemory || basename(pendingFile) !== pendingFile) {
-      throw new Error(`S2 降级归档元数据异常（file=${pendingFile ?? ''}），拒绝以空表启动。`);
+    const rawPendingFile = pendingFileRow?.value;
+    const rawExpectedSha = expectedShaRow?.value;
+    const pendingFile = typeof rawPendingFile === 'string' ? rawPendingFile.trim() : '';
+    const expectedSha = typeof rawExpectedSha === 'string' ? rawExpectedSha.trim() : '';
+    if (
+      !pendingFileRow ||
+      !expectedShaRow ||
+      !pendingFile ||
+      !expectedSha ||
+      pendingFile !== rawPendingFile ||
+      expectedSha !== rawExpectedSha ||
+      pendingFile === '.' ||
+      pendingFile === '..' ||
+      c.db.inMemory ||
+      basename(pendingFile) !== pendingFile
+    ) {
+      throw new Error(`S2 降级归档元数据异常（file=${rawPendingFile ?? ''}），拒绝以空表启动。`);
     }
     const archivePath = join(dirname(c.db.path), pendingFile);
     if (!existsSync(archivePath)) {
@@ -565,7 +617,8 @@ export function installTraces(c: CityService): void {
       !parsed ||
       parsed.version !== 1 ||
       !Array.isArray(parsed.place_traces) ||
-      !Array.isArray(parsed.house_trace_replies)
+      !Array.isArray(parsed.house_trace_replies) ||
+      (parsed.place_trace_daily_usage !== undefined && !Array.isArray(parsed.place_trace_daily_usage))
     ) {
       throw new Error('S2 降级归档格式无效，拒绝以空表启动。');
     }
@@ -606,6 +659,50 @@ export function installTraces(c: CityService): void {
         String(row.reply_origin),
         String(row.excerpt),
         Number(row.created_at_ms),
+      );
+    }
+
+    const today = c.today(now);
+    const cutDate = c.today(cut);
+    const retainDate = cutDate < today ? cutDate : today;
+    if (Array.isArray(parsed.place_trace_daily_usage)) {
+      for (const row of parsed.place_trace_daily_usage) {
+        const count = Number(row?.count);
+        if (
+          !row ||
+          typeof row.author_id !== 'string' ||
+          typeof row.business_date !== 'string' ||
+          typeof row.place_id !== 'string' ||
+          !row.author_id ||
+          !row.business_date ||
+          !row.place_id ||
+          !Number.isInteger(count) ||
+          count < 0
+        ) {
+          throw new Error('S2 降级归档日用量记录无效，拒绝以空表启动。');
+        }
+        if (row.business_date < retainDate) continue;
+        c.db.run(
+          `INSERT INTO place_trace_daily_usage(author_id, business_date, place_id, count)
+           VALUES (?, ?, ?, ?)
+           ON CONFLICT(author_id, business_date, place_id)
+           DO UPDATE SET count = MAX(count, excluded.count)`,
+          row.author_id,
+          row.business_date,
+          row.place_id,
+          count,
+        );
+      }
+    } else {
+      c.db.run(
+        `INSERT INTO place_trace_daily_usage(author_id, business_date, place_id, count)
+         SELECT author_id, business_date, place_id, COUNT(*)
+           FROM place_traces
+          WHERE business_date >= ?
+          GROUP BY author_id, business_date, place_id
+         ON CONFLICT(author_id, business_date, place_id)
+         DO UPDATE SET count = MAX(count, excluded.count)`,
+        retainDate,
       );
     }
 

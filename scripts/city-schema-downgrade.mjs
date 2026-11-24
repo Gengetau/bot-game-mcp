@@ -3,15 +3,17 @@
  * 晴空都城市库受控降级脚本（支持栈顶 S2 v6 -> v5 含归档导出、v5 -> v4 委托降级、及栈顶 S1 v4 -> v3）。
  *
  * 约束：
- *  - --to 5（默认）：仅当 PRAGMA user_version === 6 时执行，VACUUM INTO 备份 + 原子 fsync 导出 S2 归档与 SHA-256、
- *    保留 trace_reply_high_water、删除 v6 两表并回拨 user_version = 5（v5 茶屋 / 密封竞拍表与账本数据原样保留）；
- *    若已存在未消费的 s2_pending_restore_file 且 v6 表为空，重复降级保留原归档指针不覆盖。
+ *  - --to 5（默认）：仅当 PRAGMA user_version === 6 时执行，VACUUM INTO 备份 + 事务内删表回拨并校验外键与完整性 +
+ *    原子 fsync 导出 S2 归档与 SHA-256、保留 trace_reply_high_water、删除 v6 三表（place_traces、place_trace_daily_usage、
+ *    house_trace_replies）并回拨 user_version = 5（v5 茶屋 / 密封竞拍表与账本数据原样保留）；
+ *    若已存在未消费的 s2_pending_restore_file / sha256 键且 v6 表为空，重复降级保留原归档指针不覆盖（损坏或空值指针一律拒绝）；
+ *    任一失败均完整回滚并清理本次生成的归档与临时文件（保留预降级备份与既有待恢复归档）。
  *  - --to 4：委托 scripts/city-schema-downgrade-v5.mjs 执行栈顶 v5 -> v4（保留原有茶屋疏散、押金/托管余额门禁与删表行为不变）。
- *  - --to 3：仅当 PRAGMA user_version === 4 时执行，VACUUM INTO 备份、清理 'qingkong' 残留快照/状态、删除 v4 两表并回拨 user_version = 3。
+ *  - --to 3：仅当 PRAGMA user_version === 4 时执行，VACUUM INTO 备份、清理 'qingkong' 残留快照/状态、删除 v4 两表、事务内校验外键与完整性并回拨 user_version = 3。
  */
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { closeSync, existsSync, fsyncSync, openSync, readFileSync, renameSync, writeSync } from 'node:fs';
+import { closeSync, existsSync, fsyncSync, openSync, readFileSync, renameSync, unlinkSync, writeSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath } from 'node:url';
@@ -44,16 +46,51 @@ function sqlString(v) {
   return `'${String(v).replace(/'/g, "''")}'`;
 }
 
+function removeIfExists(filePath) {
+  if (!filePath) return;
+  try {
+    unlinkSync(filePath);
+  } catch (err) {
+    if (!err || err.code !== 'ENOENT') {
+      /* best-effort cleanup */
+    }
+  }
+}
+
+function chooseArchivePath(dbPath, ts) {
+  const dir = dirname(dbPath);
+  const base = basename(dbPath);
+  let name = `${base}.s2-archive-${ts}.json`;
+  let fullPath = join(dir, name);
+  let seq = 1;
+  while (existsSync(fullPath)) {
+    name = `${base}.s2-archive-${ts}-${seq++}.json`;
+    fullPath = join(dir, name);
+  }
+  return { archiveName: name, archivePath: fullPath };
+}
+
 function atomicWriteFsync(targetPath, buf) {
   const tmpPath = `${targetPath}.tmp-${process.pid}`;
-  const fd = openSync(tmpPath, 'w', 0o600);
+  let fd = null;
   try {
+    fd = openSync(tmpPath, 'w', 0o600);
     writeSync(fd, buf);
     fsyncSync(fd);
-  } finally {
     closeSync(fd);
+    fd = null;
+    renameSync(tmpPath, targetPath);
+  } catch (err) {
+    if (fd !== null) {
+      try {
+        closeSync(fd);
+      } catch {
+        /* ignore */
+      }
+    }
+    removeIfExists(tmpPath);
+    throw err;
   }
-  renameSync(tmpPath, targetPath);
 }
 
 function main() {
@@ -88,6 +125,8 @@ function main() {
     db.exec(`VACUUM INTO ${sqlString(backupPath)}`);
 
     let extraOut = {};
+    let pendingArchiveWrite = null;
+    let createdArchivePath = null;
     db.exec('BEGIN IMMEDIATE');
     try {
       if (args.to === 5) {
@@ -95,8 +134,11 @@ function main() {
         const metaHw = Number(hwRow?.value ?? 0);
         const pendingFileRow = db.prepare("SELECT value FROM meta WHERE key = 's2_pending_restore_file'").get();
         const pendingShaRow = db.prepare("SELECT value FROM meta WHERE key = 's2_pending_restore_sha256'").get();
-        const existingPendingFile = String(pendingFileRow?.value ?? '').trim();
-        const existingPendingSha = String(pendingShaRow?.value ?? '').trim();
+        const hasPendingPointer = pendingFileRow !== undefined || pendingShaRow !== undefined;
+        const rawPendingFile = pendingFileRow?.value;
+        const rawPendingSha = pendingShaRow?.value;
+        const existingPendingFile = typeof rawPendingFile === 'string' ? rawPendingFile.trim() : '';
+        const existingPendingSha = typeof rawPendingSha === 'string' ? rawPendingSha.trim() : '';
         const placeTraces = db
           .prepare(
             'SELECT trace_id, place_id, author_id, author_name, author_origin, body, reply_to, visit_id, business_date, created_at_ms FROM place_traces ORDER BY created_at_ms ASC, trace_id ASC',
@@ -107,14 +149,29 @@ function main() {
             'SELECT reply_seq, target_actor_id, trace_id, reply_trace_id, place_id, place_name, reply_author_name, reply_origin, excerpt, created_at_ms FROM house_trace_replies ORDER BY reply_seq ASC',
           )
           .all();
+        const dailyUsage = db
+          .prepare(
+            'SELECT author_id, business_date, place_id, count FROM place_trace_daily_usage ORDER BY business_date ASC, author_id ASC, place_id ASC',
+          )
+          .all();
         const tableMax = replies.reduce((m, row) => Math.max(m, Number(row.reply_seq ?? 0)), 0);
 
         const upsertMeta = db.prepare(
           'INSERT INTO meta(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
         );
-        if (existingPendingFile !== '' || existingPendingSha !== '') {
-          if (!existingPendingFile || !existingPendingSha || basename(existingPendingFile) !== existingPendingFile) {
-            throw new Error(`检测到损坏的 s2_pending_restore 元数据（file=${existingPendingFile}），拒绝覆盖归档指针`);
+        if (hasPendingPointer) {
+          if (
+            pendingFileRow === undefined ||
+            pendingShaRow === undefined ||
+            !existingPendingFile ||
+            !existingPendingSha ||
+            existingPendingFile !== rawPendingFile ||
+            existingPendingSha !== rawPendingSha ||
+            existingPendingFile === '.' ||
+            existingPendingFile === '..' ||
+            basename(existingPendingFile) !== existingPendingFile
+          ) {
+            throw new Error(`检测到损坏的 s2_pending_restore 元数据（file=${rawPendingFile ?? ''}），拒绝覆盖归档指针`);
           }
           const existingArchivePath = join(dirname(args.db), existingPendingFile);
           if (!existsSync(existingArchivePath)) {
@@ -135,11 +192,12 @@ function main() {
             !existingDoc ||
             existingDoc.version !== 1 ||
             !Array.isArray(existingDoc.place_traces) ||
-            !Array.isArray(existingDoc.house_trace_replies)
+            !Array.isArray(existingDoc.house_trace_replies) ||
+            (existingDoc.place_trace_daily_usage !== undefined && !Array.isArray(existingDoc.place_trace_daily_usage))
           ) {
             throw new Error(`未消费的 S2 归档格式无效（${existingPendingFile}），拒绝覆盖归档指针`);
           }
-          if (placeTraces.length > 0 || replies.length > 0) {
+          if (placeTraces.length > 0 || replies.length > 0 || dailyUsage.length > 0) {
             throw new Error('检测到未消费的 s2_pending_restore_file 同时 v6 表含新记录，拒绝覆盖原归档；请先完成恢复');
           }
           const archivedHw = Number(existingDoc.high_water ?? 0);
@@ -149,6 +207,7 @@ function main() {
           );
           upsertMeta.run('trace_reply_high_water', String(highWater));
           db.exec(`
+            DROP TABLE IF EXISTS place_trace_daily_usage;
             DROP TABLE IF EXISTS house_trace_replies;
             DROP TABLE IF EXISTS place_traces;
             PRAGMA user_version = 5;
@@ -161,31 +220,33 @@ function main() {
             high_water: highWater,
             place_traces_exported: 0,
             replies_exported: 0,
+            daily_usage_exported: 0,
           };
         } else {
           const highWater = Math.max(Number.isFinite(metaHw) && metaHw >= 0 ? metaHw : 0, tableMax);
           const ts = Date.now();
-          const archiveName = `${basename(args.db)}.s2-archive-${ts}.json`;
-          const archivePath = join(dirname(args.db), archiveName);
+          const { archiveName, archivePath } = chooseArchivePath(args.db, ts);
           const archivePayload = `${JSON.stringify({
             version: 1,
             exported_at_ms: ts,
             high_water: highWater,
             place_traces: placeTraces,
             house_trace_replies: replies,
+            place_trace_daily_usage: dailyUsage,
           })}\n`;
           const archiveBuf = Buffer.from(archivePayload, 'utf8');
           const archiveSha256 = createHash('sha256').update(archiveBuf).digest('hex');
-          atomicWriteFsync(archivePath, archiveBuf);
 
           upsertMeta.run('trace_reply_high_water', String(highWater));
           upsertMeta.run('s2_pending_restore_file', archiveName);
           upsertMeta.run('s2_pending_restore_sha256', archiveSha256);
           db.exec(`
+            DROP TABLE IF EXISTS place_trace_daily_usage;
             DROP TABLE IF EXISTS house_trace_replies;
             DROP TABLE IF EXISTS place_traces;
             PRAGMA user_version = 5;
           `);
+          pendingArchiveWrite = { archivePath, archiveBuf };
           extraOut = {
             archive: archivePath,
             archive_file: archiveName,
@@ -194,6 +255,7 @@ function main() {
             high_water: highWater,
             place_traces_exported: placeTraces.length,
             replies_exported: replies.length,
+            daily_usage_exported: dailyUsage.length,
           };
         }
       } else {
@@ -214,6 +276,20 @@ function main() {
           PRAGMA user_version = 3;
         `);
       }
+
+      const fkViolations = db.prepare('PRAGMA foreign_key_check').all();
+      if (fkViolations.length > 0) {
+        throw new Error(`降级前外键检查失败：${JSON.stringify(fkViolations)}`);
+      }
+      const icRows = db.prepare('PRAGMA integrity_check').all();
+      if (icRows.length !== 1 || icRows[0]?.integrity_check !== 'ok') {
+        throw new Error(`降级前完整性检查失败：${JSON.stringify(icRows)}`);
+      }
+
+      if (pendingArchiveWrite) {
+        atomicWriteFsync(pendingArchiveWrite.archivePath, pendingArchiveWrite.archiveBuf);
+        createdArchivePath = pendingArchiveWrite.archivePath;
+      }
       db.exec('COMMIT');
     } catch (e) {
       try {
@@ -221,17 +297,12 @@ function main() {
       } catch {
         /* ignore */
       }
+      if (createdArchivePath) {
+        removeIfExists(createdArchivePath);
+      }
       throw e;
     }
 
-    const fkViolations = db.prepare('PRAGMA foreign_key_check').all();
-    if (fkViolations.length > 0) {
-      throw new Error(`降级后外键检查失败：${JSON.stringify(fkViolations)}`);
-    }
-    const ic = db.prepare('PRAGMA integrity_check').get();
-    if (ic?.integrity_check !== 'ok') {
-      throw new Error(`降级后完整性检查失败：${JSON.stringify(ic)}`);
-    }
     process.stdout.write(
       JSON.stringify({ ok: true, from_version: expectedFrom, to_version: args.to, backup: backupPath, ...extraOut }) + '\n',
     );

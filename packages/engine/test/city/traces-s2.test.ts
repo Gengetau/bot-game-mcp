@@ -672,6 +672,7 @@ describe('S2 晴空都异步留痕（traces-s2）', () => {
       try {
         return {
           place_traces: readSortedTable(db, 'place_traces', 'created_at_ms ASC, trace_id ASC'),
+          place_trace_daily_usage: readSortedTable(db, 'place_trace_daily_usage', 'business_date ASC, author_id ASC, place_id ASC'),
           house_trace_replies: readSortedTable(db, 'house_trace_replies', 'reply_seq ASC'),
         };
       } finally {
@@ -761,8 +762,10 @@ describe('S2 晴空都异步留痕（traces-s2）', () => {
     // 将未写入任何 S2 数据的库精准回拨为纯 v5 库（与现行线上 v5 schema 完全一致）
     const rawV5 = new DatabaseSync(dbPath);
     expect(Number((rawV5.prepare('SELECT COUNT(*) AS n FROM place_traces').get() as any).n)).toBe(0);
+    expect(Number((rawV5.prepare('SELECT COUNT(*) AS n FROM place_trace_daily_usage').get() as any).n)).toBe(0);
     expect(Number((rawV5.prepare('SELECT COUNT(*) AS n FROM house_trace_replies').get() as any).n)).toBe(0);
     rawV5.exec(`
+      DROP TABLE place_trace_daily_usage;
       DROP TABLE house_trace_replies;
       DROP TABLE place_traces;
       PRAGMA user_version = 5;
@@ -881,12 +884,12 @@ describe('S2 晴空都异步留痕（traces-s2）', () => {
     expect(existsSync(dgOut.backup)).toBe(true);
     expect(existsSync(dgOut.archive)).toBe(true);
 
-    // 核对降回 v5 后：schema=5、S2 两表已删、v5 茶屋/竞拍/账本表计数与全部行内容原样不变
+    // 核对降回 v5 后：schema=5、S2 三表已删、v5 茶屋/竞拍/账本表计数与全部行内容原样不变
     const checkV5 = new DatabaseSync(dbPath, { readOnly: true });
     expect(checkV5.prepare('PRAGMA user_version').get()).toEqual({ user_version: 5 });
     expect(
       checkV5
-        .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name IN ('place_traces', 'house_trace_replies')")
+        .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name IN ('place_traces', 'place_trace_daily_usage', 'house_trace_replies')")
         .all(),
     ).toEqual([]);
     expect((checkV5.prepare("SELECT value FROM meta WHERE key = 's2_pending_restore_file'").get() as any)?.value).toBe(dgOut.archive_file);
@@ -929,6 +932,7 @@ describe('S2 晴空都异步留痕（traces-s2）', () => {
 
     const restoredS2 = snapshotS2(dbPath);
     expect(restoredS2.place_traces).toEqual(preDowngradeS2.place_traces);
+    expect(restoredS2.place_trace_daily_usage).toEqual(preDowngradeS2.place_trace_daily_usage);
     expect(restoredS2.house_trace_replies).toEqual(preDowngradeS2.house_trace_replies);
 
     const restoredV5 = snapshotV5Core(dbPath);
@@ -957,5 +961,243 @@ describe('S2 晴空都异步留痕（traces-s2）', () => {
     expect(allReplies.next_after_seq).toBe(3);
     expect(cReopen.db.getMeta('trace_reply_high_water')).toBe('3');
     cReopen.close();
+  });
+
+  it('留痕清理不重置同日单点与全城配额，且同日 6→5→6 降级恢复后配额计数保持生效', async () => {
+    const dbPath = makeTmpDb('quota-prune-survive.db');
+    const clock = new FakeClock();
+    clock.t = T0;
+    const c1 = createCity({
+      dbPath,
+      now: clock.now,
+      rng: new SeededRng('quota-prune-1'),
+      house: HOUSE,
+      fetchWeather: null,
+      params: { tracesEnabled: true, houseViewTraces: true },
+    });
+    await c1.start();
+    const t1 = new CityTest(c1, clock);
+    const author = t1.bot('配额旅人', { id: '9501', entry: 'ryokogai:station', stay: true });
+
+    // 1. 单点配额：同日写 2 条后第 3 条被拒
+    author.go(SPOT_KISSA);
+    expect(author.act({ type: 'leave_trace', text: '吧台第一张留痕便签测试' }).status).toBe('completed');
+    expect(author.act({ type: 'leave_trace', text: '吧台第二张留痕便签测试' }).status).toBe('completed');
+    rejects(() => author.act({ type: 'leave_trace', text: '吧台第三张应当被配额拒绝' }), 'RATE_LIMITED', 'trace_quota_exceeded');
+
+    // 填充 50 条较新记录并执行清理：正文表保留最新 50 条（原作者正文被清零），但第 3 条仍被拒
+    const fillAndPrune = (spot: string, prefix: string) => {
+      clock.t += 1000;
+      const today = c1.today(clock.t);
+      c1.commit(() => {
+        for (let i = 0; i < 50; i++) {
+          c1.db.run(
+            `INSERT INTO place_traces(trace_id, place_id, author_id, author_name, author_origin, body, reply_to, visit_id, business_date, created_at_ms)
+             VALUES (?, ?, ?, '填充旅人', 'external', '填充用测试便签正文', NULL, NULL, ?, ?)`,
+            `trc_${prefix}_${i}`,
+            spot,
+            `res_fill_${prefix}_${i}`,
+            today,
+            clock.t + i + 1,
+          );
+        }
+        pruneTraces(c1, clock.t + 100);
+      });
+    };
+
+    fillAndPrune(SPOT_KISSA, 'kissa');
+    const todayStr = c1.today(clock.t);
+    expect(c1.db.scalar('SELECT COUNT(*) FROM place_traces WHERE place_id = ?', SPOT_KISSA)).toBe(50);
+    expect(c1.db.scalar('SELECT COUNT(*) FROM place_traces WHERE author_id = ? AND place_id = ? AND business_date = ?', author.id, SPOT_KISSA, todayStr)).toBe(0);
+    rejects(() => author.act({ type: 'leave_trace', text: '清理后吧台第三张仍应被拒' }), 'RATE_LIMITED', 'trace_quota_exceeded');
+
+    // 2. 全城配额：再在书店写 2 条、面包店写 1 条（全城已满 5 条），第 6 条在露台被拒
+    author.go(SPOT_SHIORIDO);
+    expect(author.act({ type: 'leave_trace', text: '书店第一张今日便签记录' }).status).toBe('completed');
+    expect(author.act({ type: 'leave_trace', text: '书店第二张今日便签记录' }).status).toBe('completed');
+    author.go(SPOT_MUGINOHI);
+    expect(author.act({ type: 'leave_trace', text: '面包店今日第五张便签记录' }).status).toBe('completed');
+    author.go(SPOT_TERRACE);
+    rejects(() => author.act({ type: 'leave_trace', text: '露台第六张今日便签应被拒' }), 'RATE_LIMITED', 'trace_quota_exceeded');
+
+    // 把书店和面包店也都填满 50 条较新记录并清理：原作者在全城正文表中归零，但全城第 6 条仍被拒
+    fillAndPrune(SPOT_SHIORIDO, 'shiorido');
+    fillAndPrune(SPOT_MUGINOHI, 'muginohi');
+    expect(c1.db.scalar('SELECT COUNT(*) FROM place_traces WHERE author_id = ? AND business_date = ?', author.id, todayStr)).toBe(0);
+    rejects(() => author.act({ type: 'leave_trace', text: '全城清空后第六张仍应被拒' }), 'RATE_LIMITED', 'trace_quota_exceeded');
+    c1.close();
+
+    // 3. 同日 6→5 降级再 5→6 恢复：place_trace_daily_usage 随归档完整恢复，单点与全城配额仍生效
+    const dg = JSON.parse(
+      execFileSync(process.execPath, [DOWNGRADE_SCRIPT, '--db', dbPath, '--to', '5'], { encoding: 'utf8' }).trim(),
+    ) as { ok: boolean; daily_usage_exported: number };
+    expect(dg.ok).toBe(true);
+    expect(dg.daily_usage_exported).toBe(3);
+
+    const c2 = createCity({
+      dbPath,
+      now: clock.now,
+      rng: new SeededRng('quota-prune-2'),
+      house: HOUSE,
+      fetchWeather: null,
+      params: { tracesEnabled: true, houseViewTraces: true },
+    });
+    await c2.start();
+    const t2 = new CityTest(c2, clock);
+    const sameAuthor = t2.bot('配额旅人', { id: '9501', entry: 'ryokogai:station', stay: true });
+    // 恢复后仍在露台，全城 5 条已满，第 6 条仍被拒
+    rejects(
+      () => sameAuthor.act({ type: 'leave_trace', text: '同日降级恢复后第六张仍应被拒' }, 'restore-city-6'),
+      'RATE_LIMITED',
+      'trace_quota_exceeded',
+    );
+    const tripBack = sameAuthor.act({ type: 'travel', to: SPOT_KISSA }, 'restore-go-kissa');
+    t2.run(tripBack.trip.ends_at_ms - clock.t);
+    rejects(
+      () => sameAuthor.act({ type: 'leave_trace', text: '同日降级恢复后单点第三张仍被拒' }, 'restore-kissa-3'),
+      'RATE_LIMITED',
+      'trace_quota_exceeded',
+    );
+
+    // 4. 次日自动重置配额；超过保留期后历史日用量会被清理
+    t2.run(24 * HOUR);
+    expect(sameAuthor.act({ type: 'leave_trace', text: '第二天清早在吧台重新写便签' }, 'next-day-kissa-1').status).toBe('completed');
+    const farFuture = clock.t + c2.params.eventRetentionMs + 48 * HOUR;
+    c2.commit(() => pruneTraces(c2, farFuture));
+    expect(c2.db.scalar('SELECT COUNT(*) FROM place_trace_daily_usage WHERE business_date = ?', todayStr)).toBe(0);
+    c2.close();
+  });
+
+  it('降级校验前置到事务内且失败不留孤立归档（保留预降级备份与既有待恢复归档）', async () => {
+    const readState = (file: string) => {
+      const db = new DatabaseSync(file, { readOnly: true });
+      try {
+        return {
+          version: Number((db.prepare('PRAGMA user_version').get() as any)?.user_version ?? 0),
+          s2Tables: db
+            .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name IN ('place_traces','place_trace_daily_usage','house_trace_replies') ORDER BY name")
+            .all()
+            .map((r: any) => r.name),
+          pointers: db
+            .prepare("SELECT key, value FROM meta WHERE key LIKE 's2_pending_restore_%' ORDER BY key")
+            .all()
+            .map((r: any) => [r.key, r.value]),
+          traceCount: db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='place_traces'").get()
+            ? Number((db.prepare('SELECT COUNT(*) AS n FROM place_traces').get() as any).n)
+            : -1,
+        };
+      } finally {
+        db.close();
+      }
+    };
+
+    // 1. 外键破坏：降级报错并完整回滚（保持 v6、S2 表与内容不变、不留孤立归档或临时文件、保留预降级备份）
+    const fkDb = makeTmpDb('downgrade-fk-fail.db');
+    const clock = new FakeClock();
+    clock.t = T0;
+    const cFk = createCity({ dbPath: fkDb, now: clock.now, rng: new SeededRng('dg-fk'), house: HOUSE, params: { tracesEnabled: true } });
+    await cFk.start();
+    const bFk = new CityTest(cFk, clock).bot('外键测试', { id: '9601', entry: 'ryokogai:station' });
+    bFk.go(SPOT_KISSA);
+    bFk.act({ type: 'leave_trace', text: '外键报错回滚后仍应保留的便签' });
+    cFk.close();
+
+    const rawFk = new DatabaseSync(fkDb);
+    rawFk.exec("PRAGMA foreign_keys = OFF; INSERT INTO venue_table_seats VALUES ('missing-tbl', 'missing-res', 0, 0, NULL, NULL);");
+    rawFk.close();
+    const fkBefore = readState(fkDb);
+    expect(() => execFileSync(process.execPath, [DOWNGRADE_SCRIPT, '--db', fkDb, '--to', '5'], { stdio: 'pipe' })).toThrow();
+    expect(readState(fkDb)).toEqual(fkBefore);
+    const fkDirFiles = readdirSync(dirname(fkDb));
+    expect(fkDirFiles.filter((f) => f.includes('.s2-archive-'))).toEqual([]);
+    expect(fkDirFiles.filter((f) => f.includes('.pre-v5-downgrade-')).length).toBe(1);
+
+    // 2. SQL 写入失败（触发器抛错）：回滚后不留本次生成的归档或临时文件，预降级备份保留
+    const trigDb = makeTmpDb('downgrade-sql-fail.db');
+    const cTrig = createCity({ dbPath: trigDb, now: clock.now, rng: new SeededRng('dg-trig'), house: HOUSE, params: { tracesEnabled: true } });
+    await cTrig.start();
+    const bTrig = new CityTest(cTrig, clock).bot('触发器测试', { id: '9602', entry: 'ryokogai:station' });
+    bTrig.go(SPOT_KISSA);
+    bTrig.act({ type: 'leave_trace', text: '触发器回滚后仍应保留的便签' });
+    cTrig.close();
+
+    const rawTrig = new DatabaseSync(trigDb);
+    rawTrig.exec("CREATE TRIGGER force_fail BEFORE INSERT ON meta WHEN new.key = 's2_pending_restore_file' BEGIN SELECT RAISE(ABORT, 'injected meta failure'); END;");
+    rawTrig.close();
+    const trigBefore = readState(trigDb);
+    expect(() => execFileSync(process.execPath, [DOWNGRADE_SCRIPT, '--db', trigDb, '--to', '5'], { stdio: 'pipe' })).toThrow();
+    expect(readState(trigDb)).toEqual(trigBefore);
+    const trigDirFiles = readdirSync(dirname(trigDb));
+    expect(trigDirFiles.filter((f) => f.includes('.s2-archive-'))).toEqual([]);
+    expect(trigDirFiles.filter((f) => f.includes('.pre-v5-downgrade-')).length).toBe(1);
+
+    // 3. 已有合法待恢复归档时降级因外键报错回滚：既有待恢复归档绝不能被删除
+    const presDb = makeTmpDb('downgrade-preserve-existing.db');
+    const cPres = createCity({ dbPath: presDb, now: clock.now, rng: new SeededRng('dg-pres'), house: HOUSE, params: { tracesEnabled: true } });
+    await cPres.start();
+    const bPres = new CityTest(cPres, clock).bot('既有归档测试', { id: '9603', entry: 'ryokogai:station' });
+    bPres.go(SPOT_KISSA);
+    bPres.act({ type: 'leave_trace', text: '既有待恢复归档里的珍贵便签' });
+    cPres.close();
+
+    const firstDg = JSON.parse(
+      execFileSync(process.execPath, [DOWNGRADE_SCRIPT, '--db', presDb, '--to', '5'], { encoding: 'utf8' }).trim(),
+    ) as { archive: string; archive_file: string };
+    // 仅升级建表不调用 start()，模拟中断后处于 v6 空表 + 既有待恢复归档
+    const mid = createCity({ dbPath: presDb, now: clock.now, rng: new SeededRng('dg-pres-mid'), house: HOUSE });
+    mid.close();
+    const rawPres = new DatabaseSync(presDb);
+    rawPres.exec("PRAGMA foreign_keys = OFF; INSERT INTO venue_table_seats VALUES ('missing-tbl-2', 'missing-res-2', 0, 0, NULL, NULL);");
+    rawPres.close();
+    const presBefore = readState(presDb);
+    expect(() => execFileSync(process.execPath, [DOWNGRADE_SCRIPT, '--db', presDb, '--to', '5'], { stdio: 'pipe' })).toThrow();
+    expect(readState(presDb)).toEqual(presBefore);
+    expect(existsSync(firstDg.archive)).toBe(true);
+    expect(readdirSync(dirname(presDb)).filter((f) => f.includes('.s2-archive-'))).toEqual([firstDg.archive_file]);
+  });
+
+  it('空值与半残 s2_pending_restore 指针在启动恢复与降级脚本两侧一律 fail-closed', async () => {
+    const cases: Array<{ name: string; entries: Array<[string, string]> }> = [
+      { name: 'empty-sha-only', entries: [['s2_pending_restore_sha256', '']] },
+      { name: 'empty-file-only', entries: [['s2_pending_restore_file', '']] },
+      { name: 'both-empty', entries: [['s2_pending_restore_file', ''], ['s2_pending_restore_sha256', '']] },
+      { name: 'whitespace-both', entries: [['s2_pending_restore_file', '   '], ['s2_pending_restore_sha256', '  ']] },
+    ];
+    const clock = new FakeClock();
+    clock.t = T0;
+
+    for (const tc of cases) {
+      const dbPath = makeTmpDb(`ptr-${tc.name}.db`);
+      const seed = createCity({ dbPath, now: clock.now, rng: new SeededRng(`ptr-${tc.name}`), house: HOUSE });
+      await seed.start();
+      seed.close();
+
+      const raw = new DatabaseSync(dbPath);
+      const ins = raw.prepare('INSERT INTO meta(key, value) VALUES (?, ?)');
+      for (const [k, v] of tc.entries) ins.run(k, v);
+      raw.close();
+
+      // 启动恢复（异步 start 与同步 startSync）必须 fail-closed 停在 recovering
+      const cAsync = createCity({ dbPath, now: clock.now, rng: new SeededRng(`ptr-async-${tc.name}`), house: HOUSE });
+      await cAsync.start();
+      expect(cAsync.status, `${tc.name} 应停在 recovering`).toBe('recovering');
+      cAsync.close();
+
+      const cSync = createCity({ dbPath, now: clock.now, rng: new SeededRng(`ptr-sync-${tc.name}`), house: HOUSE });
+      expect(() => cSync.startSync(), `${tc.name} startSync 应抛错`).toThrow(/元数据异常/);
+      cSync.close();
+
+      // 降级脚本必须拒绝覆盖空值指针，保持 v6 且不生成归档
+      expect(() => execFileSync(process.execPath, [DOWNGRADE_SCRIPT, '--db', dbPath, '--to', '5'], { stdio: 'pipe' })).toThrow();
+      const after = new DatabaseSync(dbPath, { readOnly: true });
+      expect(after.prepare('PRAGMA user_version').get()).toEqual({ user_version: 6 });
+      const actualPointers = after
+        .prepare("SELECT key, value FROM meta WHERE key LIKE 's2_pending_restore_%' ORDER BY key")
+        .all()
+        .map((r: any) => [r.key, r.value]);
+      expect(actualPointers).toEqual([...tc.entries].sort((a, b) => a[0].localeCompare(b[0])));
+      after.close();
+      expect(readdirSync(dirname(dbPath)).filter((f) => f.includes('.s2-archive-'))).toEqual([]);
+    }
   });
 });
