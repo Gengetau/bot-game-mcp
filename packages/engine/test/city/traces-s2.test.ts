@@ -1,24 +1,30 @@
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
 import type { Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath } from 'node:url';
 import express from 'express';
 import { afterEach, describe, expect, it } from 'vitest';
 import { mountCity } from '../../src/city/http.js';
 import {
+  AUCTION_ESCROW,
+  BOARDGAME_CHAYA_ID,
   CITY_SCHEMA_VERSION,
   TRACE_SPOTS,
+  accountBalance,
   cityPulseView,
   commitVisit,
   createCity,
+  createVenueAuction,
+  ledgerImbalance,
   prepareVisit,
   pruneTraces,
   readOutbox,
   readTraceReplies,
+  runReconcile,
 } from '../../src/city/index.js';
 import { SeededRng } from '../../src/core/rng.js';
 import { FakeClock } from '../helpers.js';
@@ -632,5 +638,324 @@ describe('S2 晴空都异步留痕（traces-s2）', () => {
     ]);
     expect(restoredReplies.next_after_seq).toBe(1);
     cRecovered.close();
+  });
+
+  it('v5→v6→v5→v6 全链路演练：茶屋/竞拍/账本数据零损保留，S2 留痕与回响完整归档并无重复恢复', async () => {
+    const dbPath = makeTmpDb('drill-6-5-6.db');
+    const clock = new FakeClock();
+    clock.t = T0;
+
+    const readSortedTable = (db: DatabaseSync, table: string, orderBy: string): Record<string, unknown>[] =>
+      db.prepare(`SELECT * FROM ${table} ORDER BY ${orderBy}`).all().map((row) => ({ ...row }));
+
+    const snapshotV5Core = (dbPathArg: string) => {
+      const db = new DatabaseSync(dbPathArg, { readOnly: true });
+      try {
+        return {
+          venue_tables: readSortedTable(db, 'venue_tables', 'table_id'),
+          venue_table_seats: readSortedTable(db, 'venue_table_seats', 'table_id, resident_id'),
+          venue_auctions: readSortedTable(db, 'venue_auctions', 'auction_id'),
+          venue_auction_bids: readSortedTable(db, 'venue_auction_bids', 'auction_id, resident_id'),
+          accounts: readSortedTable(db, 'accounts', 'account_id'),
+          ledger_transactions: readSortedTable(db, 'ledger_transactions', 'transaction_id'),
+          ledger_entries: readSortedTable(db, 'ledger_entries', 'entry_id'),
+          items: readSortedTable(db, 'items', 'item_id'),
+          residents: readSortedTable(db, 'residents', 'resident_id'),
+        };
+      } finally {
+        db.close();
+      }
+    };
+
+    const snapshotS2 = (dbPathArg: string) => {
+      const db = new DatabaseSync(dbPathArg, { readOnly: true });
+      try {
+        return {
+          place_traces: readSortedTable(db, 'place_traces', 'created_at_ms ASC, trace_id ASC'),
+          house_trace_replies: readSortedTable(db, 'house_trace_replies', 'reply_seq ASC'),
+        };
+      } finally {
+        db.close();
+      }
+    };
+
+    // 1. 构造含真实茶屋牌桌、密封竞拍（含已成交与进行中托管押金）与账本流水的 v5 数据库
+    const cSeed = createCity({
+      dbPath,
+      now: clock.now,
+      rng: new SeededRng('drill-v5-seed'),
+      house: HOUSE,
+      fetchWeather: null,
+    });
+    await cSeed.start();
+    const tSeed = new CityTest(cSeed, clock);
+    const teaA = tSeed.bot('茶屋甲', { id: '9401', entry: 'ryokogai:station', stay: true });
+    const teaB = tSeed.bot('茶屋乙', { id: '9402', entry: 'ryokogai:station', stay: true });
+    const teaC = tSeed.bot('茶屋丙', { id: '9403', entry: 'ryokogai:station', stay: true });
+
+    // 先在咖啡馆产生一笔普通消费流水，再进入桌游茶屋
+    teaA.go(SPOT_KISSA);
+    expect(teaA.act({ type: 'buy', sku: 'coffee', qty: 1 }).status).toBe('completed');
+    teaA.act({ type: 'travel', to: BOARDGAME_CHAYA_ID });
+    teaB.act({ type: 'travel', to: BOARDGAME_CHAYA_ID });
+    teaC.act({ type: 'travel', to: BOARDGAME_CHAYA_ID });
+    tSeed.run(15 * MIN);
+
+    // 茶屋牌桌 1：大话骰打完至 completed
+    const tblDone = teaA.act({
+      type: 'open_table',
+      game: 'liars_dice',
+      options: { lives: 1, dice_per_player: 2, random_seats: false },
+    });
+    teaB.act({ type: 'join_table', table_id: tblDone.table_id });
+    teaA.act({ type: 'start_table', table_id: tblDone.table_id });
+    const firstPlayer = (teaA.view() as any).venue_table?.todo ? teaA : teaB;
+    const secondPlayer = firstPlayer === teaA ? teaB : teaA;
+    firstPlayer.act({ type: 'game_act', input: { action: 'bid', quantity: 2, face: 6 } });
+    expect(secondPlayer.act({ type: 'game_act', input: { action: 'challenge' } }).game_status).toBe('ended');
+
+    // 茶屋牌桌 2：保留一张 forming 且在座的牌桌
+    const tblForming = teaC.act({ type: 'open_table', game: 'color_chain' });
+    expect(tblForming.table_id).toBeTruthy();
+
+    // 密封竞拍 1：二价成交，产生竞拍账本结算与物品易主
+    const aucSold = cSeed.commit(() =>
+      createVenueAuction(cSeed, {
+        auctionId: 'auc:drill-656:sold',
+        itemId: 'curio:drill-656-book',
+        itemType: 'paperback',
+        itemName: '棱光街初版诗集',
+        reserveYen: 300,
+        priceMode: 'second',
+        closesAt: clock.now() + 20 * MIN,
+      }),
+    );
+    teaA.act({ type: 'auction_bid', auction_id: aucSold.auction_id, yen: 620 });
+    teaB.act({ type: 'auction_bid', auction_id: aucSold.auction_id, yen: 480 });
+    tSeed.run(25 * MIN);
+    expect(
+      cSeed.db.get<{ status: string; winner_id: string; winning_price: number }>(
+        'SELECT status, winner_id, winning_price FROM venue_auctions WHERE auction_id = ?',
+        aucSold.auction_id,
+      ),
+    ).toEqual({ status: 'settled', winner_id: teaA.id, winning_price: 480 });
+
+    // 密封竞拍 2：保持 open 且带 550 日元托管押金（验证 v6->v5 不会破坏活跃竞拍与托管账户）
+    const aucOpen = cSeed.commit(() =>
+      createVenueAuction(cSeed, {
+        auctionId: 'auc:drill-656:open',
+        itemId: 'curio:drill-656-lamp',
+        itemType: 'antique_curio',
+        itemName: '昭和黄铜台灯摆件',
+        reserveYen: 350,
+        priceMode: 'first',
+        closesAt: clock.now() + 6 * HOUR,
+      }),
+    );
+    teaB.act({ type: 'auction_bid', auction_id: aucOpen.auction_id, yen: 550 });
+    expect(accountBalance(cSeed, AUCTION_ESCROW)).toBe(550);
+    expect(ledgerImbalance(cSeed)).toBe(0);
+    expect(runReconcile(cSeed, 'drill-seed-v5').ok).toBe(true);
+    cSeed.close();
+
+    // 将未写入任何 S2 数据的库精准回拨为纯 v5 库（与现行线上 v5 schema 完全一致）
+    const rawV5 = new DatabaseSync(dbPath);
+    expect(Number((rawV5.prepare('SELECT COUNT(*) AS n FROM place_traces').get() as any).n)).toBe(0);
+    expect(Number((rawV5.prepare('SELECT COUNT(*) AS n FROM house_trace_replies').get() as any).n)).toBe(0);
+    rawV5.exec(`
+      DROP TABLE house_trace_replies;
+      DROP TABLE place_traces;
+      PRAGMA user_version = 5;
+    `);
+    expect(rawV5.prepare('PRAGMA user_version').get()).toEqual({ user_version: 5 });
+    expect(rawV5.prepare('PRAGMA foreign_key_check').all()).toEqual([]);
+    expect(rawV5.prepare('PRAGMA integrity_check').get()).toEqual({ integrity_check: 'ok' });
+    rawV5.close();
+
+    const v5SeedSnap = snapshotV5Core(dbPath);
+    expect(v5SeedSnap.venue_tables.length).toBeGreaterThanOrEqual(2);
+    expect(v5SeedSnap.venue_table_seats.length).toBeGreaterThanOrEqual(3);
+    expect(v5SeedSnap.venue_auctions.length).toBeGreaterThanOrEqual(2);
+    expect(v5SeedSnap.venue_auction_bids.length).toBeGreaterThanOrEqual(3);
+    expect(v5SeedSnap.ledger_transactions.length).toBeGreaterThan(0);
+    expect(v5SeedSnap.ledger_entries.length).toBeGreaterThan(0);
+
+    // 2. 在 v5 库上自动升级到 v6，核对预备份、schema 版本与 v5 表完好
+    const cV6 = createCity({
+      dbPath,
+      now: clock.now,
+      rng: new SeededRng('drill-v6-up'),
+      house: HOUSE,
+      fetchWeather: null,
+      params: { tracesEnabled: true, houseViewTraces: true },
+    });
+    await cV6.start();
+    expect(cV6.status).toBe('running');
+    expect(cV6.db.get<{ user_version: number }>('PRAGMA user_version')?.user_version).toBe(CITY_SCHEMA_VERSION);
+    expect(CITY_SCHEMA_VERSION).toBe(6);
+    const preV6Backups = readdirSync(dirname(dbPath)).filter((f) => f.startsWith(`${basename(dbPath)}.pre-v6-`) && f.endsWith('.bak'));
+    expect(preV6Backups.length).toBeGreaterThanOrEqual(1);
+    expect(cV6.db.scalar('SELECT COUNT(*) FROM place_traces')).toBe(0);
+    expect(cV6.db.scalar('SELECT COUNT(*) FROM house_trace_replies')).toBe(0);
+    expect(ledgerImbalance(cV6)).toBe(0);
+    expect(runReconcile(cV6, 'drill-after-v5-to-v6').ok).toBe(true);
+    // v5 升级 v6 本身不改动任何茶屋、竞拍、账本、物品或居民数据
+    const afterUpgradeV5 = snapshotV5Core(dbPath);
+    for (const key of Object.keys(v5SeedSnap) as (keyof typeof v5SeedSnap)[]) {
+      expect(afterUpgradeV5[key], `v5→v6 迁移后 ${key} 应原样不变`).toEqual(v5SeedSnap[key]);
+    }
+
+    // 3. 在 v6 上写入 S2 留痕与跨时间室友便签回响（同时保持茶屋三位在座/出价居民在线）
+    const tV6 = new CityTest(cV6, clock);
+    for (const bot of [teaA, teaB, teaC]) {
+      tV6.online.set(bot.id, { principalId: bot.principalId });
+    }
+    const k = tV6.kernel('nia');
+    k.depart({ yen: 10000, to: SPOT_KISSA });
+    tV6.run(40 * MIN);
+    const niaTraceId = (k.act({ type: 'leave_trace', text: '妮娅在吧台写下一条咖啡香气便签' }).payload as any).trace.trace_id as string;
+
+    const tracer1 = tV6.bot('留痕甲', { id: '9411', entry: 'ryokogai:station', stay: true });
+    tracer1.go(SPOT_KISSA);
+    tracer1.act({ type: 'leave_trace', text: '窗边位置很安静适合慢慢看书' });
+    tracer1.act({ type: 'leave_trace', text: '我也喜欢这家的手冲深烘豆子', reply_to: niaTraceId });
+
+    const tracer2 = tV6.bot('留痕乙', { id: '9412', entry: 'ryokogai:station', stay: true });
+    tracer2.go(SPOT_KISSA);
+    tracer2.act({ type: 'leave_trace', text: '顺路看到便签也留一句话打招呼', reply_to: niaTraceId });
+    tracer2.go(SPOT_SHIORIDO);
+    tracer2.act({ type: 'leave_trace', text: '书店黑板今天推荐了一本旅行随笔' });
+
+    expect(cV6.db.scalar('SELECT COUNT(*) FROM place_traces')).toBe(5);
+    expect(cV6.db.scalar('SELECT COUNT(*) FROM house_trace_replies')).toBe(2);
+    expect(cV6.db.getMeta('trace_reply_high_water')).toBe('2');
+    expect(accountBalance(cV6, AUCTION_ESCROW)).toBe(550);
+    expect(ledgerImbalance(cV6)).toBe(0);
+    expect(runReconcile(cV6, 'drill-before-v6-to-v5').ok).toBe(true);
+    cV6.close();
+
+    const preDowngradeV5 = snapshotV5Core(dbPath);
+    const preDowngradeS2 = snapshotS2(dbPath);
+    expect(preDowngradeS2.place_traces).toHaveLength(5);
+    expect(preDowngradeS2.house_trace_replies).toHaveLength(2);
+    // 茶屋牌桌、出价记录与两场显式竞拍（已成交 + 6h 开放带押金）在 v6 写入 S2 前后保持一致
+    expect(preDowngradeV5.venue_tables).toEqual(v5SeedSnap.venue_tables);
+    expect(preDowngradeV5.venue_table_seats).toEqual(v5SeedSnap.venue_table_seats);
+    expect(preDowngradeV5.venue_auction_bids).toEqual(v5SeedSnap.venue_auction_bids);
+    expect(
+      preDowngradeV5.venue_auctions.filter((a) => a.auction_id === aucSold.auction_id || a.auction_id === aucOpen.auction_id),
+    ).toEqual(
+      v5SeedSnap.venue_auctions.filter((a) => a.auction_id === aucSold.auction_id || a.auction_id === aucOpen.auction_id),
+    );
+
+    // 4. 执行 6→5 降级：先 --dry-run（不传 --to 验证默认目标为 5），再实际降级
+    const dryOut = JSON.parse(
+      execFileSync(process.execPath, [DOWNGRADE_SCRIPT, '--db', dbPath, '--dry-run'], { encoding: 'utf8' }).trim(),
+    ) as { ok: boolean; dry_run: boolean; from_version: number; to_version: number };
+    expect(dryOut).toEqual({ ok: true, dry_run: true, from_version: 6, to_version: 5 });
+
+    const dgOut = JSON.parse(
+      execFileSync(process.execPath, [DOWNGRADE_SCRIPT, '--db', dbPath, '--to', '5'], { encoding: 'utf8' }).trim(),
+    ) as {
+      ok: boolean;
+      from_version: number;
+      to_version: number;
+      backup: string;
+      archive: string;
+      archive_file: string;
+      archive_sha256: string;
+      preserved_pending_archive: boolean;
+      high_water: number;
+      place_traces_exported: number;
+      replies_exported: number;
+    };
+    expect(dgOut).toMatchObject({
+      ok: true,
+      from_version: 6,
+      to_version: 5,
+      preserved_pending_archive: false,
+      high_water: 2,
+      place_traces_exported: 5,
+      replies_exported: 2,
+    });
+    expect(existsSync(dgOut.backup)).toBe(true);
+    expect(existsSync(dgOut.archive)).toBe(true);
+
+    // 核对降回 v5 后：schema=5、S2 两表已删、v5 茶屋/竞拍/账本表计数与全部行内容原样不变
+    const checkV5 = new DatabaseSync(dbPath, { readOnly: true });
+    expect(checkV5.prepare('PRAGMA user_version').get()).toEqual({ user_version: 5 });
+    expect(
+      checkV5
+        .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name IN ('place_traces', 'house_trace_replies')")
+        .all(),
+    ).toEqual([]);
+    expect((checkV5.prepare("SELECT value FROM meta WHERE key = 's2_pending_restore_file'").get() as any)?.value).toBe(dgOut.archive_file);
+    expect((checkV5.prepare("SELECT value FROM meta WHERE key = 's2_pending_restore_sha256'").get() as any)?.value).toBe(dgOut.archive_sha256);
+    expect((checkV5.prepare("SELECT value FROM meta WHERE key = 'trace_reply_high_water'").get() as any)?.value).toBe('2');
+    expect(checkV5.prepare('PRAGMA foreign_key_check').all()).toEqual([]);
+    expect(checkV5.prepare('PRAGMA integrity_check').get()).toEqual({ integrity_check: 'ok' });
+    checkV5.close();
+
+    const afterDowngradeV5 = snapshotV5Core(dbPath);
+    for (const key of Object.keys(preDowngradeV5) as (keyof typeof preDowngradeV5)[]) {
+      expect(afterDowngradeV5[key].length, `${key} 行数不应变化`).toBe(preDowngradeV5[key].length);
+      expect(afterDowngradeV5[key], `${key} 内容不应变化`).toEqual(preDowngradeV5[key]);
+    }
+
+    // 附带核对 --to 4 委托路径：茶屋有人在座且有 550 日元托管押金时必须拒绝且不改库
+    expect(() => execFileSync(process.execPath, [DOWNGRADE_SCRIPT, '--db', dbPath, '--to', '4'], { stdio: 'pipe' })).toThrow();
+    expect(snapshotV5Core(dbPath)).toEqual(preDowngradeV5);
+
+    // 5. 再升回 v6：归档的 S2 留痕与回响全量无重复恢复，v5 与账本继续完好
+    const cRestored = createCity({
+      dbPath,
+      now: clock.now,
+      rng: new SeededRng('drill-v6-restore'),
+      house: HOUSE,
+      fetchWeather: null,
+      params: { tracesEnabled: true, houseViewTraces: true },
+    });
+    await cRestored.start();
+    expect(cRestored.status).toBe('running');
+    expect(cRestored.db.get<{ user_version: number }>('PRAGMA user_version')?.user_version).toBe(6);
+    expect(cRestored.db.getMeta('s2_pending_restore_file')).toBeUndefined();
+    expect(cRestored.db.getMeta('s2_pending_restore_sha256')).toBeUndefined();
+    expect(cRestored.db.getMeta('trace_reply_high_water')).toBe('2');
+    expect(cRestored.db.getMeta('s2_last_restored_at_ms')).toBeTruthy();
+    expect(accountBalance(cRestored, AUCTION_ESCROW)).toBe(550);
+    expect(ledgerImbalance(cRestored)).toBe(0);
+    expect(runReconcile(cRestored, 'drill-after-v5-to-v6-restore').ok).toBe(true);
+    cRestored.close();
+
+    const restoredS2 = snapshotS2(dbPath);
+    expect(restoredS2.place_traces).toEqual(preDowngradeS2.place_traces);
+    expect(restoredS2.house_trace_replies).toEqual(preDowngradeS2.house_trace_replies);
+
+    const restoredV5 = snapshotV5Core(dbPath);
+    for (const key of Object.keys(preDowngradeV5) as (keyof typeof preDowngradeV5)[]) {
+      expect(restoredV5[key].length, `恢复后 ${key} 行数不变`).toBe(preDowngradeV5[key].length);
+      expect(restoredV5[key], `恢复后 ${key} 内容不变`).toEqual(preDowngradeV5[key]);
+    }
+
+    // 二次重启不重复写入 S2 数据，且新回复沿高水位续编 reply_seq = 3
+    const cReopen = createCity({
+      dbPath,
+      now: clock.now,
+      rng: new SeededRng('drill-v6-reopen'),
+      house: HOUSE,
+      fetchWeather: null,
+      params: { tracesEnabled: true, houseViewTraces: true },
+    });
+    await cReopen.start();
+    expect(cReopen.db.scalar('SELECT COUNT(*) FROM place_traces')).toBe(5);
+    expect(cReopen.db.scalar('SELECT COUNT(*) FROM house_trace_replies')).toBe(2);
+    const tracer3 = new CityTest(cReopen, clock).bot('留痕丙', { id: '9413', entry: 'ryokogai:station', stay: true });
+    tracer3.go(SPOT_KISSA);
+    tracer3.act({ type: 'leave_trace', text: '升级恢复后补写一条新回信确认连续性', reply_to: niaTraceId });
+    const allReplies = readTraceReplies(cReopen, 0, 50);
+    expect(allReplies.replies.map((r) => r.reply_seq)).toEqual([1, 2, 3]);
+    expect(allReplies.next_after_seq).toBe(3);
+    expect(cReopen.db.getMeta('trace_reply_high_water')).toBe('3');
+    cReopen.close();
   });
 });
