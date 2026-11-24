@@ -106,6 +106,7 @@ export interface GameSummary {
   /** group = 在群里玩；web = 在网页「灯下剧场」上玩，群里只收镜像 */
   stage: 'group' | 'web';
   created_at: string;
+  ended_at?: string;
 }
 
 export interface EventView {
@@ -302,6 +303,7 @@ export class GameManager {
       auto_referee: rec.autoReferee,
       stage: rec.stage ?? 'group',
       created_at: new Date(rec.createdAt).toISOString(),
+      ...(rec.endedAt !== null ? { ended_at: new Date(rec.endedAt).toISOString() } : {}),
     };
   }
 
@@ -826,19 +828,41 @@ export class GameManager {
   }
 
   /**
-   * 中止对局。可选 expectedStatus（目前只接受 'lobby'）：带上时，引擎在同一步里核对对局
-   * 还是大厅，不是就抛 STATUS_MISMATCH、对局原样不动；不带时行为和以前完全一致。
-   * 方法全程同步，核对和中止之间不会插进开局。
+   * 中止对局。可选 expectedStatus（目前只接受 'lobby'）与 expectedMaxOtherPlayers（非负整数，须配合 expectedStatus='lobby'）：
+   * 带上时，引擎在同一步里核对对局还是大厅且除房主外的入座玩家数不超过上限；不满足就抛 STATUS_MISMATCH 或 LOBBY_OCCUPIED，
+   * 对局原样不动；不带时行为和以前完全一致。方法全程同步，核对和中止之间不会插进开局或入座。
    */
-  abortGame(actor: Identity, gameId: string, reason?: string, opts?: { expectedStatus?: 'lobby' }) {
+  abortGame(
+    actor: Identity,
+    gameId: string,
+    reason?: string,
+    opts?: { expectedStatus?: 'lobby'; expectedMaxOtherPlayers?: number },
+  ) {
     const expected = opts?.expectedStatus;
     if (expected !== undefined && expected !== 'lobby') throw badRequest('expected_status 目前只接受 lobby。');
+    const maxOther = opts?.expectedMaxOtherPlayers;
+    if (maxOther !== undefined) {
+      if (expected !== 'lobby') throw badRequest('expected_max_other_players 须配合 expected_status=lobby 使用。');
+      if (typeof maxOther !== 'number' || !Number.isInteger(maxOther) || maxOther < 0) {
+        throw badRequest('expected_max_other_players 必须是非负整数。');
+      }
+    }
     const rec = this.getRecord(gameId);
     if (expected === undefined && (rec.status === 'ended' || rec.status === 'aborted')) throw invalidState('对局已经结束。');
     const allowed = actor.admin || rec.hostId === actor.id || this.isReferee(rec, actor);
     if (!allowed) throw forbidden('只有房主、裁判或管理员可以中止对局。');
     if (expected !== undefined && rec.status !== expected) {
       throw new GameError('STATUS_MISMATCH', `对局现在是「${rec.status}」，不是大厅，没有中止。`, '带了 expected_status=lobby 只会中止还没开局的大厅；对局不受影响。');
+    }
+    if (maxOther !== undefined) {
+      const otherPlayers = rec.lobby.filter((e) => e.id !== rec.hostId && e.pref !== 'referee').length;
+      if (otherPlayers > maxOther) {
+        throw new GameError(
+          'LOBBY_OCCUPIED',
+          `大厅里已有 ${otherPlayers} 名其他玩家入座，没有中止。`,
+          '带了 expected_max_other_players 时只在其他入座玩家不超过该上限时才会中止空大厅。',
+        );
+      }
     }
     const why = sanitizeName((reason ?? '').trim(), 100) || '房主/裁判中止';
     this.closeGame(rec, why);
@@ -1272,6 +1296,7 @@ export class GameManager {
       group_id: rec.groupId,
       status: rec.status,
       round: rec.round,
+      ...(rec.endedAt !== null ? { ended_at: new Date(rec.endedAt).toISOString() } : {}),
     };
     if (rec.status === 'lobby') {
       const me = rec.lobby.find((e) => e.id === actor.id);

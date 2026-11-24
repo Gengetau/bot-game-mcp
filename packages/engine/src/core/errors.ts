@@ -11,6 +11,7 @@ export type GameErrorCode =
   | 'INVALID_ACTION'
   | 'CONFLICT'
   | 'STATUS_MISMATCH'
+  | 'LOBBY_OCCUPIED'
   // 持续世界（栖灯镇）的失败码：见 src/world/errors.ts
   | 'UNAUTHENTICATED'
   | 'CONTROL_LOST'

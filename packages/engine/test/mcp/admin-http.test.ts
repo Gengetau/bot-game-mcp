@@ -172,8 +172,15 @@ describe('管理页', () => {
     expect((await json(refused)).error).toBe('STATUS_MISMATCH');
     expect(m.getRecord(live.game_id).status).toBe('running');
 
-    const ok = await post(`/api/games/${lobby.game_id}/abort`, { expected_status: 'lobby', reason: '空大厅' });
+    const ok = await post(`/api/games/${lobby.game_id}/abort`, { expected_status: 'lobby', expected_max_other_players: 0, reason: '空大厅' });
     expect(ok.status).toBe(200);
     expect(m.getRecord(lobby.game_id).status).toBe('aborted');
+
+    const { summary: occ } = m.createGame(REF, { type: 'number_bomb', groupId: 'g-http-occ', joinAs: 'referee' });
+    m.joinGame(bot(63), occ.game_id, { as: 'player' });
+    const refusedOcc = await post(`/api/games/${occ.game_id}/abort`, { expected_status: 'lobby', expected_max_other_players: 0 });
+    expect(refusedOcc.status).toBe(400);
+    expect((await json(refusedOcc)).error).toBe('LOBBY_OCCUPIED');
+    expect(m.getRecord(occ.game_id).status).toBe('lobby');
   });
 });

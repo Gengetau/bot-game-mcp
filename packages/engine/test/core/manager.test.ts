@@ -373,6 +373,64 @@ describe('abort_game expected_status=lobby', () => {
     expect(() => manager.startGame(REF, b)).toThrow(GameError);
     expect(manager.getRecord(b).status).toBe('aborted');
   });
+
+  it('expectedMaxOtherPlayers=0 aborts empty lobby (host only) and refuses occupied lobby with LOBBY_OCCUPIED', () => {
+    const { manager } = setup();
+    const emptyHostPlayer = manager.createGame(bot(1), { type: 'number_bomb', groupId: 'g-empty-p', joinAs: 'player' }).summary.game_id;
+    const out = manager.abortGame(bot(1), emptyHostPlayer, '空大厅', { expectedStatus: 'lobby', expectedMaxOtherPlayers: 0 });
+    expect(out.summary.status).toBe('aborted');
+    expect(out.summary.ended_at).toBeTruthy();
+
+    const occ = manager.createGame(bot(1), { type: 'number_bomb', groupId: 'g-occ-p', joinAs: 'player' }).summary.game_id;
+    manager.joinGame(bot(2), occ, { as: 'player' });
+    expect(() =>
+      manager.abortGame(bot(1), occ, '空大厅', { expectedStatus: 'lobby', expectedMaxOtherPlayers: 0 }),
+    ).toThrow(expect.objectContaining({ code: 'LOBBY_OCCUPIED' }));
+    expect(manager.getRecord(occ).status).toBe('lobby');
+
+    // Join vs conditional abort race in either order: exactly one wins
+    const raceB = manager.createGame(bot(1), { type: 'number_bomb', groupId: 'g-occ-race', joinAs: 'player' }).summary.game_id;
+    manager.abortGame(bot(1), raceB, '空大厅', { expectedStatus: 'lobby', expectedMaxOtherPlayers: 0 });
+    expect(() => manager.joinGame(bot(2), raceB, { as: 'player' })).toThrow(GameError);
+
+    // Invalid expectedMaxOtherPlayers rejected
+    const bad = manager.createGame(bot(1), { type: 'number_bomb', groupId: 'g-bad-max', joinAs: 'player' }).summary.game_id;
+    expect(() => manager.abortGame(bot(1), bad, 'x', { expectedStatus: 'lobby', expectedMaxOtherPlayers: -1 })).toThrow(
+      expect.objectContaining({ code: 'BAD_REQUEST' }),
+    );
+    expect(() => manager.abortGame(bot(1), bad, 'x', { expectedMaxOtherPlayers: 0 })).toThrow(
+      expect.objectContaining({ code: 'BAD_REQUEST' }),
+    );
+  });
+
+  it('listGames and getView expose authoritative ended_at for ended, aborted, and lobby-TTL expired games', async () => {
+    const { manager, clock } = setup(21);
+    const { summary: lobby } = manager.createGame(REF, { type: 'number_bomb', groupId: 'g-end-a', joinAs: 'referee' });
+    expect(lobby.ended_at).toBeUndefined();
+    expect((manager.getView(REF, lobby.game_id) as any).game.ended_at).toBeUndefined();
+
+    // 1. Lobby TTL expiry (120m) via tick()
+    clock.advance(2 * 60 * 60 * 1000 + 1000);
+    manager.tick();
+    const expiredRec = manager.getRecord(lobby.game_id);
+    expect(expiredRec.status).toBe('aborted');
+    const expiredIso = new Date(expiredRec.endedAt!).toISOString();
+    const listed = manager.listGames({ groupId: 'g-end-a', includeFinished: true });
+    expect(listed[0]!.ended_at).toBe(expiredIso);
+    expect((manager.getView(REF, lobby.game_id) as any).game.ended_at).toBe(expiredIso);
+
+    // 2. Natural game finish
+    const { gameId, rec } = startGame(manager, 'number_bomb', { players: [bot(1), bot(2)], referee: REF });
+    await manager.refereeStep(REF, gameId);
+    const onTurn = identityOf(rec, rec.state.current);
+    clock.advance(5000);
+    manager.act(onTurn, gameId, { action: 'guess', number: rec.state.bomb as number });
+    expect(rec.status).toBe('ended');
+    const naturalIso = new Date(rec.endedAt!).toISOString();
+    const listedNat = manager.listGames({ groupId: rec.groupId, includeFinished: true }).find((g) => g.game_id === gameId)!;
+    expect(listedNat.ended_at).toBe(naturalIso);
+    expect((manager.getView(REF, gameId) as any).game.ended_at).toBe(naturalIso);
+  });
 });
 
 describe('security hardening', () => {

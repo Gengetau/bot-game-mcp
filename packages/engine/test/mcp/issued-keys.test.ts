@@ -185,8 +185,27 @@ describe('abort_game expected_status over MCP', () => {
       expect(m.getRecord(live.game_id).status).toBe('running');
       await expect(call(admin, 'abort_game', { game_id: lobby.game_id, expected_status: 'running' })).rejects.toThrow();
       expect(m.getRecord(lobby.game_id).status).toBe('lobby');
-      await call(admin, 'abort_game', { game_id: lobby.game_id, expected_status: 'lobby', reason: '空大厅' });
+
+      const { summary: occ } = m.createGame(REF, { type: 'number_bomb', groupId: 'g-mcp-occ', joinAs: 'referee' });
+      m.joinGame(bot(73), occ.game_id, { as: 'player' });
+      await expect(
+        call(admin, 'abort_game', { game_id: occ.game_id, expected_status: 'lobby', expected_max_other_players: 0 }),
+      ).rejects.toThrow(/LOBBY_OCCUPIED/);
+      expect(m.getRecord(occ.game_id).status).toBe('lobby');
+
+      const aborted = (await call(admin, 'abort_game', {
+        game_id: lobby.game_id,
+        expected_status: 'lobby',
+        expected_max_other_players: 0,
+        reason: '空大厅',
+      })) as any;
       expect(m.getRecord(lobby.game_id).status).toBe('aborted');
+      expect(aborted.summary.ended_at).toBeTruthy();
+
+      const listed = (await call(admin, 'list_games', { group_id: 'g-mcp-lobby', include_finished: true })) as any;
+      expect(listed.games[0].ended_at).toBe(aborted.summary.ended_at);
+      const view = (await call(admin, 'get_my_view', { game_id: lobby.game_id })) as any;
+      expect(view.game.ended_at).toBe(aborted.summary.ended_at);
     } finally {
       await http2.close();
       rt2.close();
