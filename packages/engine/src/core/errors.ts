@@ -10,6 +10,7 @@ export type GameErrorCode =
   | 'NOT_YOUR_TURN'
   | 'INVALID_ACTION'
   | 'CONFLICT'
+  | 'STATUS_MISMATCH'
   // 持续世界（栖灯镇）的失败码：见 src/world/errors.ts
   | 'UNAUTHENTICATED'
   | 'CONTROL_LOST'

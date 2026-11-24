@@ -297,6 +297,84 @@ describe('auto referee, long-poll, takeover, persistence', () => {
   });
 });
 
+describe('abort_game expected_status=lobby', () => {
+  const lobbyGame = (manager: GameManager, groupId = 'g-abort') => {
+    const { summary } = manager.createGame(REF, { type: 'number_bomb', groupId, joinAs: 'referee' });
+    manager.joinGame(bot(1), summary.game_id, { as: 'player' });
+    manager.joinGame(bot(2), summary.game_id, { as: 'player' });
+    return summary.game_id;
+  };
+
+  it('aborts a game that is still a lobby', () => {
+    const { manager } = setup();
+    const gameId = lobbyGame(manager);
+    const out = manager.abortGame(REF, gameId, '空大厅', { expectedStatus: 'lobby' });
+    expect(out.summary.status).toBe('aborted');
+    expect(manager.getRecord(gameId).status).toBe('aborted');
+  });
+
+  it('refuses a game that has started: STATUS_MISMATCH, game untouched', () => {
+    const { manager } = setup();
+    const { gameId, rec } = startGame(manager, 'number_bomb', { players: [bot(1), bot(2)], referee: REF });
+    let err: unknown;
+    try {
+      manager.abortGame(REF, gameId, '空大厅', { expectedStatus: 'lobby' });
+    } catch (e) {
+      err = e;
+    }
+    expect(err).toBeInstanceOf(GameError);
+    expect((err as GameError).code).toBe('STATUS_MISMATCH');
+    expect(rec.status).toBe('running');
+    expect(rec.abortReason).toBeUndefined();
+    // 原有行为：不带条件照常能中止
+    manager.abortGame(REF, gameId, '测试');
+    expect(rec.status).toBe('aborted');
+  });
+
+  it('refuses an already ended or aborted game with STATUS_MISMATCH', () => {
+    const { manager } = setup();
+    const gameId = lobbyGame(manager);
+    manager.abortGame(REF, gameId, '先关了');
+    expect(() => manager.abortGame(REF, gameId, '再关', { expectedStatus: 'lobby' })).toThrow(expect.objectContaining({ code: 'STATUS_MISMATCH' }));
+    // 不带条件的旧行为不变：已结束仍是 INVALID_STATE
+    expect(() => manager.abortGame(REF, gameId, '再关')).toThrow(expect.objectContaining({ code: 'INVALID_STATE' }));
+  });
+
+  it('only accepts "lobby" as the condition', () => {
+    const { manager } = setup();
+    const gameId = lobbyGame(manager);
+    expect(() => manager.abortGame(REF, gameId, 'x', { expectedStatus: 'running' as any })).toThrow(expect.objectContaining({ code: 'BAD_REQUEST' }));
+    expect(manager.getRecord(gameId).status).toBe('lobby');
+  });
+
+  it('does not widen permissions: a non-host player still cannot abort', () => {
+    const { manager } = setup();
+    const gameId = lobbyGame(manager);
+    expect(() => manager.abortGame(bot(2), gameId, 'x', { expectedStatus: 'lobby' })).toThrow(expect.objectContaining({ code: 'FORBIDDEN' }));
+    expect(manager.getRecord(gameId).status).toBe('lobby');
+  });
+
+  it('does not let an unauthorised caller probe the status: FORBIDDEN, not STATUS_MISMATCH', () => {
+    const { manager } = setup();
+    const { gameId, rec } = startGame(manager, 'number_bomb', { players: [bot(1), bot(2)], referee: REF });
+    expect(() => manager.abortGame(bot(2), gameId, 'x', { expectedStatus: 'lobby' })).toThrow(expect.objectContaining({ code: 'FORBIDDEN' }));
+    expect(rec.status).toBe('running');
+  });
+
+  it('start vs conditional abort: exactly one wins, in either order', () => {
+    const { manager } = setup();
+    const a = lobbyGame(manager, 'g-race-a');
+    manager.startGame(REF, a);
+    expect(() => manager.abortGame(REF, a, '空大厅', { expectedStatus: 'lobby' })).toThrow(expect.objectContaining({ code: 'STATUS_MISMATCH' }));
+    expect(manager.getRecord(a).status).toBe('running');
+
+    const b = lobbyGame(manager, 'g-race-b');
+    manager.abortGame(REF, b, '空大厅', { expectedStatus: 'lobby' });
+    expect(() => manager.startGame(REF, b)).toThrow(GameError);
+    expect(manager.getRecord(b).status).toBe('aborted');
+  });
+});
+
 describe('security hardening', () => {
   it('nobody can read a human seat through MCP, even with the human QQ id', async () => {
     const { manager } = setup(3);
