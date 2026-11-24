@@ -45,8 +45,8 @@ afterEach(() => {
 });
 
 describe('M3-A 1：模拟首末班运营时间窗（05:00–00:20 JST，source=simulated）', () => {
-  it('目录版本递增至 toto-p3.0，铁道边全部携带 simulated 首末班时间并通过自检', () => {
-    expect(CITY_CATALOG_VERSION).toBe('toto-p3.0');
+  it('目录版本递增至 toto-p3.1，铁道边全部携带 simulated 首末班时间并通过自检', () => {
+    expect(CITY_CATALOG_VERSION).toBe('toto-p3.1');
     expect(validateCatalog()).toEqual([]);
     for (const edge of TRANSIT_EDGES) {
       expect(edge.hours).toEqual({ first: '05:00', last: '00:20' });

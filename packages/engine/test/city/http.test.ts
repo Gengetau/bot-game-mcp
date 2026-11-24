@@ -154,7 +154,7 @@ describe('桥接接口', () => {
     const catalog = await api('GET', '/catalog');
     expect(catalog.body).toMatchObject({
       protocol: 'city-bridge/1',
-      city_catalog_version: 'toto-p3.0',
+      city_catalog_version: 'toto-p3.1',
       city_text_version: 'toto-text-1.1',
       mappings: { version: MAPPINGS.version },
       handover_node: HOUSE_ENTRANCE,

@@ -707,7 +707,7 @@ async function main(): Promise<void> {
       visit_id: 'vis_m2_apparel_1',
     });
     assert.equal(dep.visit.mappings_version, 3);
-    assert.equal(dep.visit.city_catalog_version, 'toto-p3.0');
+    assert.equal(dep.visit.city_catalog_version, 'toto-p3.1');
 
     await advanceBoth(60_000); // 走到玄关 away
     const hand = await driver.call({ op: 'advance_handover', visit_id: 'vis_m2_apparel_1' });
@@ -819,7 +819,7 @@ async function main(): Promise<void> {
           ok: true,
           scenario: 'city-m2-apparel-wardrobe-drive-e2e',
           catalog: {
-            version: 'toto-p3.0',
+            version: 'toto-p3.1',
             mappingsVersion: 3,
             totalCostumes: APPAREL_CATALOG.length,
             shops: APPAREL_SHOP_PLACES,

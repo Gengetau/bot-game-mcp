@@ -31,6 +31,7 @@ import { HOUSE, HOUR, MIN, T0, makeCity } from './helpers.js';
 
 const SCHEMA_PATH = fileURLToPath(new URL('../../../../docs/city/bridge-v1.schema.json', import.meta.url));
 const DOWNGRADE_SCRIPT = fileURLToPath(new URL('../../../../scripts/city-schema-downgrade.mjs', import.meta.url));
+const DOWNGRADE_SCRIPT_V5 = fileURLToPath(new URL('../../../../scripts/city-schema-downgrade-v5.mjs', import.meta.url));
 const ADMIN_KEY = 'admin-dial-secret-key-s1-test';
 const BRIDGE_KEY = 'bridge-key-s1-tests-0123456789';
 
@@ -463,7 +464,7 @@ describe('S1 自研天象引擎', () => {
     c4.close();
   });
 
-  it('受控栈顶降级脚本：v4 -> v3 清洗 qingkong 留存并可再升级；非栈顶 v5 拒绝执行且零改库', async () => {
+  it('受控栈顶降级脚本：v5 -> v4 -> v3 逐级降，v4->v3 清洗 qingkong 留存并可再升级；非栈顶 v5 对 v4->v3 脚本拒绝且零改库', async () => {
     const dbPath = makeTmpDb('downgrade-city.db');
     const clock = new FakeClock();
     clock.t = T0;
@@ -478,15 +479,16 @@ describe('S1 自研天象引擎', () => {
     expect(c1.db.get<{ user_version: number }>('PRAGMA user_version')?.user_version).toBe(CITY_SCHEMA_VERSION);
     c1.close();
 
-    // 1) 模拟已存在后续更高版本 v5 迁移 -> 非栈顶必须非 0 拒绝并保持 v5 不变
-    const v5Db = new DatabaseSync(dbPath);
-    v5Db.exec('PRAGMA user_version = 5');
-    v5Db.close();
+    // 1) 真实 v5 库（桌游茶屋 venue_* 已建）：S1 的 v4->v3 脚本非栈顶必须非 0 拒绝并保持 v5 不变
     expect(() => execFileSync(process.execPath, [DOWNGRADE_SCRIPT, '--db', dbPath, '--to', '3'], { stdio: 'pipe' })).toThrow();
     const checkV5 = new DatabaseSync(dbPath);
     expect(checkV5.prepare('PRAGMA user_version').get()).toEqual({ user_version: 5 });
-    checkV5.exec('PRAGMA user_version = 4');
     checkV5.close();
+    // 1b) 先用 v5->v4 脚本去掉 venue_*，才轮到 v4->v3
+    execFileSync(process.execPath, [DOWNGRADE_SCRIPT_V5, '--db', dbPath, '--to', '4'], { stdio: 'pipe' });
+    const checkV4 = new DatabaseSync(dbPath);
+    expect(checkV4.prepare('PRAGMA user_version').get()).toEqual({ user_version: 4 });
+    checkV4.close();
 
     // 2) 栈顶 v4 -> v3 降级成功，qingkong 快照清洗为 synthetic/fallback，且备份完整生成
     const out = execFileSync(process.execPath, [DOWNGRADE_SCRIPT, '--db', dbPath, '--to', '3'], { encoding: 'utf8' });

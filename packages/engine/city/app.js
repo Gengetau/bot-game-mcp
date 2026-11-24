@@ -154,6 +154,11 @@ const state = {
   lockerPageStack: [],
   /** @type {Map<string, Record<string, any>>} */
   inspectedItems: new Map(),
+  /** @type {Record<string, any>[] | null} */
+  recentAuctions: null,
+  venueTodoSignature: '',
+  auctionSignature: '',
+  knownAuctionIds: '',
   /** @type {EventSource | null} */
   stream: null,
   /** @type {number | null} */
@@ -397,6 +402,25 @@ const lockerPageStatus = mustEl('locker-page-status');
 const lockerPrevBtn = /** @type {HTMLButtonElement} */ (mustEl('locker-prev-btn'));
 const lockerNextBtn = /** @type {HTMLButtonElement} */ (mustEl('locker-next-btn'));
 
+const sceneVenueCard = mustEl('scene-venue-card');
+const sceneVenueBadge = mustEl('scene-venue-badge');
+const venueLobbyBox = mustEl('venue-lobby-box');
+const venueOpenForm = /** @type {HTMLFormElement} */ (mustEl('venue-open-form'));
+const venueOpenSubmitBtn = /** @type {HTMLButtonElement} */ (mustEl('venue-open-submit-btn'));
+const venueTablesList = mustEl('venue-tables-list');
+const venueActiveBox = mustEl('venue-active-box');
+const venueTableSummary = mustEl('venue-table-summary');
+const venuePrivateBox = mustEl('venue-private-box');
+const venueTodoBox = mustEl('venue-todo-box');
+const venueStartBtn = /** @type {HTMLButtonElement} */ (mustEl('venue-start-btn'));
+const venueLeaveBtn = /** @type {HTMLButtonElement} */ (mustEl('venue-leave-btn'));
+
+const sceneAuctionCard = mustEl('scene-auction-card');
+const auctionRefreshBtn = /** @type {HTMLButtonElement} */ (mustEl('auction-refresh-btn'));
+const sceneAuctionsList = mustEl('scene-auctions-list');
+const auctionHistoryBox = mustEl('auction-history-box');
+const auctionHistoryList = mustEl('auction-history-list');
+
 // ───────────────────────── 通知与错误 ─────────────────────────
 
 /**
@@ -431,14 +455,26 @@ function showError(msg) {
  * @param {string} msg
  */
 function setFieldError(errEl, inputEl, msg) {
+  const errId = errEl.id;
+  const updateDescribedBy = (/** @type {boolean} */ show) => {
+    if (!errId || !inputEl.dataset?.error) return;
+    const ids = (inputEl.getAttribute?.('aria-describedby') || '')
+      .split(/\s+/)
+      .filter((id) => id && id !== errId);
+    if (show) ids.push(errId);
+    if (ids.length) inputEl.setAttribute('aria-describedby', ids.join(' '));
+    else inputEl.removeAttribute('aria-describedby');
+  };
   if (!msg) {
     errEl.hidden = true;
     errEl.textContent = '';
-    inputEl.removeAttribute('aria-invalid');
+    inputEl.setAttribute('aria-invalid', 'false');
+    updateDescribedBy(false);
   } else {
     errEl.textContent = msg;
     errEl.hidden = false;
     inputEl.setAttribute('aria-invalid', 'true');
+    updateDescribedBy(true);
   }
 }
 
@@ -738,6 +774,14 @@ async function submitCityAction(action, successNote) {
   } catch (e) {
     if (e instanceof ApiError) {
       showError(e.message);
+      if (
+        e.reason === 'auction_closed' ||
+        e.reason === 'no_such_auction' ||
+        e.reason === 'table_not_forming' ||
+        e.reason === 'no_such_table'
+      ) {
+        void refreshMe();
+      }
     } else {
       showError('网络请求失败，请稍后重试。');
     }
@@ -815,6 +859,569 @@ async function loadHistory(reset) {
 
 function canControl() {
   return Boolean(state.view?.me?.in_city && state.view?.control?.mine);
+}
+
+/**
+ * @param {string} gameType
+ * @returns {string}
+ */
+function venueGameLabel(gameType) {
+  if (gameType === 'liars_dice') return '大话骰';
+  if (gameType === 'color_chain') return '彩牌接龙';
+  return String(gameType || '桌游');
+}
+
+/**
+ * @param {Record<string, any>} v
+ * @param {boolean} writable
+ */
+function renderVenueCard(v, writable) {
+  const canList = Array.isArray(v.can) ? v.can : [];
+  const vt = v.venue_table && typeof v.venue_table === 'object' ? v.venue_table : null;
+  const tables = Array.isArray(v.here?.tables) ? v.here.tables : [];
+  const showVenue = Boolean(vt) || canList.includes('open_table') || tables.length > 0;
+  sceneVenueCard.hidden = !showVenue;
+  if (!showVenue) {
+    state.venueTodoSignature = '';
+    return;
+  }
+
+  if (!vt) {
+    state.venueTodoSignature = '';
+    venueLobbyBox.hidden = false;
+    venueActiveBox.hidden = true;
+    sceneVenueBadge.textContent = tables.length > 0 ? `${tables.length} 桌可选` : '可开桌';
+    sceneVenueBadge.className = 'badge';
+    venueOpenSubmitBtn.disabled = !writable || !canList.includes('open_table');
+
+    venueTablesList.replaceChildren();
+    if (tables.length === 0) {
+      venueTablesList.appendChild(make('li', { className: 'muted small-note', text: '茶屋里还没有凑桌中的牌桌，可以自己先开一桌。' }));
+    } else {
+      for (const tbl of tables) {
+        const li = make('li', { className: 'entity-item' });
+        const meta = make('div', { className: 'entity-meta' });
+        const statusTxt = tbl.status === 'forming' ? '等待入座' : '对局进行中';
+        meta.appendChild(make('strong', { text: `${venueGameLabel(String(tbl.game))} · ${statusTxt}` }));
+        meta.appendChild(make('span', { className: 'muted small-note', text: `桌号 ${tbl.id} · 当前 ${Number(tbl.players || 0)} 人` }));
+        li.appendChild(meta);
+        const joinBtn = make('button', {
+          className: 'btn btn-secondary',
+          text: tbl.status === 'forming' ? '入座同玩' : '已开局',
+          attrs: { type: 'button' },
+        });
+        joinBtn.disabled = !writable || tbl.status !== 'forming' || !canList.includes('join_table');
+        joinBtn.addEventListener('click', () => {
+          void submitCityAction({ type: 'join_table', table_id: tbl.id }, '已入座茶屋牌桌。');
+        });
+        li.appendChild(joinBtn);
+        venueTablesList.appendChild(li);
+      }
+    }
+    return;
+  }
+
+  venueLobbyBox.hidden = true;
+  venueActiveBox.hidden = false;
+  const gameLabel = venueGameLabel(String(vt.game));
+  if (vt.status === 'forming') {
+    sceneVenueBadge.textContent = `凑桌中（${Number(vt.players || 0)} 人）`;
+    sceneVenueBadge.className = 'badge badge-warn';
+  } else if (vt.todo) {
+    sceneVenueBadge.textContent = '轮到你行动';
+    sceneVenueBadge.className = 'badge badge-ok';
+  } else {
+    sceneVenueBadge.textContent = '等待其他玩家';
+    sceneVenueBadge.className = 'badge';
+  }
+
+  venueTableSummary.replaceChildren();
+  if (vt.status === 'forming') {
+    venueTableSummary.appendChild(
+      make('p', {
+        text: `已入座【${gameLabel}】（桌号 ${vt.id}），当前同桌 ${Number(vt.players || 0)} 人。至少需要 2 位同在茶屋的玩家才可开局。`,
+      }),
+    );
+  } else {
+    const pub = vt.public && typeof vt.public === 'object' ? vt.public : {};
+    venueTableSummary.appendChild(
+      make('p', {
+        text: `正在进行【${gameLabel}】第 ${vt.round ?? 1} 轮 · 你的座位：${vt.seat} 号（桌号 ${vt.id}）`,
+      }),
+    );
+    if (vt.game === 'liars_dice') {
+      const bidInfo = pub.current_bid
+        ? `当前叫牌：${pub.current_bid.seat}号 叫 ${pub.current_bid.quantity} 个 ${pub.current_bid.face} 点`
+        : `尚未叫牌（开叫至少 ${pub.min_open_quantity ?? 1} 个）`;
+      venueTableSummary.appendChild(
+        make('p', {
+          className: 'small-note muted',
+          text: `场上总骰 ${pub.total_dice ?? 0} 颗 · ${bidInfo} · 点数顺序 2<3<4<5<6<1`,
+        }),
+      );
+      if (Array.isArray(pub.players) && pub.players.length > 0) {
+        const seatsTxt = pub.players
+          .map((/** @type {any} */ p) => `${p.seat}号 ${p.name}（${p.lives}命/${p.dice_count}骰）`)
+          .join(' · ');
+        venueTableSummary.appendChild(make('p', { className: 'small-note', text: `座位：${seatsTxt}` }));
+      }
+    } else if (vt.game === 'color_chain') {
+      venueTableSummary.appendChild(
+        make('p', {
+          className: 'small-note muted',
+          text: `顶牌：${pub.top_card ?? '—'} · 当前颜色：${pub.current_color ?? '—'} · 方向：${pub.direction ?? '—'} · 牌堆余 ${pub.draw_pile_count ?? 0} 张`,
+        }),
+      );
+      if (Array.isArray(pub.players) && pub.players.length > 0) {
+        const seatsTxt = pub.players
+          .map((/** @type {any} */ p) => `${p.seat}号 ${p.name}（${p.hand_count}张）`)
+          .join(' · ');
+        venueTableSummary.appendChild(make('p', { className: 'small-note', text: `座位：${seatsTxt}` }));
+      }
+    }
+  }
+
+  // 私密手牌 / 私密骰子投影（仅自己可见）
+  venuePrivateBox.replaceChildren();
+  if (vt.you && typeof vt.you === 'object') {
+    venuePrivateBox.hidden = false;
+    if (vt.game === 'liars_dice') {
+      const diceArr = Array.isArray(vt.you.dice) ? vt.you.dice : [];
+      venuePrivateBox.appendChild(
+        make('p', {
+          text: `你的私密骰子：${diceArr.length ? diceArr.join(' · ') : '（等待摇骰）'}（剩余 ${vt.you.lives ?? 0} 条命，${vt.you.wild_ones ? '1 为百搭' : '1 不百搭'}）`,
+        }),
+      );
+    } else if (vt.game === 'color_chain') {
+      const handArr = Array.isArray(vt.you.hand) ? vt.you.hand : [];
+      const playableArr = Array.isArray(vt.you.playable) ? vt.you.playable : [];
+      venuePrivateBox.appendChild(make('p', { text: `你的私密手牌（${handArr.length} 张）：${handArr.join('、') || '无'}` }));
+      if (playableArr.length > 0) {
+        venuePrivateBox.appendChild(make('p', { className: 'small-note muted', text: `当前可出合法牌：${playableArr.join('、')}` }));
+      }
+    }
+  } else {
+    venuePrivateBox.hidden = true;
+  }
+
+  venueStartBtn.hidden = vt.status !== 'forming';
+  venueStartBtn.disabled = !writable || Number(vt.players || 0) < 2;
+  venueStartBtn.dataset.tableId = String(vt.id);
+  venueLeaveBtn.disabled = !writable;
+
+  // 待办行动表单
+  const todo = vt.status === 'running' && vt.todo && typeof vt.todo === 'object' ? vt.todo : null;
+  if (!todo) {
+    state.venueTodoSignature = '';
+    venueTodoBox.hidden = true;
+    venueTodoBox.replaceChildren();
+    return;
+  }
+
+  venueTodoBox.hidden = false;
+  const actions = Array.isArray(todo.actions) ? todo.actions : [];
+  const sig = `${vt.id}|${vt.round}|${vt.phase}|${actions.join(',')}|${writable}|${JSON.stringify(vt.public?.min_next_bid ?? null)}|${JSON.stringify(vt.you?.playable ?? null)}`;
+  if (sig === state.venueTodoSignature && venueTodoBox.contains(document.activeElement)) {
+    return;
+  }
+  state.venueTodoSignature = sig;
+  venueTodoBox.replaceChildren();
+
+  const secText = typeof todo.seconds_left === 'number' ? `（限时约 ${todo.seconds_left} 秒）` : '';
+  venueTodoBox.appendChild(make('p', { className: 'lead-text', text: `${String(todo.prompt || '请行动')}${secText}` }));
+
+  if (vt.game === 'liars_dice') {
+    if (actions.includes('bid')) {
+      const bidForm = make('form', { className: 'stack-form', attrs: { id: 'venue-dice-bid-form', novalidate: '' } });
+      const row = make('div', { className: 'inline-controls' });
+      const minBid = vt.public?.min_next_bid;
+      const defaultQty = Number(minBid?.quantity ?? vt.public?.min_open_quantity ?? 1);
+      const defaultFace = Number(minBid?.face ?? 2);
+
+      const qField = make('div', { className: 'field' });
+      qField.appendChild(make('label', { text: '叫牌个数（整数）', attrs: { for: 'dice-qty-input' } }));
+      const qInput = /** @type {HTMLInputElement} */ (
+        make('input', {
+          attrs: {
+            id: 'dice-qty-input',
+            name: 'quantity',
+            type: 'text',
+            inputmode: 'numeric',
+            enterkeyhint: 'send',
+            autocomplete: 'off',
+            autocorrect: 'off',
+            autocapitalize: 'none',
+            spellcheck: 'false',
+            required: '',
+            'aria-invalid': 'false',
+            'data-error': 'dice-bid-error',
+          },
+        })
+      );
+      qInput.value = String(defaultQty);
+      qField.appendChild(qInput);
+      row.appendChild(qField);
+
+      const fField = make('div', { className: 'field' });
+      fField.appendChild(make('label', { text: '点数（2<3<4<5<6<1）', attrs: { for: 'dice-face-select' } }));
+      const fSelect = /** @type {HTMLSelectElement} */ (make('select', { attrs: { id: 'dice-face-select', name: 'face' } }));
+      for (const faceVal of [2, 3, 4, 5, 6, 1]) {
+        const opt = make('option', {
+          text: faceVal === 1 ? '1 点（最大/百搭）' : `${faceVal} 点`,
+          attrs: { value: String(faceVal) },
+        });
+        if (faceVal === defaultFace) opt.selected = true;
+        fSelect.appendChild(opt);
+      }
+      fField.appendChild(fSelect);
+      row.appendChild(fField);
+      bidForm.appendChild(row);
+
+      const errEl = make('p', { className: 'field-error', attrs: { id: 'dice-bid-error' } });
+      errEl.hidden = true;
+      bidForm.appendChild(errEl);
+
+      const actRow = make('div', { className: 'form-actions' });
+      const bidBtn = make('button', { className: 'btn btn-primary', text: '提交叫牌', attrs: { type: 'submit', id: 'venue-dice-bid-btn' } });
+      bidBtn.disabled = !writable;
+      actRow.appendChild(bidBtn);
+
+      if (actions.includes('challenge')) {
+        const chalBtn = make('button', {
+          className: 'btn btn-secondary',
+          text: '开牌质疑',
+          attrs: { type: 'button', id: 'venue-dice-challenge-btn' },
+        });
+        chalBtn.disabled = !writable;
+        chalBtn.addEventListener('click', () => {
+          void submitCityAction({ type: 'game_act', table_id: vt.id, input: { action: 'challenge' } }, '已发起开牌质疑。');
+        });
+        actRow.appendChild(chalBtn);
+      }
+      bidForm.appendChild(actRow);
+
+      qInput.addEventListener('input', () => setFieldError(errEl, qInput, ''));
+      bidForm.addEventListener('submit', (ev) => {
+        ev.preventDefault();
+        const qty = Number.parseInt(qInput.value.trim(), 10);
+        const face = Number.parseInt(fSelect.value, 10);
+        if (!Number.isInteger(qty) || qty < 1) {
+          setFieldError(errEl, qInput, '请输入大于 0 的整数个数。');
+          qInput.focus();
+          return;
+        }
+        void submitCityAction(
+          { type: 'game_act', table_id: vt.id, input: { action: 'bid', quantity: qty, face } },
+          `已叫牌 ${qty} 个 ${face} 点。`,
+        );
+      });
+      venueTodoBox.appendChild(bidForm);
+    } else if (actions.includes('challenge')) {
+      const chalBtn = make('button', {
+        className: 'btn btn-primary',
+        text: '开牌质疑',
+        attrs: { type: 'button', id: 'venue-dice-challenge-btn' },
+      });
+      chalBtn.disabled = !writable;
+      chalBtn.addEventListener('click', () => {
+        void submitCityAction({ type: 'game_act', table_id: vt.id, input: { action: 'challenge' } }, '已发起开牌质疑。');
+      });
+      venueTodoBox.appendChild(chalBtn);
+    }
+    return;
+  }
+
+  if (vt.game === 'color_chain') {
+    const colors = Array.isArray(vt.you?.colors) && vt.you.colors.length ? vt.you.colors : ['红', '黄', '蓝', '绿'];
+    if (actions.includes('color')) {
+      const colorForm = make('form', { className: 'stack-form', attrs: { id: 'venue-cc-color-form', novalidate: '' } });
+      const field = make('div', { className: 'field' });
+      field.appendChild(make('label', { text: '指定当前颜色', attrs: { for: 'cc-color-select' } }));
+      const sel = /** @type {HTMLSelectElement} */ (make('select', { attrs: { id: 'cc-color-select', name: 'color' } }));
+      for (const c of colors) sel.appendChild(make('option', { text: String(c), attrs: { value: String(c) } }));
+      field.appendChild(sel);
+      colorForm.appendChild(field);
+      const btn = make('button', { className: 'btn btn-primary', text: '选定颜色', attrs: { type: 'submit' } });
+      btn.disabled = !writable;
+      colorForm.appendChild(btn);
+      colorForm.addEventListener('submit', (ev) => {
+        ev.preventDefault();
+        void submitCityAction({ type: 'game_act', table_id: vt.id, input: { action: 'color', color: sel.value } }, `已选定颜色 ${sel.value}。`);
+      });
+      venueTodoBox.appendChild(colorForm);
+      return;
+    }
+
+    if (actions.includes('accept') || actions.includes('challenge')) {
+      const row = make('div', { className: 'form-actions' });
+      if (actions.includes('accept')) {
+        const acceptBtn = make('button', { className: 'btn btn-primary', text: '不质疑（摸 4 张）', attrs: { type: 'button' } });
+        acceptBtn.disabled = !writable;
+        acceptBtn.addEventListener('click', () => {
+          void submitCityAction({ type: 'game_act', table_id: vt.id, input: { action: 'accept' } }, '已选择不质疑。');
+        });
+        row.appendChild(acceptBtn);
+      }
+      if (actions.includes('challenge')) {
+        const chalBtn = make('button', { className: 'btn btn-secondary', text: '质疑变色+4', attrs: { type: 'button' } });
+        chalBtn.disabled = !writable;
+        chalBtn.addEventListener('click', () => {
+          void submitCityAction({ type: 'game_act', table_id: vt.id, input: { action: 'challenge' } }, '已发起质疑。');
+        });
+        row.appendChild(chalBtn);
+      }
+      venueTodoBox.appendChild(row);
+      return;
+    }
+
+    const playable = Array.isArray(vt.you?.playable) ? vt.you.playable : [];
+    if (actions.includes('play') && playable.length > 0) {
+      const playForm = make('form', { className: 'stack-form', attrs: { id: 'venue-cc-play-form', novalidate: '' } });
+      const row = make('div', { className: 'inline-controls' });
+
+      const cardField = make('div', { className: 'field' });
+      cardField.appendChild(make('label', { text: '选择要出的牌', attrs: { for: 'cc-card-select' } }));
+      const cardSel = /** @type {HTMLSelectElement} */ (make('select', { attrs: { id: 'cc-card-select', name: 'card' } }));
+      for (const cardName of playable) cardSel.appendChild(make('option', { text: String(cardName), attrs: { value: String(cardName) } }));
+      cardField.appendChild(cardSel);
+      row.appendChild(cardField);
+
+      const colorField = make('div', { className: 'field' });
+      colorField.appendChild(make('label', { text: '变色目标（仅变色牌）', attrs: { for: 'cc-wild-color-select' } }));
+      const wildSel = /** @type {HTMLSelectElement} */ (make('select', { attrs: { id: 'cc-wild-color-select', name: 'color' } }));
+      for (const c of colors) wildSel.appendChild(make('option', { text: String(c), attrs: { value: String(c) } }));
+      colorField.appendChild(wildSel);
+      const syncWild = () => {
+        colorField.hidden = !String(cardSel.value).startsWith('变色');
+      };
+      syncWild();
+      cardSel.addEventListener('change', syncWild);
+      row.appendChild(colorField);
+      playForm.appendChild(row);
+
+      const callLabel = make('label', { className: 'checkbox-row', attrs: { for: 'cc-call-checkbox' } });
+      const callBox = /** @type {HTMLInputElement} */ (make('input', { attrs: { id: 'cc-call-checkbox', name: 'call', type: 'checkbox' } }));
+      callBox.checked = Array.isArray(vt.you?.hand) && vt.you.hand.length === 2;
+      callLabel.appendChild(callBox);
+      callLabel.appendChild(make('span', { text: '出牌后只剩 1 张时喊「最后一张」' }));
+      playForm.appendChild(callLabel);
+
+      const actRow = make('div', { className: 'form-actions' });
+      const playBtn = make('button', { className: 'btn btn-primary', text: '出牌', attrs: { type: 'submit' } });
+      playBtn.disabled = !writable;
+      actRow.appendChild(playBtn);
+      if (actions.includes('draw')) {
+        const drawBtn = make('button', { className: 'btn btn-secondary', text: '摸一张', attrs: { type: 'button' } });
+        drawBtn.disabled = !writable;
+        drawBtn.addEventListener('click', () => {
+          void submitCityAction({ type: 'game_act', table_id: vt.id, input: { action: 'draw' } }, '已摸一张牌。');
+        });
+        actRow.appendChild(drawBtn);
+      }
+      if (actions.includes('pass')) {
+        const passBtn = make('button', { className: 'btn btn-secondary', text: '过回合', attrs: { type: 'button' } });
+        passBtn.disabled = !writable;
+        passBtn.addEventListener('click', () => {
+          void submitCityAction({ type: 'game_act', table_id: vt.id, input: { action: 'pass' } }, '已过回合。');
+        });
+        actRow.appendChild(passBtn);
+      }
+      playForm.appendChild(actRow);
+
+      playForm.addEventListener('submit', (ev) => {
+        ev.preventDefault();
+        const chosen = cardSel.value;
+        /** @type {Record<string, unknown>} */
+        const input = { action: 'play', card: chosen, call: callBox.checked };
+        if (chosen.startsWith('变色')) input.color = wildSel.value;
+        void submitCityAction({ type: 'game_act', table_id: vt.id, input }, `已打出 ${chosen}。`);
+      });
+      venueTodoBox.appendChild(playForm);
+    } else {
+      const row = make('div', { className: 'form-actions' });
+      if (actions.includes('draw')) {
+        const drawBtn = make('button', { className: 'btn btn-primary', text: '摸一张', attrs: { type: 'button' } });
+        drawBtn.disabled = !writable;
+        drawBtn.addEventListener('click', () => {
+          void submitCityAction({ type: 'game_act', table_id: vt.id, input: { action: 'draw' } }, '已摸一张牌。');
+        });
+        row.appendChild(drawBtn);
+      }
+      if (actions.includes('pass')) {
+        const passBtn = make('button', { className: 'btn btn-secondary', text: '过回合', attrs: { type: 'button' } });
+        passBtn.disabled = !writable;
+        passBtn.addEventListener('click', () => {
+          void submitCityAction({ type: 'game_act', table_id: vt.id, input: { action: 'pass' } }, '已过回合。');
+        });
+        row.appendChild(passBtn);
+      }
+      venueTodoBox.appendChild(row);
+    }
+  }
+}
+
+/**
+ * @param {Record<string, any>} v
+ * @param {boolean} writable
+ */
+function renderAuctionCard(v, writable) {
+  const canList = Array.isArray(v.can) ? v.can : [];
+  const auctions = Array.isArray(v.here?.auctions) ? v.here.auctions : [];
+  const showAuction = canList.includes('auction_bid') || auctions.length > 0;
+  sceneAuctionCard.hidden = !showAuction;
+  if (!showAuction) {
+    state.auctionSignature = '';
+    state.knownAuctionIds = '';
+    state.recentAuctions = null;
+    return;
+  }
+  auctionRefreshBtn.disabled = !writable || !canList.includes('auction_view');
+
+  const idsKey = auctions.map((/** @type {any} */ x) => String(x.id)).join(',');
+  const rolledOver = Boolean(state.knownAuctionIds && idsKey && state.knownAuctionIds !== idsKey);
+  state.knownAuctionIds = idsKey;
+  if (rolledOver) {
+    state.recentAuctions = null;
+    showNotice('旧物密封竞拍会已切换至新场次，可对新拍品密封出价。');
+  }
+
+  for (const auc of auctions) {
+    const countNode = sceneAuctionsList.querySelector(`[data-auc-count="${CSS.escape(String(auc.id))}"]`);
+    if (countNode) countNode.textContent = `当前密封出价：${Number(auc.bid_count || 0)} 份`;
+  }
+
+  const sig = JSON.stringify({
+    w: writable,
+    a: auctions.map((/** @type {any} */ x) => [x.id, x.my_bid_yen ?? null, x.reserve_yen, x.closes_at_ms]),
+  });
+  const focusWasInside = sceneAuctionsList.contains(document.activeElement);
+  if (sig !== state.auctionSignature || !focusWasInside) {
+    state.auctionSignature = sig;
+    sceneAuctionsList.replaceChildren();
+    if (auctions.length === 0) {
+      sceneAuctionsList.appendChild(make('li', { className: 'muted small-note', text: '当前场次准备中，请稍候或点击「查看场次记录」。' }));
+    } else {
+      for (const auc of auctions) {
+        const li = make('li', { className: 'entity-item' });
+        const meta = make('div', { className: 'entity-meta' });
+        meta.appendChild(make('strong', { text: String(auc.item_name || auc.id) }));
+        meta.appendChild(
+          make('span', {
+            className: 'muted small-note',
+            text: `起拍价 ${fmtYen(auc.reserve_yen)} · 截标 ${fmtClock(auc.closes_at_ms, state.timezone)}`,
+          }),
+        );
+        meta.appendChild(
+          make('span', {
+            className: 'muted small-note',
+            text: `当前密封出价：${Number(auc.bid_count || 0)} 份`,
+            attrs: { 'data-auc-count': String(auc.id) },
+          }),
+        );
+        li.appendChild(meta);
+
+        if (typeof auc.my_bid_yen === 'number') {
+          li.appendChild(
+            make('span', {
+              className: 'badge badge-ok',
+              text: `已密封出价 ${fmtYen(auc.my_bid_yen)}`,
+            }),
+          );
+        } else {
+          const bidForm = make('form', { className: 'stack-form', attrs: { novalidate: '', 'data-auction-form': String(auc.id) } });
+          const inputId = `auction-bid-input-${String(auc.id).replace(/[^a-zA-Z0-9_-]/g, '_')}`;
+          const errId = `auction-bid-error-${String(auc.id).replace(/[^a-zA-Z0-9_-]/g, '_')}`;
+          const field = make('div', { className: 'field' });
+          field.appendChild(
+            make('label', {
+              text: `密封出价（至少 ${fmtYen(auc.reserve_yen)} 整数）`,
+              attrs: { for: inputId },
+            }),
+          );
+          const bidInput = /** @type {HTMLInputElement} */ (
+            make('input', {
+              attrs: {
+                id: inputId,
+                name: 'yen',
+                type: 'text',
+                inputmode: 'numeric',
+                enterkeyhint: 'send',
+                autocomplete: 'off',
+                autocorrect: 'off',
+                autocapitalize: 'none',
+                spellcheck: 'false',
+                required: '',
+                placeholder: String(auc.reserve_yen),
+                'aria-invalid': 'false',
+                'data-error': errId,
+              },
+            })
+          );
+          const errEl = make('p', { className: 'field-error', attrs: { id: errId } });
+          errEl.hidden = true;
+          field.appendChild(bidInput);
+          field.appendChild(errEl);
+          bidForm.appendChild(field);
+
+          const bidBtn = make('button', {
+            className: 'btn btn-primary',
+            text: '提交密封出价',
+            attrs: { type: 'submit' },
+          });
+          bidBtn.disabled = !writable || !canList.includes('auction_bid');
+          bidForm.appendChild(bidBtn);
+
+          bidInput.addEventListener('input', () => setFieldError(errEl, bidInput, ''));
+          bidForm.addEventListener('submit', (ev) => {
+            ev.preventDefault();
+            const raw = bidInput.value.trim();
+            if (!/^\d+$/.test(raw)) {
+              setFieldError(errEl, bidInput, `请输入不少于 ${auc.reserve_yen} 的正整数日元。`);
+              bidInput.focus();
+              return;
+            }
+            const yen = Number.parseInt(raw, 10);
+            if (!Number.isSafeInteger(yen) || yen < Number(auc.reserve_yen || 1) || yen <= 0) {
+              setFieldError(errEl, bidInput, `出价不得低于起拍价 ${fmtYen(auc.reserve_yen)}。`);
+              bidInput.focus();
+              return;
+            }
+            void submitCityAction(
+              { type: 'auction_bid', auction_id: auc.id, yen },
+              `已提交密封出价 ${fmtYen(yen)}，资金已冻结托管至开标。`,
+            );
+          });
+          li.appendChild(bidForm);
+        }
+        sceneAuctionsList.appendChild(li);
+      }
+      if (rolledOver && focusWasInside) {
+        const nextInput = /** @type {HTMLElement | null} */ (sceneAuctionsList.querySelector('input, button'));
+        if (nextInput) nextInput.focus();
+      }
+    }
+  }
+
+  if (Array.isArray(state.recentAuctions) && state.recentAuctions.length > 0) {
+    auctionHistoryBox.hidden = false;
+    auctionHistoryList.replaceChildren();
+    for (const h of state.recentAuctions) {
+      const li = make('li', { className: 'entity-item' });
+      const statusMap = { open: '竞拍中', settled: '已成交', unsold: '流拍', cancelled: '已取消' };
+      const stLabel = statusMap[/** @type {keyof typeof statusMap} */ (h.status)] || String(h.status);
+      const mineTxt = h.my_bid ? ` · 我的出价 ${fmtYen(h.my_bid.yen)}（${h.my_bid.status}）` : '';
+      const winTxt = h.status === 'settled' ? ` · 成交价 ${fmtYen(h.winning_price ?? 0)}` : '';
+      li.appendChild(
+        make('span', {
+          className: 'small-note',
+          text: `${h.item_name} · ${stLabel}${winTxt} · 共 ${Number(h.bid_count || 0)} 份出价${mineTxt}`,
+        }),
+      );
+      auctionHistoryList.appendChild(li);
+    }
+  } else {
+    auctionHistoryBox.hidden = true;
+  }
 }
 
 function renderHeaderAndControl() {
@@ -1228,6 +1835,12 @@ function renderScenePanel() {
     eventsBox.hidden = true;
     peopleList.replaceChildren(make('li', { className: 'muted small-note', text: '到站后可见身边同行者。' }));
     shopCard.hidden = true;
+    sceneVenueCard.hidden = true;
+    sceneAuctionCard.hidden = true;
+    state.venueTodoSignature = '';
+    state.auctionSignature = '';
+    state.knownAuctionIds = '';
+    state.recentAuctions = null;
     chatList.replaceChildren(make('li', { className: 'muted small-note', text: '移动途中无法现场交谈。' }));
     chatInput.disabled = true;
     chatSubmitBtn.disabled = true;
@@ -1356,6 +1969,9 @@ function renderScenePanel() {
       goodsList.appendChild(li);
     }
   }
+
+  renderVenueCard(v, writable);
+  renderAuctionCard(v, writable);
 
   // 现场对话
   chatList.replaceChildren();
@@ -2102,6 +2718,30 @@ bagPrevBtn.addEventListener('click', () => stepBagPage(-1));
 bagNextBtn.addEventListener('click', () => stepBagPage(1));
 lockerPrevBtn.addEventListener('click', () => stepLockerPage(-1));
 lockerNextBtn.addEventListener('click', () => stepLockerPage(1));
+
+venueOpenForm.addEventListener('submit', async (ev) => {
+  ev.preventDefault();
+  const checked = /** @type {HTMLInputElement | null} */ (venueOpenForm.querySelector('input[name="venue_game"]:checked'));
+  const game = checked ? checked.value : 'liars_dice';
+  await submitCityAction({ type: 'open_table', game }, `已开出【${venueGameLabel(game)}】牌桌。`);
+});
+
+venueStartBtn.addEventListener('click', () => {
+  const tableId = venueStartBtn.dataset.tableId || '';
+  void submitCityAction({ type: 'start_table', ...(tableId ? { table_id: tableId } : {}) }, '牌局已开始。');
+});
+
+venueLeaveBtn.addEventListener('click', () => {
+  void submitCityAction({ type: 'leave_table' }, '已离开当前牌桌。');
+});
+
+auctionRefreshBtn.addEventListener('click', async () => {
+  const out = await submitCityAction({ type: 'auction_view' });
+  if (out && Array.isArray(out.auctions)) {
+    state.recentAuctions = out.auctions;
+    if (state.view) renderAuctionCard(state.view, canControl());
+  }
+});
 
 // ───────────────────────── 启动入口 ─────────────────────────
 

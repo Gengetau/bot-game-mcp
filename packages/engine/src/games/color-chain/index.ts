@@ -665,5 +665,6 @@ export const colorChainDefinition: GameDefinition<ColorChainOptions> = {
     target_score: '0=一局定胜负（默认）；100~500=累计达到目标分获胜',
     turn_timeout_s: '每次行动、摸后选择或质疑窗口的限时（秒，默认 45）',
   },
+  embeddable: true,
   create: (rec, env) => new ColorChainGame(rec, env),
 };

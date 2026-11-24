@@ -623,6 +623,27 @@
         },
         {
           "$ref": "#/$defs/ActionStampStation"
+        },
+        {
+          "$ref": "#/$defs/ActionOpenTable"
+        },
+        {
+          "$ref": "#/$defs/ActionJoinTable"
+        },
+        {
+          "$ref": "#/$defs/ActionStartTable"
+        },
+        {
+          "$ref": "#/$defs/ActionGameAct"
+        },
+        {
+          "$ref": "#/$defs/ActionLeaveTable"
+        },
+        {
+          "$ref": "#/$defs/ActionAuctionBid"
+        },
+        {
+          "$ref": "#/$defs/ActionAuctionView"
         }
       ]
     },
@@ -1023,6 +1044,205 @@
         "type"
       ]
     },
+    "ActionOpenTable": {
+      "description": "在桌游茶屋（ryokogai:boardgame-chaya）开一张桌游牌桌并自动入座；须在场且当前未入座。",
+      "type": "object",
+      "properties": {
+        "type": {
+          "const": "open_table"
+        },
+        "game": {
+          "type": "string",
+          "enum": [
+            "liars_dice",
+            "color_chain"
+          ]
+        },
+        "options": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "type"
+      ]
+    },
+    "ActionJoinTable": {
+      "description": "在桌游茶屋（ryokogai:boardgame-chaya）加入一张凑桌中（forming）的牌桌；须在场且未入座。仅一张 forming 牌桌时 table_id 可省略。",
+      "type": "object",
+      "properties": {
+        "type": {
+          "const": "join_table"
+        },
+        "table_id": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "type"
+      ]
+    },
+    "ActionStartTable": {
+      "description": "在桌游茶屋（ryokogai:boardgame-chaya）启动已入座的 forming 牌桌；须本人及同桌全员都在茶屋且人数符合游戏要求。table_id 可省略，默认本人当前所在牌桌。",
+      "type": "object",
+      "properties": {
+        "type": {
+          "const": "start_table"
+        },
+        "table_id": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "type"
+      ]
+    },
+    "GameActionName": {
+      "description": "牌桌游戏动作名：须含至少一个非空白字符，且去首尾空白后不能为 game_act。",
+      "type": "string",
+      "minLength": 1,
+      "pattern": "\\S",
+      "not": {
+        "pattern": "^\\s*game_act\\s*$"
+      }
+    },
+    "ActionGameAct": {
+      "description": "在桌游茶屋（ryokogai:boardgame-chaya）向本人所在的进行中（running）牌桌提交游戏动作；提供 input 对象时只从 input 内按 game_action ?? move ?? action 读取（顶层同名字段会被遮蔽），不提供 input 时从顶层按 game_action ?? move ?? action 读取；动作名须非空白且不能为 game_act。",
+      "type": "object",
+      "properties": {
+        "type": {
+          "const": "game_act"
+        },
+        "table_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "input": {
+          "type": "object",
+          "properties": {
+            "game_action": {
+              "$ref": "#/$defs/GameActionName"
+            },
+            "move": {
+              "$ref": "#/$defs/GameActionName"
+            },
+            "action": {
+              "$ref": "#/$defs/GameActionName"
+            }
+          },
+          "anyOf": [
+            {
+              "required": [
+                "game_action"
+              ]
+            },
+            {
+              "required": [
+                "move"
+              ]
+            },
+            {
+              "required": [
+                "action"
+              ]
+            }
+          ]
+        },
+        "game_action": {
+          "$ref": "#/$defs/GameActionName"
+        },
+        "move": {
+          "$ref": "#/$defs/GameActionName"
+        },
+        "action": {
+          "$ref": "#/$defs/GameActionName"
+        }
+      },
+      "required": [
+        "type"
+      ],
+      "oneOf": [
+        {
+          "required": [
+            "input"
+          ]
+        },
+        {
+          "not": {
+            "required": [
+              "input"
+            ]
+          },
+          "anyOf": [
+            {
+              "required": [
+                "game_action"
+              ]
+            },
+            {
+              "required": [
+                "move"
+              ]
+            },
+            {
+              "required": [
+                "action"
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "ActionLeaveTable": {
+      "description": "离开本人当前在座的活跃牌桌（forming / running）；无人时自动散局，对局中离开按退座托管处理。",
+      "type": "object",
+      "properties": {
+        "type": {
+          "const": "leave_table"
+        }
+      },
+      "required": [
+        "type"
+      ]
+    },
+    "ActionAuctionBid": {
+      "description": "在桌游茶屋（ryokogai:boardgame-chaya）向开放中的旧物密封竞拍会提交出价；须身处竞拍所在地点，yen 为不低于起拍价的正整数日元且受 spendable 约束（室友须留回程车费），每人每场限一笔有效出价且开放期对他人密封。",
+      "type": "object",
+      "properties": {
+        "type": {
+          "const": "auction_bid"
+        },
+        "auction_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "yen": {
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "required": [
+        "type",
+        "yen"
+      ]
+    },
+    "ActionAuctionView": {
+      "description": "查看旧物密封竞拍会摘要（不强制在茶屋；传 auction_id 查指定场次，不传查当前地点最近 5 场、路上默认茶屋）。开放期密封，只返回 bid_count 与本人 my_bid；结算后同场旁观者收到的 auction_closed 不含得主与成交价，但主动调用 auction_view 在 settled 后会返回 winner_id 与 winning_price——二价（second）有两笔及以上有效出价时成交价就是次高出价，次高那一笔的金额会因此公开，其余落选出价不公开。",
+      "type": "object",
+      "properties": {
+        "type": {
+          "const": "auction_view"
+        },
+        "auction_id": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "type"
+      ]
+    },
     "Receipt": {
       "description": "桥接回执。永久保存；同一个 request_id + 同样内容重发返回原回执并带 replayed: true，内容不同返回 409 CONFLICT / request_conflict。state 是处理完之后访问的状态。",
       "type": "object",
@@ -1352,7 +1572,7 @@
       ]
     },
     "ActPayload": {
-      "description": "动作结果；形状随动作而不同，只有 status 稳定。completed：已完成；accepted：已受理（travel、go_home）；pending：结果未知，钱已锁住等对账（buy，reason = outcome_unknown）。常见字段：travel → trip；say → message_id、heard_by；buy → order_id、item、paid_yen、purse_yen；consume → consumed、effect_id；give → given、to；go_home → returning。",
+      "description": "动作结果；形状随动作而不同，只有 status 稳定。completed：已完成；accepted：已受理（travel、go_home）；pending：结果未知，钱已锁住等对账（buy，reason = outcome_unknown）。常见字段：travel → trip；say → message_id、heard_by；buy → order_id、item、paid_yen、purse_yen；consume → consumed、effect_id；give → given、to；go_home → returning；open_table → table_id、game、min_players、max_players；join_table → table_id、players；start_table → table_id、game、game_id；game_act → table_id、message、game_status；leave_table → table_id；auction_bid → auction_id、item_id、bid_yen、held_yen、purse_yen；auction_view → auctions。",
       "type": "object",
       "properties": {
         "status": {
