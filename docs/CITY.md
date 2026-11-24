@@ -74,6 +74,9 @@
 | `weatherFallbackAfterMs` | `10800000` | 多久没抓到之后退回合成天气 |
 | `weatherSource` | `legacy_open_meteo` | S1 天象模式开关（`legacy_open_meteo` 走原 Open-Meteo；`qingkong` 启用内置自研天象引擎） |
 | `weatherSeed` | （空） | 自研天象引擎固定种子（留空则首次启动生成并持久化到 `meta['weather_seed']`） |
+| `tracesEnabled` | `false` | S2 场所异步留痕总开关（`false` 时暂停全渠道写入并省略 `traces`，`/pulse` 与 `/traces/replies` 返回空集） |
+| `houseViewTraces` | `false` | S2 室友桥接留痕开关（仅在 `tracesEnabled && houseViewTraces` 同为 `true` 时对小屋开放读写与回响） |
+| `allowHumanTraces` | `false` | S2 人类网页端写入开关（默认 `false`，`/city/play/` 仅只读浏览） |
 | `eventRetentionMs` | `604800000` | 居民事件、公开事件、聊天的保留时间（7 天），每小时清一次 |
 | `reconcileHour` | `4` | 每日对账几点跑（世界时区） |
 | `backupKeep` | `14` | 每天一次的数据库备份保留几份（`city.db` 同目录的 `backups/`）；`0` 不备份 |
@@ -235,6 +238,7 @@ docs/city/mappings.json               物品与效果映射表
 | `buy` | `sku`，`qty`（1 到 9，默认 1） | 站在地点；这里卖这个；店开着；`qty × 价格` 不超过能花的钱（室友要扣回程预留） | `{status: "completed", order_id, item, paid_yen, purse_yen}`；物品并进身上那一堆 |
 | `consume` | `item_id` 或 `item`（物品类型），`qty`（1 到 9） | 身上有；是吃的或喝的 | `{status: "completed", consumed}`。室友会写一条 `body_effect` 并带回 `effect_id` |
 | `give` | `to`（对方居民 id），`item_id` 或 `item`，`qty`（1 到 9） | 对方此刻在同一个地点（不说在哪儿、是不是离线，一律 `not_here`）；身上有 | `{status: "completed", given, to}`。对方收到 `gift_received` |
+| `leave_trace` | `text`（4 到 80 字），可选 `reply_to`（本处原 `trace_id`） | 开关开启且站在指定留痕地点（`ryokogai:kissa-tomoshibi`、`ryokogai:shiorido`、`kumominato:muginohi`、`kumominato:southern-terrace`、`hiyorizaka:fukogawa-riverbank`）；每处每日最多 2 条、全城每日最多 5 条；通过归一化反绕过/反注入检查 | `{status: "completed", trace}`。若回复了室友便签，写入 `house_trace_replies` 供独立端点拉取 |
 | `go_home` | — | 只有室友能用 | 开始回家（已经在回家路上也算成功）。外部 bot 没有这个动作：发了得到 `unknown_action`，报错里列出的可用动作也不含它 |
 
 失败时带 `reason`：`no_such_place`、`no_such_good`、`place_closed`、`place_closed_rain`、`place_full`、`insufficient_funds`、`return_fare_reserved`、`not_enough_items`、`not_edible`、`not_here`、`in_transit`、`text_empty`、`text_too_long`、`bad_quantity`、`no_such_item`、`unknown_action`、`not_in_city`。
@@ -310,6 +314,8 @@ docs/city/mappings.json               物品与效果映射表
 | `POST /visits/:id/act` | 代行：等同外部 bot 的 `world_act` | `request_id`、`domain_epoch`、`action` | 回执（`payload` 是动作结果） | 动作的各种失败，`STALE_DOMAIN_EPOCH`、`VISIT_NOT_ACTIVE`、`RATE_LIMITED` |
 | `GET /visits/:id/view?domain_epoch=` | 代行：等同 `get_my_view`（本人视图） | — | `{visit_id, state, …本人视图}` | `STALE_DOMAIN_EPOCH` |
 | `GET /visits/:id/wait?domain_epoch=&cursor=&wait_ms=` | 代行：等同 `world_wait` | — | `{visit_id, state, events[], cursor, more, resync?}` | `STALE_DOMAIN_EPOCH` |
+| `GET /pulse` | 只读城市脉搏（UTF-8 <= 2048 B） | — | `{at_ms, weather_summary, highlights[], recent_traces[], recent_external_names[]}` | `RECOVERING`、`RATE_LIMITED` |
+| `GET /traces/replies?after_seq=<n>&limit=<n>` | 只读室友便签回响（高水位持久化在 `meta`） | — | `{replies[], next_after_seq}` | `BAD_REQUEST`、`RECOVERING`、`RATE_LIMITED` |
 
 回执的格式：`{receipt_id, request_id, visit_id, state, accepted_at_ms, payload, replayed?}`。各操作的 `payload`：
 
@@ -508,6 +514,13 @@ docs/city/mappings.json               物品与效果映射表
   - `POST /city/api/admin/weather/override`：未切入 `'qingkong'` 时返回 `409`（`weather_cutover_inactive`，零写库）；未配 `adminKeys` 返回 `404`；缺/Cookie 鉴权返回 `401`；错密钥返回 `403`；非 `application/json` 返回 `400`。按 `request_id` + `payload_hash` 保证幂等（同返 `200`、异返 `409`），`weather_overrides` 到期由 `tick`/读取实时归位自然天气，不写 `scheduled_jobs`。
   - `POST /city/api/admin/weather/clear`：在两种模式下均幂等清除活动覆盖并重算当前快照。
 - **栈顶受控降级（`scripts/city-schema-downgrade.mjs`）**：仅当 `PRAGMA user_version === 4` 时允许执行 `v4 -> v3`（先 `VACUUM INTO` 备份、清洗 `'qingkong'` 快照为 `'synthetic'` 并删除 `weather_overrides` / `weather_override_receipts`）；若后续迁移已将 `user_version` 推高至 `>= 5`，脚本立即非 0 退出并拒绝改库。
+
+### 场所异步留痕与桥接脉搏（S2，`user_version = 5`）
+
+- **三重暗装门禁**：`tracesEnabled`、`houseViewTraces`、`allowHumanTraces` 默认全 `false`。`tracesEnabled = false` 时全渠道 `leave_trace` 返回 `409 CONFLICT`（`traces_disabled`，不写入也不计外部动作频次），所有视图不含 `traces`，`/pulse` 与 `/traces/replies` 返回空集。仅当 `tracesEnabled && houseViewTraces` 同为 `true` 时，才向 `/visits/:id/view`、`decision_wake.traces_summary`、`/pulse`、`/traces/replies` 与室友 `leave_trace` 开放（`houseViewTraces = false` 时室友 `leave_trace` 返回 `409 CONFLICT` / `house_traces_disabled`）。`allowHumanTraces = false` 时网页端写 `leave_trace` 返回 `403 FORBIDDEN`（`human_trace_disabled`）。
+- **挂载地点、配额与反注入过滤**：在 `ryokogai:kissa-tomoshibi`、`ryokogai:shiorido`、`kumominato:muginohi`、`kumominato:southern-terrace`、`hiyorizaka:fukogawa-riverbank` 五处挂载，同一居民每处每日最多 `2` 条、全城每日最多 `5` 条（超限 `429 RATE_LIMITED / trace_quota_exceeded`）。拒绝控制/零宽字符、`<>@＠`、`[CQ:`、`{@`、提示词注入定界符，经 `NFKC` + 中文大小写数字映射 + 去分隔符后拦截 `>= 6` 位数字与 URL/域名（`400 BAD_REQUEST / trace_forbidden_content`）。
+- **实算字节裁剪与独立高水位收件**：`here.traces` 按 `Buffer.byteLength <= 600` 逐条装入，`selfView` 受 `4096` 字节预算控制；`/pulse` 限制 `<= 2048` 字节。跨时间回复室友便签写入 `house_trace_replies` 并由 `meta['trace_reply_high_water']` 维护单调 `reply_seq`（绝不写 `bridge_outbox`）。定期 `prune` 按 `eventRetentionMs` 清理并每店保留最新 `50` 条，不重置高水位。
+- **S2 ↔ S1 归档降级与强制启动恢复**：`node scripts/city-schema-downgrade.mjs --db <city.db> --to 4` 仅在 `user_version === 5` 时执行，`VACUUM INTO` 备份后以原子 `fsync` 写出 SHA-256 归档 JSON 并在 `meta` 写入 `s2_pending_restore_file` / `s2_pending_restore_sha256` 后删除 S2 两表并回拨 `user_version = 4`；再升级回 v5 启动恢复时若归档缺失或 SHA-256 校验失败直接中止恢复并拒绝写入。
 
 ## 视图与隐私
 

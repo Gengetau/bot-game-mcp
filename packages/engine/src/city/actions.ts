@@ -44,6 +44,7 @@ import { runReconcile } from './reconcile.js';
 import { card, updateResidentProfile } from './residents.js';
 import type { CityResident, CityService } from './service.js';
 import { stampAtStation } from './stamps.js';
+import { doLeaveTrace, pruneTraces } from './traces.js';
 import { placeOpen, spendable, startTrip, tripView } from './trips.js';
 import { MAX_SELF_VIEW_BYTES, cityItemsPage } from './views.js';
 import { beginReturn, bodyEffect, clearChatWake, noteSpeech, openVisitOf, outboxOrderRefunded, outboxPurchase, visitById, wake, wakeForChat, withReceipt, type BridgeReceipt, type VisitRow } from './visits.js';
@@ -61,6 +62,7 @@ export const CITY_ACTIONS = [
   'store_locker',
   'take_locker',
   'stamp_station',
+  'leave_trace',
   'update_profile',
   'go_home',
 ] as const;
@@ -551,6 +553,8 @@ function perform(c: CityService, r: CityResident, action: unknown, at: number, v
       return doTakeLocker(c, r, a, visit);
     case 'stamp_station':
       return doStampStation(c, r, at, visit);
+    case 'leave_trace':
+      return doLeaveTrace(c, r, a, at, visit);
     case 'update_profile':
       return doUpdateProfile(c, r, a, visit);
     case 'go_home':
@@ -625,7 +629,7 @@ export function cityCommand(
     if (e instanceof CityError) {
       c.metrics.rejected++;
       const subject: string | null = attempted;
-      if (subject !== null) {
+      if (subject !== null && e.reason !== 'traces_disabled' && e.reason !== 'house_traces_disabled') {
         try {
           c.commit(() => rateNote(c, subject, 'act', c.now()));
         } catch {
@@ -789,6 +793,7 @@ export function installActions(c: CityService): void {
     }
     c.db.run('DELETE FROM chat_audience WHERE message_id IN (SELECT message_id FROM chat_messages WHERE sent_at <= ?)', cut);
     c.db.run('DELETE FROM chat_messages WHERE sent_at <= ?', cut);
+    pruneTraces(c, now);
     c.schedule('prune', `prune:${Math.floor(now / 3600_000) + 1}`, (Math.floor(now / 3600_000) + 1) * 3600_000);
   });
   c.hooks.recover.push((now) => c.schedule('prune', `prune:${Math.floor(now / 3600_000) + 1}`, (Math.floor(now / 3600_000) + 1) * 3600_000));

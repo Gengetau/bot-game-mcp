@@ -539,6 +539,37 @@ const MIGRATIONS: readonly string[] = [
     created_at_ms INTEGER NOT NULL
   ) STRICT, WITHOUT ROWID;
   `,
+  // v5：S2 场所异步留痕（place_traces）与室友便签回响收件表（house_trace_replies，高水位存于 meta['trace_reply_high_water']）
+  `
+  CREATE TABLE place_traces (
+    trace_id TEXT PRIMARY KEY,
+    place_id TEXT NOT NULL,
+    author_id TEXT NOT NULL,
+    author_name TEXT NOT NULL,
+    author_origin TEXT NOT NULL CHECK (author_origin IN ('house', 'external', 'human')),
+    body TEXT NOT NULL,
+    reply_to TEXT,
+    visit_id TEXT,
+    business_date TEXT NOT NULL,
+    created_at_ms INTEGER NOT NULL
+  ) STRICT;
+  CREATE INDEX place_traces_place_time ON place_traces(place_id, created_at_ms DESC);
+  CREATE INDEX place_traces_author_day ON place_traces(author_id, business_date);
+
+  CREATE TABLE house_trace_replies (
+    reply_seq INTEGER PRIMARY KEY,
+    target_actor_id TEXT NOT NULL,
+    trace_id TEXT NOT NULL,
+    reply_trace_id TEXT NOT NULL UNIQUE,
+    place_id TEXT NOT NULL,
+    place_name TEXT NOT NULL,
+    reply_author_name TEXT NOT NULL,
+    reply_origin TEXT NOT NULL,
+    excerpt TEXT NOT NULL,
+    created_at_ms INTEGER NOT NULL
+  ) STRICT;
+  CREATE INDEX house_trace_replies_actor ON house_trace_replies(target_actor_id, reply_seq);
+  `,
 ];
 
 export const CITY_SCHEMA: SchemaSpec = { label: '城市世界数据库', migrations: MIGRATIONS, backupPrefix: 'city-' };
