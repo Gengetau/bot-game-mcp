@@ -464,7 +464,7 @@ describe('S1 自研天象引擎', () => {
     c4.close();
   });
 
-  it('受控栈顶降级脚本：v5 -> v4 -> v3 逐级降，v4->v3 清洗 qingkong 留存并可再升级；非栈顶 v5 对 v4->v3 脚本拒绝且零改库', async () => {
+  it('受控栈顶降级脚本：v6 -> v5 -> v4 -> v3 逐级降，v4->v3 清洗 qingkong 留存并可再升级；非栈顶拒绝执行且零改库', async () => {
     const dbPath = makeTmpDb('downgrade-city.db');
     const clock = new FakeClock();
     clock.t = T0;
@@ -477,20 +477,45 @@ describe('S1 自研天象引擎', () => {
     });
     await c1.start();
     expect(c1.db.get<{ user_version: number }>('PRAGMA user_version')?.user_version).toBe(CITY_SCHEMA_VERSION);
+    expect(CITY_SCHEMA_VERSION).toBe(6);
     c1.close();
 
-    // 1) 真实 v5 库（桌游茶屋 venue_* 已建）：S1 的 v4->v3 脚本非栈顶必须非 0 拒绝并保持 v5 不变
+    // 1) 模拟已存在更高版本 v7 迁移 -> --to 5 / --to 4 / --to 3 均非栈顶，必须非 0 拒绝并保持 v7 不变
+    const v7Db = new DatabaseSync(dbPath);
+    v7Db.exec('PRAGMA user_version = 7');
+    v7Db.close();
+    expect(() => execFileSync(process.execPath, [DOWNGRADE_SCRIPT, '--db', dbPath, '--to', '5'], { stdio: 'pipe' })).toThrow();
+    expect(() => execFileSync(process.execPath, [DOWNGRADE_SCRIPT, '--db', dbPath, '--to', '4'], { stdio: 'pipe' })).toThrow();
+    expect(() => execFileSync(process.execPath, [DOWNGRADE_SCRIPT_V5, '--db', dbPath, '--to', '4'], { stdio: 'pipe' })).toThrow();
     expect(() => execFileSync(process.execPath, [DOWNGRADE_SCRIPT, '--db', dbPath, '--to', '3'], { stdio: 'pipe' })).toThrow();
+    const checkV7 = new DatabaseSync(dbPath);
+    expect(checkV7.prepare('PRAGMA user_version').get()).toEqual({ user_version: 7 });
+    checkV7.exec('PRAGMA user_version = 6');
+    checkV7.close();
+
+    // 2) 真实 v6 库：直接 --to 4 或 --to 3 必须非 0 拒绝并保持 v6 不变，先 --to 5 栈顶降级至 v5
+    expect(() => execFileSync(process.execPath, [DOWNGRADE_SCRIPT, '--db', dbPath, '--to', '4'], { stdio: 'pipe' })).toThrow();
+    expect(() => execFileSync(process.execPath, [DOWNGRADE_SCRIPT_V5, '--db', dbPath, '--to', '4'], { stdio: 'pipe' })).toThrow();
+    expect(() => execFileSync(process.execPath, [DOWNGRADE_SCRIPT, '--db', dbPath, '--to', '3'], { stdio: 'pipe' })).toThrow();
+    const out5 = execFileSync(process.execPath, [DOWNGRADE_SCRIPT, '--db', dbPath, '--to', '5'], { encoding: 'utf8' });
+    expect(JSON.parse(out5.trim())).toMatchObject({ ok: true, from_version: 6, to_version: 5 });
     const checkV5 = new DatabaseSync(dbPath);
     expect(checkV5.prepare('PRAGMA user_version').get()).toEqual({ user_version: 5 });
+    checkV5.exec("DELETE FROM meta WHERE key LIKE 's2_pending_restore_%'");
     checkV5.close();
-    // 1b) 先用 v5->v4 脚本去掉 venue_*，才轮到 v4->v3
-    execFileSync(process.execPath, [DOWNGRADE_SCRIPT_V5, '--db', dbPath, '--to', '4'], { stdio: 'pipe' });
+
+    // 3) 真实 v5 库（桌游茶屋 venue_* 已建）：--to 3 与 --to 5 均非栈顶拒绝；用 --to 4（及 v5 专用脚本等价路径）去掉 venue_* 降至 v4
+    expect(() => execFileSync(process.execPath, [DOWNGRADE_SCRIPT, '--db', dbPath, '--to', '3'], { stdio: 'pipe' })).toThrow();
+    expect(() => execFileSync(process.execPath, [DOWNGRADE_SCRIPT, '--db', dbPath, '--to', '5'], { stdio: 'pipe' })).toThrow();
+    const dryV5 = execFileSync(process.execPath, [DOWNGRADE_SCRIPT_V5, '--db', dbPath, '--to', '4', '--dry-run'], { encoding: 'utf8' });
+    expect(JSON.parse(dryV5.trim())).toMatchObject({ ok: true, dry_run: true, from_version: 5, to_version: 4 });
+    const out4 = execFileSync(process.execPath, [DOWNGRADE_SCRIPT, '--db', dbPath, '--to', '4'], { encoding: 'utf8' });
+    expect(JSON.parse(out4.trim())).toMatchObject({ ok: true, from_version: 5, to_version: 4 });
     const checkV4 = new DatabaseSync(dbPath);
     expect(checkV4.prepare('PRAGMA user_version').get()).toEqual({ user_version: 4 });
     checkV4.close();
 
-    // 2) 栈顶 v4 -> v3 降级成功，qingkong 快照清洗为 synthetic/fallback，且备份完整生成
+    // 4) 栈顶 v4 -> v3 降级成功，qingkong 快照清洗为 synthetic/fallback，且备份完整生成
     const out = execFileSync(process.execPath, [DOWNGRADE_SCRIPT, '--db', dbPath, '--to', '3'], { encoding: 'utf8' });
     const parsed = JSON.parse(out.trim()) as { ok: boolean; from_version: number; to_version: number; backup: string };
     expect(parsed.ok).toBe(true);
@@ -505,7 +530,7 @@ describe('S1 自研天象引擎', () => {
     expect(snaps.every((s) => s.source === 'synthetic' && s.status === 'fallback' && s.rain === 0)).toBe(true);
     checkV3.close();
 
-    // 3) 再升级恢复 v4 无损启动
+    // 5) 再升级恢复最新 schema（v6）无损启动
     const dbReopen = openCityDb(dbPath);
     expect(dbReopen.get<{ user_version: number }>('PRAGMA user_version')?.user_version).toBe(CITY_SCHEMA_VERSION);
     dbReopen.close();

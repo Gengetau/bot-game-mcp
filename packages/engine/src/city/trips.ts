@@ -29,6 +29,7 @@ import { CityError, cityPrecondition } from './errors.js';
 import { TRANSIT, ledger, purseOf, wallet } from './ledger.js';
 import { card } from './residents.js';
 import type { CityResident, CityService } from './service.js';
+import { wakeTracesSummary } from './traces.js';
 import { addWalk, afterMove, lastTrainSafeDepartMs, openVisitOf, outboxPurchase, progress, settle, transitWindowAt, visitById, wake, type VisitRow } from './visits.js';
 import { isRaining } from './weather.js';
 
@@ -473,7 +474,12 @@ export function installTrips(c: CityService): void {
       if (arriveAt === HOUSE_ENTRANCE) settle(c, visit, at);
       return;
     }
-    wake(c, visit, diverted ? 'diverted' : 'arrived', at, { place: arriveAt, ...(diverted ? { reason: diverted } : {}) });
+    const tracesSummary = !diverted ? wakeTracesSummary(c, arriveAt, at) : undefined;
+    wake(c, visit, diverted ? 'diverted' : 'arrived', at, {
+      place: arriveAt,
+      ...(diverted ? { reason: diverted } : {}),
+      ...(tracesSummary ? { traces_summary: tracesSummary } : {}),
+    });
     afterMove(c, visit, arriveAt);
   });
 }
