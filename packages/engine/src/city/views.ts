@@ -51,6 +51,7 @@ import { MAPPINGS, kernelItemOf } from './mappings.js';
 import { card } from './residents.js';
 import type { CityResident, CityService } from './service.js';
 import { stampSummary } from './stamps.js';
+import { canLeaveTraceForViewer, projectPlaceTraces } from './traces.js';
 import { placeOpen, routeTransitCheck, runningTrip, spendable, tripView } from './trips.js';
 import { effectiveVisitReturnSchedule, openVisitOf, type VisitRow } from './visits.js';
 import { venueSceneProjection, venueSelfProjection } from './venue-games.js';
@@ -189,6 +190,7 @@ export interface SelfViewOptions {
   lockerOffset?: number;
   maxBytes?: number;
   prettyIndent?: number;
+  includeTraces?: boolean;
 }
 
 export function publicCityView(c: CityService): Record<string, unknown> {
@@ -325,6 +327,8 @@ export function sceneView(
     compactWeather?: boolean;
     goodsCap?: number;
     booksCap?: number;
+    includeTraces?: boolean;
+    tracesCap?: number;
   } = {},
 ): Record<string, unknown> {
   const p = place(placeId)!;
@@ -396,6 +400,8 @@ export function sceneView(
   const goods = opts.goodsCap !== undefined ? allGoods.slice(0, Math.max(0, opts.goodsCap)) : allGoods;
   const allEvents = eventsToday(c, at).filter((e) => e.area === p.area && e.ends_at_ms > at);
   const events = opts.eventCap !== undefined ? allEvents.slice(0, Math.max(0, opts.eventCap)) : allEvents;
+  const actions = canLeaveTraceForViewer(c, viewer, placeId) && !p.actions.includes('leave_trace') ? [...p.actions, 'leave_trace'] : p.actions;
+  const traces = projectPlaceTraces(c, viewer, placeId, at, opts.tracesCap ?? 3, opts.includeTraces);
   return {
     place: {
       ...placeCard(c, p, at),
@@ -407,10 +413,11 @@ export function sceneView(
     goods,
     ...(goods.length < allGoods.length ? { goods_truncated: allGoods.length - goods.length } : {}),
     ...(books.length > 0 ? { books } : {}),
-    actions: p.actions,
+    actions,
     exits,
     ...(exits.length < boundedExits.length ? { exits_truncated: boundedExits.length - exits.length } : {}),
     recent_chat: chatLimit > 0 ? recentChat(c, viewer.resident_id, placeId, chatLimit, at) : [],
+    ...(traces !== undefined ? { traces } : {}),
     weather,
     events,
     ...venueSceneProjection(c, placeId, viewer, at),
@@ -650,6 +657,13 @@ export function selfView(
     has_voucher: d.voucher_hash !== null,
   }));
   const pending = c.db.all<Row>("SELECT order_id, type, yen FROM orders WHERE resident_id = ? AND status = 'pending' ORDER BY created_at", r.resident_id).map((o) => ({ order_id: String(o.order_id), what: itemName(String(o.type)), yen: Number(o.yen) }));
+  const placeActions = r.place_id ? (place(r.place_id)?.actions ?? ['travel']) : ['travel'];
+  const hereActions =
+    r.place_id === HOUSE_ENTRANCE
+      ? ['say', 'travel']
+      : canLeaveTraceForViewer(c, r, r.place_id ?? '') && !placeActions.includes('leave_trace')
+        ? [...placeActions, 'leave_trace']
+        : placeActions;
   const actions = !inCity
     ? []
     : visit?.state === 'returning'
@@ -659,7 +673,7 @@ export function selfView(
           ? ['go_home']
           : []
         : [
-            ...(r.place_id === HOUSE_ENTRANCE ? ['say', 'travel'] : (place(r.place_id ?? '')?.actions ?? ['travel'])),
+            ...hereActions,
             ...(r.origin === 'house' ? (visit ? ['go_home'] : []) : ['update_profile']),
           ];
   const control =
@@ -694,6 +708,7 @@ export function selfView(
   let dropItemMeta = false;
   let goodsCap: number | undefined;
   let booksCap: number | undefined;
+  let tracesCap = 3;
   let depositCap: number | undefined;
   let compactMeBio = false;
   let pendingCap: number | undefined;
@@ -767,6 +782,8 @@ export function selfView(
               compactWeather,
               ...(goodsCap !== undefined ? { goodsCap } : {}),
               ...(booksCap !== undefined ? { booksCap } : {}),
+              ...(opts.includeTraces !== undefined ? { includeTraces: opts.includeTraces } : {}),
+              tracesCap,
             })
           : null,
       ...(visit ? { visit: visitBrief(c, visit, r) } : {}),
@@ -843,6 +860,8 @@ export function selfView(
       exitCap = 0;
     } else if (booksCap === undefined) {
       booksCap = 0;
+    } else if (tracesCap > 0) {
+      tracesCap--;
     } else if ((depositCap ?? Math.max(lockerPickups.length, lockerDeposits.length)) > 0) {
       depositCap = Math.max(0, (depositCap ?? Math.max(lockerPickups.length, lockerDeposits.length)) - 1);
     } else if ((goodsCap ?? hereGoodsTotal) > 0) {
@@ -912,6 +931,10 @@ export function enforceSelfViewBudget(
       here.recent_chat = [];
       if (bytes(out) <= maxBytes) return out;
     }
+    if (Array.isArray(here.traces) && here.traces.length > 0) {
+      here.traces = [];
+      if (bytes(out) <= maxBytes) return out;
+    }
     if (Array.isArray(here.exits) && here.exits.length > 0) {
       here.exits = [];
       if (bytes(out) <= maxBytes) return out;
@@ -966,7 +989,7 @@ export function enforceSelfViewBudget(
   }
 
   if (here) {
-    for (const k of ['events', 'recent_chat', 'exits', 'people', 'goods', 'tables', 'auctions'] as const) {
+    for (const k of ['events', 'recent_chat', 'traces', 'exits', 'people', 'goods', 'tables', 'auctions'] as const) {
       if (Array.isArray(here[k]) && (here[k] as unknown[]).length === 0) {
         delete here[k];
         if (bytes(out) <= maxBytes) return out;

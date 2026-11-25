@@ -226,6 +226,37 @@
         "VISIT_NOT_ACTIVE",
         "RATE_LIMITED"
       ]
+    },
+    {
+      "method": "GET",
+      "path": "/city/bridge/v1/pulse",
+      "request": null,
+      "response": {
+        "$ref": "#/$defs/CityPulseResponse"
+      },
+      "errors": [
+        "UNAUTHENTICATED",
+        "RECOVERING",
+        "RATE_LIMITED"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/city/bridge/v1/traces/replies",
+      "query": {
+        "after_seq": "上一次返回的 next_after_seq，非负整数（默认 0）",
+        "limit": "1..200（默认 50）"
+      },
+      "request": null,
+      "response": {
+        "$ref": "#/$defs/TraceRepliesResponse"
+      },
+      "errors": [
+        "BAD_REQUEST",
+        "UNAUTHENTICATED",
+        "RECOVERING",
+        "RATE_LIMITED"
+      ]
     }
   ],
   "$defs": {
@@ -623,6 +654,9 @@
         },
         {
           "$ref": "#/$defs/ActionStampStation"
+        },
+        {
+          "$ref": "#/$defs/ActionLeaveTrace"
         },
         {
           "$ref": "#/$defs/ActionOpenTable"
@@ -1242,6 +1276,30 @@
       "required": [
         "type"
       ]
+    },
+    "ActionLeaveTrace": {
+      "description": "在指定的晴空都留言簿或寄语牌处留下一张异步便签（4..80 字）。",
+      "type": "object",
+      "properties": {
+        "type": {
+          "const": "leave_trace"
+        },
+        "text": {
+          "type": "string",
+          "minLength": 4,
+          "maxLength": 80
+        },
+        "reply_to": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        }
+      },
+      "required": [
+        "type",
+        "text"
+      ],
+      "additionalProperties": false
     },
     "Receipt": {
       "description": "桥接回执。永久保存；同一个 request_id + 同样内容重发返回原回执并带 replayed: true，内容不同返回 409 CONFLICT / request_conflict。state 是处理完之后访问的状态。",
@@ -2592,6 +2650,12 @@
             "name",
             "qty"
           ]
+        },
+        "traces_summary": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/TraceSummaryItem"
+          }
         }
       },
       "required": [
@@ -3551,6 +3615,188 @@
         "cursor",
         "more"
       ]
+    },
+    "TraceSummaryItem": {
+      "type": "object",
+      "properties": {
+        "trace_id": {
+          "type": "string"
+        },
+        "author_name": {
+          "type": "string"
+        },
+        "author_origin": {
+          "type": "string"
+        },
+        "excerpt": {
+          "type": "string"
+        },
+        "created_at_ms": {
+          "$ref": "#/$defs/TimeMs"
+        },
+        "untrusted": {
+          "const": true
+        }
+      },
+      "required": [
+        "trace_id",
+        "author_name",
+        "author_origin",
+        "excerpt",
+        "created_at_ms",
+        "untrusted"
+      ],
+      "additionalProperties": false
+    },
+    "TraceReplyItem": {
+      "type": "object",
+      "properties": {
+        "reply_seq": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "target_actor_id": {
+          "type": "string"
+        },
+        "trace_id": {
+          "type": "string"
+        },
+        "reply_trace_id": {
+          "type": "string"
+        },
+        "place_id": {
+          "$ref": "#/$defs/PlaceId"
+        },
+        "place_name": {
+          "type": "string"
+        },
+        "reply_author_name": {
+          "type": "string"
+        },
+        "reply_origin": {
+          "type": "string"
+        },
+        "excerpt": {
+          "type": "string"
+        },
+        "created_at_ms": {
+          "$ref": "#/$defs/TimeMs"
+        },
+        "untrusted": {
+          "const": true
+        }
+      },
+      "required": [
+        "reply_seq",
+        "target_actor_id",
+        "trace_id",
+        "reply_trace_id",
+        "place_id",
+        "place_name",
+        "reply_author_name",
+        "reply_origin",
+        "excerpt",
+        "created_at_ms",
+        "untrusted"
+      ],
+      "additionalProperties": false
+    },
+    "TraceRepliesResponse": {
+      "type": "object",
+      "properties": {
+        "replies": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/TraceReplyItem"
+          }
+        },
+        "next_after_seq": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "replies",
+        "next_after_seq"
+      ],
+      "additionalProperties": false
+    },
+    "CityPulseTraceItem": {
+      "type": "object",
+      "properties": {
+        "trace_id": {
+          "type": "string"
+        },
+        "place_id": {
+          "$ref": "#/$defs/PlaceId"
+        },
+        "place_name": {
+          "type": "string"
+        },
+        "author_name": {
+          "type": "string"
+        },
+        "author_origin": {
+          "type": "string"
+        },
+        "excerpt": {
+          "type": "string"
+        },
+        "created_at_ms": {
+          "$ref": "#/$defs/TimeMs"
+        },
+        "untrusted": {
+          "const": true
+        }
+      },
+      "required": [
+        "trace_id",
+        "place_id",
+        "place_name",
+        "author_name",
+        "author_origin",
+        "excerpt",
+        "created_at_ms",
+        "untrusted"
+      ],
+      "additionalProperties": false
+    },
+    "CityPulseResponse": {
+      "type": "object",
+      "properties": {
+        "at_ms": {
+          "$ref": "#/$defs/TimeMs"
+        },
+        "weather_summary": {
+          "type": "string"
+        },
+        "highlights": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "recent_traces": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CityPulseTraceItem"
+          }
+        },
+        "recent_external_names": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "at_ms",
+        "weather_summary",
+        "highlights",
+        "recent_traces",
+        "recent_external_names"
+      ],
+      "additionalProperties": false
     },
     "Error": {
       "description": "失败响应。HTTP 状态：BAD_REQUEST 400、UNAUTHENTICATED 401、FORBIDDEN 403、NOT_FOUND 404、CONFLICT 409、PRECONDITION_FAILED 422、RATE_LIMITED 429、RECOVERING 503、REQUEST_EXPIRED 410、ENTRY_VIA_HOME_ONLY 403、STALE_DOMAIN_EPOCH 409、VISIT_NOT_ACTIVE 409、VERSION_MISMATCH 422、INTERNAL 500。只有 RECOVERING、RATE_LIMITED、INTERNAL 用同一个 request_id 重试有意义；其余重试也没用。「不存在」和「无权访问」统一成 NOT_FOUND。reason 是机器可读的细分原因（insufficient_funds、place_closed、request_conflict ……）；还可能带若干附加字段（expected、last_epoch、domain_epoch、state、visit_id、retryAfterMs ……）。",

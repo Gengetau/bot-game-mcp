@@ -17,11 +17,13 @@ import {
   allWeather,
   applyWeather,
   bridgePayloadHash,
+  cityPulseView,
   commitVisit,
   describeVisit,
   latestReconcile,
   prepareVisit,
   readOutbox,
+  readTraceReplies,
   releaseVisit,
   requestReturn,
   visitAct,
@@ -64,11 +66,12 @@ describe('bridge-v1.schema.json 本身', () => {
       'PrepareRequest', 'CommitRequest', 'AbortRequest', 'ReturnRequest', 'ReleaseRequest', 'ActRequest', 'Action', 'Receipt',
       'PreparePayload', 'CommitPayload', 'AbortPayload', 'ReturnRequestPayload', 'ReleasePayload', 'ActPayload', 'VisitState',
       'VisitDescription', 'OutboxPage', 'OutboxRecord', 'Settlement', 'WeatherResponse', 'WeatherSnapshot', 'ReconcileResponse', 'Catalog', 'Error',
+      'ActionLeaveTrace', 'TraceSummaryItem', 'TraceReplyItem', 'TraceRepliesResponse', 'CityPulseTraceItem', 'CityPulseResponse',
     ]) {
       expect(schema.$defs[def], def).toBeDefined();
     }
     const endpoints = schema['x-endpoints'] as { method: string; path: string; request: { $ref: string } | null; response: { $ref: string }; errors: string[] }[];
-    expect(endpoints.length).toBe(13);
+    expect(endpoints.length).toBe(15);
     const codes = new Set<string>(schema.$defs.ErrorCode.enum);
     for (const e of endpoints) {
       expect(e.path.startsWith('/city/bridge/v1/')).toBe(true);
@@ -169,6 +172,8 @@ describe('协议产物和 schema 对得上', () => {
       { type: 'give', to: 'r1', item: 'cookie' },
       { type: 'inspect_item', item_id: 'itm_x' },
       { type: 'inspect_item', scope: 'held', offset: 0, limit: 10 },
+      { type: 'leave_trace', text: '今天店里的手冲咖啡好香' },
+      { type: 'leave_trace', text: '下次再来坐会儿看看窗外', reply_to: 'trc_abc123' },
       { type: 'go_home' },
       { type: 'open_table' },
       { type: 'open_table', game: 'liars_dice', options: { lives: 1 } },
@@ -301,6 +306,9 @@ describe('协议产物和 schema 对得上', () => {
     expect(rec.reports.length).toBeGreaterThan(0);
     expectValid('ReconcileResponse', rec);
     expect(rec.reports.every((r) => r.ok)).toBe(true);
+
+    expectValid('CityPulseResponse', cityPulseView(c));
+    expectValid('TraceRepliesResponse', readTraceReplies(c, 0, 50));
   });
 
   it('失败响应：CityError#toJSON() 都符合 Error', () => {

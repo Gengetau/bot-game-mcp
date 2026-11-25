@@ -66,6 +66,7 @@ import {
 } from './residents.js';
 import type { CityService } from './service.js';
 import { stampBookView } from './stamps.js';
+import { areHouseTracesEnabled, cityPulseView, readTraceReplies } from './traces.js';
 import { SELF_VIEW_MAX_BYTES, chatHistory, publicCityView, routePreview, selfView } from './views.js';
 import { BRIDGE_PROTOCOL, abortVisit, commitVisit, describeVisit, prepareVisit, readOutbox, releaseVisit, requestReturn } from './visits.js';
 import { adminClearWeatherOverride, adminGetWeather, adminSetWeatherOverride, allWeather, isQingkongMode, weatherAttribution } from './weather.js';
@@ -895,6 +896,23 @@ export function mountCity(app: Express, c: CityService, log: (msg: string) => vo
   bridge.get('/visits/:id', sync((req) => describeVisit(c, visitId(req))));
   bridge.get('/weather', sync(() => ({ at_ms: c.now(), attribution: weatherAttribution(c), areas: allWeather(c) })));
   bridge.get('/reconcile', sync(() => ({ reports: latestReconcile(c, 10) })));
+  bridge.get('/pulse', sync(() => cityPulseView(c)));
+  bridge.get(
+    '/traces/replies',
+    sync((req) => {
+      const afterRaw = req.query.after_seq;
+      const afterSeq = afterRaw === undefined || afterRaw === '' ? 0 : Number(afterRaw);
+      if (!Number.isSafeInteger(afterSeq) || afterSeq < 0) {
+        throw cityBadRequest('after_seq 必须是非负整数。', 'bad_after_seq');
+      }
+      const limitRaw = req.query.limit;
+      const limitNum = limitRaw === undefined || limitRaw === '' ? 50 : Number(limitRaw);
+      if (!Number.isSafeInteger(limitNum) || limitNum < 1 || limitNum > 200) {
+        throw cityBadRequest('limit 必须是 1 到 200 之间的整数。', 'bad_limit');
+      }
+      return readTraceReplies(c, afterSeq, limitNum);
+    }),
+  );
 
   bridge.get('/outbox', async (req, res) => {
     try {
@@ -924,6 +942,7 @@ export function mountCity(app: Express, c: CityService, log: (msg: string) => vo
         state: visit.state,
         ...selfView(c, c.mustResident(visit.resident_id), {
           maxBytes: Math.max(1024, SELF_VIEW_MAX_BYTES - prefixBytes),
+          includeTraces: areHouseTracesEnabled(c),
           ...(itemOffset !== undefined ? { itemOffset } : {}),
           ...(lockerOffset !== undefined ? { lockerOffset } : {}),
         }),
