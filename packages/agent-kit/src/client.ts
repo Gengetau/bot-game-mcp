@@ -22,12 +22,42 @@ export class ToolError extends Error {
     readonly tool: string,
     /** 引擎给的错误码（如 CONTEXT_STALE、FORBIDDEN）；没有就是 undefined */
     readonly code?: string,
-    /** 引擎返回的完整错误文本（message 只是第一行）；小镇客户端从里面取 reason、retryAfterMs 等细节 */
+    /** 引擎返回的完整错误文本（message 只是第一行）；城市客户端从里面取 reason、retryAfterMs 等细节 */
     readonly raw?: string,
   ) {
     super(message);
     this.name = 'ToolError';
   }
+}
+
+/** 引擎返回的错误文本：「❌ 消息\n{json 细节}\n💡 提示\n(code: X)」。 */
+export function parseToolErrorText(raw: string): { message: string; data: Record<string, unknown>; hint?: string; code?: string } {
+  const lines = raw.replace(/^❌\s*/, '').split('\n');
+  const message = (lines[0] ?? raw).trim();
+  let data: Record<string, unknown> = {};
+  let hint: string | undefined;
+  let code: string | undefined;
+  for (const line of lines.slice(1)) {
+    const t = line.trim();
+    if (t.startsWith('{') && t.endsWith('}')) {
+      try {
+        data = JSON.parse(t) as Record<string, unknown>;
+      } catch {
+        /* 不是 JSON 就忽略 */
+      }
+    } else if (t.startsWith('💡')) hint = t.replace(/^💡\s*/, '');
+    else {
+      const m = /^\(code: ([A-Z_]+)\)$/.exec(t);
+      if (m) code = m[1];
+    }
+  }
+  return { message, data, ...(hint ? { hint } : {}), ...(code ? { code } : {}) };
+}
+
+/** 持续世界客户端需要的最小调用能力（BotGameClient 满足它，测试里可以换成假的）。 */
+export interface ToolCaller {
+  call<T = any>(name: string, args?: Record<string, unknown>, timeoutMs?: number, signal?: AbortSignal): Promise<T>;
+  close?(): Promise<void>;
 }
 
 export type JoinAs = 'player' | 'referee' | 'either';

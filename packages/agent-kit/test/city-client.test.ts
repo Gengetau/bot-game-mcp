@@ -225,8 +225,6 @@ describe('CityClient：真实隔离引擎（town.enabled=false, city.enabled=tru
       BOTGAME_HOST: '127.0.0.1',
       BOTGAME_PORT: '0',
     });
-    cfg.town.enabled = false;
-    cfg.town.dbFile = join(workDir, 'town-unused.db');
     cfg.city.enabled = true;
     cfg.city.dbFile = join(workDir, 'city-test.db');
     cfg.city.weather = false;

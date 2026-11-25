@@ -1,6 +1,6 @@
 /**
  * 晴空都持续世界 AI 居民运行器（CityRunner）：
- * 复用 ResidentRunner 已验证的事件驱动与预算思想，针对晴空都「无帧级坐标、持久电车/步行行程（trips）」模型定制。
+ * 事件驱动与预算控制运行器，针对晴空都「无帧级坐标、持久电车/步行行程（trips）」模型定制。
  *
  * 核心保证（对齐计划书 §五 M1-B 与 docs/city/IDENTITY-AND-FACTS.md §3.2）：
  *  1. 事件三级分类：
@@ -34,7 +34,32 @@ import {
   type CityWaitOptions,
   type CityWaitResult,
 } from './city.js';
-import { systemClock, type EventClass, type RunnerClock } from './resident.js';
+
+export interface RunnerClock {
+  now(): number;
+  /** 等 ms 毫秒；signal 取消时 reject（AbortError） */
+  sleep(ms: number, signal?: AbortSignal): Promise<void>;
+}
+
+export const systemClock: RunnerClock = {
+  now: () => Date.now(),
+  sleep: (ms, signal) =>
+    new Promise((resolve, reject) => {
+      if (signal?.aborted) return reject(new DOMException('aborted', 'AbortError'));
+      const t = setTimeout(() => {
+        signal?.removeEventListener('abort', onAbort);
+        resolve();
+      }, ms);
+      const onAbort = () => {
+        clearTimeout(t);
+        reject(new DOMException('aborted', 'AbortError'));
+      };
+      signal?.addEventListener('abort', onAbort, { once: true });
+    }),
+};
+
+/** 事件的重要性：urgent 立刻（只受最小间隔和预算约束），normal 合并窗口去抖，ignore 不触发决策（但会记进 events）。 */
+export type EventClass = 'urgent' | 'normal' | 'ignore';
 
 // ───────────────────────── 接口定义 ─────────────────────────
 

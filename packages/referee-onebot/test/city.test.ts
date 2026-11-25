@@ -2,7 +2,7 @@
  * 晴空都（--city）接入测试：
  *  1. DEFAULT_CITY_KEYWORDS 默认仅收口为 ['晴空都', '进城']，旧词「东京」「东京都」不触发签票；
  *  2. 群内发送「晴空都」通过 city_issue_ticket 私聊送达一次性登录链接，群内不泄露票据；
- *  3. 当 --city 开启且 --town 未开启时，收到「小镇」温和引导发送「晴空都」。
+ *  3. 发送旧词「小镇」不再响应或签票。
  */
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -34,7 +34,7 @@ describe('isCityCommand（晴空都 R0 默认关键词）', () => {
   });
 });
 
-describe('晴空都：登录链接签发与旧词引导', () => {
+describe('晴空都：登录链接签发', () => {
   const dir = mkdtempSync(join(tmpdir(), 'referee-city-'));
   let eng: { rt: Runtime; http: HttpHandle };
 
@@ -65,7 +65,7 @@ describe('晴空都：登录链接签发与旧词引导', () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
-  it('群内发「晴空都」私聊收到一次性链接，发「东京」不签票，发「小镇」引导发「晴空都」', async () => {
+  it('群内发「晴空都」私聊收到一次性链接，发「东京」「小镇」均不签票不回复', async () => {
     const qq = new FakeOneBot();
     await qq.start();
     const ac = new AbortController();
@@ -121,11 +121,11 @@ describe('晴空都：登录链接签发与旧词引导', () => {
       });
       expect(eng.rt.city!.db.get<{ subject: string }>('SELECT subject FROM principals WHERE principal_id = ?', exchanged.principal.principal_id)?.subject).toBe(ALICE);
 
-      // 3. 当 --city 开而 --town 关时，发「小镇」引导发送「晴空都」
+      // 3. 发旧词「小镇」不再回复旧引导，也不签发任何票据
+      const callsBefore = qq.calls.length;
       emitGroup(BOB, '鲍勃', '小镇');
-      const hint = await qq.waitForCall((c: ApiCall) => c.action === 'send_group_msg' && callText(c).includes('栖灯镇已停运封存'));
-      expect(callText(hint)).toContain('发送「晴空都」可获取晴空都登录链接');
-      expect(callText(hint)).not.toContain('东京');
+      await sleep(300);
+      expect(qq.calls.slice(callsBefore)).toHaveLength(0);
     } finally {
       ac.abort();
       await Promise.race([done, sleep(5000)]);

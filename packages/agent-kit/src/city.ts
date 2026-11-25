@@ -12,8 +12,7 @@
  *  - 门禁硬拦截：ENTRY_VIA_HOME_ONLY / FORBIDDEN / UNAUTHENTICATED / PRECONDITION_FAILED 原样抛出，不盲目重试。
  */
 import { randomUUID } from 'node:crypto';
-import { BotGameClient, ToolError, type BotGameClientOptions } from './client.js';
-import { parseToolErrorText, type ToolCaller } from './town.js';
+import { BotGameClient, ToolError, parseToolErrorText, type BotGameClientOptions, type ToolCaller } from './client.js';
 
 // ───────────────────────── 类型 ─────────────────────────
 
