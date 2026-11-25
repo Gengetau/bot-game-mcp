@@ -330,8 +330,15 @@ export default async function run(h) {
     await clickNpc(A, KEEPER);
     await until(() => actionsOf(A, 'navigate').length > nNav, 10_000, '点远处的 NPC 应发出一条 navigate');
     check(!(await menuState(A.page)).open, '远处点选：走的时候不开菜单');
-    await until(async () => (await godotNpc(A)).arrivals > arr0, 90_000, '收到 you_arrived', 500);
+    // 屏障：这一趟自己的到达（目标是掌柜、不是之前的路）。不能只数 you_arrived：上面那段 API 代发的路在服务器上晚一拍才结算
+    // （waitIdle 看的是快照，人到点就停了；到达要等调度器每秒一次的那一拍，或者等下一条 navigate 顺手结清），
+    // 它的 you_arrived 有一半的遍数落在这次点击之后。产品要认得出它是「之前的路」，不让它用掉「在这里点的」记号（nav_route.gd）
+    const keeperArrival = (n0, what) => until(async () => { const la = (await godotNpc(A)).lastArrival; return la && la.n > n0 && la.kind === 'npc' && la.id === KEEPER && !la.prior ? la : null; }, 90_000, what, 300);
+    await keeperArrival(arr0, '收到走到掌柜身边的 you_arrived');
     await menuIs(until, A, KEEPER, 20_000);
+    const log = (await godotNpc(A)).farLog ?? [];
+    const raced = log.slice(log.findLastIndex((l) => l.includes('pick far'))).some((l) => l.includes('arrived(prior)'));
+    note(`上一趟路的 you_arrived 落在这次点击之后（撞上了原来间歇失败的条件）：${raced ? '是' : '否'}`);
     check(actionsOf(A, 'ask_npc').length === nAsk, '到了开菜单也不发 ask_npc');
     await closeMenu(A);
     // 走到菜单开着时被别处引走：不再自动开（别处发起的走近）
@@ -339,7 +346,8 @@ export default async function run(h) {
     await apiAct(A, { type: 'navigate', to: { x: (await sceneOf(A)).x + 4, z: (await sceneOf(A)).z } });
     await waitIdle(A);
     await apiAct(A, { type: 'navigate', approach: KEEPER });
-    await until(async () => (await godotNpc(A)).arrivals > arr1, 90_000, '别处发起的走近也收到 you_arrived', 500);
+    // 屏障要认目标：只数次数的话，上面走开那一段的 you_arrived 就够数了，下面的断言会在人还没走到掌柜身边时就做完（空过）
+    await keeperArrival(arr1, '别处发起的走近也收到走到掌柜身边的 you_arrived');
     await sleep(1500);
     check(!(await menuState(A.page)).open, '不是在这个页面点出来的走近：到了不弹菜单');
   });
@@ -640,3 +648,7 @@ export default async function run(h) {
 // 20. （评审）85 的「走开」提示改成比文字：把 hud.js 提示条上限当成 3 条的情形（已有 3 条时条数不变）下旧写法红，新写法绿；连续两次（修复前的导出、修复后的导出）在 85 红过，改成比文字之后 --only=1,80 全绿。根因（提示条最多留 3 条）是从 hud.js 读出来的，没有在浏览器里单独复现。【间接实测】
 // 21. （评审）main.gd 的 _update_scenery 把 NPC 的头放回 heads：茶馆屋顶对所有人永远隐藏。端到端没有断言它（要读 world 节点的网格可见性，没有 debug 口），由 client/tests/scene_logic_test.gd 守着。【单测实测，浏览器侧未验证】
 // 22. （评审）npc.gd 的「走过去」：you_arrived 不结束 _walking、没有按距离算的上限：单测 t_walk_arrival_not_close、t_walk_rejected_times_out 红；端到端里造不出「服务器拒绝 navigate」，所以只有单测。【单测实测】
+// 23. （83.1 的间歇失败）npc.gd 的 you_arrived 不看 prior_route（或 main.gd 不标它）：83.1 约一半的遍数红，「服务菜单出现」等不到，
+//     报错里的 farLog 是「pick far → arrived point（把记号用掉）→ arrived npc（没有记号，不开）」。红不红取决于上一段 API 代发的路
+//     在服务器上的结算落在点击之前还是之后（调度器每秒一拍），所以不是每遍都红；过的那几遍看步骤里那行「撞上了原来间歇失败的条件：是 / 否」。
+//     【实测：修复之前的导出连跑 3 遍红 2 遍，诊断如上；单测一侧 npc_feature_test 的 t_prior_arrival_* 去掉这个判断红 8 项，nav_route_test 守着判据本身】

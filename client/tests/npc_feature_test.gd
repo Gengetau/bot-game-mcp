@@ -175,6 +175,9 @@ func _run() -> void:
 	t_pick_near_and_reentry()
 	t_pick_far_arrival()
 	t_arrival_wrong_target()
+	t_prior_arrival_keeps_mark()
+	await t_prior_arrival_keeps_walking()
+	t_people_prior_arrival()
 	await t_ask_basic_and_dup()
 	await t_net_fail_rid_per_object()
 	await t_buy_rid_per_object()
@@ -243,6 +246,79 @@ func t_arrival_wrong_target() -> void:
 	f.on_event({"type": "you_arrived", "data": {"target": {"kind": "actor", "id": "r_other"}}})
 	f.tick(0.3, 0.0)
 	check(not f.debug()["open"], "居民目标的到达：不开")
+
+
+## 端到端 83.1 的间歇失败：人刚停下就点远处的 NPC，上一趟路的 you_arrived（服务器晚一拍才结算）落在这一下之后。
+## main 把它标成 prior_route（nav_route.gd）：记号不能被它用掉，真到了要照开
+func t_prior_arrival_keeps_mark() -> void:
+	var p: Array = _make()
+	var f = p[0]
+	var c: FakeCtx = p[1]
+	f.on_pick("actor", STROLL)
+	c.gen += 1  # main 发出 navigate
+	f.on_event({"type": "you_arrived", "prior_route": true, "data": {"target": {"kind": "point", "name": "那边"}}})
+	check(f.debug()["farId"] == STROLL, "上一趟路（点地）的到达：记号还在")
+	f.tick(0.3, 0.0)
+	# 上一趟路的目标碰巧就是这个 NPC（走到了、它走开了、马上又点它）：也不算这一趟到了
+	f.on_event({"type": "you_arrived", "prior_route": true, "data": {"target": {"kind": "npc", "id": STROLL}}})
+	check(f.debug()["farId"] == STROLL and f.debug()["wantId"] == "", "上一趟路（同一个 NPC）的到达：记号还在，也不开始等位置")
+	check(f.debug()["arrivals"] == 2 and f.debug()["lastArrival"]["prior"] == true, "到达照样计数，标着是之前的路")
+	f.tick(0.3, 0.0)
+	check(not f.debug()["open"], "还没真到：不开")
+	(c.acts[STROLL] as TActor).disp = Vector2(1.5, 0)
+	f.on_event({"type": "you_arrived", "data": {"target": {"kind": "npc", "id": STROLL}}})
+	f.tick(0.3, 0.0)
+	check(f.debug()["open"] and f.debug()["npcId"] == STROLL, "这一趟真到了：开菜单")
+	check(f.debug()["lastArrival"]["prior"] == false and f.debug()["lastArrival"]["id"] == STROLL, "最近一次到达：这一趟、目标是它")
+	# 对照（原来的规矩没变）：没标 prior_route 的别处到达，照旧把记号用掉
+	var q: Array = _make()
+	var f2 = q[0]
+	var c2: FakeCtx = q[1]
+	f2.on_pick("actor", STROLL)
+	c2.gen += 1
+	f2.on_event({"type": "you_arrived", "data": {"target": {"kind": "point", "name": "那边"}}})
+	check(f2.debug()["farId"] == "", "这一趟之后别的路线到了别处：记号作废")
+	(c2.acts[STROLL] as TActor).disp = Vector2(1.5, 0)
+	f2.on_event({"type": "you_arrived", "data": {"target": {"kind": "npc", "id": STROLL}}})
+	f2.tick(0.3, 0.0)
+	check(not f2.debug()["open"], "记号作废之后的到达：不开")
+
+
+## 点了「走过去」之后，上一趟路的到达不结束这次走近（否则 3 秒后按钮放开，人其实还在路上）
+func t_prior_arrival_keeps_walking() -> void:
+	var p: Array = _make()
+	var f = p[0]
+	var c: FakeCtx = p[1]
+	f.on_pick("actor", KEEPER)
+	(c.acts[KEEPER] as TActor).disp = Vector2(3.9, 0)
+	c.act_queue.append(_err("too_far", {"data": {"navigateTo": KEEPER}}))
+	await f.on_ui("ask", "hello")
+	f.on_ui("walk", "")
+	f.on_event({"type": "you_arrived", "prior_route": true, "data": {"target": {"kind": "point", "name": "那边"}}})
+	check(f.debug()["wantId"] == "", "上一趟路的到达：不开始等位置")
+	for i in range(14):  # 3.5 秒：要是被当成到达，「正在走」这时已经放开
+		f.tick(0.3, 0.0)
+	check(f.debug()["walking"] == true, "上一趟路的到达不结束「正在走过去」")
+
+
+## 居民卡同理：点了远处的人之后，上一趟路的到达不用掉记号；走进人家这件事照记（不在这里断言，people 的登记要 /me）
+func t_people_prior_arrival() -> void:
+	var c := FakeCtx.new()
+	_actor(c, SELF, "human", Vector2(0, 0))
+	_actor(c, "r_far", "human", Vector2(20, 0))
+	var f = People.new()
+	f.ctx = c
+	f.on_enter()
+	check(not f.on_pick("actor", "r_far"), "远处点人：不接管")
+	check(f.debug()["far"] == "r_far", "记下了是在这里点的")
+	f.on_event({"type": "you_arrived", "prior_route": true, "data": {"target": {"kind": "point", "name": "那边"}}})
+	check(f.debug()["far"] == "r_far", "上一趟路的到达：记号还在")
+	f.on_event({"type": "you_arrived", "prior_route": true, "data": {"target": {"kind": "resident", "id": "r_far"}}})
+	check(f.debug()["far"] == "r_far" and f.debug()["want"] == "", "上一趟路（同一个人）的到达：记号还在，也不开始等位置")
+	(c.acts["r_far"] as TActor).disp = Vector2(1.5, 0)
+	f.on_event({"type": "you_arrived", "data": {"target": {"kind": "resident", "id": "r_far"}}})
+	f.tick(0.3, 0.0)
+	check(f.debug()["cardId"] == "r_far", "这一趟真到了：开居民卡")
 
 
 func t_ask_basic_and_dup() -> void:
