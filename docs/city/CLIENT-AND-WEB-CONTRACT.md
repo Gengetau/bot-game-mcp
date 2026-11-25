@@ -10,7 +10,7 @@
 
 1. **唯一规则面**：外部独立 Bot 调 MCP `world_act`、人类网页端调 `POST /city/api/act`，在服务端最终进入**同一个 `cityCommand(c, residentId, requestId, action, opts)` 处理器**；小屋六位室友由小屋内核经桥接接口 `POST /city/bridge/v1/visits/:id/act` 进入 `visitAct()`，底层共用同一个 `perform()` 状态机。不存在“网页特权接口”或第二套业务规则。
 2. **AI 与真人自主铁律**：离线或未响应期间，引擎仅通过 `scheduled_jobs` 确定性推进**已确认的乘车到站、已开始的制作作业、到期的室友返程结算与超时邀约过期**；绝不代玩家发言、消费、接受邀约或改道。
-3. **栖灯镇（`town`）关闭独立运行**：当 `town.enabled: false` 且 `city.enabled: true` 时，`WorldService` 不初始化、不占内存与定时器；MCP 服务器（含 Streamable HTTP、Legacy SSE、`stdio` 三种传输）通过 `registerCityTools()` 暴露完整城市工具、资源与提示词，同时公共桌游（`create_game` / `join_game` / `act` / `speak` 等）100% 照常可用。
+3. **晴空都独立运行**：栖灯镇 2026-11 已删除，世界改为晴空都。当 `city.enabled: true` 时，MCP 服务器（含 Streamable HTTP、Legacy SSE、`stdio` 三种传输）通过 `registerCityTools()` 和 `registerCityDedicatedTools()` 暴露完整城市工具、资源与提示词，同时公共桌游（`create_game` / `join_game` / `act` / `speak` 等）100% 照常可用。
 
 ---
 
@@ -22,11 +22,11 @@
 - **会话上下文**：
   - 调用 `enter_world({ world_id: "city", ... })` 后，当前 MCP 会话进入城市上下文（绑定会话级稳定 `clientId = "mcp:" + (args.client_id ?? sessionDefaultUuid)`）。
   - 在城市上下文中，不带 `game_id` 的 `get_my_view`、`speak`、`world_act`、`world_wait`、`heartbeat`、`claim_control`、`leave_world` 均路由至晴空都城市世界；带 `game_id` 的调用仍路由至公共桌游 `GameManager`，互不干扰。
-  - 当 `town.enabled: false` 时，`enter_world` 的 `world_id` 省略或传 `"city"` 均进入晴空都；传旧值 `"tokyo"` 或其他值一律返回 `NOT_FOUND`。
+  - `enter_world` 的 `world_id` 省略或传 `"city"` 均进入晴空都；传旧值 `"tokyo"` 或其他值一律返回 `NOT_FOUND`。
 
 ### 2.2 MCP 工具全集与签名规范
 
-无论 `town.enabled` 为 `false`（走 `registerCityTools`）还是 `true`（走 `withCity` 包装），晴空都城市世界保证以下工具、资源与提示词完整可用：
+晴空都城市世界通过 `registerCityTools` 和 `registerCityDedicatedTools` 保证以下工具、资源与提示词完整可用：
 
 | 类别 | 名称 | 调用方 | 输入参数（Zod / JSON） | 返回摘要与关键语义 |
 |---|---|---|---|---|
@@ -86,7 +86,7 @@
 
 ### 2.5 错误码与客户端重试规范
 
-MCP 错误消息格式与栖灯镇一致：`❌ <人类可读消息>\n<单行 JSON 附加字段>\n💡 <提示>\n(code: <ERROR_CODE>)`。HTTP 接口返回状态码与 JSON `{"error": "<ERROR_CODE>", "message": "…", "reason"?: "…", ...}`。
+MCP 错误消息格式：`❌ <人类可读消息>\n<单行 JSON 附加字段>\n💡 <提示>\n(code: <ERROR_CODE>)`。HTTP 接口返回状态码与 JSON `{"error": "<ERROR_CODE>", "message": "…", "reason"?: "…", ...}`。
 
 | `ErrorCode` | HTTP | 典型 `reason` | 客户端（`CityClient` / 网页）标准处置 |
 |---|---|---|---|
@@ -216,10 +216,9 @@ MCP 错误消息格式与栖灯镇一致：`❌ <人类可读消息>\n<单行 JS
 
 1. **开关与参数**：
    - CLI 新增 `--city`（环境变量 `BOTGAME_REFEREE_CITY=1`）、可选 `--city-keywords <逗号分隔>`。
-   - `RefereeOptions` 新增 `city?: CityRefereeOptions`：`{ enabled?: boolean, keywords?: string[], ticketCooldownSeconds?: number (默认 60), whenOff?: 'reply' | 'silent' (默认 'reply'), requireGroupMember?: boolean (默认 true), legacyTownHint?: boolean (默认 true) }`。
-2. **指令识别与旧镇引导**：
+   - `RefereeOptions` 新增 `city?: CityRefereeOptions`：`{ enabled?: boolean, keywords?: string[], ticketCooldownSeconds?: number (默认 60), whenOff?: 'reply' | 'silent' (默认 'reply'), requireGroupMember?: boolean (默认 true) }`。
+2. **指令识别**：
    - 默认触发关键词 `DEFAULT_CITY_KEYWORDS = ['晴空都', '进城']`（整条消息去 CQ 码、可选 `/桌游` 前缀及句尾标点后精确匹配，如「晴空都」「/桌游 进城」；含多余参数如「晴空都 12345」一律不触发）。
-   - 当 `--city` 开启且 `--town` 未开启时，若真人发送旧词 `['小镇', '进小镇', '栖灯镇']` 且 `legacyTownHint !== false`，温和回复：`「栖灯镇已停运封存，发送「晴空都」可获取晴空都登录链接。」`
 3. **真实身份绑定与私聊投递安全铁律**：
    - **账号唯一来源**：传给 `city_issue_ticket` 的 `user_id` **只能取自 OneBot 消息事件自身的 `ev.user_id`**（排除 `bots` 与裁判自身账号），绝不解析消息文本中的任何数字。
    - **私聊要求群成员校验**：私聊触发且 `requireGroupMember === true` 时，非管理员须通过 `get_group_member_info` 核实属于 `groupId` 群成员。

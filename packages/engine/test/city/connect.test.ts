@@ -4,7 +4,7 @@
  * 页面和文档是给外部主人看的：数字必须取自真实参数；不能出现任何密钥（桥接密钥、管理员密钥是内部凭证）、
  * 不能出现 R0 禁用旧词，也不能暴露常驻居民的家那一侧（页面里没有「小屋」）。
  */
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import type { Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { fileURLToPath } from 'node:url';
@@ -180,10 +180,7 @@ describe('接入说明 docs/CITY-BOTS.md', () => {
     expect(doc).toContain('heartbeat');
   });
 
-  it('TOWN-BOTS.md 顶部指向新文件', () => {
-    const head = readFileSync(TOWN_BOTS_PATH, 'utf8').split('\n').slice(0, 6).join('\n');
-    expect(head).toContain('CITY-BOTS.md');
-    // 两个世界共用同一套鉴权：同一把密钥通用，只有准入名单和限额各自独立
-    expect(head).toContain('同一把 MCP 密钥两边通用');
+  it('旧文档 TOWN-BOTS.md 已删除', () => {
+    expect(existsSync(TOWN_BOTS_PATH)).toBe(false);
   });
 });

@@ -12,8 +12,9 @@
    ▼
 src/server/   传输层：HTTP 会话与密钥绑定、SSE、stdio、bridge、只读观战 API、定时器
 src/mcp/      MCP 层：17 个工具、资源、提示词；认证（keys/open/admin）；消息渲染（text/CQ/OneBot）
-src/core/     引擎：GameManager（大厅、抽签、推进、投递、长轮询、视角、裁判、存档）与 BaseGame 基类
-src/games/    具体游戏：werewolf、undercover、liars-dice、number-bomb
+src/core/     引擎：GameManager（大厅、抽签、推进、投递、长轮询、视角、裁判、存档）、BaseGame 基类、通用 SQLite/时区/哈希工具
+src/games/    具体游戏：werewolf、undercover、liars-dice、number-bomb、sealed-auction、color-chain、bluff-tavern、holdem、jubensha
+src/city/     持续城市世界「晴空都」（栖灯镇 2026-11 已删除，世界改为晴空都；详见 docs/CITY.md）
 ```
 
 MCP 层只做两件事：参数校验，把调用转给 `GameManager`。所有规则和状态都在 `src/core` 与 `src/games` 里。所以引擎也能脱离 MCP 当作库使用（见 `src/index.ts`），测试大多直接调用 `GameManager`。

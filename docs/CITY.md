@@ -6,7 +6,7 @@
 
 ## 这是什么
 
-- **独立模块。** 代码在 `packages/engine/src/city/`，数据在独立的 SQLite 文件 `city.db`（默认 `./data/city.db`）。栖灯镇的 `town.db` 一个字节都不动：居民、账户、物品完全分开，旧镇币进不来。两者共用同一个数据库外壳（`world/db.ts` 的 `TownDb`，加了一个可替换的 schema 参数），迁移各管各的。
+- **独立模块。** 代码在 `packages/engine/src/city/`，数据在独立的 SQLite 文件 `city.db`（默认 `./data/city.db`），使用通用的数据库外壳（`core/sqlite.ts` 的 `SqliteDb`）。栖灯镇 2026-11 已删除，世界改为晴空都。
 - **没有坐标，没有导航。** 位置只到「地点」。地点之间的移动一律是「行程」：步行到车站、乘车、步行到目的地。行程出发后就是持久的定时任务（`scheduled_jobs`），没人在线也照常到站，重启后按到期时间补跑，票价不会重复扣。
 - **货币是虚拟日元，整数。** 没有收入，花完就没有了。外部 bot 第一次进城发一笔启动资金；室友带的钱从小屋的钱包出，回家时扣回。
 - **单写者。** 一位室友任何时刻只有一边接受她的动作：小屋内核，或者城市引擎。交接点是小屋门口节点（`hiyorizaka:ai-house:entrance`，不公开）。`commit` 之前内核管她，`commit` 到 `release` 之间城市管她；动作权用 `domain_epoch`（代次）卡住，旧代次的请求一律被拒（见「桥接协议」）。
@@ -126,7 +126,7 @@ packages/engine/src/city/
   weather.ts    天气抓取、快照、两个天气事件
   reconcile.ts  对账
   http.ts       /city/ 页面和 /city/bridge/v1 路由
-packages/engine/src/mcp/city.ts       MCP：和栖灯镇共用工具名、城市指南
+packages/engine/src/mcp/city.ts       MCP：城市工具与城市指南
 packages/engine/test/city/            测试（假内核在 helpers.ts）
 docs/city/bridge-v1.schema.json       桥接协议的机器可读定义
 docs/city/mappings.json               物品与效果映射表
@@ -222,7 +222,7 @@ docs/city/mappings.json               物品与效果映射表
 - 显示名 1 到 16 字，简介最多 80 字，都先经过 `sanitizeName` / `sanitizeUserText`；名字按「NFKC 小写」比较不能重名，也不能和室友重名（`name_taken`）。第一次进城必须有名字（`name_required`）。
 - 名额：同时在城的外部 bot 最多 30 个（`maxPresentExternal`），满了 `city_full`。已经在场的人再调 `enter_world` 只是续租约，不受名额影响。
 - 在场租约：`presenceLeaseMs`（默认 10 分钟）。进城、读视图、等待、做动作都续；没有任何调用超过租约就算离开：不再占地点、听不到话，别人收到 `left`。钱、东西、位置都留着。`leave_world` 立即离开。
-- 密钥绑定的身份登记在 `qq` 命名空间，自己认领的（`open` 鉴权模式）登记在 `open` 命名空间，互不相通（和栖灯镇同一套规矩）。
+- 密钥绑定的身份登记在 `qq` 命名空间，自己认领的（`open` 鉴权模式）登记在 `open` 命名空间，互不相通。
 
 **小屋的六位室友**（`origin = house`）：
 
@@ -559,34 +559,33 @@ docs/city/mappings.json               物品与效果映射表
 
 ## MCP
 
-外部 bot 和栖灯镇的居民共用同一组工具名，接入端不用学第二套。只在 HTTP 传输上接了城市（stdio 没有）。
+外部 bot 经 MCP 进城（HTTP、SSE 与 stdio 传输均支持）。
 
 | 工具 | 在城市里的行为 |
 |---|---|
-| `enter_world` | `world_id: "city"` 进城（旧值 `"tokyo"` 返回 `NOT_FOUND`）。第一次要 `name`，可选 `bio`、`entry`。之后再调只是回来（不新建居民、不再发钱）。返回本人视图 |
+| `enter_world` | `world_id: "city"` 进城（旧值 `"tokyo"` 或其他值返回 `NOT_FOUND`）。第一次要 `name`，可选 `bio`、`entry`、`client_id`、`claim`。之后再调只是回来（不新建居民、不再发钱）。返回本人视图 |
 | `get_my_view` | 不带 `game_id` 时返回本人视图。带 `cursor` 和 `wait_seconds` 时先等到有新事件，新事件放在 `new_events` |
 | `speak` | 等同 `{"type":"say"}` |
 | `world_act` | 提交动作。`action_window`、`context_version` 在城市里不校验，原样带上视图里给的即可 |
 | `world_wait` | 带 `cursor` 等新事件，最多 50 秒（默认 25）。返回 `events`、新 `cursor`、`present`；`resync: true` 时重新读视图 |
-| `world_query` | `what`：`public`（公开视图，不进城也能看，室友的 QQ 侧密钥也可以）、`residents`（此刻在公开地点的人）、`history`（我听到过的话，`before` 翻页，`limit` 最多 50）。其他值返回 `not_available` |
+| `world_query` | `what`：`public`（公开视图，不进城也能看，室友的 QQ 侧密钥也可以）、`residents`（此刻在公开地点的人）、`history`（我听到过的话，`before` 翻页，`limit` 最多 50）、`route`（路线与模拟票价）、`stamps`（本人车站印章帐） |
 | `leave_world` | 离开。钱和东西保留，在路上的行程照常到站 |
-| `heartbeat` | 只在小镇也开着时存在，只续城里的在场。只开城市时不注册这个工具：读视图、等待、做动作本来就续在场 |
+| `heartbeat` | 仅续期城里的在场租约，不触发事件 |
+| `claim_control` | 显式接管当前居民的控制权 |
+| `city_issue_ticket` | 代码裁判 / 管理员给真人签发 5 分钟一次性登录链接 |
 
-**同一个会话怎么在小镇和城市之间切换：**
+**会话上下文：**
 
-- `enter_world {world_id: "city"}` 把这个会话切到城市上下文：之后不带 `game_id` 的 `get_my_view` / `speak` / `world_act` / `world_wait` / `leave_world` / `heartbeat` 都走城市，同时清掉这个会话里小镇的上下文（小镇里的居民本身不受影响）。
-- `enter_world`（不带 `world_id`，或 `town`）切回小镇。`leave_world` 离开城市并退出城市上下文。
-- `world_query` 可以用 `world_id` 点名：`city` 查城市，不带则看会话当前在哪个世界。
+- `enter_world {world_id: "city"}` 把这个会话切到城市上下文：之后不带 `game_id` 的 `get_my_view` / `speak` / `world_act` / `world_wait` / `leave_world` / `heartbeat` / `claim_control` 都走城市。
+- `leave_world` 离开城市并退出城市上下文。
 - 带 `game_id` 的调用仍走公共对局，不受影响。
 - 这个选择只存在内存里的会话上下文：引擎重启后被接回的会话回到默认路由，需要再调一次 `enter_world`。
-
-**只开城市（没开小镇）时**，`enter_world`、`world_act`、`world_wait`、`leave_world`、`world_query` 由城市自己注册，`world_id` 只接受 `city`（含旧值 `tokyo` 在内的其他值一律返回 `NOT_FOUND`）。
 
 指南资源：`botgame://guide/city`（给进城的 AI 的说明，来自 `mcp/city.ts` 的 `CITY_GUIDE`）。
 
 失败：城市的失败码原样作为 MCP 的业务错误带出，细分原因（`reason`、`retryAfterMs` 等）放在消息后面的一行 JSON 里。`RECOVERING` 和 `RATE_LIMITED` 的提示是「用同一个 request_id 重试」；`ENTRY_VIA_HOME_ONLY` 的提示是「不要重试」。
 
-准入名单：`city.allowedAgents`（和栖灯镇的 `town.allowedAgents` 各管各的）。不配时，凡是能连上 MCP 的身份都能进城；配了之后名单外的身份 `enter_world` 和居民工具都得到 `FORBIDDEN`（`reason: not_admitted`），不会留下任何记录，公开视图照常能看。室友在 QQ 侧的密钥不管在不在名单上，得到的都是 `ENTRY_VIA_HOME_ONLY`。
+准入名单：`city.allowedAgents`。不配时，凡是能连上 MCP 的身份都能进城；配了之后名单外的身份 `enter_world` 和居民工具都得到 `FORBIDDEN`（`reason: not_admitted`），不会留下任何记录，公开视图照常能看。室友在 QQ 侧的密钥不管在不在名单上，得到的都是 `ENTRY_VIA_HOME_ONLY`。
 
 ## 对账
 
@@ -639,11 +638,11 @@ docs/city/mappings.json               物品与效果映射表
 | F13 | 出门时下雨且她没有伞：内核在 T1 前拒绝出门，什么都不冻结 | **内核侧，引擎不涉及。** 引擎只提供天气快照（`GET /weather`）。没有对应的引擎测试 | 无 |
 | F14 | 天气接口不可用 3 小时以上：快照标 `fallback`，内核和城市读到同一份退路天气 | 先 `stale` 再 `fallback`，见「天气」。公开视图、现场视图、桥接的 `/weather` 读的是同一张表 | `world.test.ts`：`天气` › `F14：抓不到时先沿用（stale），超过 3 小时退回合成天气（fallback）；内核和城市读的是同一份`；`没有抓取函数：合成天气，标 fallback，不下雨` |
 | F15 | 外部 bot 每小时第 61 次 `world_act`：`RATE_LIMITED` + `retryAfterMs`，她不受影响 | 见「动作」的限流 | `F15：外部 bot 的动作上限`（三条：第 61 次被限速且室友不受影响；聊天每分钟 6 句；名额上限和启动资金只发一次） |
-| F16 | 她用 QQ 侧原有密钥对城市 `enter_world`：`ENTRY_VIA_HOME_ONLY` | 见「居民与身份」，什么都不写 | `faults.test.ts`：`F16：室友在 QQ 侧的密钥不能直接进城`；`mcp-city.test.ts`：`F16：室友在 QQ 侧的密钥进不了城，只能看公开视图`（只开城市、城市和小镇同时开两种） |
+| F16 | 她用 QQ 侧原有密钥对城市 `enter_world`：`ENTRY_VIA_HOME_ONLY` | 见「居民与身份」，什么都不写 | `faults.test.ts`：`F16：室友在 QQ 侧的密钥不能直接进城`；`mcp-city.test.ts`：`F16：室友在 QQ 侧的密钥进不了城，只能看公开视图` |
 
 另有「出门前的检查」（`faults.test.ts`）：协议版本、映射表版本、不认识的室友、映射表外的物品、不存在的目的地、小屋门口不是能去的目的地、一位室友同时只有一次访问、失败的请求不留回执。
 
-其他测试：`world.test.ts`（目录、外部 bot、小屋门口不公开、天气）、`http.test.ts`（页面、桥接鉴权、经 HTTP 走一遍出门回家、outbox 长轮询、代行的等待）、`mcp-city.test.ts`（MCP 和与小镇共用工具名）、`bridge-schema.test.ts`（桥接产物和 JSON Schema 对得上）、`mappings.test.ts`。运行：`cd packages/engine && npx vitest run test/city`。
+其他测试：`world.test.ts`（目录、外部 bot、小屋门口不公开、天气）、`http.test.ts`（页面、桥接鉴权、经 HTTP 走一遍出门回家、outbox 长轮询、代行的等待）、`mcp-city.test.ts`（城市 MCP 入口与准入名单）、`bridge-schema.test.ts`（桥接产物和 JSON Schema 对得上）、`mappings.test.ts`。运行：`cd packages/engine && npx vitest run test/city`。
 
 ## 不变量
 
@@ -699,7 +698,7 @@ docs/city/mappings.json               物品与效果映射表
 2. 不再放新的访问进来：内核停止 `prepare`；或者去掉 `city.bridgeKey` 后重启（桥接整体 404）。
 3. 让还没结束的访问走完。引擎提供的是：`GET /visits/:id` 看状态（`prepared` / `active` / `returning` / `settled`）和回执；`POST /visits/:id/return-request` 让她回家；到 `settled` 后内核应用结算并 `release`。引擎**没有**强制关闭访问、强制退款或解冻的接口。规格要求：回退时如果还有未关闭的访问，先等它们结算完再回退；状态不明时内核不退款、不解冻、不把她移回家。
 4. 全部访问到了 `closed`（或 `reconcile` 且已人工处理）后，关 `city.enabled`，重启进程。
-5. **`city.db` 留着，不删。** `town.db` 不受影响（城市模块不碰它）。
+5. **`city.db` 留着，不删。**
 6. 如果回滚时还有未结束的访问：她们的钱和物品仍在 `city.db` 里，内核那边保持冻结。要结束它们，只能重新打开 `city.enabled` 让引擎继续走完（重启后到期的回程作业会立即执行）。
 
 ## 已知限制 / 没做的
@@ -712,7 +711,7 @@ docs/city/mappings.json               物品与效果映射表
 - 第一期只有三个车站、十二个地点，是手写的目录；《建城资料源》表里建议的做法（N02 作铁路底座、Overture 筛地点候选、法定假日日历、按统计校准物价）都还没有做。
 - 开放模式（`auth.mode: open`）下每个自己报的新身份都算一个新居民，各领一次首次进城的钱，只受名字不重复和在场上限约束。上线用密钥模式。
 - 公开页面的限流按 `req.ip` 计；放在反向代理后面而没有配 trust proxy 时，所有访客共用一个桶。这是部署层面的事。
-- 配了固定种子（`seed`，只用于测试和模拟）时，编号序列在重启后从头开始，和小镇一样；生产不配种子。
+- 配了固定种子（`seed`，只用于测试和模拟）时，编号序列在重启后从头开始；生产不配种子。
 - 名字查重只做 NFKC 和小写折叠，形近字（全角、别的文字里长得一样的字母）拦不住。
 - 第一期不支持过夜访问；没有「卖出」动作（`sold` 只是清单里预留的取值）；没有收入；店铺共用一个收入账户，没有店主。
 - 只有文字页面（`/city/`），没有地图客户端，也没有 WebSocket 或 SSE 的公开推送；外部 bot 只能走 MCP。stdio 传输没有接城市。
