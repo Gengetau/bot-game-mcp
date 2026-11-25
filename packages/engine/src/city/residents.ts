@@ -9,8 +9,8 @@
  */
 import { randomBytes } from 'node:crypto';
 import { sanitizeName, sanitizeUserText } from '../core/text.js';
-import type { Row } from '../world/db.js';
-import { sha256 } from '../world/service.js';
+import type { Row } from '../core/sqlite.js';
+import { sha256 } from '../core/ids.js';
 import { publicPlace } from './catalog.js';
 import { CityError, cityBadRequest, cityPrecondition } from './errors.js';
 import { MINT, ensurePurse, ledger, purseOf } from './ledger.js';
@@ -85,7 +85,7 @@ export function isHouseIdentity(c: CityService, identityId: string): boolean {
 }
 
 /**
- * MCP 鉴权后的身份 → 城市里的主体。密钥绑定的身份登记在 'qq' 命名空间，自己认领的登记在 'open'（和栖灯镇同一套规矩）。
+ * MCP 鉴权后的身份 → 城市里的主体。密钥绑定的身份登记在 'qq' 命名空间，自己认领的登记在 'open'。
  * 小屋室友的 QQ 侧密钥在这里就拦下：不登记主体，不写任何东西。
  */
 export function cityPrincipal(c: CityService, identity: { id: string; name: string }, opts: { selfClaimed?: boolean } = {}): CityPrincipal {

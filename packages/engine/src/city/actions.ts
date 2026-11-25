@@ -7,8 +7,8 @@
  * 处理过程同步，全部在一个事务里：状态、账本、物品、事件、回执、outbox 一起提交或一起回滚。
  */
 import { sanitizeUserText } from '../core/text.js';
-import { parseJson, type Row } from '../world/db.js';
-import { REQUEST_ID_RE, sha256, stableStringify } from '../world/service.js';
+import { parseJson, type Row } from '../core/sqlite.js';
+import { REQUEST_ID_RE, sha256, stableStringify } from '../core/ids.js';
 import { BOOK_SHELF_BUYBACK_YEN, BOOK_SHELF_RESALE_YEN, findGoodAtPlace, isCarryHome, itemName, itemType, place, publicPlace } from './catalog.js';
 import { CityError, cityBadRequest, cityConflict, cityControlLost, cityPrecondition } from './errors.js';
 import {

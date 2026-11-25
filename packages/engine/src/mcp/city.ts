@@ -38,7 +38,7 @@ import {
 } from '../city/index.js';
 import { GameError, type GameErrorCode } from '../core/errors.js';
 import type { Identity } from '../core/types.js';
-import { REQUEST_ID_RE } from '../world/service.js';
+import { REQUEST_ID_RE } from '../core/ids.js';
 import type { Authenticator, SessionContext } from './auth.js';
 
 export interface CityDeps {

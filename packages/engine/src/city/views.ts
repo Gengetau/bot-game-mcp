@@ -8,7 +8,7 @@
  *
  * 位置的公开粒度是「地点」；在路上的人只算一个数。别人的钱、物品、行程不出现在任何别人能拿到的投影里。
  */
-import { parseJson, type Row } from '../world/db.js';
+import { parseJson, type Row } from '../core/sqlite.js';
 import {
   AREAS,
   BOOK_SHELF_RESALE_YEN,
@@ -64,7 +64,7 @@ const QINGKONG_WEATHER_SOURCE_REF: SourceReference = {
   note: '当前与逐小时天气由晴空都内置确定性天象引擎按片区微气候与季节日温差推演生成，全城各片区与桥接读取同一份天象快照。',
 };
 
-/** 交给 world_act 的占位窗口：城市世界不用动作窗口，保留这个字段只为了和栖灯镇的工具签名一致。 */
+/** 交给 world_act 的占位窗口：城市世界不用动作窗口，保留这个字段以兼容客户端的工具签名。 */
 export const CITY_ACTION_WINDOW = 'city';
 /** 本人视图 UTF-8 JSON 字节硬上限（4 KB）。 */
 export const MAX_SELF_VIEW_BYTES = 4096;

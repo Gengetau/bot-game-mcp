@@ -8,9 +8,9 @@
  * 引擎不替她算身体：吃了什么、走了多久只写成 body_effect 记录，由内核按自己的规则结算。
  * 引擎不主动调内核：内核需要知道的事都写进 bridge_outbox（带递增 seq），和对应的状态变化同一事务提交。
  */
-import { parseJson, type Row } from '../world/db.js';
-import { sha256, stableStringify } from '../world/service.js';
-import { localParts, localToUtc, nextDate } from '../world/time.js';
+import { parseJson, type Row } from '../core/sqlite.js';
+import { sha256, stableStringify } from '../core/ids.js';
+import { localParts, localToUtc, nextDate } from '../core/time.js';
 import {
   CITY_CATALOG_VERSION,
   HOUSE_ENTRANCE,
