@@ -47,7 +47,6 @@ import type { Identity } from '../../src/core/types.js';
 import { createRegistry } from '../../src/games/index.js';
 import { Authenticator, type SessionContext } from '../../src/mcp/auth.js';
 import { createMcpServer } from '../../src/mcp/server.js';
-import { makeTown } from '../world/helpers.js';
 import { KISSA, MIN, makeCity, type CityTest } from './helpers.js';
 
 const RENAME_R0_PATH = fileURLToPath(new URL('../../../../docs/city/rename-r0.json', import.meta.url));
@@ -103,20 +102,18 @@ async function serveHttp(t: CityTest): Promise<{ base: string }> {
   return { base: `http://127.0.0.1:${(server.address() as AddressInfo).port}` };
 }
 
-function makeMcpEnv(opts: { town?: boolean } = {}): {
+function makeMcpEnv(): {
   t: CityTest;
   connect: (who?: Identity) => Promise<Client>;
 } {
   const t = makeCity({ seed: 'r0-guard-city-seed' });
   const manager = new GameManager({ registry: createRegistry(), rng: new SeededRng('r0-guard-mgr-seed') });
   const auth = new Authenticator({ mode: 'keys', adminKeys: [], agents: AGENTS }, manager);
-  const town = opts.town ? makeTown() : null;
   const deps = {
     manager,
     auth,
     version: 'test',
     city: { city: t.c },
-    ...(town ? { town: { world: town.w, auth, trustedIds: [] } } : {}),
   };
   const connect = async (who: Identity = PROBE_AGENT) => {
     const ctx: SessionContext = { identity: who, fixed: true, transport: 'memory' };
@@ -250,98 +247,94 @@ describe('晴空都 R0 全量改名与暂卸内容包专项守卫', () => {
   it('门禁 1b：MCP 指南/提示词/工具说明与外部 bot 全链路视图对 57 项旧词零命中', async () => {
     expectZeroLegacyTokens('agent-kit prompts/city-resident-zh.md', readFileSync(AGENT_KIT_PROMPT_PATH, 'utf8'));
 
-    for (const withTown of [false, true]) {
-      const { t, connect } = makeMcpEnv({ town: withTown });
-      const client = await connect();
+    const { t, connect } = makeMcpEnv();
+    const client = await connect();
 
-      const tools = await client.listTools();
-      expectZeroLegacyTokens(`MCP listTools (town=${withTown})`, tools);
+    const tools = await client.listTools();
+    expectZeroLegacyTokens('MCP listTools', tools);
 
-      const guide = await client.readResource({ uri: 'botgame://guide/city' });
-      expectZeroLegacyTokens(`MCP botgame://guide/city (town=${withTown})`, guide);
+    const guide = await client.readResource({ uri: 'botgame://guide/city' });
+    expectZeroLegacyTokens('MCP botgame://guide/city', guide);
 
-      const overview = await client.readResource({ uri: 'botgame://guide/overview' });
-      expectZeroLegacyTokens(`MCP botgame://guide/overview (town=${withTown})`, overview);
+    const overview = await client.readResource({ uri: 'botgame://guide/overview' });
+    expectZeroLegacyTokens('MCP botgame://guide/overview', overview);
 
-      const prompt = await client.getPrompt({ name: 'city-resident' });
-      expectZeroLegacyTokens(`MCP prompt city-resident (town=${withTown})`, prompt);
+    const prompt = await client.getPrompt({ name: 'city-resident' });
+    expectZeroLegacyTokens('MCP prompt city-resident', prompt);
 
-      const qPublic = await callRaw(client, 'world_query', { world_id: 'city', what: 'public' });
-      expectZeroLegacyTokens(`MCP world_query public (town=${withTown})`, qPublic.text);
-      expect(qPublic.json.timezone).toBe('JST');
+    const qPublic = await callRaw(client, 'world_query', { world_id: 'city', what: 'public' });
+    expectZeroLegacyTokens('MCP world_query public', qPublic.text);
+    expect(qPublic.json.timezone).toBe('JST');
 
-      const qRoute = await callRaw(client, 'world_query', {
-        world_id: 'city',
-        what: 'route',
-        from: 'hiyorizaka:station',
-        to: 'kumominato:station',
-      });
-      expectZeroLegacyTokens(`MCP world_query route (town=${withTown})`, qRoute.text);
+    const qRoute = await callRaw(client, 'world_query', {
+      world_id: 'city',
+      what: 'route',
+      from: 'hiyorizaka:station',
+      to: 'kumominato:station',
+    });
+    expectZeroLegacyTokens('MCP world_query route', qRoute.text);
 
-      const entered = await callRaw(client, 'enter_world', {
-        world_id: 'city',
-        name: '探针旅人',
-        entry: 'kumominato:station',
-      });
-      expectZeroLegacyTokens(`MCP enter_world (town=${withTown})`, entered.text);
+    const entered = await callRaw(client, 'enter_world', {
+      world_id: 'city',
+      name: '探针旅人',
+      entry: 'kumominato:station',
+    });
+    expectZeroLegacyTokens('MCP enter_world', entered.text);
 
-      const v0 = await callRaw(client, 'get_my_view');
-      expectZeroLegacyTokens(`MCP get_my_view 站内 (town=${withTown})`, v0.text);
+    const v0 = await callRaw(client, 'get_my_view');
+    expectZeroLegacyTokens('MCP get_my_view 站内', v0.text);
 
-      const stamped = await callRaw(client, 'world_act', {
-        request_id: `r0-stamp-${withTown ? 't' : 'c'}-001`,
-        action_window: 'city',
-        context_version: 0,
-        action: { type: 'stamp_station' },
-      });
-      expectZeroLegacyTokens(`MCP stamp_station (town=${withTown})`, stamped.text);
+    const stamped = await callRaw(client, 'world_act', {
+      request_id: 'r0-stamp-c-001',
+      action_window: 'city',
+      context_version: 0,
+      action: { type: 'stamp_station' },
+    });
+    expectZeroLegacyTokens('MCP stamp_station', stamped.text);
 
-      const qStamps = await callRaw(client, 'world_query', { world_id: 'city', what: 'stamps' });
-      expectZeroLegacyTokens(`MCP world_query stamps (town=${withTown})`, qStamps.text);
+    const qStamps = await callRaw(client, 'world_query', { world_id: 'city', what: 'stamps' });
+    expectZeroLegacyTokens('MCP world_query stamps', qStamps.text);
 
-      const travel = await callRaw(client, 'world_act', {
-        request_id: `r0-travel-${withTown ? 't' : 'c'}-001`,
-        action_window: 'city',
-        context_version: 0,
-        action: { type: 'travel', to: KISSA },
-      });
-      expectZeroLegacyTokens(`MCP travel 受理 (town=${withTown})`, travel.text);
+    const travel = await callRaw(client, 'world_act', {
+      request_id: 'r0-travel-c-001',
+      action_window: 'city',
+      context_version: 0,
+      action: { type: 'travel', to: KISSA },
+    });
+    expectZeroLegacyTokens('MCP travel 受理', travel.text);
 
-      const inTransit = await callRaw(client, 'get_my_view');
-      expectZeroLegacyTokens(`MCP get_my_view 乘车途中 (town=${withTown})`, inTransit.text);
+    const inTransit = await callRaw(client, 'get_my_view');
+    expectZeroLegacyTokens('MCP get_my_view 乘车途中', inTransit.text);
 
-      const waiting = callRaw(client, 'world_wait', { cursor: inTransit.json.cursor, wait_seconds: 5 });
-      await new Promise((r) => setTimeout(r, 25));
-      t.run(20 * MIN);
-      const woke = await waiting;
-      expectZeroLegacyTokens(`MCP world_wait 到站事件 (town=${withTown})`, woke.text);
+    const waiting = callRaw(client, 'world_wait', { cursor: inTransit.json.cursor, wait_seconds: 5 });
+    await new Promise((r) => setTimeout(r, 25));
+    t.run(20 * MIN);
+    const woke = await waiting;
+    expectZeroLegacyTokens('MCP world_wait 到站事件', woke.text);
 
-      const vArrived = await callRaw(client, 'get_my_view', { cursor: woke.json.cursor });
-      expectZeroLegacyTokens(`MCP get_my_view 到站后 (town=${withTown})`, vArrived.text);
+    const vArrived = await callRaw(client, 'get_my_view', { cursor: woke.json.cursor });
+    expectZeroLegacyTokens('MCP get_my_view 到站后', vArrived.text);
 
-      const qResidents = await callRaw(client, 'world_query', { world_id: 'city', what: 'residents' });
-      expectZeroLegacyTokens(`MCP world_query residents (town=${withTown})`, qResidents.text);
-    }
+    const qResidents = await callRaw(client, 'world_query', { world_id: 'city', what: 'residents' });
+    expectZeroLegacyTokens('MCP world_query residents', qResidents.text);
   });
 
-  it('门禁 2：world_id="tokyo"（含大小写变体）在仅开城市与双世界同开时均返回 NOT_FOUND', async () => {
-    for (const withTown of [false, true]) {
-      const { connect } = makeMcpEnv({ town: withTown });
-      const client = await connect();
-      for (const legacyId of ['tokyo', 'TOKYO', 'Tokyo']) {
-        const enterErr = await callFail(client, 'enter_world', { world_id: legacyId, name: '旧客' });
-        expect(enterErr.code, `enter_world(${legacyId}) town=${withTown}`).toBe('NOT_FOUND');
-        expectZeroLegacyTokens(`enter_world(${legacyId}) 错误回包`, enterErr.text);
+  it('门禁 2：world_id="tokyo"（含大小写变体）返回 NOT_FOUND', async () => {
+    const { connect } = makeMcpEnv();
+    const client = await connect();
+    for (const legacyId of ['tokyo', 'TOKYO', 'Tokyo']) {
+      const enterErr = await callFail(client, 'enter_world', { world_id: legacyId, name: '旧客' });
+      expect(enterErr.code, `enter_world(${legacyId})`).toBe('NOT_FOUND');
+      expectZeroLegacyTokens(`enter_world(${legacyId}) 错误回包`, enterErr.text);
 
-        const queryErr = await callFail(client, 'world_query', { world_id: legacyId, what: 'public' });
-        expect(queryErr.code, `world_query(${legacyId}) town=${withTown}`).toBe('NOT_FOUND');
-        expectZeroLegacyTokens(`world_query(${legacyId}) 错误回包`, queryErr.text);
-      }
+      const queryErr = await callFail(client, 'world_query', { world_id: legacyId, what: 'public' });
+      expect(queryErr.code, `world_query(${legacyId})`).toBe('NOT_FOUND');
+      expectZeroLegacyTokens(`world_query(${legacyId}) 错误回包`, queryErr.text);
     }
   });
 
   it('门禁 3：隐藏门口与暂卸/旧版地点编号对外部 bot travel 的报错与乱写地名逐字完全一致', async () => {
-    const { t, connect } = makeMcpEnv({ town: true });
+    const { t, connect } = makeMcpEnv();
     const client = await connect();
     const entered = await callRaw(client, 'enter_world', {
       world_id: 'city',

@@ -255,7 +255,7 @@ export interface GameRecord<S = any, O = any> {
   spectatorChat?: SpectatorChatEntry[];
   spectatorChatSeq?: number;
   /**
-   * 嵌入活动：这局是持续世界（栖灯镇）里一次活动的小游戏。有它的记录只归世界服务读写，
+   * 嵌入活动：这局是持续世界里一次活动的小游戏。有它的记录只归世界服务读写，
    * 普通 Manager 不保存、不推进、不对外提供视图。旧存档没有这个字段（= 普通独立对局）。
    */
   embed?: { worldId: string; activityId: string };

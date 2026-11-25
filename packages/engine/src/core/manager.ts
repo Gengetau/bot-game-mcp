@@ -1317,7 +1317,7 @@ export class GameManager {
       });
       return {
         ...base,
-        // AI 座位用有预算的视图；真人座位网页、观战、小镇嵌入局仍是 privateView / publicView
+        // AI 座位用有预算的视图；真人座位网页、观战、嵌入局仍是 privateView / publicView
         public: inst.agentPublicView(seat),
         you: { seat, name: me.name, alive: me.alive, ...inst.agentView(seat) },
         your_turn: Boolean(todo),

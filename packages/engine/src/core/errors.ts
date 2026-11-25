@@ -10,7 +10,7 @@ export type GameErrorCode =
   | 'NOT_YOUR_TURN'
   | 'INVALID_ACTION'
   | 'CONFLICT'
-  // 持续世界（栖灯镇）的失败码：见 src/world/errors.ts
+  // 持续世界的失败码
   | 'UNAUTHENTICATED'
   | 'CONTROL_LOST'
   | 'CONTEXT_STALE'
@@ -22,7 +22,7 @@ export type GameErrorCode =
   | 'RESYNC_REQUIRED'
   | 'RECOVERING'
   | 'NOT_AVAILABLE'
-  // 东京城市世界：见 src/city/errors.ts
+  // 晴空都城市世界：见 src/city/errors.ts
   | 'ENTRY_VIA_HOME_ONLY'
   | 'STALE_DOMAIN_EPOCH'
   | 'VISIT_NOT_ACTIVE'

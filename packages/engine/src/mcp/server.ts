@@ -5,14 +5,13 @@
 import { McpServer, ResourceTemplate } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
-import { GameError, invalidAction } from '../core/errors.js';
+import { GameError } from '../core/errors.js';
 import type { GameManager } from '../core/manager.js';
 import type { ActionInput, Identity } from '../core/types.js';
 import type { Authenticator, SessionContext } from './auth.js';
 import { OVERVIEW, PLAYER_GUIDE, REFEREE_GUIDE, gameTips, gameTypeTable } from './guides.js';
 import { renderDelivery, type DeliveryFormat } from './render.js';
-import { CITY_GUIDE, citySectionView, cityView, citySession, citySpeak, registerCityDedicatedTools, registerCityTools, withCity, type CityDeps } from './city.js';
-import { TOWN_GUIDE, registerTownTools, townGameAct, townSession, townSpeak, townView, type TownDeps } from './town.js';
+import { CITY_GUIDE, citySectionView, cityView, citySession, citySpeak, registerCityDedicatedTools, registerCityTools, type CityDeps } from './city.js';
 
 export interface ServerDeps {
   manager: GameManager;
@@ -20,8 +19,6 @@ export interface ServerDeps {
   version: string;
   /** 有它时每次工具调用记一行：谁、哪个工具、成败、耗时（不记参数和内容） */
   log?: (msg: string) => void;
-  /** 开了持续世界（栖灯镇）时才有：注册小镇的工具，并让进入了世界上下文的会话走居民路由 */
-  town?: TownDeps;
   /** 开了晴空都城市世界时才有：进城的会话走城市路由 */
   city?: CityDeps;
 }
@@ -88,11 +85,9 @@ const actionShape = {
   call: z.boolean().optional().describe('彩牌接龙：出后剩一张时设为 true，同时喊「最后一张」'),
 };
 
-/** 进入栖灯镇（世界上下文）之后，speak / act 额外需要的字段。普通桌游对局不用填。 */
-const townShape = {
-  request_id: z.string().min(8).max(80).optional().describe('栖灯镇：这次动作的幂等编号（每个新动作一个新的；重试用同一个）。在小镇里必填'),
-  action_window: z.string().optional().describe('栖灯镇：视图返回的 action_window（可选；带上则过期后拒绝重试）'),
-  context_version: z.number().int().optional().describe('栖灯镇：视图返回的 context.version（可选；带上则上下文变化后拒绝）'),
+/** 进入晴空都（城市世界）之后，speak 额外需要的字段。普通桌游对局不用填。 */
+const citySpeakShape = {
+  request_id: z.string().min(8).max(80).optional().describe('晴空都：这次发言的幂等编号（每个新动作一个新的；重试用同一个）。在城里必填'),
 };
 
 export const SERVER_INSTRUCTIONS = `QQ 群桌游引擎（狼人杀 / 谁是卧底 / 大话骰 / 数字炸弹 / 密封竞拍 / 彩牌接龙 / 诈牌酒馆 / 德州扑克）。
@@ -108,11 +103,6 @@ export function createMcpServer(deps: ServerDeps, ctx: SessionContext): McpServe
   );
 
   const me = (): Identity => auth.require(ctx);
-  const town = deps.town;
-  /** 这个会话选中了世界上下文，而且这次调用没有点名普通对局 */
-  // 小镇里的嵌入局编号是 TG- 开头的（普通对局没有这个前缀）：带着它也算小镇上下文
-  const inTown = (gameId: string | undefined): boolean => Boolean(town && townSession(ctx) && (!gameId || /^TG-/i.test(gameId)));
-
   const city = deps.city;
   /** 这个会话选中了城市世界，而且这次调用没有点名对局 */
   const inCity = (gameId: string | undefined): boolean => Boolean(city && citySession(ctx) && !gameId);
@@ -383,7 +373,7 @@ export function createMcpServer(deps: ServerDeps, ctx: SessionContext): McpServe
         wait_seconds: waitSeconds,
         wake_on: z.enum(['turn', 'any']).optional().describe('等待时：turn=轮到我才返回（默认）；any=有任何你看得见的新事件就返回（别人的私密事件不算）'),
         full_log: z.boolean().optional().describe('返回你可见的全部历史事件（默认只返回上次查看后的新事件）'),
-        cursor: z.string().optional().describe('栖灯镇：上次视图返回的 cursor。带上它会附带之后的新事件（一次最多 50 条；返回 more=true 时用返回的 cursor 接着取）；配合 wait_seconds 可以等到有新事件再返回'),
+        cursor: z.string().optional().describe('晴空都：上次视图返回的 cursor。带上它会附带之后的新事件（一次最多 50 条；返回 more=true 时用返回的 cursor 接着取）；配合 wait_seconds 可以等到有新事件再返回'),
         section: z.string().max(80).optional().describe('要取的段，名字见 you.sections 目录（例如 "role:3"、"act:2"、"truth"、"find:关键词"）；在晴空都城市世界中支持 "items"（随身背包）、"locker_items"（储物柜）或 "stamps"（印章帐）。带它时只返回这一段，忽略 wait_seconds / wake_on / full_log / cursor。'),
         page: z.number().int().min(1).max(200).optional().describe('分页取段时的页码，从 1 开始，默认 1。'),
         offset: z.number().int().min(0).max(10_000).optional().describe('晴空都城市世界列表起始偏移量（从 0 开始，可直接传入上一页 items_page.next_offset 或 locker_page.next_offset）。'),
@@ -395,11 +385,9 @@ export function createMcpServer(deps: ServerDeps, ctx: SessionContext): McpServe
     async (a, extra) => {
       if (a.section !== undefined) {
         if (city && inCity(a.game_id)) return citySectionView(city, ctx, me(), a.section, a.page ?? 1, a.offset);
-        if (town && inTown(a.game_id)) throw invalidAction('你现在在小镇里。取对局里的剧本段要带 game_id（对局编号）。');
         return manager.getSection(me(), a.game_id, a.section, a.page ?? 1);
       }
       if (city && inCity(a.game_id)) return cityView(city, ctx, me(), a, extra.signal);
-      if (town && inTown(a.game_id)) return townView(town, ctx, me(), a, extra.signal);
       const wait = Math.min(a.wait_seconds ?? 0, MAX_WAIT_SECONDS) * 1000;
       return manager.waitView(me(), a.game_id, wait, { fullLog: a.full_log, wakeOn: a.wake_on }, extra.signal);
     },
@@ -410,15 +398,15 @@ export function createMcpServer(deps: ServerDeps, ctx: SessionContext): McpServe
     {
       title: '发言',
       description:
-        '轮到你发言（白天发言、遗言、PK 发言、描述词语等）时调用。channel="team" 用于狼人夜间队内交流。若结果含 post_to_group，请把发言原文发到群里。进入小镇后不带 game_id 时，它是附近聊天（只有交谈距离内、同一房间的人听得到，等同 world_act 的 say_nearby）；全镇公屏用 world_act 的 say_town。',
+        '轮到你发言（白天发言、遗言、PK 发言、描述词语等）时调用。channel="team" 用于狼人夜间队内交流。若结果含 post_to_group，请把发言原文发到群里。进入晴空都后不带 game_id 时，是在当前地点现场发言（等同 world_act 的 say），需带 request_id。',
       inputSchema: {
         text: z.string().min(1).max(1000).describe('发言内容'),
         channel: z.enum(['public', 'team']).optional().describe('public（默认）或 team（狼队夜聊）'),
         game_id: gameIdOpt,
-        ...townShape,
+        ...citySpeakShape,
       },
     },
-    (a) => (city && inCity(a.game_id) ? citySpeak(city, ctx, me(), a) : town && inTown(a.game_id) ? townSpeak(town, ctx, me(), a) : manager.speak(me(), a.game_id, a.text, a.channel ?? 'public')),
+    (a) => (city && inCity(a.game_id) ? citySpeak(city, ctx, me(), a) : manager.speak(me(), a.game_id, a.text, a.channel ?? 'public')),
   );
 
   tool(
@@ -427,11 +415,10 @@ export function createMcpServer(deps: ServerDeps, ctx: SessionContext): McpServe
       title: '行动',
       description:
         '执行游戏动作（投票、夜间技能、出价、开骰、猜数……）。可用的 action 及参数以 get_my_view 返回的 todo.actions 为准，示例：act({"action":"vote","target":3})、act({"action":"bid","quantity":4,"face":6})、act({"action":"skip"})。',
-      inputSchema: { ...actionShape, game_id: gameIdOpt, ...townShape, phase_id: z.number().int().optional().describe('栖灯镇里的小游戏：当前阶段编号（视图里的 game.phase_id），必填；同时要带 game_id（视图里的 game.game_id）或 context_version') },
+      inputSchema: { ...actionShape, game_id: gameIdOpt },
     },
     (a) => {
-      const { game_id, request_id, action_window, context_version, phase_id, ...input } = a;
-      if (town && inTown(game_id)) return townGameAct(town, ctx, me(), { request_id, action_window, context_version, phase_id, ...(game_id ? { game_id } : {}) }, input);
+      const { game_id, ...input } = a;
       return manager.act(me(), game_id, input as ActionInput);
     },
   );
@@ -603,20 +590,10 @@ export function createMcpServer(deps: ServerDeps, ctx: SessionContext): McpServe
     () => ({ keys: auth.listIssued(me()) }),
   );
 
-  // ─────────────────────────── 栖灯镇（持续世界） ───────────────────────────
-
-  if (town) {
-    registerTownTools((city ? withCity(tool as never, city, ctx, me) : tool) as never, town, ctx, me);
-    server.registerResource('guide-town', 'botgame://guide/town', { title: '栖灯镇：AI 居民说明', mimeType: 'text/markdown' }, (uri) => ({
-      contents: [{ uri: uri.href, mimeType: 'text/markdown', text: TOWN_GUIDE }],
-    }));
-    server.registerPrompt('resident', { title: '栖灯镇居民指南', description: '给住进栖灯镇的 AI 的说明', argsSchema: {} }, () => ({
-      messages: [{ role: 'user', content: { type: 'text', text: TOWN_GUIDE } }],
-    }));
-  }
+  // ─────────────────────────── 晴空都（持续城市世界） ───────────────────────────
 
   if (city) {
-    if (!town) registerCityTools(tool as never, city, ctx, me);
+    registerCityTools(tool as never, city, ctx, me);
     registerCityDedicatedTools(tool as never, city, me);
     server.registerResource('guide-city', 'botgame://guide/city', { title: '晴空都城市世界：进城说明', mimeType: 'text/markdown' }, (uri) => ({
       contents: [{ uri: uri.href, mimeType: 'text/markdown', text: CITY_GUIDE }],

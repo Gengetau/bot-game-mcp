@@ -20,34 +20,6 @@ export { startStdioServer } from './server/stdio.js';
 export { startBridge, type BridgeOptions } from './server/bridge.js';
 export { simulate, type SimulateOptions } from './sim/simulate.js';
 export { VERSION } from './version.js';
-// 持续世界「栖灯镇」
-export {
-  createWorld,
-  enterWorld,
-  enterWorldAgent,
-  WorldService,
-  WorldError,
-  agentPrincipal,
-  issueTicket,
-  exchangeTicket,
-  sessionPrincipal,
-  heartbeat as townHeartbeat,
-  leaveWorld,
-  claimControl,
-  publicView as townPublicView,
-  meView as townMeView,
-  agentView as townAgentView,
-  townParamsSchema,
-  verifyBackup as verifyTownBackup,
-  type WorldOptions,
-  type TownParams,
-  type MeView as TownMeView,
-  type PublicView as TownPublicView,
-} from './world/index.js';
-export { mountTown } from './world/http.js';
-export { TOWN_GUIDE, TOWN_NOT_ADMITTED, TOWN_NOT_ADMITTED_HINT, TOWN_TICKETS_ADMIN_ONLY, townPolicy, type TownDeps } from './mcp/town.js';
-/** 小镇模块的完整导出（脚本、测试和嵌入方用；上面那些是常用的别名） */
-export * as town from './world/index.js';
 // 晴空都城市世界
 export {
   createCity,
