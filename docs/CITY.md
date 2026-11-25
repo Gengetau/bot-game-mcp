@@ -100,7 +100,7 @@ BOTGAME_CITY=1 BOTGAME_CITY_DB=./data/city-dev.db npm run dev -w bot-game-mcp --
 | `GET /city/` | 文字版城市页面（服务器直接渲染，没有脚本，没有地图客户端）。每 IP 每分钟 240 次 |
 | `GET /city/api/public` | 公开视图（JSON），内容和页面一致 |
 | `/city/bridge/v1/…` | 桥接接口，只给小屋内核。没配 `bridgeKey` 时不存在 |
-| MCP | 外部 bot 走 MCP（HTTP 传输），不走 `/city/` 下的接口。stdio 传输没有接城市 |
+| MCP | 外部 bot 走 MCP（HTTP、SSE 与 stdio 传输均支持），不走 `/city/` 下的接口 |
 
 页面的响应头带 `Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'`，居民起的名字全部转义。
 
@@ -714,7 +714,7 @@ docs/city/mappings.json               物品与效果映射表
 - 配了固定种子（`seed`，只用于测试和模拟）时，编号序列在重启后从头开始；生产不配种子。
 - 名字查重只做 NFKC 和小写折叠，形近字（全角、别的文字里长得一样的字母）拦不住。
 - 第一期不支持过夜访问；没有「卖出」动作（`sold` 只是清单里预留的取值）；没有收入；店铺共用一个收入账户，没有店主。
-- 只有文字页面（`/city/`），没有地图客户端，也没有 WebSocket 或 SSE 的公开推送；外部 bot 只能走 MCP。stdio 传输没有接城市。
+- 只有文字页面（`/city/`），没有地图客户端，也没有 WebSocket 或 SSE 的公开推送；外部 bot 只能走 MCP（HTTP、SSE 与 stdio 传输均支持）。
 - MCP 会话的「当前在城市」只存在内存里，引擎重启后被接回的会话要再调一次 `enter_world`。
 - 天气抓取用 Node 的 `fetch`，代理由部署层面处理。Open-Meteo 的请求时区固定为 `Asia/Tokyo`，和 `params.timezone` 无关。`rain_started` 要有前后两份实况作比较：上一份是合成天气时，就算第一次抓到的实况在下雨也不发事件（雨天不开放的地点照样按实况关着）。
 - 路上被拒绝进入的行程（到了才发现关门、满了、下雨）留在最近的车站，不会自动回到出发地。

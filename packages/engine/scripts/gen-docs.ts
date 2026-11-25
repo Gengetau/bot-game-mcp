@@ -57,7 +57,7 @@ async function genTools(): Promise<void> {
     '',
     `共 ${tools.length} 个工具。所有工具返回一个 JSON 文本块；业务错误以 \`isError: true\` 的工具结果返回（含中文原因与建议），不会是协议错误。`,
     '',
-    '标着「晴空都」的工具、资源和提示词只在配置里开了城市（`city.enabled`）时才有，说明见 [CITY.md](CITY.md)。',
+    '八个城市工具（`enter_world`、`leave_world`、`world_query`、`world_act`、`world_wait`、`heartbeat`、`claim_control`、`city_issue_ticket`）和城市指南（`botgame://guide/city`、`city-resident`）只在 `city.enabled` 时注册；共用工具总是注册，进城后走城市路由；说明见 [CITY.md](CITY.md)。',
     '',
     '## 工具',
     '',
