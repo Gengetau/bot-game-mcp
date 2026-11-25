@@ -2,6 +2,3 @@
 # 导致「prompts/*.md 和代码里的提示词一致」这类测试失败。
 * text=auto eol=lf
 *.sh text eol=lf
-
-# 第三方素材的许可文本保持原样（原文件就是 CRLF），不参与换行转换
-client/art_source/third_party/**/License.txt -text

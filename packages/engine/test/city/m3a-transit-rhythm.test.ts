@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { localToUtc } from '../../src/world/time.js';
+import { localToUtc } from '../../src/core/time.js';
 import {
   CITY_CATALOG_VERSION,
   HOUSE_ENTRANCE,

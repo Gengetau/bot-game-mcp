@@ -15,10 +15,8 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { afterEach, describe, expect, it } from 'vitest';
 import { loadConfig } from '../../src/config.js';
-import { createRegistry } from '../../src/games/index.js';
 import { startHttpServer, type HttpHandle } from '../../src/server/http.js';
 import { createRuntime, type Runtime } from '../../src/server/runtime.js';
-import { agentPrincipal, createWorld, enterWorldAgent } from '../../src/world/index.js';
 import { ledgerImbalance, runReconcile } from '../../src/city/index.js';
 import { COOKIE, HOUR, KISSA, MIN } from './helpers.js';
 
@@ -80,38 +78,31 @@ describe('M0 栖灯镇关停封存演练：town.enabled=false + city.enabled=tru
     const frozenTownDb = join(workDir, 'town-frozen.db');
     const cityTestDb = join(workDir, 'city-test.db');
 
-    // 第 1 步：构造一份含历史居民与镇币的栖灯镇数据库并封存关闭，记录字节级 SHA-256
-    {
-      const w = createWorld({ dbPath: frozenTownDb, registry: createRegistry(), seed: 'freeze-seed' });
-      await w.start();
-      const p = agentPrincipal(w, { id: '90001', name: '旧镇旅人' });
-      enterWorldAgent(w, { principalId: p.principal_id, clientId: 'mcp:freeze' }, { name: '旧镇旅人' });
-      // Checkpoint WAL into main db file before sealing
-      w.db.checkpoint();
-      w.close();
-    }
+    // 第 1 步：构造一份遗留封存文件 town-frozen.db，记录字节级 SHA-256
+    writeFileSync(frozenTownDb, 'frozen-legacy-town-db-snapshot-v6');
     expect(existsSync(frozenTownDb)).toBe(true);
     const shaBefore = fileSha256(frozenTownDb);
 
-    // 第 2 步：加载 botgame.city-test.json 模板，保持 town.enabled=false & city.enabled=true
+    // 第 2 步：加载 botgame.city-test.json 模板，故意保留遗留 town 段 & city.enabled=true
     const rawCfg = JSON.parse(readFileSync(TEMPLATE_PATH, 'utf8')) as Record<string, any>;
     rawCfg.port = 0;
     rawCfg.stateFile = join(workDir, 'city-test-state.json');
     rawCfg.settingsFile = join(workDir, 'city-test-settings.json');
     rawCfg.auth.issuedKeysFile = join(workDir, 'city-test-keys.json');
-    rawCfg.town.enabled = false;
-    rawCfg.town.dbFile = frozenTownDb;
+    rawCfg.town = { enabled: false, dbFile: frozenTownDb };
     rawCfg.city.enabled = true;
     rawCfg.city.dbFile = cityTestDb;
     const cfgFile = join(workDir, 'botgame.city-test.json');
     writeFileSync(cfgFile, JSON.stringify(rawCfg, null, 2));
 
-    const cfg = loadConfig(cfgFile, {});
-    expect(cfg.town.enabled).toBe(false);
+    const cfgLogs: string[] = [];
+    const cfg = loadConfig(cfgFile, {}, (m) => cfgLogs.push(m));
+    expect('town' in cfg).toBe(false);
+    expect(cfgLogs).toContain('配置里的 town 已不再使用，可以删掉');
     expect(cfg.city.enabled).toBe(true);
 
     rt = createRuntime(cfg, () => undefined);
-    expect(rt.world).toBeUndefined();
+    expect('world' in rt).toBe(false);
     expect(rt.city).toBeDefined();
     // 等待 city 异步恢复变为 running
     for (let i = 0; i < 50 && rt.city!.status !== 'running'; i++) {

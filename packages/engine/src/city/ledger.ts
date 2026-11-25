@@ -6,8 +6,8 @@
  * 物品只通过这里的函数变动；带出门的物品每件资源一行（带着 origin_ref），不和城里得到的同类物品合并。
  */
 import { sanitizeUserText } from '../core/text.js';
-import type { Row } from '../world/db.js';
-import { sha256 } from '../world/service.js';
+import type { Row } from '../core/sqlite.js';
+import { sha256 } from '../core/ids.js';
 import { MAX_FLYLEAF_ENTRIES, MAX_FLYLEAF_NOTE_CHARS, isStorable, itemName, itemType } from './catalog.js';
 import { CityError, cityBadRequest, cityPrecondition } from './errors.js';
 import type { CityService } from './service.js';

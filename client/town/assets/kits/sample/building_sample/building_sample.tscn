@@ -1,9 +1,0 @@
-[gd_scene load_steps=3 format=3]
-
-[ext_resource type="Script" path="res://scripts/stateful_prop.gd" id="1_prop"]
-[ext_resource type="PackedScene" path="res://assets/kits/sample/building_sample/building_sample.glb" id="2_model"]
-
-[node name="building_sample" type="Node3D"]
-script = ExtResource("1_prop")
-
-[node name="model" parent="." instance=ExtResource("2_model")]

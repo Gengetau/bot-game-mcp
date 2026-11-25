@@ -105,7 +105,7 @@ export abstract class BaseGame<S = any, O = any> {
   abstract privateView(seat: Seat): Record<string, unknown>;
   abstract publicView(): Record<string, unknown>;
 
-  // 以下是 AI 座位 MCP 视图的可选钩子（默认实现保证别的游戏的返回形状不变）。真人座位网页、观战、小镇嵌入局仍用 privateView / publicView。
+  // 以下是 AI 座位 MCP 视图的可选钩子（默认实现保证别的游戏的返回形状不变）。真人座位网页、观战、嵌入局仍用 privateView / publicView。
 
   /** AI 座位的 MCP 视图（可以有长度预算）。默认就是 privateView。 */
   agentView(seat: Seat): Record<string, unknown> {

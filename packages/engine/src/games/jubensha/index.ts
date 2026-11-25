@@ -1524,7 +1524,7 @@ export function createJubenshaDefinition(
     // ───────────────────────── 视角 ─────────────────────────
 
     /**
-     * 完整视图：真人座位网页（webSeatView）和小镇嵌入局用。真人 DM 在网页上看全部剧本（人在读，不受 token 限制）。
+     * 完整视图：真人座位网页（webSeatView）和嵌入局用。真人 DM 在网页上看全部剧本（人在读，不受 token 限制）。
      * 真人 DM 没有 get_my_view 和 act 工具，所以这里的 note / dm_actions 不提 lookup / section。
      */
     private fullView(seat: Seat): Record<string, unknown> {
@@ -1715,7 +1715,7 @@ export function createJubenshaDefinition(
       return out;
     }
 
-    /** img 给了就按 AI 座位的预算处理（卡面、图片说明、地点卡背标题）；不给是完整版（网页、小镇） */
+    /** img 给了就按 AI 座位的预算处理（卡面、图片说明、地点卡背标题）；不给是完整版（网页、嵌入局） */
     private searchView(seat: Seat, img?: { left: number }): Record<string, unknown> {
       const sx = this.sx;
       const searching = this.phase?.key === 'search';

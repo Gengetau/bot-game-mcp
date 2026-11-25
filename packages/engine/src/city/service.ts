@@ -1,7 +1,7 @@
 /**
  * CityService：晴空都城市世界的内核（事务、事件流、定时作业、启动恢复）。
  *
- * 和栖灯镇的 WorldService 是同一套纪律，但没有坐标、没有导航租约、没有控制权代数：
+ * 单写入进程 SQLite 事务纪律（无坐标、无导航租约）：
  *  - 所有写入都在 commit() 的同一个 SQLite 事务里：状态、账本、物品、事件、回执、outbox、定时作业一起提交或一起回滚。
  *    处理过程同步，不等模型、不等网络（天气抓取在事务外面做，抓到了再提交）。
  *  - 订阅者（world_wait、桥接的 wait）只在提交之后被唤醒。
@@ -12,8 +12,8 @@ import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import { dirname, join } from 'node:path';
 import { CryptoRng, type Rng } from '../core/rng.js';
-import { parseJson, type Row, type TownDb } from '../world/db.js';
-import { businessDate, localParts } from '../world/time.js';
+import { parseJson, type Row, type SqliteDb } from '../core/sqlite.js';
+import { businessDate, localParts } from '../core/time.js';
 import { CITY_WORLD_ID, CITY_WORLD_NAME, validateCatalog, type CatalogTimeContext } from './catalog.js';
 import { openCityDb } from './db.js';
 import { CityError } from './errors.js';
@@ -108,7 +108,7 @@ const MUST_COMPLETE_JOBS = new Set(['trip_leg', 'visit_return']);
 const JOB_BACKOFF_MS = [60_000, 5 * 60_000, 15 * 60_000, 60 * 60_000];
 
 export class CityService {
-  readonly db: TownDb;
+  readonly db: SqliteDb;
   readonly worldId = CITY_WORLD_ID;
   readonly worldName = CITY_WORLD_NAME;
   readonly params: CityParams;

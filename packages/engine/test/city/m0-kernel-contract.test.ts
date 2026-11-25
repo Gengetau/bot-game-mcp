@@ -211,7 +211,7 @@ describe('M0 桥接协议与 life1 词表对齐守门', () => {
     expect(existsSync(itemFile)).toBe(true);
 
     const identityText = readFileSync(identityFile, 'utf8');
-    for (const token of ['principal_id', 'resident_id', 'actor_id', 'domain_epoch', 'control_epoch', 'CONTROL_LOST', 'town.db', '¥200,000', 'walk_15m']) {
+    for (const token of ['principal_id', 'resident_id', 'actor_id', 'domain_epoch', 'control_epoch', 'CONTROL_LOST', '物理分库', 'city.db', '余额迁移', '跨世界资产兑换', '¥200,000', 'walk_15m']) {
       expect(identityText).toContain(token);
     }
 

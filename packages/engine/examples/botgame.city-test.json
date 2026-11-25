@@ -21,15 +21,6 @@
     ],
     "issuedKeysFile": "./data/city-test-keys.json"
   },
-  "town": {
-    "enabled": false,
-    "dbFile": "./data/town-frozen.db",
-    "publicUrl": null,
-    "devLogin": false,
-    "clientDir": null,
-    "params": {},
-    "adminOnlyTickets": false
-  },
   "city": {
     "enabled": true,
     "dbFile": "./data/city-test.db",

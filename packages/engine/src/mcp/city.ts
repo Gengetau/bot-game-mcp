@@ -1,7 +1,7 @@
 /**
  * 晴空都城市世界的 MCP 入口（给外部 bot）。
  *
- * 用的是和栖灯镇同一组工具名：enter_world（world_id="city"）之后，这个会话的
+ * enter_world（world_id="city"）之后，这个会话的
  * get_my_view / speak / world_act / world_wait / world_query / leave_world 都走城市。
  * 小屋的室友不从这里进城：她们由小屋内核经桥接接口（/city/bridge/v1）代行，
  * 她们在 QQ 侧的那把密钥调 enter_world 会得到 ENTRY_VIA_HOME_ONLY（只读的 world_query what=public 仍然可以）。
@@ -38,7 +38,7 @@ import {
 } from '../city/index.js';
 import { GameError, type GameErrorCode } from '../core/errors.js';
 import type { Identity } from '../core/types.js';
-import { REQUEST_ID_RE } from '../world/service.js';
+import { REQUEST_ID_RE } from '../core/ids.js';
 import type { Authenticator, SessionContext } from './auth.js';
 
 export interface CityDeps {
@@ -121,7 +121,7 @@ export const CITY_GUIDE = `# 晴空都：给进城的 AI 的说明
 - 视图里没有的东西就是你不知道的，不要编。城里有些地方不对外开放，查不到就是去不了。
 `;
 
-/** 城市的失败 → MCP 的业务错误。码原样带出，细分原因放在消息后面的一行 JSON 里（和栖灯镇同一个写法）。 */
+/** 城市的失败 → MCP 的业务错误。码原样带出，细分原因放在消息后面的一行 JSON 里。 */
 export function cityToGameError(e: unknown): unknown {
   if (!(e instanceof CityError)) return e;
   const extra = e.reason || (e.data && Object.keys(e.data).length) ? `\n${JSON.stringify({ ...(e.reason ? { reason: e.reason } : {}), ...(e.data ?? {}) })}` : '';
@@ -142,7 +142,6 @@ interface CitySessionFlag {
   city?: boolean;
   cityClientId?: string;
   defaultCityClientId?: string;
-  town?: unknown;
 }
 
 function sessionClientId(ctx: SessionContext, requested?: string): string {
@@ -167,8 +166,6 @@ export function citySession(ctx: SessionContext): boolean {
 function setCitySession(ctx: SessionContext, on: boolean): void {
   const flags = ctx as SessionContext & CitySessionFlag;
   flags.city = on;
-  // 一个会话同一时刻只在一个世界上下文里：进城就不再把不带 game_id 的调用路由到小镇（小镇里的居民不受影响）
-  if (on) flags.town = null;
 }
 
 function residentOf(deps: CityDeps, ctx: SessionContext, me: Identity): CityResident {
@@ -504,82 +501,8 @@ function leave(deps: CityDeps, ctx: SessionContext, me: Identity): Promise<unkno
 }
 
 const isCity = (worldId: unknown): boolean => worldId === CITY_WORLD_ID;
-const isLegacyCityWorldId = (worldId: unknown): boolean =>
-  typeof worldId === 'string' && worldId.trim().toLowerCase() === 'tokyo';
 
-const CITY_NOTES: Record<string, string> = {
-  enter_world: ' 晴空都城市世界：带 world_id="city"（可选 entry=kumominato:station 或 ryokogai:station、client_id、claim）。第一次进城发一笔启动资金，只发一次。',
-  world_act: ` 会话在晴空都城市世界里时，action 是 ${CITY_ACTIONS.filter((x) => x !== 'go_home').join(' / ')}（写法见资源 botgame://guide/city）；action_window、context_version 原样用视图里给的。`,
-  world_wait: ' 会话在晴空都城市世界里时等的是城里的事件（you_arrived、chat、arrived / left、gift_received、control、weather）。',
-  leave_world: ' 会话在晴空都城市世界里时离开的是城市：钱和东西保留，在路上的行程照常到站。',
-  world_query: ' 晴空都城市世界：带 world_id="city"，what 支持 public / residents / history / route / stamps（route 需带 from 与 to）。',
-  heartbeat: ' 会话在晴空都城市世界里时续城里的在场租约（若不在城返回 PRECONDITION_FAILED / not_in_city）。',
-  claim_control: ' 会话在晴空都城市世界里时显式接管这位城市居民的控制权。',
-};
-
-/**
- * 包一层栖灯镇的工具注册函数：同名工具在「这次调用指向城市」时走城市，否则原样交给小镇。
- * 两个世界共用工具名，接入端不用学第二套。
- */
-export function withCity(tool: ToolFn, deps: CityDeps, ctx: SessionContext, me: () => Identity): ToolFn {
-  return (name, config, handler) => {
-    const note = CITY_NOTES[name];
-    if (!note) {
-      tool(name, config, handler);
-      return;
-    }
-    const description = `${config.description}${note}`;
-    switch (name) {
-      case 'enter_world':
-        tool(name, { ...config, description, inputSchema: { ...config.inputSchema, world_id: z.string().optional().describe('世界编号：town（栖灯镇，默认）或 city（晴空都城市世界）'), entry: z.string().max(40).optional().describe('city：第一次进城的入口地点编号') } }, (a, extra) => {
-          if (isCity(a.world_id)) return wrap(() => enter(deps, ctx, me(), a));
-          setCitySession(ctx, false);
-          if (isLegacyCityWorldId(a.world_id)) return wrap(() => { throw new CityError('NOT_FOUND', '没有这个世界。'); });
-          return handler(a, extra);
-        });
-        return;
-      case 'world_act':
-        tool(name, { ...config, description }, (a, extra) => (citySession(ctx) ? act(deps, ctx, me(), a.request_id, a.action) : handler(a, extra)));
-        return;
-      case 'world_wait':
-        tool(name, { ...config, description }, (a, extra) => (citySession(ctx) ? wait(deps, ctx, me(), a, extra.signal) : handler(a, extra)));
-        return;
-      case 'leave_world':
-        tool(name, { ...config, description }, (a, extra) => (citySession(ctx) ? leave(deps, ctx, me()) : handler(a, extra)));
-        return;
-      case 'heartbeat':
-        tool(name, { ...config, description }, (a, extra) =>
-          citySession(ctx) ? heartbeatTool(deps, ctx, me()) : handler(a, extra),
-        );
-        return;
-      case 'claim_control':
-        tool(name, { ...config, description }, (a, extra) => (citySession(ctx) ? claimControlTool(deps, ctx, me()) : handler(a, extra)));
-        return;
-      default:
-        // world_query
-        tool(
-          name,
-          {
-            ...config,
-            description,
-            inputSchema: {
-              ...config.inputSchema,
-              what: z.enum(['public', 'residents', 'letters', 'history', 'town_chat', 'relations', 'report', 'route', 'stamps']),
-              world_id: z.string().optional().describe('查哪个世界：不填 = 这个会话当前所在的世界（没进过城就是栖灯镇）；city = 晴空都城市世界'),
-              from: z.string().max(60).optional().describe('city route：起点地点编号'),
-              to: z.string().max(60).optional().describe('city route：终点地点编号'),
-            },
-          },
-          (a, extra) => {
-            if (isLegacyCityWorldId(a.world_id)) return wrap(() => { throw new CityError('NOT_FOUND', '没有这个世界。'); });
-            return isCity(a.world_id) || (a.world_id === undefined && citySession(ctx)) ? query(deps, ctx, me, a) : handler(a, extra);
-          },
-        );
-    }
-  };
-}
-
-/** 无论栖灯镇开或关都注册的城市专属工具（如真人票据签发 city_issue_ticket）。 */
+/** 注册晴空都专属工具（如真人票据签发 city_issue_ticket）。 */
 export function registerCityDedicatedTools(tool: ToolFn, deps: CityDeps, me: () => Identity): void {
   tool(
     'city_issue_ticket',
@@ -615,7 +538,7 @@ export function registerCityDedicatedTools(tool: ToolFn, deps: CityDeps, me: () 
   );
 }
 
-/** 没开栖灯镇、只开了城市时：自己注册这一组工具。 */
+/** 注册晴空都城市世界的通用世界工具。 */
 export function registerCityTools(tool: ToolFn, deps: CityDeps, ctx: SessionContext, me: () => Identity): void {
   tool(
     'enter_world',

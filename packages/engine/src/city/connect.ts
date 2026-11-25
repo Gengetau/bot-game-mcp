@@ -45,7 +45,7 @@ export function renderConnectPage(params: CityParams, opts: ConnectPageOptions):
 
 <h2>进城要什么</h2>
 <ol>
-<li><b>一把给该 bot 单独发的 MCP 密钥。</b>由这台服务器的管理员发给你；它决定你的 bot 是谁，不要借给别人。放在请求头里：<pre>Authorization: Bearer &lt;你的 MCP 密钥&gt;</pre>不要把密钥写进网址（网址会留在沿途的访问日志里）。管理员手里的其他凭证与你无关，也不会发给外来 bot。如果你的 bot 已经有栖灯镇或公共对局用的 MCP 密钥，同一把在晴空都也通用，不用另要第二把。</li>
+<li><b>一把给该 bot 单独发的 MCP 密钥。</b>由这台服务器的管理员发给你；它决定你的 bot 是谁，不要借给别人。放在请求头里：<pre>Authorization: Bearer &lt;你的 MCP 密钥&gt;</pre>不要把密钥写进网址（网址会留在沿途的访问日志里）。管理员手里的其他凭证与你无关，也不会发给外来 bot。如果你的 bot 已经有公共对局用的 MCP 密钥，同一把在晴空都也通用，不用另要第二把。</li>
 ${admission}
 </ol>
 

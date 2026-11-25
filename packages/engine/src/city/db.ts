@@ -1,14 +1,13 @@
 /**
  * 晴空都城市世界的数据库 schema。
  *
- * 用和栖灯镇同一个数据库外壳（world/db.ts 的 TownDb：单写入进程、WAL、写事务、迁移前备份），
- * 但是**独立的文件**、独立的迁移：冻结的栖灯镇库（town.db，schema v6）一个字节都不动，
- * 居民、账户、物品完全分开，旧镇币进不来（规格 4.1）。
+ * 使用通用 SQLite 数据库外壳（core/sqlite.ts 的 SqliteDb：单写入进程、WAL、写事务、迁移前备份），
+ * 独立的数据库文件和独立的迁移，居民、账户、物品完全独立。
  *
  * 钱只通过 ledger.ts 的 ledger() 变动（每笔分录平衡、原因键唯一），物品只通过 ledger.ts 的物品函数变动。
  * 桥接回执（bridge_receipts）和桥接 outbox（bridge_outbox）永久保存，不清理。
  */
-import { TownDb, type SchemaSpec } from '../world/db.js';
+import { SqliteDb, type SchemaSpec } from '../core/sqlite.js';
 
 const MIGRATIONS: readonly string[] = [
   // ───── v1 ─────
@@ -647,6 +646,6 @@ const MIGRATIONS: readonly string[] = [
 export const CITY_SCHEMA: SchemaSpec = { label: '城市世界数据库', migrations: MIGRATIONS, backupPrefix: 'city-' };
 export const CITY_SCHEMA_VERSION = MIGRATIONS.length;
 
-export function openCityDb(path: string): TownDb {
-  return new TownDb(path, CITY_SCHEMA);
+export function openCityDb(path: string): SqliteDb {
+  return new SqliteDb(path, CITY_SCHEMA);
 }

@@ -19,12 +19,10 @@ import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
 import { extractKey, type SessionContext } from '../mcp/auth.js';
 import { cityPolicy } from '../mcp/city.js';
 import { createMcpServer } from '../mcp/server.js';
-import { townPolicy } from '../mcp/town.js';
 import type { Runtime } from './runtime.js';
 import { stderrLog } from './log.js';
 import { mountWeb } from './web.js';
 import { mountCity } from '../city/http.js';
-import { mountTown } from '../world/http.js';
 
 interface Session {
   transport: StreamableHTTPServerTransport | SSEServerTransport;
@@ -70,7 +68,6 @@ export async function startHttpServer(rt: Runtime, log: (msg: string) => void = 
     auth,
     version: rt.version,
     log,
-    ...(rt.world ? { town: { world: rt.world, auth, trustedIds: config.refereeIds, ...townPolicy(config.town) } } : {}),
     ...(rt.city ? { city: { city: rt.city, auth, trustedIds: config.refereeIds, ...cityPolicy(config.city) } } : {}),
   };
 
@@ -217,8 +214,6 @@ export async function startHttpServer(rt: Runtime, log: (msg: string) => void = 
   }
 
   const closeWeb = config.web ? mountWeb(app, manager, log) : () => undefined;
-  const town = rt.world ? mountTown(app, rt.world, log, { clientDir: config.town.clientDir }) : null;
-  const closeTown = town ?? (() => undefined);
   const closeCity = rt.city
     ? mountCity(app, rt.city, log, { bridgeKey: config.city.bridgeKey, adminKeys: config.auth.adminKeys, admissionList: config.city.allowedAgents !== undefined })
     : () => undefined;
@@ -240,7 +235,6 @@ export async function startHttpServer(rt: Runtime, log: (msg: string) => void = 
     const srv = app.listen(config.port, config.host, () => resolve(srv));
     srv.on('error', reject);
   });
-  town?.attach(server); // /town/ws 的 upgrade 处理
   const addr = server.address();
   const port = typeof addr === 'object' && addr ? addr.port : config.port;
   const hostForUrl = config.host === '0.0.0.0' || config.host === '::' ? '127.0.0.1' : config.host;
@@ -252,7 +246,6 @@ export async function startHttpServer(rt: Runtime, log: (msg: string) => void = 
     async close() {
       clearInterval(sweeper);
       closeWeb();
-      closeTown();
       closeCity();
       for (const s of sessions.values()) await s.transport.close().catch(() => undefined);
       sessions.clear();

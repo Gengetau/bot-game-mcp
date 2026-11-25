@@ -451,14 +451,14 @@ async function main(): Promise<void> {
     });
 
     // ── 1. 隔离护栏与桌面游戏不受影响 ──
-    assert.equal(harness.config.town.enabled, false);
+    assert.equal('town' in harness.config, false);
     const health = await (await fetch(`${harness.baseUrl}/health`)).json() as Record<string, any>;
     assert.equal(health.ok, true);
     assert.equal(health.town_enabled, false);
     assert.equal(health.city_enabled, true);
 
     const townResp = await fetch(`${harness.baseUrl}/town/`);
-    assert.equal(townResp.status, 404, 'town.enabled=false 时 /town/ 必须返回 404');
+    assert.equal(townResp.status, 404, '/town/ 必须返回 404');
 
     const cityPage = await fetch(`${harness.baseUrl}/city/`);
     assert.equal(cityPage.status, 200);

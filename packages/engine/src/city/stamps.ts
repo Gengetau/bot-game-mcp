@@ -6,7 +6,7 @@
  *  - selfView 仅附带精炼已集章数摘要（collected / total / here_stamped），
  *    完整印章帐明细通过 world_query(what="stamps") 或 GET /city/api/stamps 按需查询。
  */
-import type { Row } from '../world/db.js';
+import type { Row } from '../core/sqlite.js';
 import {
   CITY_CATALOG_VERSION,
   FARE_RULE_VERSION,

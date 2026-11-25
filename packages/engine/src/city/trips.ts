@@ -8,7 +8,7 @@
  *
  * 位置只由这个模块写（residents.place_id / trip_id）；进城、出城那两处在 residents.ts 和 visits.ts 里，也只调这里的函数。
  */
-import { parseJson, type Row } from '../world/db.js';
+import { parseJson, type Row } from '../core/sqlite.js';
 import {
   FARE_RULE_VERSION,
   HOUSE_ENTRANCE,

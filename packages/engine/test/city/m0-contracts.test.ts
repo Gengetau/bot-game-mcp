@@ -31,7 +31,7 @@ describe('M0 四份工程规格文档与 mappings v2 守门', () => {
     const specs: { file: string; mustContain: string[] }[] = [
       {
         file: 'IDENTITY-AND-FACTS.md',
-        mustContain: ['principal_id', 'resident_id', 'actor_id', 'domain_epoch', 'control_epoch', 'STALE_DOMAIN_EPOCH', 'CONTROL_LOST', 'ENTRY_VIA_HOME_ONLY', 'town.db'],
+        mustContain: ['principal_id', 'resident_id', 'actor_id', 'domain_epoch', 'control_epoch', 'STALE_DOMAIN_EPOCH', 'CONTROL_LOST', 'ENTRY_VIA_HOME_ONLY', '物理分库', 'city.db', '余额迁移', '跨世界资产兑换'],
       },
       {
         file: 'CLIENT-AND-WEB-CONTRACT.md',

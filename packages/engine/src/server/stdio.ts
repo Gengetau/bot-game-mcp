@@ -7,7 +7,6 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import type { SessionContext } from '../mcp/auth.js';
 import { cityPolicy } from '../mcp/city.js';
 import { createMcpServer } from '../mcp/server.js';
-import { townPolicy } from '../mcp/town.js';
 import type { Runtime } from './runtime.js';
 
 export async function startStdioServer(rt: Runtime, env: NodeJS.ProcessEnv = process.env): Promise<void> {
@@ -23,7 +22,6 @@ export async function startStdioServer(rt: Runtime, env: NodeJS.ProcessEnv = pro
       manager: rt.manager,
       auth: rt.auth,
       version: rt.version,
-      ...(rt.world ? { town: { world: rt.world, auth: rt.auth, trustedIds: rt.config.refereeIds, ...townPolicy(rt.config.town) } } : {}),
       ...(rt.city ? { city: { city: rt.city, auth: rt.auth, trustedIds: rt.config.refereeIds, ...cityPolicy(rt.config.city) } } : {}),
     },
     ctx,

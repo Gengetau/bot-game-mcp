@@ -47,7 +47,7 @@ import {
 import { createMcpServer } from '../../src/mcp/server.js';
 import { Authenticator } from '../../src/mcp/auth.js';
 import { REF, bot, human, identityOf, pendingSeats, setup, startGame } from '../helpers.js';
-import { makeTown } from '../world/helpers.js';
+import { makeCity } from '../city/helpers.js';
 import { BIG12, NEAR_MAX, X1, driveSamples, exampleDemo, fill, rig, synth, type Rig, type Sample, type SynthOpts } from './jubensha-views-helpers.js';
 
 const baseline = JSON.parse(readFileSync(new URL('./fixtures/jubensha-views-baseline.json', import.meta.url), 'utf8')) as Record<string, { tag: string; seat: number; dm: boolean; you: any; public: any }[]>;
@@ -1043,13 +1043,13 @@ describe('测试缺口：纯读的副作用、结束后不放宽、小镇会话�
     }
   });
 
-  it('MCP：会话在小镇里、没带 game_id 带 section → INVALID_ACTION，不返回小镇视图；带真实的 game_id 照常取', async () => {
+  it('MCP：会话在城市里、没带 game_id 带剧本 section → 拒绝，不返回城市视图；带真实的 game_id 照常取', async () => {
     const demo = exampleDemo('demo-rainy-bookshop');
-    const t = makeTown();
-    const manager = new GameManager({ registry: createRegistry({ scripts: memoryLibrary([demo]) }), rng: new SeededRng('mcp-town-g2') });
-    const agents = [1, 2, 3, 4, 5].map((n) => ({ key: `town-k${n}`.padEnd(16, 'x'), id: `600${n}`, name: `Bot${n}` }));
+    const t = makeCity();
+    const manager = new GameManager({ registry: createRegistry({ scripts: memoryLibrary([demo]) }), rng: new SeededRng('mcp-city-g2') });
+    const agents = [1, 2, 3, 4, 5].map((n) => ({ key: `city-k${n}`.padEnd(16, 'x'), id: `600${n}`, name: `Bot${n}` }));
     const auth = new Authenticator({ mode: 'keys', adminKeys: [], agents }, manager);
-    const deps = { manager, auth, version: 't', town: { world: t.w, auth, trustedIds: [] as string[] } };
+    const deps = { manager, auth, version: 't', city: { city: t.c, auth, trustedIds: [] as string[] } };
     const clients: Client[] = [];
     for (const a of agents) {
       const server = createMcpServer(deps, { identity: { id: a.id, name: a.name } as Identity, fixed: true, transport: 'memory' });
@@ -1067,14 +1067,12 @@ describe('测试缺口：纯读的副作用、结束后不放宽、小镇会话�
     const gameId = JSON.parse(made.text).game_id ?? JSON.parse(made.text).summary?.game_id;
     for (const [i, c] of clients.entries()) if (i > 0) await call(c, 'join_game', { game_id: gameId });
     await call(clients[0]!, 'start_game', { game_id: gameId });
-    // 还没进小镇：不带 game_id 取段是普通的「没指定对局」之类的错误，不是小镇的拒绝
-    const entered = await call(clients[4]!, 'enter_world', { client_id: 'run-6005-aaaa' });
+    const entered = await call(clients[4]!, 'enter_world', { world_id: 'city', name: 'Bot5', client_id: 'run-6005-aaaa' });
     expect(entered.isError, entered.text).toBe(false);
-    const inTown = await call(clients[4]!, 'get_my_view', { section: 'truth' });
-    expect(inTown.isError).toBe(true);
-    expect(inTown.text).toContain('INVALID_ACTION');
-    expect(inTown.text).toContain('你现在在小镇里');
-    expect(inTown.text).not.toContain('"context"');
+    const inCity = await call(clients[4]!, 'get_my_view', { section: 'truth' });
+    expect(inCity.isError).toBe(true);
+    expect(inCity.text).toContain('BAD_REQUEST');
+    expect(inCity.text).not.toContain('"context"');
     // 带上对局编号：照常取到（DM = 5 号机器人）
     const ok = await call(clients[4]!, 'get_my_view', { game_id: gameId, section: 'truth' });
     expect(ok.isError, ok.text).toBe(false);

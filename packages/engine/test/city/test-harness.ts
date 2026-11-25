@@ -121,8 +121,6 @@ export async function createIsolatedCityHarness(opts: IsolatedCityHarnessOptions
   rawCfg.stateFile = join(workDir, 'city-test-state.json');
   rawCfg.settingsFile = join(workDir, 'city-test-settings.json');
   rawCfg.auth.issuedKeysFile = join(workDir, 'city-test-keys.json');
-  rawCfg.town.enabled = false;
-  rawCfg.town.dbFile = join(workDir, 'town-untouched.db');
   rawCfg.city.enabled = true;
   rawCfg.city.dbFile = dbPath;
   rawCfg.city.weather = false;
@@ -135,7 +133,6 @@ export async function createIsolatedCityHarness(opts: IsolatedCityHarnessOptions
   const { writeFileSync } = await import('node:fs');
   writeFileSync(tmpCfgFile, JSON.stringify(rawCfg, null, 2));
   const config = loadConfig(tmpCfgFile, {});
-  if (config.town.enabled) throw new Error('隔离城市测试环境必须保持 town.enabled = false');
 
   const clock = new FakeClock();
   clock.t = opts.at ?? CITY_TEST_T0;
