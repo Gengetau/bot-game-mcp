@@ -13,7 +13,7 @@
  */
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { closeSync, existsSync, fsyncSync, openSync, readFileSync, renameSync, unlinkSync, writeSync } from 'node:fs';
+import { closeSync, existsSync, fstatSync, fsyncSync, openSync, readFileSync, renameSync, unlinkSync, writeSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath } from 'node:url';
@@ -73,13 +73,33 @@ function chooseArchivePath(dbPath, ts) {
 function atomicWriteFsync(targetPath, buf) {
   const tmpPath = `${targetPath}.tmp-${process.pid}`;
   let fd = null;
+  let renamed = false;
   try {
     fd = openSync(tmpPath, 'w', 0o600);
-    writeSync(fd, buf);
+    // writeSync may write fewer bytes than asked (file size limit, full disk, signals):
+    // keep writing until the whole buffer is on disk, and treat a zero-byte write as failure.
+    let offset = 0;
+    while (offset < buf.length) {
+      const n = writeSync(fd, buf, offset, buf.length - offset);
+      if (!Number.isInteger(n) || n <= 0) {
+        throw new Error(`归档写入不完整：${offset}/${buf.length} 字节`);
+      }
+      offset += n;
+    }
     fsyncSync(fd);
+    const size = fstatSync(fd).size;
+    if (size !== buf.length) {
+      throw new Error(`归档写入后大小不符：${size}/${buf.length} 字节`);
+    }
     closeSync(fd);
     fd = null;
     renameSync(tmpPath, targetPath);
+    renamed = true;
+    // Read the published file back: only an archive whose bytes match what the pointer records may be committed.
+    const onDisk = readFileSync(targetPath);
+    if (!onDisk.equals(buf)) {
+      throw new Error(`归档回读与写入内容不一致：${onDisk.length}/${buf.length} 字节`);
+    }
   } catch (err) {
     if (fd !== null) {
       try {
@@ -89,6 +109,9 @@ function atomicWriteFsync(targetPath, buf) {
       }
     }
     removeIfExists(tmpPath);
+    if (renamed) {
+      removeIfExists(targetPath);
+    }
     throw err;
   }
 }

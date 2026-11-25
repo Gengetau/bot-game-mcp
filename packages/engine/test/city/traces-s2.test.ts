@@ -1,5 +1,6 @@
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readdirSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
 import type { Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -1154,6 +1155,63 @@ describe('S2 晴空都异步留痕（traces-s2）', () => {
     expect(readState(presDb)).toEqual(presBefore);
     expect(existsSync(firstDg.archive)).toBe(true);
     expect(readdirSync(dirname(presDb)).filter((f) => f.includes('.s2-archive-'))).toEqual([firstDg.archive_file]);
+  });
+
+  it('归档分段写入时完整写完才提交，写不完则退出非零、保持 v6 并清理本次归档', async () => {
+    const FAULT_PRELOAD = fileURLToPath(new URL('./fixtures/archive-write-fault.cjs', import.meta.url));
+    const runWithFault = (dbFile: string, mode: 'short' | 'stall') =>
+      execFileSync(process.execPath, ['--require', FAULT_PRELOAD, DOWNGRADE_SCRIPT, '--db', dbFile, '--to', '5'], {
+        encoding: 'utf8',
+        stdio: 'pipe',
+        env: { ...process.env, ARCHIVE_WRITE_FAULT: mode },
+      });
+    const readState = (file: string) => {
+      const db = new DatabaseSync(file, { readOnly: true });
+      try {
+        const hasTraces = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='place_traces'").get();
+        return {
+          version: Number((db.prepare('PRAGMA user_version').get() as any)?.user_version ?? 0),
+          pointers: db
+            .prepare("SELECT key, value FROM meta WHERE key LIKE 's2_pending_restore_%' ORDER BY key")
+            .all()
+            .map((r: any) => [r.key, r.value]),
+          traceCount: hasTraces ? Number((db.prepare('SELECT COUNT(*) AS n FROM place_traces').get() as any).n) : -1,
+        };
+      } finally {
+        db.close();
+      }
+    };
+    const seed = async (name: string, id: string) => {
+      const file = makeTmpDb(name);
+      const clock = new FakeClock();
+      clock.t = T0;
+      const c = createCity({ dbPath: file, now: clock.now, rng: new SeededRng(`dg-${id}`), house: HOUSE, params: { tracesEnabled: true } });
+      await c.start();
+      const b = new CityTest(c, clock).bot('分段写入测试', { id, entry: 'ryokogai:station' });
+      b.go(SPOT_KISSA);
+      b.act({ type: 'leave_trace', text: '分段写入时也要完整归档的便签' });
+      c.close();
+      return file;
+    };
+
+    // 1. 每次只写入 16 字节：脚本循环写完，归档 SHA 与指针一致，正常提交 v5
+    const shortDb = await seed('downgrade-short-write.db', '9611');
+    const out = JSON.parse(runWithFault(shortDb, 'short').trim()) as { archive: string; archive_sha256: string };
+    const archiveBuf = readFileSync(out.archive);
+    expect(createHash('sha256').update(archiveBuf).digest('hex')).toBe(out.archive_sha256);
+    const after = readState(shortDb);
+    expect(after.version).toBe(5);
+    expect(after.pointers).toContainEqual(['s2_pending_restore_sha256', out.archive_sha256]);
+
+    // 2. 写入卡住（后续写入 0 字节）：退出非零，库保持 v6、便签与指针不变，不留本次归档或临时文件，预降级备份保留
+    const stallDb = await seed('downgrade-stalled-write.db', '9612');
+    const before = readState(stallDb);
+    expect(before.version).toBe(6);
+    expect(() => runWithFault(stallDb, 'stall')).toThrow();
+    expect(readState(stallDb)).toEqual(before);
+    const stallFiles = readdirSync(dirname(stallDb));
+    expect(stallFiles.filter((f) => f.includes('.s2-archive-'))).toEqual([]);
+    expect(stallFiles.filter((f) => f.includes('.pre-v5-downgrade-')).length).toBe(1);
   });
 
   it('空值与半残 s2_pending_restore 指针在启动恢复与降级脚本两侧一律 fail-closed', async () => {
