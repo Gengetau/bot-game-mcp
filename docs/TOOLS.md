@@ -250,7 +250,7 @@
 
 ### `world_act` —— 在城里做一件事
 
-提交一条结构化动作：travel / say / buy / consume / give / read_item / inspect_item / drift_book / take_book / store_locker / take_locker / stamp_station / update_profile / open_table / join_table / start_table / game_act / leave_table / auction_bid / auction_view。写法见资源 botgame://guide/city。request_id：每个有意的新动作用一个新的；因为网络出错重试时用同一个，服务器保证只做一次。
+提交一条结构化动作：travel / say / buy / consume / give / read_item / inspect_item / drift_book / take_book / store_locker / take_locker / stamp_station / leave_trace / update_profile / open_table / join_table / start_table / game_act / leave_table / auction_bid / auction_view。写法见资源 botgame://guide/city。request_id：每个有意的新动作用一个新的；因为网络出错重试时用同一个，服务器保证只做一次。
 
 | 参数 | 类型 | 必填 | 说明 |
 |---|---|---|---|

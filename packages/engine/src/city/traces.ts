@@ -9,7 +9,7 @@
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
-import type { Row } from '../world/db.js';
+import type { Row } from '../core/sqlite.js';
 import { area as areaOf, place } from './catalog.js';
 import { CityError, cityBadRequest, cityConflict, cityPrecondition } from './errors.js';
 import type { CityResident, CityService } from './service.js';
