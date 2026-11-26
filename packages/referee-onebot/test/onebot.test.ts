@@ -1368,6 +1368,125 @@ describe('OneBot referee against the real engine', () => {
     }
   }, 30_000);
 
+  // 以下两条来自衡的 R86 第三轮复现：反复复核失败后的去重，以及复核卡住时不能长时间堵住发送队列
+  it('external rooms dedupe: after 100 failed rechecks a lobby is still invited only once', async () => {
+    const group = '9000000094';
+    const qq = new FakeOneBot('r3retry');
+    await qq.start();
+    const [host, mainBrain] = await Promise.all([mcpAs(KEYS.ai2), mcpAs(KEYS.ref)]);
+    const id = (await host.call('create_game', { game_type: 'number_bomb', group_id: group, join_as: 'player' })).summary.game_id;
+    await mainBrain.call('join_game', { game_id: id, join_as: 'referee' });
+    let holdReady!: () => void;
+    let unblock!: () => void;
+    const held = new Promise<void>((resolve) => { holdReady = resolve; });
+    const gate = new Promise<void>((resolve) => { unblock = resolve; });
+    let first = true;
+    let recheck = false;
+    let failures = 0;
+    const liveFetch = globalThis.fetch;
+    const spy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const rpc = typeof init?.body === 'string' ? JSON.parse(init.body) : null;
+      if (rpc?.params?.name === 'list_games' && rpc.params.arguments?.group_id === group) {
+        if (first) {
+          first = false;
+          holdReady();
+          await gate;
+        } else if (recheck) {
+          recheck = false;
+          if (failures < 100) {
+            failures += 1;
+            return new Response(JSON.stringify({ jsonrpc: '2.0', id: rpc.id, error: { code: -32603, message: 'forced R3 recheck failure' } }), {
+              headers: { 'content-type': 'application/json' },
+            });
+          }
+        }
+      }
+      return liveFetch(input, init);
+    });
+    const ac = new AbortController();
+    const done = runReferee({
+      url: http.url, key: KEYS.ref, onebotUrl: qq.url, onebotToken: 'r3retry',
+      groupId: group, admins: [OWNER], bots: ['1000000009'], selfInPool: false, sendGapMs: 0, signal: ac.signal,
+      log: (l) => { if (l.includes('排队点名')) recheck = true; },
+    });
+    // 「/桌游 状态」会立刻刷新一次，用它代替 3 秒一次的轮询
+    const status = async () => {
+      const mark = qq.calls.length;
+      qq.emit({ post_type: 'message', message_type: 'group', group_id: Number(group), user_id: Number(OWNER), message_id: ++msgSeq, sender: { nickname: '主人' }, message: text('/桌游 状态') });
+      await qq.waitForCall((c) => callText(c).includes('报名中'), 3000, mark);
+    };
+    const invites = () => qq.calls.filter((c) => callText(c).includes('AI 玩家请调用') && callText(c).includes(id));
+    try {
+      await qq.waitForConnection();
+      await Promise.race([held, new Promise((_, reject) => setTimeout(() => reject(new Error('第一次 list_games 没有被挂住')), 5000))]);
+      for (let i = 0; i < 100; i++) await status();
+      expect(failures).toBe(100);
+      expect(invites()).toHaveLength(0);
+      await status();
+      expect(invites()).toHaveLength(1);
+      await status();
+      expect(invites()).toHaveLength(1);
+    } finally {
+      ac.abort();
+      unblock();
+      spy.mockRestore();
+      await Promise.race([done, new Promise((res) => setTimeout(res, 5000))]);
+      await Promise.all([host.close(), mainBrain.close(), qq.close()]);
+    }
+  }, 40_000);
+
+  it('external rooms slow recheck: a stuck lookup holds other replies for at most a few seconds, then the next refresh invites', async () => {
+    const group = '9000000095';
+    const qq = new FakeOneBot('r3slow');
+    await qq.start();
+    const [host, mainBrain] = await Promise.all([mcpAs(KEYS.ai2), mcpAs(KEYS.ref)]);
+    const id = (await host.call('create_game', { game_type: 'number_bomb', group_id: group, join_as: 'player' })).summary.game_id;
+    await mainBrain.call('join_game', { game_id: id, join_as: 'referee' });
+    let holdReady!: () => void;
+    let unblock!: () => void;
+    const held = new Promise<void>((resolve) => { holdReady = resolve; });
+    const gate = new Promise<void>((resolve) => { unblock = resolve; });
+    let reads = 0;
+    const actualFetch = globalThis.fetch;
+    // 第二次 list_games 就是点名前的复核：一直挂着，直到测试结束
+    const spy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const rpc = typeof init?.body === 'string' ? JSON.parse(init.body) : null;
+      if (rpc?.params?.name === 'list_games' && rpc.params.arguments?.group_id === group && ++reads === 2) {
+        holdReady();
+        await gate;
+      }
+      return actualFetch(input, init);
+    });
+    const ac = new AbortController();
+    const logs: string[] = [];
+    const done = runReferee({
+      url: http.url, key: KEYS.ref, onebotUrl: qq.url, onebotToken: 'r3slow',
+      groupId: group, admins: [OWNER], bots: ['1000000009'], selfInPool: false, sendGapMs: 0, signal: ac.signal,
+      log: (l) => logs.push(l),
+    });
+    const isHelp = (c: ApiCall) => callText(c).includes('桌游指令');
+    const isInvite = (c: ApiCall) => callText(c).includes('AI 玩家请调用') && callText(c).includes(id);
+    try {
+      await qq.waitForConnection();
+      await Promise.race([held, new Promise((_, reject) => setTimeout(() => reject(new Error('复核没有被挂住')), 5000))]);
+      const asked = Date.now();
+      qq.emit({ post_type: 'message', message_type: 'group', group_id: Number(group), user_id: Number(OWNER), message_id: ++msgSeq, sender: { nickname: '主人' }, message: text('/桌游 帮助') });
+      await qq.waitForCall(isHelp, 7000);
+      expect(Date.now() - asked).toBeLessThan(7000);
+      expect(logs.some((l) => l.includes(`点名前查对局 ${id} 失败`))).toBe(true);
+      // 复核没做成：这局不算点过，下一轮刷新正常点名，只点一次
+      await qq.waitForCall(isInvite, 8000);
+      await new Promise((res) => setTimeout(res, 3500));
+      expect(qq.calls.filter(isInvite)).toHaveLength(1);
+    } finally {
+      ac.abort();
+      unblock();
+      spy.mockRestore();
+      await Promise.race([done, new Promise((res) => setTimeout(res, 5000))]);
+      await Promise.all([host.close(), mainBrain.close(), qq.close()]);
+    }
+  }, 30_000);
+
   it('key-issuer: a voice account hands out engine keys over private chat', async () => {
     const qqM = new FakeOneBot('tm2');
     const qqX = new FakeOneBot('tx2');

@@ -501,6 +501,8 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
   const autoStart = Math.max(0, opts.autoStartSeconds ?? 0);
   const lobbyTimeout = Math.max(0, opts.lobbyTimeoutSeconds ?? 0);
   const sendGap = opts.sendGapMs ?? 300;
+  /** 外部房点名前复核对局状态最多等多久（这时发送队列被占着） */
+  const INVITE_RECHECK_MS = 5_000;
   const postWaitMs = opts.postWaitMs ?? 60_000;
   /** 群里每个人最后一次说话的时间（判断自己发群的 bot 的发言是否已出现） */
   const lastGroupPost = new Map<string, number>();
@@ -572,9 +574,8 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
     takeoverAt: 0,
     noted: '',
   };
-  /** 已经点名请 bot 报名过的对局（只记最近的一批）：自己开房、别人开房两条路径共用，同一局只点一次 */
+  /** 已经点名请 bot 报名过的对局（按登记先后只记最近 100 局）：自己开房、别人开房两条路径共用，同一局只点一次 */
   const invited = new Set<string>();
-  const invitedQueue: string[] = [];
   let wake: (() => void) | null = null;
   const idle = (ms: number) =>
     new Promise<void>((res) => {
@@ -838,21 +839,32 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
     // 查重和登记在第一个 await 之前同步完成：并发的刷新、开房指令不会对同一局点两次名
     if (follower || !gameId || invited.has(gameId)) return;
     invited.add(gameId);
-    invitedQueue.push(gameId);
-    if (invitedQueue.length > 100) invited.delete(invitedQueue.shift()!);
+    if (invited.size > 100) invited.delete(invited.values().next().value!);
     log(`[referee] 排队点名请 bot 报名 ${gameId}`);
     await enqueue(async () => {
       let skip = new Set<string>();
       if (mode === 'recheck') {
         // 别人开的房：排在前面的消息发完时，房间可能已开局、被中止或有人报名。
         // 轮到这条时再按引擎里的最新状态核一次：不在报名中就不点；已报名的和房主不点
+        // 这次查询占着整个发送队列（群聊、私聊都在等），所以只等几秒；超时不断开引擎连接，迟到的结果直接丢掉
         let latest: Json | undefined;
+        let timer: ReturnType<typeof setTimeout> | undefined;
         try {
-          latest = ((await main.engine.call('list_games', { group_id: opts.groupId })).games ?? []).find((x: Json) => String(x.game_id) === gameId);
+          const lookup = main.engine.call('list_games', { group_id: opts.groupId });
+          lookup.catch(() => undefined);
+          const res = await Promise.race([
+            lookup,
+            new Promise<never>((_, reject) => {
+              timer = setTimeout(() => reject(new Error(`${INVITE_RECHECK_MS / 1000} 秒内没查到`)), INVITE_RECHECK_MS);
+            }),
+          ]);
+          latest = (res.games ?? []).find((x: Json) => String(x.game_id) === gameId);
         } catch (e) {
-          invited.delete(gameId); // 没核成：下次刷新再试
+          invited.delete(gameId); // 没核成：撤销这局的登记，下次刷新再试
           log(`[referee] 点名前查对局 ${gameId} 失败：${errMsg(e)}，稍后再试`);
           return;
+        } finally {
+          clearTimeout(timer);
         }
         if (latest?.status !== 'lobby') {
           log(`[referee] 对局 ${gameId} 已不在报名中，不点名`);
