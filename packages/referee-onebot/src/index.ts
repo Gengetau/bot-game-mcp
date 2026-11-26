@@ -226,6 +226,8 @@ export function parseOptionTokens(tokens: string[]): Record<string, unknown> {
 class Engine {
   private client: Client | null = null;
   private connecting: Promise<Client> | null = null;
+  /** 裁判退出后为 true：不再连接，退出时还没握完手的连接握完就关掉 */
+  private closed = false;
   /** 在途调用；退出时一起中断（长轮询 referee_step 不中断的话，SIGTERM 后要等一分钟） */
   private readonly aborts = new Set<AbortController>();
 
@@ -236,6 +238,7 @@ class Engine {
   ) {}
 
   private ensure(): Promise<Client> {
+    if (this.closed) return Promise.reject(new Error('引擎连接已关闭'));
     if (this.client) return Promise.resolve(this.client);
     if (!this.connecting) {
       this.connecting = (async () => {
@@ -246,6 +249,11 @@ class Engine {
           await client.connect(new StreamableHTTPClientTransport(new URL(this.url), { requestInit: { headers } }));
         } finally {
           this.connecting = null;
+        }
+        if (this.closed) {
+          // 握手期间裁判已经退出：这条连接没人会再用，也不能留在后台
+          await client.close().catch(() => undefined);
+          throw new Error('引擎连接已关闭');
         }
         client.onclose = () => {
           if (this.client === client) this.client = null;
@@ -258,14 +266,21 @@ class Engine {
     return this.connecting;
   }
 
-  /** 调用工具；传输层问题抛 TransportError（可重试），引擎拒绝抛 ToolError。 */
-  async call(name: string, args: Record<string, unknown> = {}, timeoutMs = 60_000): Promise<any> {
+  /**
+   * 调用工具；传输层问题抛 TransportError（可重试），引擎拒绝抛 ToolError。
+   * signal 中断时只取消这一次调用（抛 TransportError），不断开和引擎的连接。
+   */
+  async call(name: string, args: Record<string, unknown> = {}, timeoutMs = 60_000, signal?: AbortSignal): Promise<any> {
     const ac = new AbortController();
+    const cancel = () => ac.abort();
+    if (signal?.aborted) ac.abort();
+    signal?.addEventListener('abort', cancel, { once: true });
     this.aborts.add(ac);
     try {
       return await this.callWith(ac, name, args, timeoutMs);
     } finally {
       this.aborts.delete(ac);
+      signal?.removeEventListener('abort', cancel);
     }
   }
 
@@ -277,8 +292,17 @@ class Engine {
   private async callWith(ac: AbortController, name: string, args: Record<string, unknown>, timeoutMs: number): Promise<any> {
     let client: Client;
     try {
-      client = await this.ensure();
+      // 共用的握手可能还在进行：这次调用被中断时就不等了，握手继续留给别的调用
+      const ready = this.ensure();
+      ready.catch(() => undefined);
+      ac.signal.throwIfAborted();
+      client = await new Promise<Client>((resolve, reject) => {
+        const stop = () => reject(ac.signal.reason);
+        ac.signal.addEventListener('abort', stop, { once: true });
+        ready.then(resolve, reject).finally(() => ac.signal.removeEventListener('abort', stop));
+      });
     } catch (e) {
+      if (ac.signal.aborted) throw new TransportError(`${name}：已中断`);
       throw new TransportError(`连接引擎失败：${errMsg(e)}`);
     }
     let res: any;
@@ -304,6 +328,12 @@ class Engine {
     } catch {
       throw new ToolError(`引擎返回的不是 JSON：${text.slice(0, 200)}`);
     }
+  }
+
+  /** 退出时调用：断开当前连接，之后不再连接（还在进行的握手完成后会自己关掉） */
+  async close(): Promise<void> {
+    this.closed = true;
+    await this.drop();
   }
 
   async drop(): Promise<void> {
@@ -501,6 +531,8 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
   const autoStart = Math.max(0, opts.autoStartSeconds ?? 0);
   const lobbyTimeout = Math.max(0, opts.lobbyTimeoutSeconds ?? 0);
   const sendGap = opts.sendGapMs ?? 300;
+  /** 外部房点名前复核对局状态最多等多久（这时发送队列被占着） */
+  const INVITE_RECHECK_MS = 5_000;
   const postWaitMs = opts.postWaitMs ?? 60_000;
   /** 群里每个人最后一次说话的时间（判断自己发群的 bot 的发言是否已出现） */
   const lastGroupPost = new Map<string, number>();
@@ -572,6 +604,8 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
     takeoverAt: 0,
     noted: '',
   };
+  /** 已经点名请 bot 报名过的对局（按登记先后只记最近 100 局）：自己开房、别人开房两条路径共用，同一局只点一次 */
+  const invited = new Set<string>();
   let wake: (() => void) | null = null;
   const idle = (ms: number) =>
     new Promise<void>((res) => {
@@ -640,22 +674,26 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
     if (!Array.isArray(message) || !message.some((m: Json) => m?.type === 'at')) return null;
     return message.map((m: Json) => (m?.type === 'at' ? { type: 'text', data: { text: `@${String(m.data?.qq ?? '')}` } } : m));
   };
+  /** 立刻发一条群消息（只在发送队列里调用） */
+  const sendGroupNow = async (v: Voice, message: unknown): Promise<void> => {
+    const via = sendable(v);
+    try {
+      try {
+        await via.onebot.call('send_group_msg', { group_id: Number(opts.groupId), message });
+      } catch (e) {
+        // 有一个 @ 的号解析不了（不在群里、QQ 侧查不到），整条消息都会被拒：把 @ 换成纯文字再发一次
+        const plain = withoutAt(message);
+        if (!plain) throw e;
+        log(`[referee] 群消息发送失败（${via.name || via.id}）：${errMsg(e)}，去掉 @ 重发`);
+        await via.onebot.call('send_group_msg', { group_id: Number(opts.groupId), message: plain });
+      }
+    } catch (e) {
+      log(`[referee] 群消息发送失败（${via.name || via.id}）：${errMsg(e)}`);
+    }
+  };
   const sendGroupAs = (v: Voice, message: unknown) =>
     enqueue(async () => {
-      const via = sendable(v);
-      try {
-        try {
-          await via.onebot.call('send_group_msg', { group_id: Number(opts.groupId), message });
-        } catch (e) {
-          // 有一个 @ 的号解析不了（不在群里、QQ 侧查不到），整条消息都会被拒：把 @ 换成纯文字再发一次
-          const plain = withoutAt(message);
-          if (!plain) throw e;
-          log(`[referee] 群消息发送失败（${via.name || via.id}）：${errMsg(e)}，去掉 @ 重发`);
-          await via.onebot.call('send_group_msg', { group_id: Number(opts.groupId), message: plain });
-        }
-      } catch (e) {
-        log(`[referee] 群消息发送失败（${via.name || via.id}）：${errMsg(e)}`);
-      }
+      await sendGroupNow(v, message);
       await pause(sendGap);
     });
   /**
@@ -791,6 +829,22 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
         if (j.group_message) await say(j.group_message);
       }
       await offerVoices();
+      // 别的 bot 自己调 create_game 开的房（不经过「/桌游 <游戏>」指令）：也像自己开房那样点名请聊天 bot 报名。
+      // 已报名的（含房主）不点；去不去由它们自己决定，不设人数上限。
+      // 嗓子账号（--voices）照样点：它们的模型也只在被 @ 时才会去报名，和开房指令那条路径一致。
+      // 开房指令开的房（bot 发「/桌游」也算）房主是主账号，由那条路径点名；两条路径共用 invited，同一局只点一次
+      const cur = st.game;
+      if (cur && cur.status === 'lobby' && !follower && !invited.has(cur.id) && cur.host !== main.id) {
+        if (keyIssuer) {
+          try {
+            await syncIssuedBots();
+          } catch (e) {
+            log(`[keys] 同步已发放密钥失败：${errMsg(e)}`);
+          }
+        }
+        // 跳过名单在真正发出前按引擎里的最新状态再算（见 inviteBots 的 recheck）
+        await inviteBots(cur.id, 'recheck');
+      }
     } else {
       // 本局裁判是我的账号，且没有别的进程在代行（没登记过代行时 hostedBy 为空，也是我来）
       const mine = voiceOf(st.game.refereeId);
@@ -805,6 +859,58 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
       }
     }
     wake?.();
+  }
+
+  /**
+   * 只有被 @ 才会醒来的聊天 bot（比如 AI 小屋的居民）：点名请它们报名。
+   * 自己开房和发现别人开的房都走这里；同一局只点一次名，两条路径不会叠加。
+   */
+  async function inviteBots(gameId: string, mode: 'all' | 'recheck' = 'all'): Promise<void> {
+    // 查重和登记在第一个 await 之前同步完成：并发的刷新、开房指令不会对同一局点两次名
+    if (follower || !gameId || invited.has(gameId)) return;
+    invited.add(gameId);
+    if (invited.size > 100) invited.delete(invited.values().next().value!);
+    log(`[referee] 排队点名请 bot 报名 ${gameId}`);
+    await enqueue(async () => {
+      let skip = new Set<string>();
+      if (mode === 'recheck') {
+        // 别人开的房：排在前面的消息发完时，房间可能已开局、被中止或有人报名。
+        // 轮到这条时再按引擎里的最新状态核一次：不在报名中就不点；已报名的和房主不点
+        // 这次查询占着整个发送队列（群聊、私聊都在等），所以只等几秒，到时取消这一次请求。
+        // 走中断而不是请求超时：引擎那边的超时会断开主账号共用的连接
+        let latest: Json | undefined;
+        const stop = new AbortController();
+        const timer = setTimeout(() => stop.abort(), INVITE_RECHECK_MS);
+        try {
+          const res = await main.engine.call('list_games', { group_id: opts.groupId }, undefined, stop.signal);
+          latest = (res.games ?? []).find((x: Json) => String(x.game_id) === gameId);
+        } catch (e) {
+          invited.delete(gameId); // 没核成：撤销这局的登记，下次刷新再试
+          log(`[referee] 点名前查对局 ${gameId} 失败：${stop.signal.aborted ? `${INVITE_RECHECK_MS / 1000} 秒内没查到` : errMsg(e)}，稍后再试`);
+          return;
+        } finally {
+          clearTimeout(timer);
+        }
+        if (latest?.status !== 'lobby') {
+          log(`[referee] 对局 ${gameId} 已不在报名中，不点名`);
+          return;
+        }
+        const lobbyNow: Json[] = latest.lobby ?? [];
+        skip = new Set([String(latest.host ?? ''), ...lobbyNow.map((e) => String(e.id))]);
+      }
+      const targets = [...bots].filter((qq) => !skip.has(qq));
+      if (targets.length === 0) return;
+      log(`[referee] 点名请 ${targets.length} 个 bot 报名 ${gameId}`);
+      // 固定用主账号发：上一局的裁判嗓子可能还没换下来（st.active），而居民收到自己发的消息不会醒
+      await sendGroupNow(main, [
+        ...targets.flatMap((qq) => [
+          { type: 'at', data: { qq } },
+          { type: 'text', data: { text: ' ' } },
+        ]),
+        { type: 'text', data: { text: `AI 玩家请调用 join_game(game_id="${gameId}", join_as="player") 报名。` } },
+      ]);
+      await pause(sendGap);
+    });
   }
 
   /** 向引擎登记：报名了的、本进程能替它说话的账号，抽中就由本进程代行。 */
@@ -1043,15 +1149,7 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
             }
           }
           // 只有被 @ 才会醒来的聊天 bot：点名请它们报名
-          if (bots.size > 0) {
-            await sendGroup([
-              ...[...bots].flatMap((qq) => [
-                { type: 'at', data: { qq } },
-                { type: 'text', data: { text: ' ' } },
-              ]),
-              { type: 'text', data: { text: `AI 玩家请调用 join_game(game_id="${id}", join_as="player") 报名。` } },
-            ]);
-          }
+          await inviteBots(id);
           return;
         }
       }
@@ -1713,6 +1811,6 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
     stopped = true;
     for (const v of voices) v.onebot.close();
     await sendChain;
-    await Promise.all([...voices.map((v) => v.engine.drop()), adminEngine?.drop()]);
+    await Promise.all([...voices.map((v) => v.engine.close()), adminEngine?.close()]);
   }
 }
