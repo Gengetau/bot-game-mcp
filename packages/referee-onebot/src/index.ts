@@ -258,14 +258,21 @@ class Engine {
     return this.connecting;
   }
 
-  /** 调用工具；传输层问题抛 TransportError（可重试），引擎拒绝抛 ToolError。 */
-  async call(name: string, args: Record<string, unknown> = {}, timeoutMs = 60_000): Promise<any> {
+  /**
+   * 调用工具；传输层问题抛 TransportError（可重试），引擎拒绝抛 ToolError。
+   * signal 中断时只取消这一次调用（抛 TransportError），不断开和引擎的连接。
+   */
+  async call(name: string, args: Record<string, unknown> = {}, timeoutMs = 60_000, signal?: AbortSignal): Promise<any> {
     const ac = new AbortController();
+    const cancel = () => ac.abort();
+    if (signal?.aborted) ac.abort();
+    signal?.addEventListener('abort', cancel, { once: true });
     this.aborts.add(ac);
     try {
       return await this.callWith(ac, name, args, timeoutMs);
     } finally {
       this.aborts.delete(ac);
+      signal?.removeEventListener('abort', cancel);
     }
   }
 
@@ -846,22 +853,17 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
       if (mode === 'recheck') {
         // 别人开的房：排在前面的消息发完时，房间可能已开局、被中止或有人报名。
         // 轮到这条时再按引擎里的最新状态核一次：不在报名中就不点；已报名的和房主不点
-        // 这次查询占着整个发送队列（群聊、私聊都在等），所以只等几秒；超时不断开引擎连接，迟到的结果直接丢掉
+        // 这次查询占着整个发送队列（群聊、私聊都在等），所以只等几秒，到时取消这一次请求。
+        // 走中断而不是请求超时：引擎那边的超时会断开主账号共用的连接
         let latest: Json | undefined;
-        let timer: ReturnType<typeof setTimeout> | undefined;
+        const stop = new AbortController();
+        const timer = setTimeout(() => stop.abort(), INVITE_RECHECK_MS);
         try {
-          const lookup = main.engine.call('list_games', { group_id: opts.groupId });
-          lookup.catch(() => undefined);
-          const res = await Promise.race([
-            lookup,
-            new Promise<never>((_, reject) => {
-              timer = setTimeout(() => reject(new Error(`${INVITE_RECHECK_MS / 1000} 秒内没查到`)), INVITE_RECHECK_MS);
-            }),
-          ]);
+          const res = await main.engine.call('list_games', { group_id: opts.groupId }, undefined, stop.signal);
           latest = (res.games ?? []).find((x: Json) => String(x.game_id) === gameId);
         } catch (e) {
           invited.delete(gameId); // 没核成：撤销这局的登记，下次刷新再试
-          log(`[referee] 点名前查对局 ${gameId} 失败：${errMsg(e)}，稍后再试`);
+          log(`[referee] 点名前查对局 ${gameId} 失败：${stop.signal.aborted ? `${INVITE_RECHECK_MS / 1000} 秒内没查到` : errMsg(e)}，稍后再试`);
           return;
         } finally {
           clearTimeout(timer);

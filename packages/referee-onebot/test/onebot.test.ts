@@ -1487,6 +1487,101 @@ describe('OneBot referee against the real engine', () => {
     }
   }, 30_000);
 
+  // 来自衡的 R86 第四轮复现：被放弃的复核请求不能在晚些时候断开主账号共用的引擎连接
+  it.each(['late success', 'late SDK timeout'] as const)('external rooms abandoned recheck: %s', async (scenario) => {
+    const group = scenario === 'late success' ? '9000000096' : '9000000097';
+    const qq = new FakeOneBot('r4late');
+    await qq.start();
+    const [host, mainBrain] = await Promise.all([mcpAs(KEYS.ai2), mcpAs(KEYS.ref)]);
+    const id = (await host.call('create_game', { game_type: 'number_bomb', group_id: group, join_as: 'player' })).summary.game_id;
+    await mainBrain.call('join_game', { game_id: id, join_as: 'referee' });
+    let reportLookupHeld!: () => void;
+    let reportRulesHeld!: () => void;
+    let releaseLookup!: () => void;
+    let releaseRules!: () => void;
+    const lookupHeld = new Promise<void>((resolve) => { reportLookupHeld = resolve; });
+    const rulesHeld = new Promise<void>((resolve) => { reportRulesHeld = resolve; });
+    const lookupGate = new Promise<void>((resolve) => { releaseLookup = resolve; });
+    const rulesGate = new Promise<void>((resolve) => { releaseRules = resolve; });
+    const actualFetch = globalThis.fetch;
+    let listPosts = 0;
+    let listCalls = 0;
+    let rulesPosts = 0;
+    let oldResponseReturned = false;
+    // 第二次 list_games（点名前复核）的响应被扣住
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const rpc = typeof init?.body === 'string' ? JSON.parse(init.body) : null;
+      if (rpc?.params?.name === 'list_games' && rpc.params.arguments?.group_id === group && ++listPosts === 2) {
+        const response = await actualFetch(input, init);
+        reportLookupHeld();
+        await lookupGate;
+        oldResponseReturned = true;
+        return response;
+      }
+      if (scenario === 'late SDK timeout' && rpc?.params?.name === 'get_rules' && ++rulesPosts === 1) {
+        reportRulesHeld();
+        await rulesGate;
+      }
+      return actualFetch(input, init);
+    });
+    // 把这次复核的 SDK 请求期限从 60 秒缩到 12 秒，测试不用等一分钟
+    const realCall = Client.prototype.callTool;
+    const sdkSpy = vi.spyOn(Client.prototype, 'callTool').mockImplementation(function (this: Client, params, schema, options) {
+      if (scenario === 'late SDK timeout' && params.name === 'list_games' && params.arguments?.group_id === group && ++listCalls === 2) {
+        return realCall.call(this, params, schema, { ...options, timeout: 12_000 });
+      }
+      return realCall.call(this, params, schema, options);
+    });
+    const ac = new AbortController();
+    const logs: string[] = [];
+    const done = runReferee({
+      url: http.url, key: KEYS.ref, onebotUrl: qq.url, onebotToken: 'r4late',
+      groupId: group, admins: [OWNER], bots: ['1000000009'], selfInPool: false, sendGapMs: 0, signal: ac.signal,
+      log: (l) => logs.push(l),
+    });
+    const emit = (t: string) => qq.emit({ post_type: 'message', message_type: 'group', group_id: Number(group), user_id: Number(OWNER), message_id: ++msgSeq, sender: { nickname: '主人' }, message: text(t) });
+    const isInvite = (c: ApiCall) => callText(c).includes('AI 玩家请调用') && callText(c).includes(id);
+    const isRules = (c: ApiCall) => callText(c).includes('炸弹') && !isInvite(c);
+    const limit = <T,>(p: Promise<T>, ms: number) => Promise.race([p, new Promise<never>((_, reject) => setTimeout(() => reject(new Error('gate did not fire')), ms))]);
+    try {
+      await qq.waitForConnection();
+      await limit(lookupHeld, 5000);
+      // 5 秒后放弃这次复核，下一轮刷新点名
+      await qq.waitForCall(isInvite, 11000);
+      expect(logs.filter((l) => l.includes('5 秒内没查到'))).toHaveLength(1);
+      if (scenario === 'late success') {
+        // 迟到的成功响应不会再点一次名
+        releaseLookup();
+        emit('/桌游 状态');
+        await qq.waitForCall((c) => callText(c).includes('报名中'), 3000);
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        expect(oldResponseReturned).toBe(true);
+        expect(qq.calls.filter(isInvite)).toHaveLength(1);
+      } else {
+        // 一条独立的群指令跨过原请求的期限：连接不能被断开
+        emit('/桌游 规则 数字炸弹');
+        await limit(rulesHeld, 2500);
+        let closedLog: string | undefined;
+        for (let i = 0; i < 55 && !closedLog; i++) {
+          await new Promise((resolve) => setTimeout(resolve, 100));
+          closedLog = logs.find((l) => l.includes('处理消息失败') && l.includes('get_rules'));
+        }
+        expect(closedLog).toBeUndefined();
+        releaseRules();
+        await qq.waitForCall(isRules, 2500);
+        expect(qq.calls.filter(isInvite)).toHaveLength(1);
+      }
+    } finally {
+      ac.abort();
+      releaseLookup();
+      releaseRules();
+      sdkSpy.mockRestore();
+      fetchSpy.mockRestore();
+      await Promise.race([done, new Promise((res) => setTimeout(res, 5000))]);
+      await Promise.all([host.close(), mainBrain.close(), qq.close()]);
+    }
+  }, 40_000);
+
   it('key-issuer: a voice account hands out engine keys over private chat', async () => {
     const qqM = new FakeOneBot('tm2');
     const qqX = new FakeOneBot('tx2');
