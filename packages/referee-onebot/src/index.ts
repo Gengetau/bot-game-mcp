@@ -564,8 +564,6 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
     takeoverAt: number;
     /** 上次记过日志的「对局:裁判:代行者」，避免每次刷新都重复打印 */
     noted: string;
-    /** 已经点名请 bot 报名过的对局：自己开房、别人开房两条路径都只点一次 */
-    invitedFor: string;
   } = {
     game: null,
     lastSeq: -1, // 本局已发出的最后一条 seq；-1 = 未知
@@ -573,8 +571,10 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
     active: null,
     takeoverAt: 0,
     noted: '',
-    invitedFor: '',
   };
+  /** 已经点名请 bot 报名过的对局（只记最近的一批）：自己开房、别人开房两条路径共用，同一局只点一次 */
+  const invited = new Set<string>();
+  const invitedQueue: string[] = [];
   let wake: (() => void) | null = null;
   const idle = (ms: number) =>
     new Promise<void>((res) => {
@@ -797,9 +797,9 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
       // 别的 bot 自己调 create_game 开的房（不经过「/桌游 <游戏>」指令）：也像自己开房那样点名请聊天 bot 报名。
       // 已报名的（含房主）不点；去不去由它们自己决定，不设人数上限。
       // 嗓子账号（--voices）照样点：它们的模型也只在被 @ 时才会去报名，和开房指令那条路径一致。
-      // 开房指令开的房（bot 发「/桌游」也算）房主是主账号，由那条路径点名；两条路径共用 invitedFor，同一局只点一次
+      // 开房指令开的房（bot 发「/桌游」也算）房主是主账号，由那条路径点名；两条路径共用 invited，同一局只点一次
       const cur = st.game;
-      if (cur && cur.status === 'lobby' && !follower && st.invitedFor !== cur.id && cur.host !== main.id) {
+      if (cur && cur.status === 'lobby' && !follower && !invited.has(cur.id) && cur.host !== main.id) {
         if (keyIssuer) {
           try {
             await syncIssuedBots();
@@ -807,7 +807,12 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
             log(`[keys] 同步已发放密钥失败：${errMsg(e)}`);
           }
         }
-        await inviteBots(cur.id, new Set([...cur.lobbyIds, cur.host]));
+        // 上面几步要等引擎：这期间房间可能已开局、被中止或有人报名。按引擎里的最新状态再核一次，跳过名单也用最新的
+        const latest = ((await main.engine.call('list_games', { group_id: opts.groupId })).games ?? []).find((x: Json) => String(x.game_id) === cur.id);
+        if (latest?.status === 'lobby') {
+          const lobbyNow: Json[] = latest.lobby ?? [];
+          await inviteBots(cur.id, new Set([String(latest.host ?? ''), ...lobbyNow.map((e) => String(e.id))]));
+        }
       }
     } else {
       // 本局裁判是我的账号，且没有别的进程在代行（没登记过代行时 hostedBy 为空，也是我来）
@@ -830,8 +835,11 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
    * 自己开房和发现别人开的房都走这里；同一局只点一次名，两条路径不会叠加。
    */
   async function inviteBots(gameId: string, skip: ReadonlySet<string> = new Set()): Promise<void> {
-    if (follower || !gameId || st.invitedFor === gameId) return;
-    st.invitedFor = gameId;
+    // 查重和登记在第一个 await 之前同步完成：并发的刷新、开房指令不会对同一局点两次名
+    if (follower || !gameId || invited.has(gameId)) return;
+    invited.add(gameId);
+    invitedQueue.push(gameId);
+    if (invitedQueue.length > 100) invited.delete(invitedQueue.shift()!);
     const targets = [...bots].filter((qq) => !skip.has(qq));
     if (targets.length === 0) return;
     log(`[referee] 点名请 ${targets.length} 个 bot 报名 ${gameId}`);

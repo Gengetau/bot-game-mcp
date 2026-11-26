@@ -1,7 +1,7 @@
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { configSchema, createRuntime, startHttpServer, type HttpHandle, type Runtime } from 'bot-game-mcp';
@@ -1060,6 +1060,168 @@ describe('OneBot referee against the real engine', () => {
       await Promise.all([brainX.close(), qqE.close(), qqV.close()]);
     }
   }, 90_000);
+
+  // 以下两组用例来自衡的 R86 复审复现：配了发放密钥时，点名前要等 list_keys，期间房间和名单都可能变
+  const holdSecondListKeys = () => {
+    let release!: () => void;
+    let signalHeld!: () => void;
+    const held = new Promise<void>((resolve) => { signalHeld = resolve; });
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const realFetch = globalThis.fetch;
+    let keyCalls = 0;
+    // 第 1 次 list_keys 是启动时的同步，第 2 次是主循环发现外部房后的同步：把它挂住
+    const spy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      if (typeof init?.body === 'string' && JSON.parse(init.body).params?.name === 'list_keys' && ++keyCalls === 2) {
+        signalHeld();
+        await gate;
+      }
+      return realFetch(input, init);
+    });
+    const waitHeld = () => Promise.race([held, new Promise((_, reject) => setTimeout(() => reject(new Error('list_keys 没有被挂住')), 7000))]);
+    return { release: () => release(), waitHeld, restore: () => spy.mockRestore() };
+  };
+
+  it('external rooms race: a key sync that returns after the next room opened does not invite the old, aborted room again', async () => {
+    const GROUP_EX = '9000000006';
+    const EXTRA_BOT = '1000000009';
+    const qqE = new FakeOneBot('te6');
+    await qqE.start();
+    const acE = new AbortController();
+    const lines: string[] = [];
+    const sendE = (c: ApiCall) => c.action === 'send_group_msg' && String(c.params.group_id) === GROUP_EX;
+    const isInviteFor = (id: string) => (c: ApiCall) => sendE(c) && callText(c).includes('AI 玩家请调用') && callText(c).includes(id);
+    const brainX = new Client({ name: 'brain', version: '1.0.0' });
+    await brainX.connect(new StreamableHTTPClientTransport(new URL(http.url), { requestInit: { headers: { Authorization: `Bearer ${KEYS.ai2}` } } }));
+    const callX = async (name: string, args: Record<string, unknown> = {}) => {
+      const r: any = await brainX.callTool({ name, arguments: args });
+      const t = r.content?.[0]?.text ?? '';
+      if (r.isError) throw new Error(t);
+      return JSON.parse(t);
+    };
+    const created = await callX('create_game', { game_type: 'number_bomb', group_id: GROUP_EX, join_as: 'player' });
+    const gid: string = created.summary?.game_id ?? created.game_id;
+    const hold = holdSecondListKeys();
+    const done = runReferee({
+      url: http.url,
+      key: KEYS.ref,
+      onebotUrl: qqE.url,
+      onebotToken: 'te6',
+      groupId: GROUP_EX,
+      admins: [OWNER],
+      keyIssuer: REF_ID,
+      issuerKey: KEYS.admin,
+      bots: [AI_ID, AI2_ID, EXTRA_BOT],
+      stepWaitSeconds: 1,
+      sendGapMs: 0,
+      autoStartSeconds: 0,
+      selfInPool: false,
+      hostId: 'external-rooms-race-host',
+      signal: acE.signal,
+      log: (l) => lines.push(l),
+    });
+    await qqE.waitForConnection();
+    const emit = (t: string) =>
+      qqE.emit({ post_type: 'message', message_type: 'group', sub_type: 'normal', group_id: Number(GROUP_EX), user_id: Number(OWNER), message_id: ++msgSeq, sender: { user_id: Number(OWNER), nickname: '主人', card: '' }, message: text(t), raw_message: t });
+    try {
+      await hold.waitHeld();
+      // 主循环挂在同步上时，群消息那边的刷新先点了 A 的名
+      emit('/桌游 状态');
+      await qqE.waitForCall(isInviteFor(gid), 5000);
+      await callX('abort_game', { game_id: gid });
+      const mark = qqE.calls.length;
+      emit('/桌游 数字炸弹');
+      await qqE.waitForCall((c) => sendE(c) && callText(c).includes('AI 玩家请调用') && !callText(c).includes(gid), 5000, mark);
+      hold.release();
+      await new Promise((res) => setTimeout(res, 1500));
+      expect(qqE.calls.filter(isInviteFor(gid))).toHaveLength(1);
+    } finally {
+      hold.release();
+      hold.restore();
+      acE.abort();
+      await Promise.race([done, new Promise((res) => setTimeout(res, 5000))]);
+      await Promise.all([brainX.close(), qqE.close()]);
+    }
+  }, 30_000);
+
+  it.each([
+    ['join during sync', '9000000015'],
+    ['start during sync', '9000000016'],
+    ['already running', '9000000017'],
+  ])('external rooms lobby: %s', async (scenario, GROUP_EX) => {
+    const EXTRA_BOT = '1000000009';
+    const qqE = new FakeOneBot('te7');
+    await qqE.start();
+    const acE = new AbortController();
+    const lines: string[] = [];
+    const sendE = (c: ApiCall) => c.action === 'send_group_msg' && String(c.params.group_id) === GROUP_EX;
+    const invites = () => qqE.calls.filter((c) => sendE(c) && callText(c).includes('AI 玩家请调用'));
+    const atIds = (c: ApiCall) => (c.params.message as any[]).filter((m) => m.type === 'at').map((m) => String(m.data?.qq));
+    const connect = async (key: string) => {
+      const c = new Client({ name: 'brain', version: '1.0.0' });
+      await c.connect(new StreamableHTTPClientTransport(new URL(http.url), { requestInit: { headers: { Authorization: `Bearer ${key}` } } }));
+      return c;
+    };
+    const brainX = await connect(KEYS.ai2);
+    const brainA = await connect(KEYS.ai);
+    const callOn = async (c: Client, name: string, args: Record<string, unknown> = {}) => {
+      const r: any = await c.callTool({ name, arguments: args });
+      const t = r.content?.[0]?.text ?? '';
+      if (r.isError) throw new Error(t);
+      return JSON.parse(t);
+    };
+    const created = await callOn(brainX, 'create_game', { game_type: 'number_bomb', group_id: GROUP_EX, join_as: 'player', auto_referee: true });
+    const gid: string = created.summary?.game_id ?? created.game_id;
+    if (scenario === 'already running') {
+      await callOn(brainA, 'join_game', { game_id: gid, join_as: 'player' });
+      await callOn(brainX, 'start_game', { game_id: gid });
+    }
+    const hold = holdSecondListKeys();
+    const done = runReferee({
+      url: http.url,
+      key: KEYS.ref,
+      onebotUrl: qqE.url,
+      onebotToken: 'te7',
+      groupId: GROUP_EX,
+      admins: [OWNER],
+      keyIssuer: REF_ID,
+      issuerKey: KEYS.admin,
+      bots: [AI_ID, AI2_ID, EXTRA_BOT],
+      stepWaitSeconds: 1,
+      sendGapMs: 0,
+      autoStartSeconds: 0,
+      selfInPool: false,
+      hostId: 'external-rooms-lobby-host',
+      signal: acE.signal,
+      log: (l) => lines.push(l),
+    });
+    await qqE.waitForConnection();
+    try {
+      if (scenario === 'already running') {
+        // 第一次看到时已经在进行中：不点名
+        for (let i = 0; i < 50 && !lines.some((l) => l.includes('本进程只旁观')); i++) await new Promise((res) => setTimeout(res, 100));
+        expect(lines.some((l) => l.includes('本进程只旁观'))).toBe(true);
+        expect(invites()).toHaveLength(0);
+      } else {
+        await hold.waitHeld();
+        await callOn(brainA, 'join_game', { game_id: gid, join_as: 'player' });
+        if (scenario === 'start during sync') await callOn(brainX, 'start_game', { game_id: gid });
+        hold.release();
+        await new Promise((res) => setTimeout(res, 1500));
+        if (scenario === 'start during sync') expect(invites()).toHaveLength(0);
+        else {
+          // 同步期间报了名的克蕾雅不再点名
+          expect(invites()).toHaveLength(1);
+          expect(atIds(invites()[0])).toEqual([EXTRA_BOT]);
+        }
+      }
+    } finally {
+      hold.release();
+      hold.restore();
+      acE.abort();
+      await Promise.race([done, new Promise((res) => setTimeout(res, 5000))]);
+      await Promise.all([brainX.close(), brainA.close(), qqE.close()]);
+    }
+  }, 30_000);
 
   it('key-issuer: a voice account hands out engine keys over private chat', async () => {
     const qqM = new FakeOneBot('tm2');
