@@ -1650,6 +1650,80 @@ describe('OneBot referee against the real engine', () => {
     }
   }, 35_000);
 
+  // 来自衡的 R86 第六轮复现：退出时正好在重连，握手晚完成也不能在退出后留下一条活连接
+  it('engine shutdown during reconnect: a handshake that finishes after stop closes its client', async () => {
+    const group = '9000000100';
+    const qq = new FakeOneBot('r6shutdown');
+    await qq.start();
+    const [host, mainBrain] = await Promise.all([mcpAs(KEYS.ai2), mcpAs(KEYS.ref)]);
+    const id = (await host.call('create_game', { game_type: 'number_bomb', group_id: group, join_as: 'player' })).summary.game_id;
+    await mainBrain.call('join_game', { game_id: id, join_as: 'referee' });
+    let reportHeld!: () => void;
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { reportHeld = resolve; });
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const connected: Client[] = [];
+    const closed: Client[] = [];
+    const actualConnect = Client.prototype.connect;
+    const actualClose = Client.prototype.close;
+    const connectSpy = vi.spyOn(Client.prototype, 'connect').mockImplementation(function (this: Client, ...args) {
+      connected.push(this);
+      return actualConnect.apply(this, args);
+    });
+    const closeSpy = vi.spyOn(Client.prototype, 'close').mockImplementation(function (this: Client) {
+      closed.push(this);
+      return actualClose.call(this);
+    });
+    // 第二次握手（重连）被挂住，直到裁判已经退出
+    const actualFetch = globalThis.fetch;
+    let initializes = 0;
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const rpc = typeof init?.body === 'string' ? JSON.parse(init.body) : null;
+      if (rpc?.method === 'initialize' && ++initializes === 2) {
+        reportHeld();
+        await gate;
+      }
+      return actualFetch(input, init);
+    });
+    const ac = new AbortController();
+    const logs: string[] = [];
+    let injected = false;
+    let stopped = false;
+    const done = runReferee({
+      url: http.url, key: KEYS.ref, onebotUrl: qq.url, onebotToken: 'r6shutdown',
+      groupId: group, admins: [OWNER], bots: ['1000000009'], selfInPool: false, sendGapMs: 0, signal: ac.signal,
+      log: (l) => {
+        logs.push(stopped ? `after return: ${l}` : l);
+        if (l.includes('排队点名') && !injected) {
+          injected = true;
+          void connected[0]!.close();
+        }
+      },
+    }).then(() => { stopped = true; });
+    try {
+      await qq.waitForConnection();
+      await Promise.race([held, new Promise((_, reject) => setTimeout(() => reject(new Error('重连没有开始')), 5000))]);
+      ac.abort();
+      // 退出不等这次握手
+      await Promise.race([done, new Promise((resolve) => setTimeout(resolve, 1200))]);
+      expect(stopped).toBe(true);
+      release();
+      for (let i = 0; i < 40 && !closed.includes(connected[1]!); i++) await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(connected).toHaveLength(2);
+      expect(closed.includes(connected[1]!)).toBe(true);
+      expect(logs.some((l) => l.startsWith('after return:') && l.includes('已连接'))).toBe(false);
+    } finally {
+      ac.abort();
+      release();
+      await Promise.race([done, new Promise((res) => setTimeout(res, 5000))]);
+      await Promise.all(connected.map((client) => actualClose.call(client)));
+      connectSpy.mockRestore();
+      closeSpy.mockRestore();
+      fetchSpy.mockRestore();
+      await Promise.all([host.close(), mainBrain.close(), qq.close()]);
+    }
+  }, 35_000);
+
   it('key-issuer: a voice account hands out engine keys over private chat', async () => {
     const qqM = new FakeOneBot('tm2');
     const qqX = new FakeOneBot('tx2');

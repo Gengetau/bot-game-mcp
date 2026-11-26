@@ -226,6 +226,8 @@ export function parseOptionTokens(tokens: string[]): Record<string, unknown> {
 class Engine {
   private client: Client | null = null;
   private connecting: Promise<Client> | null = null;
+  /** 裁判退出后为 true：不再连接，退出时还没握完手的连接握完就关掉 */
+  private closed = false;
   /** 在途调用；退出时一起中断（长轮询 referee_step 不中断的话，SIGTERM 后要等一分钟） */
   private readonly aborts = new Set<AbortController>();
 
@@ -236,6 +238,7 @@ class Engine {
   ) {}
 
   private ensure(): Promise<Client> {
+    if (this.closed) return Promise.reject(new Error('引擎连接已关闭'));
     if (this.client) return Promise.resolve(this.client);
     if (!this.connecting) {
       this.connecting = (async () => {
@@ -246,6 +249,11 @@ class Engine {
           await client.connect(new StreamableHTTPClientTransport(new URL(this.url), { requestInit: { headers } }));
         } finally {
           this.connecting = null;
+        }
+        if (this.closed) {
+          // 握手期间裁判已经退出：这条连接没人会再用，也不能留在后台
+          await client.close().catch(() => undefined);
+          throw new Error('引擎连接已关闭');
         }
         client.onclose = () => {
           if (this.client === client) this.client = null;
@@ -320,6 +328,12 @@ class Engine {
     } catch {
       throw new ToolError(`引擎返回的不是 JSON：${text.slice(0, 200)}`);
     }
+  }
+
+  /** 退出时调用：断开当前连接，之后不再连接（还在进行的握手完成后会自己关掉） */
+  async close(): Promise<void> {
+    this.closed = true;
+    await this.drop();
   }
 
   async drop(): Promise<void> {
@@ -1797,6 +1811,6 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
     stopped = true;
     for (const v of voices) v.onebot.close();
     await sendChain;
-    await Promise.all([...voices.map((v) => v.engine.drop()), adminEngine?.drop()]);
+    await Promise.all([...voices.map((v) => v.engine.close()), adminEngine?.close()]);
   }
 }
