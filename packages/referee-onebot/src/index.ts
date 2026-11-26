@@ -284,8 +284,17 @@ class Engine {
   private async callWith(ac: AbortController, name: string, args: Record<string, unknown>, timeoutMs: number): Promise<any> {
     let client: Client;
     try {
-      client = await this.ensure();
+      // 共用的握手可能还在进行：这次调用被中断时就不等了，握手继续留给别的调用
+      const ready = this.ensure();
+      ready.catch(() => undefined);
+      ac.signal.throwIfAborted();
+      client = await new Promise<Client>((resolve, reject) => {
+        const stop = () => reject(ac.signal.reason);
+        ac.signal.addEventListener('abort', stop, { once: true });
+        ready.then(resolve, reject).finally(() => ac.signal.removeEventListener('abort', stop));
+      });
     } catch (e) {
+      if (ac.signal.aborted) throw new TransportError(`${name}：已中断`);
       throw new TransportError(`连接引擎失败：${errMsg(e)}`);
     }
     let res: any;

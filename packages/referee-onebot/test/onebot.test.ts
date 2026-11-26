@@ -1582,6 +1582,74 @@ describe('OneBot referee against the real engine', () => {
     }
   }, 40_000);
 
+  // 来自衡的 R86 第五轮复现：复核排队时引擎连接正好断开，5 秒期限也要管住等重连握手的时间
+  it('external rooms recheck during reconnect: the 5s limit also covers waiting for the engine handshake', async () => {
+    const group = '9000000098';
+    const qq = new FakeOneBot('r5reconnect');
+    await qq.start();
+    const [host, mainBrain] = await Promise.all([mcpAs(KEYS.ai2), mcpAs(KEYS.ref)]);
+    const id = (await host.call('create_game', { game_type: 'number_bomb', group_id: group, join_as: 'player' })).summary.game_id;
+    await mainBrain.call('join_game', { game_id: id, join_as: 'referee' });
+    let reportHeld!: () => void;
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { reportHeld = resolve; });
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const connected: Client[] = [];
+    const actualConnect = Client.prototype.connect;
+    const connectSpy = vi.spyOn(Client.prototype, 'connect').mockImplementation(function (this: Client, ...args) {
+      connected.push(this);
+      return actualConnect.apply(this, args);
+    });
+    // 第二次握手（重连）被挂住
+    const actualFetch = globalThis.fetch;
+    let initializes = 0;
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const rpc = typeof init?.body === 'string' ? JSON.parse(init.body) : null;
+      if (rpc?.method === 'initialize' && ++initializes === 2) {
+        reportHeld();
+        await gate;
+      }
+      return actualFetch(input, init);
+    });
+    const ac = new AbortController();
+    const logs: string[] = [];
+    let closed = false;
+    const done = runReferee({
+      url: http.url, key: KEYS.ref, onebotUrl: qq.url, onebotToken: 'r5reconnect',
+      groupId: group, admins: [OWNER], bots: ['1000000009'], selfInPool: false, sendGapMs: 0, signal: ac.signal,
+      log: (l) => {
+        logs.push(l);
+        if (l.includes('排队点名') && !closed) {
+          closed = true;
+          // 点名刚排进队列时，裁判和引擎的连接断开
+          void connected[0]!.close();
+        }
+      },
+    });
+    const isHelp = (c: ApiCall) => callText(c).includes('桌游指令');
+    const isInvite = (c: ApiCall) => callText(c).includes('AI 玩家请调用') && callText(c).includes(id);
+    try {
+      await qq.waitForConnection();
+      await Promise.race([held, new Promise((_, reject) => setTimeout(() => reject(new Error('重连没有开始')), 5000))]);
+      qq.emit({ post_type: 'message', message_type: 'group', group_id: Number(group), user_id: Number(OWNER), message_id: ++msgSeq, sender: { nickname: '主人' }, message: text('/桌游 帮助') });
+      // 握手还挂着，「帮助」也要在几秒内发出
+      expect(await qq.waitForCall(isHelp, 7000).catch(() => undefined)).toBeDefined();
+      expect(logs.some((l) => l.includes(`点名前查对局 ${id} 失败`) && l.includes('5 秒内没查到'))).toBe(true);
+      // 握手放行后，下一轮刷新点名一次
+      release();
+      await qq.waitForCall(isInvite, 8000);
+      await new Promise((res) => setTimeout(res, 3500));
+      expect(qq.calls.filter(isInvite)).toHaveLength(1);
+    } finally {
+      ac.abort();
+      release();
+      connectSpy.mockRestore();
+      fetchSpy.mockRestore();
+      await Promise.race([done, new Promise((res) => setTimeout(res, 5000))]);
+      await Promise.all([host.close(), mainBrain.close(), qq.close()]);
+    }
+  }, 35_000);
+
   it('key-issuer: a voice account hands out engine keys over private chat', async () => {
     const qqM = new FakeOneBot('tm2');
     const qqX = new FakeOneBot('tx2');
