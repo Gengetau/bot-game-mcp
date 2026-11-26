@@ -795,10 +795,11 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
       }
       await offerVoices();
       // 别的 bot 自己调 create_game 开的房（不经过「/桌游 <游戏>」指令）：也像自己开房那样点名请聊天 bot 报名。
-      // 已报名的（含房主）和本进程自己的账号不点；去不去由它们自己决定，不设人数上限
-      // （自己开的房房主是主账号，由开房指令那条路径点名；两条路径共用 invitedFor，同一局只点一次）
+      // 已报名的（含房主）不点；去不去由它们自己决定，不设人数上限。
+      // 嗓子账号（--voices）照样点：它们的模型也只在被 @ 时才会去报名，和开房指令那条路径一致。
+      // 开房指令开的房（bot 发「/桌游」也算）房主是主账号，由那条路径点名；两条路径共用 invitedFor，同一局只点一次
       const cur = st.game;
-      if (cur && cur.status === 'lobby' && !follower && st.invitedFor !== cur.id && !myIds().has(cur.host)) {
+      if (cur && cur.status === 'lobby' && !follower && st.invitedFor !== cur.id && cur.host !== main.id) {
         if (keyIssuer) {
           try {
             await syncIssuedBots();
@@ -806,7 +807,7 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
             log(`[keys] 同步已发放密钥失败：${errMsg(e)}`);
           }
         }
-        await inviteBots(cur.id, new Set([...cur.lobbyIds, cur.host, ...myIds()]));
+        await inviteBots(cur.id, new Set([...cur.lobbyIds, cur.host]));
       }
     } else {
       // 本局裁判是我的账号，且没有别的进程在代行（没登记过代行时 hostedBy 为空，也是我来）
