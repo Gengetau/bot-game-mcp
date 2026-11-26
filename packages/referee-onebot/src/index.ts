@@ -564,6 +564,8 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
     takeoverAt: number;
     /** 上次记过日志的「对局:裁判:代行者」，避免每次刷新都重复打印 */
     noted: string;
+    /** 已经点名请 bot 报名过的对局：自己开房、别人开房两条路径都只点一次 */
+    invitedFor: string;
   } = {
     game: null,
     lastSeq: -1, // 本局已发出的最后一条 seq；-1 = 未知
@@ -571,6 +573,7 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
     active: null,
     takeoverAt: 0,
     noted: '',
+    invitedFor: '',
   };
   let wake: (() => void) | null = null;
   const idle = (ms: number) =>
@@ -791,6 +794,20 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
         if (j.group_message) await say(j.group_message);
       }
       await offerVoices();
+      // 别的 bot 自己调 create_game 开的房（不经过「/桌游 <游戏>」指令）：也像自己开房那样点名请聊天 bot 报名。
+      // 已报名的（含房主）和本进程自己的账号不点；去不去由它们自己决定，不设人数上限
+      // （自己开的房房主是主账号，由开房指令那条路径点名；两条路径共用 invitedFor，同一局只点一次）
+      const cur = st.game;
+      if (cur && cur.status === 'lobby' && !follower && st.invitedFor !== cur.id && !myIds().has(cur.host)) {
+        if (keyIssuer) {
+          try {
+            await syncIssuedBots();
+          } catch (e) {
+            log(`[keys] 同步已发放密钥失败：${errMsg(e)}`);
+          }
+        }
+        await inviteBots(cur.id, new Set([...cur.lobbyIds, cur.host, ...myIds()]));
+      }
     } else {
       // 本局裁判是我的账号，且没有别的进程在代行（没登记过代行时 hostedBy 为空，也是我来）
       const mine = voiceOf(st.game.refereeId);
@@ -805,6 +822,25 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
       }
     }
     wake?.();
+  }
+
+  /**
+   * 只有被 @ 才会醒来的聊天 bot（比如 AI 小屋的居民）：点名请它们报名。
+   * 自己开房和发现别人开的房都走这里；同一局只点一次名，两条路径不会叠加。
+   */
+  async function inviteBots(gameId: string, skip: ReadonlySet<string> = new Set()): Promise<void> {
+    if (follower || !gameId || st.invitedFor === gameId) return;
+    st.invitedFor = gameId;
+    const targets = [...bots].filter((qq) => !skip.has(qq));
+    if (targets.length === 0) return;
+    log(`[referee] 点名请 ${targets.length} 个 bot 报名 ${gameId}`);
+    await sendGroup([
+      ...targets.flatMap((qq) => [
+        { type: 'at', data: { qq } },
+        { type: 'text', data: { text: ' ' } },
+      ]),
+      { type: 'text', data: { text: `AI 玩家请调用 join_game(game_id="${gameId}", join_as="player") 报名。` } },
+    ]);
   }
 
   /** 向引擎登记：报名了的、本进程能替它说话的账号，抽中就由本进程代行。 */
@@ -1043,15 +1079,7 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
             }
           }
           // 只有被 @ 才会醒来的聊天 bot：点名请它们报名
-          if (bots.size > 0) {
-            await sendGroup([
-              ...[...bots].flatMap((qq) => [
-                { type: 'at', data: { qq } },
-                { type: 'text', data: { text: ' ' } },
-              ]),
-              { type: 'text', data: { text: `AI 玩家请调用 join_game(game_id="${id}", join_as="player") 报名。` } },
-            ]);
-          }
+          await inviteBots(id);
           return;
         }
       }

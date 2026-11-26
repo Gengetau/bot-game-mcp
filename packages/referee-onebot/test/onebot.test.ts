@@ -972,6 +972,71 @@ describe('OneBot referee against the real engine', () => {
     }
   }, 90_000);
 
+  it('external rooms: a room another bot opens via create_game gets the same @ invite as a /桌游 room, once per room', async () => {
+    const GROUP_EX = '9000000005';
+    const EXTRA_BOT = '1000000009'; // 只在 QQ 里、没有引擎账号的聊天 bot：照样点名
+    const qqE = new FakeOneBot('te');
+    await qqE.start();
+    const acE = new AbortController();
+    const lines: string[] = [];
+    const done = runReferee({
+      url: http.url,
+      key: KEYS.ref,
+      onebotUrl: qqE.url,
+      onebotToken: 'te',
+      groupId: GROUP_EX,
+      admins: [OWNER],
+      bots: [AI_ID, AI2_ID, EXTRA_BOT],
+      stepWaitSeconds: 1,
+      sendGapMs: 0,
+      autoStartSeconds: 0,
+      selfInPool: false,
+      hostId: 'external-rooms-host',
+      signal: acE.signal,
+      log: (l) => lines.push(l),
+    });
+    await qqE.waitForConnection();
+    const sendE = (c: ApiCall) => c.action === 'send_group_msg' && String(c.params.group_id) === GROUP_EX;
+    const invites = (from: number) => qqE.calls.slice(from).filter((c) => sendE(c) && callText(c).includes('AI 玩家请调用'));
+    const atIds = (c: ApiCall) => (c.params.message as any[]).filter((m) => m.type === 'at').map((m) => String(m.data?.qq));
+    const brainX = new Client({ name: 'brain', version: '1.0.0' });
+    await brainX.connect(new StreamableHTTPClientTransport(new URL(http.url), { requestInit: { headers: { Authorization: `Bearer ${KEYS.ai2}` } } }));
+    const callX = async (name: string, args: Record<string, unknown> = {}) => {
+      const r: any = await brainX.callTool({ name, arguments: args });
+      const t = r.content?.[0]?.text ?? '';
+      if (r.isError) throw new Error(t);
+      return JSON.parse(t);
+    };
+    try {
+      // —— 1. 别的 bot（艾莉希娅）自己调 create_game 开房：裁判发现后点名其余 bot，房主自己不点 ——
+      let mark = qqE.calls.length;
+      const created = await callX('create_game', { game_type: 'number_bomb', group_id: GROUP_EX, join_as: 'player' });
+      const gid: string = created.summary?.game_id ?? created.game_id;
+      const invite = await qqE.waitForCall((c) => sendE(c) && callText(c).includes('AI 玩家请调用'), 15_000, mark);
+      expect(callText(invite)).toContain(`game_id="${gid}"`);
+      expect(atIds(invite).sort()).toEqual([AI_ID, EXTRA_BOT].sort());
+      // 之后每次刷新（3 秒一轮）都不再重复点名
+      await new Promise((res) => setTimeout(res, 7000));
+      expect(invites(mark)).toHaveLength(1);
+      await callX('abort_game', { game_id: gid });
+      for (let i = 0; i < 100 && !lines.some((l) => l.includes(`对局 ${gid} 已结束`)); i++) await new Promise((res) => setTimeout(res, 100));
+
+      // —— 2. 自己的「/桌游」开房：照旧点名全部 bot，且只点一次（发现房间的刷新路径不再叠加）——
+      mark = qqE.calls.length;
+      qqE.emit({ post_type: 'message', message_type: 'group', sub_type: 'normal', group_id: Number(GROUP_EX), user_id: Number(OWNER), message_id: ++msgSeq, sender: { user_id: Number(OWNER), nickname: '主人', card: '' }, message: text('/桌游 数字炸弹'), raw_message: '' });
+      const own = await qqE.waitForCall((c) => sendE(c) && callText(c).includes('AI 玩家请调用'), 10_000, mark);
+      expect(atIds(own).sort()).toEqual([AI_ID, AI2_ID, EXTRA_BOT].sort());
+      await new Promise((res) => setTimeout(res, 7000));
+      expect(invites(mark)).toHaveLength(1);
+      expect(lines.some((l) => l.includes('处理消息失败') || l.includes('未预期的错误'))).toBe(false);
+    } finally {
+      if (process.env.REF_DEBUG) console.log(['--- external-rooms logs', ...lines, '--- calls', ...qqE.calls.map((c) => `${c.action} ${callText(c)}`)].join('\n'));
+      acE.abort();
+      await Promise.race([done, new Promise((res) => setTimeout(res, 5000))]);
+      await Promise.all([brainX.close(), qqE.close()]);
+    }
+  }, 60_000);
+
   it('key-issuer: a voice account hands out engine keys over private chat', async () => {
     const qqM = new FakeOneBot('tm2');
     const qqX = new FakeOneBot('tx2');
