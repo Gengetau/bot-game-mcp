@@ -1223,6 +1223,151 @@ describe('OneBot referee against the real engine', () => {
     }
   }, 30_000);
 
+  // 以下两组来自衡的 R86 第二轮复现：点名的发送账号，以及排在发送队列里时房间状态又变了
+  const mcpAs = async (key: string) => {
+    const c = new Client({ name: 'review', version: '1.0.0' });
+    await c.connect(new StreamableHTTPClientTransport(new URL(http.url), { requestInit: { headers: { Authorization: `Bearer ${key}` } } }));
+    return {
+      close: () => c.close(),
+      call: async (name: string, args: Record<string, unknown>) => {
+        const r = await c.callTool({ name, arguments: args });
+        const t = (r.content as any[])[0].text;
+        if (r.isError) throw new Error(t);
+        return JSON.parse(t);
+      },
+    };
+  };
+
+  it('external rooms sender: the invite for a new external lobby comes from the main account even while the last game\'s referee voice is still active', async () => {
+    const group = '9000000091';
+    const hostId = 'r2-stale-voice';
+    const qMain = new FakeOneBot('r2m');
+    const qVoice = new FakeOneBot('r2v');
+    await Promise.all([qMain.start(), qVoice.start()]);
+    const [voice, external, mainBrain] = await Promise.all([mcpAs(KEYS.ai), mcpAs(KEYS.ai2), mcpAs(KEYS.ref)]);
+    // 旧局：克蕾雅（嗓子账号）当裁判，由本进程代行
+    const old = (await voice.call('create_game', { game_type: 'number_bomb', group_id: group, join_as: 'referee' })).summary.game_id;
+    await voice.call('referee_offer', { game_id: old, host_id: hostId });
+    await external.call('join_game', { game_id: old, join_as: 'player' });
+    await mainBrain.call('join_game', { game_id: old, join_as: 'player' });
+    await voice.call('start_game', { game_id: old });
+    expect((await external.call('list_games', { group_id: group })).games[0].referee_id).toBe(AI_ID);
+    let reportHeld!: () => void;
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { reportHeld = resolve; });
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const actualFetch = globalThis.fetch;
+    // 挂住旧局的 referee_step：st.active 还停在克蕾雅身上
+    const spy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const params = typeof init?.body === 'string' ? JSON.parse(init.body).params : null;
+      if (params?.name === 'referee_step' && params.arguments?.game_id === old) {
+        reportHeld();
+        await gate;
+      }
+      return actualFetch(input, init);
+    });
+    const ac = new AbortController();
+    const done = runReferee({
+      url: http.url, key: KEYS.ref, onebotUrl: qMain.url, onebotToken: 'r2m',
+      voices: [{ key: KEYS.ai, onebotUrl: qVoice.url, onebotToken: 'r2v' }],
+      groupId: group, hostId, admins: [OWNER], bots: [AI_ID, AI2_ID],
+      selfInPool: false, sendGapMs: 0, stepWaitSeconds: 1, signal: ac.signal,
+      log: () => undefined,
+    });
+    const invitesOn = (q: FakeOneBot, gameId: string) =>
+      q.calls.filter((c) => c.action === 'send_group_msg' && callText(c).includes('AI 玩家请调用') && callText(c).includes(gameId));
+    try {
+      await Promise.all([qMain.waitForConnection(), qVoice.waitForConnection()]);
+      await Promise.race([held, new Promise((_, reject) => setTimeout(() => reject(new Error('referee_step 没有被挂住')), 5000))]);
+      await voice.call('abort_game', { game_id: old });
+      const next = (await external.call('create_game', { game_type: 'number_bomb', group_id: group, join_as: 'player' })).summary.game_id;
+      qMain.emit({ post_type: 'message', message_type: 'group', group_id: Number(group), user_id: Number(OWNER), message_id: ++msgSeq, sender: { nickname: '主人' }, message: text('/桌游 状态') });
+      await Promise.any([qMain, qVoice].map((q) => q.waitForCall((c) => callText(c).includes('AI 玩家请调用') && callText(c).includes(next), 5000)));
+      expect(invitesOn(qMain, next)).toHaveLength(1);
+      expect(invitesOn(qVoice, next)).toHaveLength(0);
+    } finally {
+      ac.abort();
+      release();
+      spy.mockRestore();
+      await Promise.race([done, new Promise((res) => setTimeout(res, 5000))]);
+      await Promise.all([voice.close(), external.close(), mainBrain.close(), qMain.close(), qVoice.close()]);
+    }
+  }, 30_000);
+
+  it.each(['queued send', 'retry list_games'] as const)('external rooms delivery: %s', async (scenario) => {
+    const group = scenario === 'queued send' ? '9000000092' : '9000000093';
+    const qq = new FakeOneBot('r2queue');
+    await qq.start();
+    const [host, player, mainBrain] = await Promise.all([mcpAs(KEYS.ai2), mcpAs(KEYS.ai), mcpAs(KEYS.ref)]);
+    const id = (await host.call('create_game', { game_type: 'number_bomb', group_id: group, join_as: 'player', auto_referee: true })).summary.game_id;
+    await player.call('join_game', { game_id: id, join_as: 'player' });
+    await mainBrain.call('join_game', { game_id: id, join_as: 'referee' });
+    let signalHeld!: () => void;
+    let release!: () => void;
+    let signalQueued!: () => void;
+    const held = new Promise<void>((resolve) => { signalHeld = resolve; });
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const queued = new Promise<void>((resolve) => { signalQueued = resolve; });
+    const liveFetch = globalThis.fetch;
+    let reads = 0;
+    const spy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const rpc = typeof init?.body === 'string' ? JSON.parse(init.body) : null;
+      if (rpc?.params?.name === 'list_games' && rpc.params.arguments?.group_id === group) {
+        reads += 1;
+        if (scenario === 'queued send' && reads === 1) {
+          signalHeld();
+          await gate;
+        }
+        if (scenario === 'retry list_games' && reads === 2) {
+          return new Response(JSON.stringify({ jsonrpc: '2.0', id: rpc.id, error: { code: -32603, message: 'forced R2 read failure' } }), {
+            headers: { 'content-type': 'application/json' },
+          });
+        }
+      }
+      return liveFetch(input, init);
+    });
+    const ac = new AbortController();
+    const logs: string[] = [];
+    const done = runReferee({
+      url: http.url, key: KEYS.ref, onebotUrl: qq.url, onebotToken: 'r2queue',
+      groupId: group, admins: [OWNER], bots: ['1000000009'],
+      selfInPool: false, sendGapMs: scenario === 'queued send' ? 2500 : 0, stepWaitSeconds: 1, signal: ac.signal,
+      log: (l) => { logs.push(l); if (l.includes('排队点名')) signalQueued(); },
+    });
+    const isInvite = (c: ApiCall) => callText(c).includes('AI 玩家请调用') && callText(c).includes(id);
+    const until = <T,>(p: Promise<T>, label: string) =>
+      Promise.race([p, new Promise<never>((_, reject) => setTimeout(() => reject(new Error(label)), 5500))]);
+    try {
+      await qq.waitForConnection();
+      if (scenario === 'queued send') {
+        // 先让「帮助」占住发送队列（发送间隔 2.5 秒），点名排在它后面；排队期间房主开局
+        await until(held, '第一次 list_games 没有被挂住');
+        qq.emit({ post_type: 'message', message_type: 'group', group_id: Number(group), user_id: Number(OWNER), message_id: ++msgSeq, sender: { nickname: '主人' }, message: text('/桌游 帮助') });
+        await qq.waitForCall((c) => callText(c).includes('桌游指令'), 5000);
+        release();
+        await until(queued, '点名没有排进队列');
+        expect(qq.calls.filter(isInvite)).toHaveLength(0);
+        expect((await host.call('start_game', { game_id: id })).summary.status).toBe('running');
+        await qq.waitForCall(isInvite, 3200).catch(() => undefined);
+        expect(qq.calls.filter(isInvite)).toHaveLength(0);
+        expect(logs.some((l) => l.includes(`对局 ${id} 已不在报名中`))).toBe(true);
+      } else {
+        // 点名前那次查询失败：这局不算点过，下一轮刷新重试，最后只点一次
+        await qq.waitForCall(isInvite, 8000);
+        expect(reads).toBeGreaterThanOrEqual(4);
+        expect(logs.some((l) => l.includes('forced R2 read failure'))).toBe(true);
+        await new Promise((res) => setTimeout(res, 3500));
+        expect(qq.calls.filter(isInvite)).toHaveLength(1);
+      }
+    } finally {
+      ac.abort();
+      release();
+      spy.mockRestore();
+      await Promise.race([done, new Promise((res) => setTimeout(res, 5000))]);
+      await Promise.all([host.close(), player.close(), mainBrain.close(), qq.close()]);
+    }
+  }, 30_000);
+
   it('key-issuer: a voice account hands out engine keys over private chat', async () => {
     const qqM = new FakeOneBot('tm2');
     const qqX = new FakeOneBot('tx2');

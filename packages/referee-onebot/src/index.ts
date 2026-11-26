@@ -643,22 +643,26 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
     if (!Array.isArray(message) || !message.some((m: Json) => m?.type === 'at')) return null;
     return message.map((m: Json) => (m?.type === 'at' ? { type: 'text', data: { text: `@${String(m.data?.qq ?? '')}` } } : m));
   };
+  /** 立刻发一条群消息（只在发送队列里调用） */
+  const sendGroupNow = async (v: Voice, message: unknown): Promise<void> => {
+    const via = sendable(v);
+    try {
+      try {
+        await via.onebot.call('send_group_msg', { group_id: Number(opts.groupId), message });
+      } catch (e) {
+        // 有一个 @ 的号解析不了（不在群里、QQ 侧查不到），整条消息都会被拒：把 @ 换成纯文字再发一次
+        const plain = withoutAt(message);
+        if (!plain) throw e;
+        log(`[referee] 群消息发送失败（${via.name || via.id}）：${errMsg(e)}，去掉 @ 重发`);
+        await via.onebot.call('send_group_msg', { group_id: Number(opts.groupId), message: plain });
+      }
+    } catch (e) {
+      log(`[referee] 群消息发送失败（${via.name || via.id}）：${errMsg(e)}`);
+    }
+  };
   const sendGroupAs = (v: Voice, message: unknown) =>
     enqueue(async () => {
-      const via = sendable(v);
-      try {
-        try {
-          await via.onebot.call('send_group_msg', { group_id: Number(opts.groupId), message });
-        } catch (e) {
-          // 有一个 @ 的号解析不了（不在群里、QQ 侧查不到），整条消息都会被拒：把 @ 换成纯文字再发一次
-          const plain = withoutAt(message);
-          if (!plain) throw e;
-          log(`[referee] 群消息发送失败（${via.name || via.id}）：${errMsg(e)}，去掉 @ 重发`);
-          await via.onebot.call('send_group_msg', { group_id: Number(opts.groupId), message: plain });
-        }
-      } catch (e) {
-        log(`[referee] 群消息发送失败（${via.name || via.id}）：${errMsg(e)}`);
-      }
+      await sendGroupNow(v, message);
       await pause(sendGap);
     });
   /**
@@ -807,12 +811,8 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
             log(`[keys] 同步已发放密钥失败：${errMsg(e)}`);
           }
         }
-        // 上面几步要等引擎：这期间房间可能已开局、被中止或有人报名。按引擎里的最新状态再核一次，跳过名单也用最新的
-        const latest = ((await main.engine.call('list_games', { group_id: opts.groupId })).games ?? []).find((x: Json) => String(x.game_id) === cur.id);
-        if (latest?.status === 'lobby') {
-          const lobbyNow: Json[] = latest.lobby ?? [];
-          await inviteBots(cur.id, new Set([String(latest.host ?? ''), ...lobbyNow.map((e) => String(e.id))]));
-        }
+        // 跳过名单在真正发出前按引擎里的最新状态再算（见 inviteBots 的 recheck）
+        await inviteBots(cur.id, 'recheck');
       }
     } else {
       // 本局裁判是我的账号，且没有别的进程在代行（没登记过代行时 hostedBy 为空，也是我来）
@@ -834,22 +834,46 @@ export async function runReferee(opts: RefereeOptions): Promise<void> {
    * 只有被 @ 才会醒来的聊天 bot（比如 AI 小屋的居民）：点名请它们报名。
    * 自己开房和发现别人开的房都走这里；同一局只点一次名，两条路径不会叠加。
    */
-  async function inviteBots(gameId: string, skip: ReadonlySet<string> = new Set()): Promise<void> {
+  async function inviteBots(gameId: string, mode: 'all' | 'recheck' = 'all'): Promise<void> {
     // 查重和登记在第一个 await 之前同步完成：并发的刷新、开房指令不会对同一局点两次名
     if (follower || !gameId || invited.has(gameId)) return;
     invited.add(gameId);
     invitedQueue.push(gameId);
     if (invitedQueue.length > 100) invited.delete(invitedQueue.shift()!);
-    const targets = [...bots].filter((qq) => !skip.has(qq));
-    if (targets.length === 0) return;
-    log(`[referee] 点名请 ${targets.length} 个 bot 报名 ${gameId}`);
-    await sendGroup([
-      ...targets.flatMap((qq) => [
-        { type: 'at', data: { qq } },
-        { type: 'text', data: { text: ' ' } },
-      ]),
-      { type: 'text', data: { text: `AI 玩家请调用 join_game(game_id="${gameId}", join_as="player") 报名。` } },
-    ]);
+    log(`[referee] 排队点名请 bot 报名 ${gameId}`);
+    await enqueue(async () => {
+      let skip = new Set<string>();
+      if (mode === 'recheck') {
+        // 别人开的房：排在前面的消息发完时，房间可能已开局、被中止或有人报名。
+        // 轮到这条时再按引擎里的最新状态核一次：不在报名中就不点；已报名的和房主不点
+        let latest: Json | undefined;
+        try {
+          latest = ((await main.engine.call('list_games', { group_id: opts.groupId })).games ?? []).find((x: Json) => String(x.game_id) === gameId);
+        } catch (e) {
+          invited.delete(gameId); // 没核成：下次刷新再试
+          log(`[referee] 点名前查对局 ${gameId} 失败：${errMsg(e)}，稍后再试`);
+          return;
+        }
+        if (latest?.status !== 'lobby') {
+          log(`[referee] 对局 ${gameId} 已不在报名中，不点名`);
+          return;
+        }
+        const lobbyNow: Json[] = latest.lobby ?? [];
+        skip = new Set([String(latest.host ?? ''), ...lobbyNow.map((e) => String(e.id))]);
+      }
+      const targets = [...bots].filter((qq) => !skip.has(qq));
+      if (targets.length === 0) return;
+      log(`[referee] 点名请 ${targets.length} 个 bot 报名 ${gameId}`);
+      // 固定用主账号发：上一局的裁判嗓子可能还没换下来（st.active），而居民收到自己发的消息不会醒
+      await sendGroupNow(main, [
+        ...targets.flatMap((qq) => [
+          { type: 'at', data: { qq } },
+          { type: 'text', data: { text: ' ' } },
+        ]),
+        { type: 'text', data: { text: `AI 玩家请调用 join_game(game_id="${gameId}", join_as="player") 报名。` } },
+      ]);
+      await pause(sendGap);
+    });
   }
 
   /** 向引擎登记：报名了的、本进程能替它说话的账号，抽中就由本进程代行。 */
