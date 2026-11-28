@@ -93,12 +93,14 @@
 
 ### `abort_game` —— 中止对局（破坏性）
 
-房主、裁判或管理员中止对局（无胜负）。
+房主、裁判或管理员中止对局（无胜负）。可带 expected_status=lobby（及可选 expected_max_other_players=0）：只在对局还是空大厅时才中止，否则返回 STATUS_MISMATCH 或 LOBBY_OCCUPIED、对局不受影响（用来清理没人来的空大厅，不会误关已入座或刚开始的一局）。
 
 | 参数 | 类型 | 必填 | 说明 |
 |---|---|---|---|
 | `game_id` | string | 是 |  |
 | `reason` | string |  |  |
+| `expected_status` | string |  | 目前只接受 lobby |
+| `expected_max_other_players` | integer |  | 须配合 expected_status=lobby 使用：除房主外其他入座玩家数不超过此值时才中止（0 表示空大厅） |
 
 ### `get_my_view` —— 我的视角（只读）
 

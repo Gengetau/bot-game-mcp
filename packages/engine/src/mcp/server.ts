@@ -353,11 +353,30 @@ export function createMcpServer(deps: ServerDeps, ctx: SessionContext): McpServe
     'abort_game',
     {
       title: '中止对局',
-      description: '房主、裁判或管理员中止对局（无胜负）。',
-      inputSchema: { game_id: z.string(), reason: z.string().optional() },
+      description: '房主、裁判或管理员中止对局（无胜负）。可带 expected_status=lobby（及可选 expected_max_other_players=0）：只在对局还是空大厅时才中止，否则返回 STATUS_MISMATCH 或 LOBBY_OCCUPIED、对局不受影响（用来清理没人来的空大厅，不会误关已入座或刚开始的一局）。',
+      inputSchema: {
+        game_id: z.string(),
+        reason: z.string().optional(),
+        expected_status: z.literal('lobby').optional().describe('目前只接受 lobby'),
+        expected_max_other_players: z
+          .number()
+          .int()
+          .min(0)
+          .max(99)
+          .optional()
+          .describe('须配合 expected_status=lobby 使用：除房主外其他入座玩家数不超过此值时才中止（0 表示空大厅）'),
+      },
       destructive: true,
     },
-    (a) => manager.abortGame(me(), a.game_id, a.reason),
+    (a) =>
+      manager.abortGame(
+        me(),
+        a.game_id,
+        a.reason,
+        a.expected_status !== undefined || a.expected_max_other_players !== undefined
+          ? { expectedStatus: a.expected_status, expectedMaxOtherPlayers: a.expected_max_other_players }
+          : undefined,
+      ),
   );
 
   // ─────────────────────────── 玩家 ───────────────────────────
