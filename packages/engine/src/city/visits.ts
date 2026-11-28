@@ -408,6 +408,8 @@ export function settle(c: CityService, visit: VisitRow, at: number, opts?: { ext
       const aid = trustedAssetIdOf(it);
       resolvedKernel = aid ? { kind: 'wardrobe_asset', item: aid } : null;
     }
+    // 借来的东西不是她的，不能变成家里的东西（v4 起雨伞能回家，借来的伞仍然留在城里）
+    if (it.origin_ref === null && it.borrowed_from !== null) resolvedKernel = null;
     // 带出来的物品原样回家；城里得到的要映射表里有（且具名服饰具备可信 asset_id）才能回家，否则留在城市储物柜
     const fate = it.origin_ref !== null || resolvedKernel ? 'back' : 'locker';
     items.push({

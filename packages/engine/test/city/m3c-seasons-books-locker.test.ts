@@ -1237,7 +1237,8 @@ describe('晴空都 M3-C：车站投币储物柜凭条代取与 72h 超时退回
     t.run(30 * MIN);
     expect(nia.release().state).toBe('closed');
 
-    // 3) 室友返家托管（有个人底仓 + 跨关单 F9 补发 addPlainToLocker 子场景）：买未映射透明伞（umbrella）1 代取 + 1 私柜 + 1 随身返家 + 1 关单后补发 = 1 代取 + 3 私柜
+    // 3) 室友返家托管（有个人底仓 + 跨关单 F9 补发 addPlainToLocker 子场景）：买透明伞（umbrella）1 代取 + 1 私柜 + 1 随身 + 1 关单后补发。
+    //    mappings v4 起随身那把伞回家变成她的配饰（fate=back），所以 = 1 代取 + 2 私柜
     claire.depart({ yen: 5000, items: [], to: 'ryokogai:ekimae-conbini' });
     t.run(40 * MIN);
     claire.act({ type: 'buy', sku: 'umbrella', qty: 3 });
@@ -1253,6 +1254,10 @@ describe('晴空都 M3-C：车站投币储物柜凭条代取与 72h 超时退回
 
     claire.act({ type: 'go_home' });
     t.run(30 * MIN);
+    claire.pull();
+    expect(claire.settlement!.items).toContainEqual(
+      expect.objectContaining({ type: 'umbrella', fate: 'back', qty: 1, kernel: { kind: 'garment', item: 'umbrella' } }),
+    );
     expect(claire.release().state).toBe('reconcile');
     const resolved = resolvePendingOrder(t.c, pendingOrd, 'completed');
     expect(resolved.reconcile_ok).toBe(true);
@@ -1263,7 +1268,7 @@ describe('晴空都 M3-C：车站投币储物柜凭条代取与 72h 超时退回
 
     claire.depart({ yen: 3000, items: [], to: 'ryokogai:station' });
     t.run(30 * MIN);
-    expect(claire.view().locker_items).toEqual([expect.objectContaining({ item_id: clairePersonal.item_id, type: 'umbrella', qty: 3 })]);
+    expect(claire.view().locker_items).toEqual([expect.objectContaining({ item_id: clairePersonal.item_id, type: 'umbrella', qty: 2 })]);
     expect(runReconcile(t.c, 'locker-isolation-full').ok).toBe(true);
   });
 });
