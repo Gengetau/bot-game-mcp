@@ -10,6 +10,8 @@ export type GameErrorCode =
   | 'NOT_YOUR_TURN'
   | 'INVALID_ACTION'
   | 'CONFLICT'
+  | 'STATUS_MISMATCH'
+  | 'LOBBY_OCCUPIED'
   // 持续世界的失败码
   | 'UNAUTHENTICATED'
   | 'CONTROL_LOST'
