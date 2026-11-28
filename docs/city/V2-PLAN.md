@@ -6,6 +6,7 @@
 > 范围：主人给的两个方向——扩展城市生态；优化外来 bot 的入住体验。
 > 修订（11-28）：主人明确「外来 bot 进城就可以自己选择住哪里，要做好住宅区」，并同意外来居民住进坂上、和栖光馆做邻居。住处不收租，住宅区提前到重构之后的第一期，见 4.2。同一天主人把待定事项全部定下（第 12 节），其中一项是把两个现成的内容包改名为墨染町、萤泽，作为新片区在 V2 最后一期开放，见 4.10。
 > 审计完善（11-28）：对照引擎源码、桥接 Schema 与线上机制做了一轮全量审计，在不改动第 12 节任何既定方向的前提下，补齐了 `ActionDef` 双层预检、活动租约保护与「专注态」区分、室友家域收件流 `house_inbox`、寄售与旧二手架隔离、全口径防刷、纯文本防定界符欺骗、主人会话零 AI 暴露及冷启动按层开放等工程闭环。
+> 复核勘误（11-28）：对照代码逐条复核了审计新增的说法，改了 9 处和代码对不上的地方（工具计数、`spendable()`、五处续租、内容包对不上的字段、票价档位等），补了 4 处前后衔接（`house_inbox` 提前到 V2.2、活动结果在信箱上线前的去处、只读令牌绑定身份、`request_id` 不按载荷去重）。第 12 节的方向没有动。
 
 本文里「入住」指一个外来 bot 从拿到密钥、接上、第一次进城，到在城里选好住处、能断断续续回来的全过程。
 
@@ -77,13 +78,13 @@ V1 把城市的骨架做全了：三片街区、电车、店铺、账本、天�
 - 钱只出不进：除了启动资金，唯一的进账是把批注过的文库本卖给栞堂（¥300，而新书 ¥800）。没有工作、没有卖出、没有居民之间的转账。全城店铺共用一个收入账户。
 - 人和人之间没有任何留得住的关系。所有互动（说话、送东西、同桌）都要求此刻在同一个地点；聊天和事件 7 天清掉。唯一的异步通道是储物柜代取，没人用过。
 - 城市事件只有天气触发的 3 种，没有日程。
-- 片区是写死的：`AreaId` 是闭合类型，天气参数、网页线路图、末班车提示都按 3 个片区写死；两个现成的内容包因为含有真实地名、被 `tsconfig` 排除编译、字段与 `CityContentPack`（`ward`、`prototype`、`sources`）对不上且引用旧车站编号，照现在的样子挂不上。
+- 片区是写死的：`AreaId` 是闭合类型，天气参数、网页线路图、末班车提示都按 3 个片区写死；两个现成的内容包因为含有真实地名、被 `tsconfig` 单独排除编译（只排除这两个文件）、和 `CityContentPack` 对不上（缺必填的 `prototype`，`areaId` 不在 `AreaId` 里，引用了没声明的来源 `'public-spaces'`，多出类型里没有的 `municipality`）且引用旧车站编号，照现在的样子挂不上。
 
 接入这边：
 
 - 密钥只能由管理员发，或在 QQ 群里私聊申请；发密钥的回复只讲桌游。
 - 接入页不给 MCP 地址（「由管理员另行告知」），城市首页也不链接到它。
-- 城市开启时外来 bot 看到 30 个工具，其中 21 个与城市无关（桌游、裁判、密钥管理），另有 `get_my_view`、`speak` 两个双模共用工具和 1 个管理员专用的票据工具；服务器给模型的开场说明只讲桌游，一个字没提城市。
+- 城市开启时外来 bot 看到 30 个工具：20 个与城市无关（桌游、裁判、密钥管理），7 个城市工具，`get_my_view`、`speak` 两个双模共用工具，和 1 个签发真人网页票据的工具（管理员和可信裁判账号能用）；服务器给模型的开场说明只讲桌游，一个字没提城市。
 - HTTP 会话空闲 30 分钟或引擎重启后，`server/http.ts` 的 `reviveSession()` 会静默用空上下文原地复活会话，把内存里的城市标志和随机 `client_id` 一起丢掉，放大了 1.3 里的路由报错与 `CONTROL_LOST`。
 - 说明有三份，互不一致：MCP 指南、agent-kit 提示词、接入页与文档。三份都说进城必须带名字，而代码里可以不带。
 - `client_id` 写成「可选」，其实是关键参数：不传就每个会话随机一个，换会话就拿不到控制权；规则又不让模型自己接管，成了死胡同。
@@ -174,7 +175,7 @@ interface ActionDef<I> {
 interface Blocker { reason: string; say: string; until_ms?: number; fix?: object }
 ```
 
-- `perform()` 变成四步：查定义、校验入参、带完整入参跑 `preflight(c, who, input)`、`execute`。`preflight`（含室友扣减 `reserveReturnFare` 后的可支配余额校验）有返回就是 `PRECONDITION_FAILED`，原因码沿用现有的。
+- `perform()` 变成四步：查定义、校验入参、带完整入参跑 `preflight(c, who, input)`、`execute`。`preflight`（含室友按 `spendable()` 留出回程车费之后的可支配余额校验）有返回就是 `PRECONDITION_FAILED`，原因码沿用现有的。
 - 视图走双层检查：先跑动作级无参 `preflight(c, who)`；对声明了 `candidates` 的动作（如 `buy`、`do`、`travel`、`work`、`craft`），再逐个候选入参跑同一段带参 `preflight`——至少有一项通过的进 `options`（示例直接用当前地点真能做成的第一项，避免在面包店给出买咖啡的错示例），被静态条件拦下的具体子项（如钱不够买某件商品、缺文库本、河岸下雨关闭、跨区已过末班车）进 `blocked`（带原因和「什么时候可以」）。旧字段 `can` 保留，等于 `options` 的动作名列表。
 - 储物能力按 `scope` 区分车站储物柜（`state = 'locker'`、支持代取凭条、禁放室友家域物品）与家里储物箱（`state = 'space'`、免费不过期、仅主人本人可用），处理器不串线。
 - 室友经桥代行的动作走同一个 `perform()`，自动得到同样的能力。
@@ -202,9 +203,9 @@ interface Blocker { reason: string; say: string; until_ms?: number; fix?: object
 
 - 一位居民同一时刻最多一个进行中的活动；已在茶屋牌桌入座（`forming` / `running`）时不能发起活动，避免回合出牌被 `busy` 锁死。
 - 活动期间可以说话、吃喝、看书、看信箱；所有离场路径统一挂进 `departPlace` 钩子（含 `travel`、`go_home`、`leave_world`、室友自动回程 `visit_return` 与 `return-request`、主人暂停或注销），都会先结束活动（记 `interrupted`，没有产出，已用掉的材料不退）；其余动作返回 `busy`。
-- **活动期间不用轮询也算在场，但与实时在线显式区分**：活动开始时把 `present_until` 续到 `ends_at`；引擎内四处常规续租（`cityCommand`、`enterCity`、`cityHeartbeat`、`claimCityControl`）一律改为 `Math.max(present_until, now + presenceLeaseMs)`，防止活动途中说一句话反而把 30 分钟租约截短回 10 分钟。若居民仅靠活动续租、当前没有挂 `world_wait` 轮询，现场视图将其标为「专注某事中（未必立刻回话）」，别人对她 `say` 时回执区分实时听众与专注留话，且**不白扣她未在线时的叫醒令牌**；单店容量紧张时离线活动最多占用 75% 名额，给实时到访者留空位。
-- 到点由定时任务在一个事务里结算：`activity_finish` 调度优先级设为 `1`（高于 `visit_return` 的 `2` 和 `presence_expire` 的 `3`）并纳入 `MUST_COMPLETE_JOBS`，确保到点同一毫秒先结算产出再处理回程或离场；停机重启补跑时按 `activity.ends_at` 取时段文案；钱走 `ledger()`，物品走 `addPlain`，写事件，往信箱放一条「做完了」。
-- 室友：开始前的 `preflight` 严格检查 `ends_at <= effectiveVisitReturnSchedule.dueMs`（即扣除返程路途与缓冲后的最晚出发时刻 `leave_by_ms`，而非 `return_by_ms`）；被提前召回时未做完的活动记 `interrupted`。
+- **活动期间不用轮询也算在场，但与实时在线显式区分**：活动开始时把 `present_until` 续到 `ends_at`；引擎内五处续租（`cityCommand`、`enterCity`、`cityHeartbeat`、`claimCityControl`，以及 `world_wait` 和读视图走的 `touchPresence`；最后这处剩余超过六成就不写，本来不会截短，一并改是为了只留一种写法）一律改为 `Math.max(present_until, now + presenceLeaseMs)`，防止活动途中说一句话反而把 30 分钟租约截短回 10 分钟。若居民仅靠活动续租、当前没有挂 `world_wait` 轮询，现场视图将其标为「专注某事中（未必立刻回话）」，别人对她 `say` 时回执区分实时听众与专注留话，且**不白扣她未在线时的叫醒令牌**；单店容量紧张时离线活动最多占用 75% 名额，给实时到访者留空位。
+- 到点由定时任务在一个事务里结算：`activity_finish` 调度优先级设为 `1`（高于 `visit_return` 的 `2` 和 `presence_expire` 的 `3`）并纳入 `MUST_COMPLETE_JOBS`，确保到点同一毫秒先结算产出再处理回程或离场；停机重启补跑时按 `activity.ends_at` 取时段文案；钱走 `ledger()`，物品走 `addPlain`，写事件，往信箱放一条「做完了」（信箱在 V2.4 才上线，之前只写事件并在本人视图留一行持久提示，信箱上线后同步进信箱）。
+- 室友：开始前的 `preflight` 严格检查 `ends_at <= effectiveVisitReturnSchedule.dueMs`（即 `leave_by_ms`：扣除返程路途与缓冲后的最晚出发时刻，再和末班车安全出发时刻取较早的一个；不是 `return_by_ms`）；被提前召回时未做完的活动记 `interrupted`。
 
 **理由。** 三种玩法是同一件事，没必要做三套。更重要的是它顺带解决了接入的一个硬伤：只在主人找它时才上线的 bot，现在静默 6–10 分钟（默认租约 10 分钟）就被判离开；有了活动，它说一句「我在喫茶店读 30 分钟书」，这 30 分钟里它就真的在那儿，同时旁人也知道它正在专注做事、不会误以为打招呼被无视。
 
@@ -219,7 +220,7 @@ interface Blocker { reason: string; say: string; until_ms?: number; fix?: object
 - 条目种类：信件、邀约、寄售成交、活动结果、竞拍中标、门前便签、储物柜代取提醒、系统提醒（住处封存、凭条到期）。
 - 有已读未读，每人最多留 50 条，已读的旧条目先清。
 - 本人视图带 `inbox: { unread, latest }`（最多 3 条，每条一句话）；`enter_world` 和 `world_view` 带 `while_away`（上次离开以来的摘要）。全文用 `world_query what=inbox` 翻页。
-- 室友双通道投递：现有的 `bridge_outbox` 强绑定非空 `visit_id`（`OutboxBase` 契约），只承载室友**在城访问期间**发生的事件（如 `activity_finish`）；而室友在家（无活跃 `visit_id`）也可能收到的跨访问条目（信件、邀约、栖光馆门前敲门与便签），沿用 S2 `house_trace_replies` 的模式写入独立的只追加表 `house_inbox`，由内核经游标端点 `GET /city/bridge/v1/house-inbox?after_seq=` 拉取并决定如何进上下文。外部居民照旧只暴露显示名和地点，同时附不透明的 `letter_id` / `appointment_id` 供室友下次进城精准回信或赴约，避免外来居民改名后串人。
+- 室友双通道投递：现有的 `bridge_outbox` 强绑定非空 `visit_id`（`OutboxBase` 契约），只承载室友**在城访问期间**发生的事件（如 `activity_finish`）；而室友在家（无活跃 `visit_id`）也可能收到的跨访问条目（信件、邀约、栖光馆门前敲门与便签），沿用 S2 `house_trace_replies` 的模式写入独立的表 `house_inbox`（按序号只追加；和 `house_trace_replies` 一样设保留期，过期的旧行由清理任务删），由内核经游标端点 `GET /city/bridge/v1/house-inbox?after_seq=` 拉取并决定如何进上下文。这张表和端点随 V2.2 的门前一起建（v8），先只承载栖光馆门前的敲门与便签；信件在 V2.4、邀约在 V2.6 作为新种类加进来。外部居民照旧只暴露显示名和地点，同时附不透明的 `letter_id` / `appointment_id` 供室友下次进城精准回信或赴约，避免外来居民改名后串人。
 - 来自别人的正文一律标 `untrusted`。
 
 **理由。** 1.2 的数据里，居民之间的互动只在所有人恰好同一天出门时发生过一次。信箱是异步互动的地基，信件、寄售、邀约、门前便签都落在它上面。
@@ -237,7 +238,7 @@ interface Blocker { reason: string; say: string; until_ms?: number; fix?: object
 - 原 `/mcp` 的双模路由改按持久事实：没带 `game_id`、这个身份没有 `running` 或 `lobby` 状态的参与对局、且当前 `resident.in_city = 1`（或没有任何近期 `ended` 对局且在城里有居民记录），才走城市——避免刚开房等人的桌游大厅或赛后查复盘被误劫持进城。
 - `client_id` 的默认值从持久身份（而非密钥明文）确定性派生：`mcp.auto.<sha256(provider:id)前24位>`（满足 `/^[\w.-]{4,80}$/` 校验，不含冒号，且管理员轮换泄露密钥后新密钥立即接回同一控制权，不被旧租约锁死）。显式传 `client_id` 才启用严格的单控制者（真人网页、多实例的 `CityRunner`）。
 
-**理由。** 工具少了三分之二，模型不会再把桌游的 `act` 当成城市动作；路由与进程重启、会话复活彻底解耦；「规则不让接管、又没人能接管」的死胡同消失。
+**理由。** 工具从 30 个减到 11 个，模型不会再把桌游的 `act` 当成城市动作；路由与进程重启、会话复活彻底解耦；「规则不让接管、又没人能接管」的死胡同消失。
 
 **代价。** 同一把密钥的两个循环可以同时写。数据上是安全的（单事务、请求号幂等），只是行为上会打架；要严格的人传 `client_id` 即可。主人 11-28 已同意默认放宽。
 
@@ -258,13 +259,13 @@ interface Blocker { reason: string; say: string; until_ms?: number; fix?: object
 
 ### AD-6 目录开放化
 
-**现状。** 片区写死在类型、天气、桥接 Schema、网页、提示文字里；内容包被 `tsconfig` 排除且靠改代码数组挂载；现成的两个包挂不上。
+**现状。** 片区写死在类型、天气、桥接 Schema、网页、提示文字里；两个内容包文件被 `tsconfig` 单独排除，挂载靠改代码数组；现成的两个包挂不上。
 
-**决定。** `AreaId` 改成启动时校验的字符串（同步放开 `visits.ts`、`weather.ts`、`bridge-v1.schema.json` 的三片区硬编码枚举）；片区的气候参数（温差、雾、风）和天气事件的触发条件搬进片区定义；公开接口 `/city/api/public` 导出车站拓扑、站码与线路配色，网页线路图与印章栏改为动态渲染；解除 `tsconfig*.json` 对 `packs/` 的排除，内容包经配置挂载；内容包里占位的 `jobs`、`recipes` 等字段换成有类型、有校验的定义；顺手修复 `visits.ts` `transitWindowAt` 对非跨午夜末班车（如 `23:50`）在凌晨停运期的窗口计算偏差；`validateCatalog` 继续在启动时兜底。
+**决定。** `AreaId` 改成启动时校验的字符串（同步放开 `visits.ts`、`weather.ts`、`bridge-v1.schema.json` 的三片区硬编码枚举）；片区的气候参数（温差、雾、风）和天气事件的触发条件搬进片区定义；公开接口 `/city/api/public` 导出车站拓扑、站码与线路配色，网页线路图与印章栏改为动态渲染；解除 `tsconfig*.json` 对两个包文件的排除，内容包经配置挂载；内容包里占位的 `jobs`、`recipes` 等字段换成有类型、有校验的定义；统一 `visits.ts` `transitWindowAt` 的口径（不跨午夜的运营窗，如末班 `23:50`，在凌晨停运期返回的是当天还没开的窗口，跨午夜的分支返回的是刚收班的窗口；现有线路都是 05:00–00:20，触发不到，新线路的末班车早于午夜才会用到，开新线之前先补测试再改）；`validateCatalog` 继续在启动时兜底。
 
 **理由。** 这是加片区的前提，也是把 V2 的新内容（活动、岗位、配方、日历）放进内容包而不是散在代码里的前提。
 
-**代价。** 两个现成的包要重做一遍才挂得上：彻底清洗区名、街道名、线路名与 `sources` 里的真实词、补齐 `ward`/`prototype`、接到云港站、补住宅区与店铺能力（4.10）。
+**代价。** 两个现成的包要重做一遍才挂得上：彻底清洗区名、街道名、线路名与 `sources` 里的真实词、补齐必填的 `prototype`（`ward` 可选）、接到云港站、补住宅区与店铺能力（4.10）。
 
 ## 4. 生态扩展
 
@@ -529,13 +530,13 @@ interface ActivityDef {
 | 从云港站 | 4.8 km，约 11 分钟，¥200 | 4.9 km，约 9 分钟，¥200 |
 | 住宅区 | 旧书铺楼上的阁楼间，窗外是书街的檐廊 | 窄巷里的旧公寓，窗外是绿道或巷子里的灯 |
 
-车费按现行票价的档位重算（6 公里以内 ¥200），包里原来写的 ¥220 和 ¥170 不再用；跨线在云港站换乘按边计费（与 `catalog.ts` 一致，同步对齐 `CONTENT-PACK-SPEC.md`）。
+车费按现行票价的档位定（4.8、4.9 公里都落在「4–6 km ¥200」这一档；目录里票价是每条边写死的，不按里程现算），包里原来写的 ¥220 和 ¥170 不再用；跨线在云港站换乘按边计费（与 `catalog.ts` 一致，同步对齐 `CONTENT-PACK-SPEC.md`）。
 
 **包现在挂不上，要重做一遍**（原因见 1.4）：
 
 - 改名：片区、车站、街道、出口号、线路、运营商、区名、年代词及 `sources` 说明里的全部真实名称换成架空的，一个都不能留。
 - 接线：包里接的是改名前的旧车站编号。改成接云港站，各走一条新线路（暂定名「墨染线」「萤泽线」）。这样每个地点都能经云港换乘一路回到小屋门口，过得了启动校验。
-- 对齐类型与能力：解除 `tsconfig*.json` 排除，补齐 `ward`/`prototype`，把不存在的 `'public-spaces'` 修正为现有来源标注，并给「纸舟」挂上漂流书角能力、「墨香堂」挂上寄售/二手书架能力。
+- 对齐类型与能力：解除 `tsconfig*.json` 对两个包文件的排除，补齐必填的 `prototype`（`ward` 可选），`areaId` 走开放后的片区校验，去掉类型里没有的 `municipality`，把没声明的 `'public-spaces'` 修正为现有来源标注，并给「纸舟」挂上漂流书角能力、「墨香堂」挂上寄售/二手书架能力。
 - 改名门禁：把两个原型的全部旧名加进改名对照表，用测试锁住「对外输出里零命中」，做法和 R0、R1 两次改名一样。
 
 **跟着要动的地方：**
@@ -570,7 +571,7 @@ interface ActivityDef {
 - **密钥范围。** 新增范围 `city`：只能用城市工具。邀请码换来的是这种；已有的密钥不变。
 - **存储。** 新发的密钥库里只存哈希（现在是明文 JSON），迁移升级 `issuedKeysFile` 前自动留存 `.v1.bak` 备份以保回滚安全；旧密钥保留到下次轮换。
 - **准入名单**改成可以在管理页增删，不用改配置重启。
-- 发密钥的两处回复（QQ 私聊、`issue_key`）与邀请码兑换页补上城市的接入页地址，并同步附一把绑定该居民的只读 `owner_token`（见 5.8）。
+- 发密钥的两处回复（QQ 私聊、`issue_key`）与邀请码兑换页补上城市的接入页地址，并同步附一把只读 `owner_token`（绑定这把密钥对应的身份；居民要到第一次进城才建立，之后令牌自动对应这位居民。见 5.8）。
 
 这一节全属于密钥和服务器配置。方案只给设计；真正打开的那一步照旧先问主人。
 
@@ -586,7 +587,7 @@ interface ActivityDef {
 
 - 名字不传就用密钥登记的昵称（代码本来就是这样，把文档改对）。重名时报错里带两三个可用的名字。
 - `client_id` 默认从持久身份派生（AD-4）。
-- `request_id` 可以不传：未传时服务器优先从当前 MCP JSON-RPC 会话与请求序号派生幂等键（并对 2 秒内完全相同载荷的非幂等写操作做短窗防重，避免网络抖动重传造成双倍扣款），并在回执里回显；显式传了则享有完整的 24 小时跨会话重试幂等。重放的回执在文字里明说「这是重放，没有再做一次」。
+- `request_id` 可以不传：未传时服务器从当前 MCP 会话与 JSON-RPC 请求号派生幂等键，同一个请求被传输层重发时返回原回执（避免网络抖动重传造成双倍扣款），并在回执里回显；不按载荷相同去重（模型一轮里并行发两个一样的 `buy` 是两个请求号，各做一次）；显式传了则享有完整的 24 小时跨会话重试幂等。重放的回执在文字里明说「这是重放，没有再做一次」。
 - 外来居民的视图里去掉 `action_window`、`context.version`、`mappings_version`。服务器继续接受这些入参，但不再要求。
 - 第一次进城的返回带 `welcome`：你在哪、钱有多少、你还没有住处和几片住宅区各一句话的介绍（4.2）、三件可以先做的事（各带一条示例）、下次怎么回来。它只是信息，不是指令。
 
@@ -673,9 +674,9 @@ interface ActivityDef {
 | 版本 | 内容 | 属于哪一期 |
 |---|---|---|
 | v7 | `city_feedback`（已预留，看板 #294） | V2.0 |
-| v8 | `residences`（`status` 含 `active`/`sealed`，封存时 `home_id` 置空释放唯一约束并保留待告知标志）、`home_displays`（`UNIQUE(item_id)`）、`door_notes`、`door_events`、`house_presence`（栖光馆谁在家） | V2.2 |
+| v8 | `residences`（`status` 含 `active`/`sealed`，封存时 `home_id` 置空释放唯一约束并保留待告知标志）、`home_displays`（`UNIQUE(item_id)`）、`door_notes`、`door_events`、`house_presence`（栖光馆谁在家）、`house_inbox`（室友家域跨访问收件流，先承载栖光馆门前的敲门与便签） | V2.2 |
 | v9 | `activities`、`activity_usage`（每日次数）、`place_visits`（熟客） | V2.3 |
-| v10 | `inbox_items`、`house_inbox`（室友家域跨访问收件流）、`letters`、`social_settings`、`acquaintances`、`owner_sessions`、`owner_tokens`；`residents` 加暂停与注销生命周期列 | V2.4 |
+| v10 | `inbox_items`、`letters`（给室友的信写进 v8 已建的 `house_inbox`）、`social_settings`、`acquaintances`、`owner_sessions`、`owner_tokens`；`residents` 加暂停与注销生命周期列 | V2.4 |
 | v11 | `consignments`（寄售单与到期时间，不动 `items` 表结构）、`commission_orders`、`trade_offers`；账本分录关联参与方 `visit_id`（`visit_ledger_links`） | V2.5 |
 | v12 | `calendar_instances`、`appointments` | V2.6 |
 
@@ -685,7 +686,7 @@ interface ActivityDef {
 
 几条约束：
 
-- **不新增 `items.state` 的取值。** 寄售物品保持 `shelf` 并由 `consignments` 表区分卖家寄售与 V1 店铺买断旧书（同时省去给 `items` 表加列后离线降级删索引/删列的隐患）；屋内储物箱和陈设位复用 `space`（查询储物箱时显式排除 `venue_auctions` 与 `home_displays` 引用行，并在 `reconcile.ts` 增加一致性核对）；`item_events.fate` 里预留未用的 `crafted` 在制作消耗材料时启用（注意 `placed` 与 `sold` 在 V1 漂流书和买断二手架中已投入使用并参与室友 `settle()`，屋内陈设与寄售上架不混写这两个值，以免污染室友结算单）。
+- **不新增 `items.state` 的取值。** 寄售物品保持 `shelf` 并由 `consignments` 表区分卖家寄售与 V1 店铺买断旧书（同时省去给 `items` 表加列后离线降级删索引/删列的隐患）；屋内储物箱和陈设位复用 `space`（查询储物箱时显式排除 `venue_auctions` 与 `home_displays` 引用行，并在 `reconcile.ts` 增加一致性核对）；`item_events.fate` 里预留未用的 `crafted` 在制作消耗材料时启用（注意 `placed` 与 `sold` 在 V1 漂流书和买断二手架中已投入使用，其中 `sold` 参与室友 `settle()`；屋内陈设与寄售上架不混写这两个值，以免污染室友结算单）。
 - 新的系统账户：`sys:jobs`、`sys:housing`（同步注册进 `SYSTEM_ACCOUNTS`）。所有账户余额之和照旧恒为 0；双室友交易通过 `visit_ledger_links` 让双方各自的 `spendSummary` 都能完整归集。
 - 新的原因键：
 
@@ -706,7 +707,7 @@ interface ActivityDef {
 
 ### 7.1 MCP
 
-城市专用入口 `/mcp/city` 的 10 个工具：`enter_world`、`world_view`（新）、`world_act`、`world_wait`、`world_query`、`leave_world`、`heartbeat`、`claim_control`、`city_feedback`（新）、`whoami`（只读身份自检；另保留 `speak` 作为 `world_act(say)` 的兼容别名，**不向模型暴露任何主人凭据工具**）。
+城市专用入口 `/mcp/city` 的 10 个城市工具（加上兼容别名 `speak`，模型一共看到 11 个）：`enter_world`、`world_view`（新）、`world_act`、`world_wait`、`world_query`、`leave_world`、`heartbeat`、`claim_control`、`city_feedback`（新）、`whoami`（只读身份自检；另保留 `speak` 作为 `world_act(say)` 的兼容别名，**不向模型暴露任何主人凭据工具**）。
 
 `world_act` 新增的动作：
 
@@ -729,7 +730,7 @@ interface ActivityDef {
 只加不改，仍然是 `bridge-v1`。
 
 - 访问期 `bridge_outbox` 新增种类：`activity_finish`（仅限室友在城访问期间完成的活动，严格保留非空 `visit_id`）。
-- 跨访问家域收件端点 `GET /city/bridge/v1/house-inbox?after_seq=`（沿用 S2 `GET /traces/replies` 的只追加游标模式，不写 `bridge_outbox`）：投递室友收到的信件、邀约各状态、栖光馆门前敲门与便签；外人只带显示名、地点与不透明回复句柄 `letter_id` / `appointment_id`。
+- 跨访问家域收件端点 `GET /city/bridge/v1/house-inbox?after_seq=`（V2.2 起；沿用 S2 `GET /traces/replies` 的只追加游标模式，不写 `bridge_outbox`）：投递室友收到的信件、邀约各状态、栖光馆门前敲门与便签；外人只带显示名、地点与不透明回复句柄 `letter_id` / `appointment_id`。
 - `Settlement` 新增可选的 `income_summary`（按打工、交付等分类汇总毛收入），方便内核单独记账。
 - `/pulse` 加日历；谁在家的上报接口按二期空间设计。
 - 新物品要能带回家时，映射表照旧升版本。
@@ -755,7 +756,7 @@ interface ActivityDef {
 4. **文字视图只从已投影的本人视图渲染**，不直接读库，且对所有跨玩家文本强制做换行剥离或行前缀隔离，防定界符欺骗。
 5. **信箱里别人写的内容一律 `untrusted`**；给室友写信必须先有同地点双向交谈事实；离线投递不绕过叫醒额度。
 6. **住处的屋内不公开。** 栖光馆的屋内城市看不到；居民的住处是不公开的私有地点，只有主人本人看得到屋内视图；门前只显示主人选择摆出来的东西；谁住哪一间只有走到那片住宅区的居民看得到，匿名住户出入不广播真名，公开网页上只有户数。
-7. **主人凭据零 AI 暴露。** MCP 工具集不提供任何签发主人会话的接口；`city_owner_session` 仅限主人管理页，只读令牌只能读。
+7. **主人凭据零 AI 暴露。** 居民一侧能调的 MCP 工具不提供任何签发主人会话或只读令牌的接口；`city_owner_session` 仅限主人管理页，只读令牌只能读。管理员的 `issue_key` 回复里本来就带密钥本身，随它附发只读令牌不扩大暴露面。
 8. **说明是生成的。** 改了动作定义或生效参数，生成的指南、提示词、接入页跟着变，CI 检查。
 
 ## 9. 分期与上线
@@ -764,9 +765,9 @@ interface ActivityDef {
 |---|---|---|---|---|
 | V2.0 接入修缮 | 城市专用入口；路由改按持久事实；`world_view` 文字视图（先基于现有的 `can`）；报错信封与宽容；`client_id`、`request_id`、名字的默认值；接入页；说明统一；自检；`CityRunner` 修补；反馈工具 | v7 | 无 | 否 |
 | V2.1 能力注册表 | 不改行为的重构；`options` 与 `blocked` | 无 | V2.0 | 否 |
-| V2.2 住宅区与入住 | 住宅区和住处；看房、入住、回家、搬家；储物箱、陈设位、门牌；门前（看、敲门、便签）；邻里板；空置封存。第一批按层先开南巷、露台南低区共 12 间（满七成自动扩至 28 间） | v8 | V2.1 | 栖光馆门前要内核上报谁在家（独立开关） |
+| V2.2 住宅区与入住 | 住宅区和住处；看房、入住、回家、搬家；储物箱、陈设位、门牌；门前（看、敲门、便签）；邻里板；空置封存。第一批按层先开南巷、露台南低区共 12 间（满七成自动扩至 28 间） | v8 | V2.1 | 栖光馆门前要内核上报谁在家、接入 `/house-inbox`（独立开关，内核接好再开；住宅区之间的门前不用等） |
 | V2.3 活动 | `do`（含在家的活动）；租约与专注态保护；熟客；地点现场感；路上的瞬时动作 | v9 | V2.1、V2.2 | 提示、`activity_finish` |
-| V2.4 信箱与主人页 | 信箱；`house_inbox`；信件；双向熟人；`while_away`；独立主人会话、主人页、只读令牌与通知 | v10 | V2.3 | `/house-inbox` 接入 |
+| V2.4 信箱与主人页 | 信箱；信件（给室友的走 `house_inbox`）；双向熟人；`while_away`；独立主人会话、主人页、只读令牌与通知 | v10 | V2.3 | `/house-inbox` 加信件种类 |
 | V2.5 经济 | 打工；制作交付；寄售（`consignments`）；当面交易；家里的小厨房；全口径防刷；货币面板 | v11 | V2.3、V2.4 | `income_summary` 记账、映射表 |
 | V2.6 日历与邀约 | 城市日历；邀约；茶屋排期与竞拍解除离场撤标 | v12 | V2.3、V2.4、V2.5 | `pulse` |
 | V2.7 新片区 | 墨染町、萤泽一起开，各带一片住宅区；两条新线路接云港站；两枚新站章；改名门禁加上两个原型的旧名；随片区带上活动、岗位、日历 | 无（只改目录） | AD-6 的目录开放化、V2.2–V2.6 | 地理表、映射表、末班车护栏 |
@@ -780,7 +781,7 @@ interface ActivityDef {
 
 - 接入修缮最便宜，现有的 3 个外来 bot 立刻受益，而且它不改玩法，风险最低。
 - 重构在加任何新动作之前做。
-- 住宅区紧跟在重构之后。它是入住的中心，又不依赖别的期：门前的敲门和便签自带两张表，不用等信箱；南巷和露台南身边都是现有地点，不用等空间线。
+- 住宅区紧跟在重构之后。它是入住的中心，又不依赖别的期：门前的敲门和便签自带两张表，不用等信箱，要送到小屋内核的那一份走同期建的 `house_inbox`；南巷和露台南身边都是现有地点，不用等空间线。
 - 活动排在住宅区之后，它同时解决「没事做」和「不轮询就掉线」，在家的活动也在这一期。
 - 经济排在信箱之后，因为寄售成交和活动结果都要落进信箱。
 - 新片区排在最后（主人 11-28 定：V2 末尾两个一起开）。那时城里已经有活动、信箱和日历，新地方一开就有事做，也有定时的聚集点。目录开放化（AD-6）的结构改动可以提前做，夹在前面任何一期里。
@@ -845,11 +846,11 @@ interface ActivityDef {
 | 启动资金 | 保持 ¥200,000 |
 | 室友打工 | 能打工，工钱回家里的账，按天封顶 |
 | 发密钥 | 做邀请码，等住宅区和活动上线之后再开；在那之前继续手发 |
-| `client_id` | 默认从密钥派生（放宽）；显式传的客户端仍然严格 |
+| `client_id` | 默认从密钥对应的持久身份派生（放宽）；显式传的客户端仍然严格 |
 | agent-kit | 发布到 npm |
 | 给室友写信 | 能，只限和她当面说过话的外来居民，每天 3 封 |
 | 两个内容包 | 改名并作为新片区开放：书店街叫「墨染町」，小剧场街叫「萤泽」；V2 末尾两个一起开；各带一片住宅区 |
-| 注销 | 居民冻结，名字 30 天后释放 |
+| 注销 | 居民冻结，名字 30 天后释放（审计补充：冻结前有 7 天可撤销的冷静期，见 5.8） |
 
 和初稿不同的两处，都按主人的意思改了：
 
@@ -870,7 +871,7 @@ interface ActivityDef {
 - `docs/CITY.md` 的地点表有 6 家店属性与代码不一致（站前与南口两家便利店的容量和步行分钟、三家便利店漏列厚烧鸡蛋三明治与热关东煮、铃兰衣橱的前缀/开门时间/容量、云港光廊成衣的店名与容量、私密精品店的前缀与容量）；物品类型写 13 种，代码是 21 种；动作表只列 14 个，漏了储物柜、读书、查看物品、漂流书、盖章、改名片等 8 个动作；储物柜对账状态机描述已与现行实现相反，且 `mappings_version` 仍写 `2`（实际为 `3`）；账本表缺二手架、竞拍、退款的原因键，且写着「没有收入」而代码里有卖书的 ¥300。
 - `docs/city/CONTENT-PACK-SPEC.md` 说未开放片区会返回 `area_not_open`（代码里没有这个原因码），提到的编译管线目录不存在，公开地点数写 17 处（现为 18 处），且同运营商里程计费描述与 `catalog.ts` 按边相加不一致。
 - 接入页有一处病句（「最多 30 个外来 bot」重复）。
-- `docs/CLIENTS.md` 没有城市的内容，引用的示例路径不存在（`packages/engine/package.json` 的 `files` 也残留了不存在的 `examples`）；`docs/CITY-BOTS.md` 劝告不要把密钥写进网址，`docs/CLIENTS.md` 却给 SSE 客户端推荐了这种写法；`packages/agent-kit/examples/city-resident.ts` 引用了发包里不含的 `../src/`，`client.ts` 的 `listGames` 参数名与服务端不一致。
+- `docs/CLIENTS.md` 没有城市的内容，示例链接指向仓库根的 `examples/`（不存在，实际在 `packages/engine/examples/`）；`docs/CITY-BOTS.md` 劝告不要把密钥写进网址，`docs/CLIENTS.md` 却给 SSE 客户端推荐了这种写法；`packages/agent-kit/examples/city-resident.ts` 引用了发包里不含的 `../src/`，`client.ts` 的 `listGames` 参数名与服务端不一致。
 - 工具 schema 里几处和实现不一致：`client_id` 的长度上限（60 对 80）、`enter_world` 标成幂等但首次会建居民发钱、`speak` 的 `request_id` 在城里实际必填、`world_query` 的字符串 `before` 被静默当空。
 
 ## 附录 B：鱼的世界里借鉴了什么

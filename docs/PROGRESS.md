@@ -13,6 +13,7 @@
 - 和已有材料的关系：M2 内容草案（看板 #249）、二期空间设计（ai-house-world PR #191）、反馈工具（看板 #294，schema v7）都接着用，不另起一套。
 - 验证：这次只新增文档。跑了会读取 `docs/` 的三个城市测试文件（`m0-contracts`、`r0-rename-guard`、`connect`），3 个文件 19 个测试全部通过；没有跑全量测试和端到端。
 - 同日审计完善（PR #89 审校）：对照源码与桥接 Schema 全量审计后，在不改变主人 14 项决定的前提下补齐 `docs/city/V2-PLAN.md` 的工程与安全闭环（`ActionDef` 双层候选预检、活动租约保护与专注态区分、室友家域收件流 `house_inbox` 与 `Settlement.income_summary`、`consignments` 独立表与全口径双向防刷、密封竞拍解除离场撤标、住宅区 `residentialHub` 寻路与按层冷启动开放、切断 MCP `owner_link` AI 暴露面、纯文本防定界符欺骗、无副作用 `bot-game-check --city`，并修正分期依赖与附录 A/B 勘误）。
+- 同日复核勘误（PR #89）：两路只读核对把审计新增的「现状」说法逐条对了代码。改了 9 处对不上的地方：工具计数是 20 个无关 + 7 个城市 + 2 个双模 + 1 个票据；余额保留函数是 `spendable()`；续租是五处（含 `touchPresence`）；`house_trace_replies` 有保留期清理；`transitWindowAt` 的不一致现有线路触发不到；内容包只排除两个文件、缺的是 `prototype`；只有 `sold` 参与结算；票价档位是「4–6 km ¥200」；`packages/engine/examples/` 存在。补了 4 处衔接：`house_inbox` 提前到 V2.2（v8）；活动结果在信箱上线前只写事件和视图提示；只读令牌绑定密钥身份；`request_id` 缺省时只按会话请求号去重。验证：`m0-contracts`、`r0-rename-guard`、`connect` 3 个文件 19 个测试通过；没有跑全量测试和端到端。
 
 ## 2026-11-25：彻底删除栖灯镇（Ftown）
 
