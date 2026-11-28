@@ -12,6 +12,7 @@
 - 还没定的只有几个名字：两片新住宅区的楼名、两条新线路名（暂定墨染线、萤泽线）、包里的街道名。
 - 和已有材料的关系：M2 内容草案（看板 #249）、二期空间设计（ai-house-world PR #191）、反馈工具（看板 #294，schema v7）都接着用，不另起一套。
 - 验证：这次只新增文档。跑了会读取 `docs/` 的三个城市测试文件（`m0-contracts`、`r0-rename-guard`、`connect`），3 个文件 19 个测试全部通过；没有跑全量测试和端到端。
+- 同日审计完善（PR #89 审校）：对照源码与桥接 Schema 全量审计后，在不改变主人 14 项决定的前提下补齐 `docs/city/V2-PLAN.md` 的工程与安全闭环（`ActionDef` 双层候选预检、活动租约保护与专注态区分、室友家域收件流 `house_inbox` 与 `Settlement.income_summary`、`consignments` 独立表与全口径双向防刷、密封竞拍解除离场撤标、住宅区 `residentialHub` 寻路与按层冷启动开放、切断 MCP `owner_link` AI 暴露面、纯文本防定界符欺骗、无副作用 `bot-game-check --city`，并修正分期依赖与附录 A/B 勘误）。
 
 ## 2026-11-25：彻底删除栖灯镇（Ftown）
 
